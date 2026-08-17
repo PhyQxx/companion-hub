@@ -7,6 +7,22 @@ on:
 jobs:
   contracts-and-tests:
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_DB: aria_test
+          POSTGRES_USER: aria
+          POSTGRES_PASSWORD: ci-postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U aria -d aria_test"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 20
+    env:
+      ARIA_TEST_DATABASE_URL: postgresql+asyncpg://aria:ci-postgres@localhost:5432/aria_test
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v6
@@ -33,3 +49,34 @@ jobs:
       - run: pnpm --dir contracts run check
       - name: Verify generated contracts are committed
         run: git diff --exit-code -- contracts/jsonschema contracts/types
+
+  compose-smoke:
+    runs-on: ubuntu-latest
+    env:
+      POSTGRES_DB: aria_compose_test
+      POSTGRES_PASSWORD: ci-compose-postgres
+      MQTT_USERNAME: aria
+      MQTT_PASSWORD: ci-compose-mqtt
+    steps:
+      - uses: actions/checkout@v4
+      - name: Start the complete authenticated stack
+        run: docker compose up -d --build --wait
+      - name: Verify Hub health
+        run: curl --fail --silent http://localhost:8000/healthz
+      - name: Verify authenticated MQTT publish
+        run: >-
+          docker compose exec -T mosquitto mosquitto_pub
+          -h 127.0.0.1 -u aria -P ci-compose-mqtt
+          -t aria/ci -m authenticated
+      - name: Verify anonymous MQTT is rejected
+        run: |
+          if docker compose exec -T mosquitto mosquitto_pub -h 127.0.0.1 -t aria/ci -m anonymous; then
+            echo "anonymous MQTT publish unexpectedly succeeded"
+            exit 1
+          fi
+      - name: Show logs after failure
+        if: failure()
+        run: docker compose logs --no-color
+      - name: Stop test stack
+        if: always()
+        run: docker compose down --volumes

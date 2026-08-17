@@ -102,7 +102,8 @@ async def _mark_failure(
     outbox = await session.get(OutboxRecord, delivery.outbox_id)
     if outbox is None or outbox.lease_owner != delivery.lease_owner:
         return "lost_lease"
-    detail = f"{type(error).__name__}: {error}"[:4_000]
+    # Exception messages may contain adapter payloads or secrets. Persist only the type.
+    detail = type(error).__name__[:160]
     outbox.last_error = detail
     outbox.lease_owner = None
     outbox.lease_expires_at = None

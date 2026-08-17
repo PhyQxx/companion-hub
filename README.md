@@ -21,6 +21,7 @@
 | [docs/12-安全边界同意与陪伴伦理.md](./docs/12-安全边界同意与陪伴伦理.md) | 用户控制、访客同意、录音/传感器、真人素材、高风险建议、非操纵关系与红队验收 |
 | [docs/13-需求追踪与架构决策.md](./docs/13-需求追踪与架构决策.md) | FR/NFR→设计→里程碑→测试追踪矩阵、发布定义、ADR、待决问题与设计冻结规则 |
 | [docs/14-输入输出扩展契约.md](./docs/14-输入输出扩展契约.md) | 统一多模态输入/输出协议、L3 临时信号管道、Adapter 生命周期、能力协商、路由降级与 M0 契约测试 |
+| [docs/15-M0输入输出骨架验收报告.md](./docs/15-M0输入输出骨架验收报告.md) | I/O 扩展、隐私隔离、可靠事件、故障恢复和容器鉴权的实现验收矩阵 |
 
 ## 一图速览
 
@@ -48,7 +49,8 @@
 - [x] M0.4 单实例集成 —— 真实 PostgreSQL/Mosquitto 容器迁移、鉴权、幂等写入、outbox 发布与回收验证
 - [x] 入口隐私闸门 —— 服务端重分类、L3 落库阻断、带 TTL 和背压策略的有界内存信号缓冲
 - [x] 常驻事件分发 —— FastAPI 生命周期 worker、本地命名消费者、inbox 去重、失败重试与健康状态
-- [ ] M0.4 并发恢复闸门 —— 多 worker 竞争、进程 kill/recover、持续消息压力与可观测指标
+- [x] M0.4 并发恢复闸门 —— PostgreSQL `SKIP LOCKED` 多 worker 竞争和 lease 持有者终止恢复测试
+- [x] M0 I/O 契约闸门 —— 显式 registry、四个参考 adapter、能力交集、降级、取消和 unknown outcome
 
 ## 本地开发
 
@@ -68,6 +70,7 @@ uv run uvicorn app.main:app --app-dir server --reload
 
 - 健康检查：`GET /healthz`
 - 协议元数据：`GET /api/v1/meta/protocol`
+- 已登记 Adapter：`GET /api/v1/meta/adapters`
 - JSON Schema：`contracts/jsonschema/`
 - TypeScript 类型：`contracts/types/index.d.ts`
 
@@ -82,6 +85,8 @@ docker compose up --build -d
 curl http://localhost:8000/healthz
 docker compose logs -f hub
 ```
+
+PostgreSQL 默认映射到宿主机 `5433`，可通过 `POSTGRES_PORT` 修改，避免占用本机常见的 `5432`。
 
 停止服务但保留数据：
 

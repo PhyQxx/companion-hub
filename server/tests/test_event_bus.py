@@ -149,6 +149,29 @@ async def test_dispatcher_moves_terminal_failure_to_dead_letter(
     assert dead_letter.error_code == "publish_failed"
 
 
+async def test_dead_letter_does_not_persist_exception_payload(
+    database: Database, input_event: InputEnvelope
+) -> None:
+    class CanaryPublisher:
+        async def publish(self, topic: str, event: InputEnvelope) -> None:
+            del topic, event
+            raise RuntimeError("L3-CANARY-must-not-enter-dead-letter")
+
+    async with database.sessions.begin() as session:
+        await append_event(session, input_event, topics=["hub.internal"])
+    await dispatch_once(
+        database.sessions,
+        CanaryPublisher(),
+        owner="worker-canary",
+        max_attempts=1,
+    )
+    async with database.sessions() as session:
+        outbox = (await session.scalars(select(OutboxRecord))).one()
+        dead_letter = (await session.scalars(select(DeadLetterRecord))).one()
+    assert outbox.last_error == "RuntimeError"
+    assert dead_letter.error_detail == "RuntimeError"
+
+
 async def test_expired_dispatch_lease_can_be_reclaimed(
     database: Database, input_event: InputEnvelope
 ) -> None:
