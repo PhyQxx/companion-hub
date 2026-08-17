@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Awaitable, Callable
 from types import SimpleNamespace
 from typing import Any
 
@@ -38,9 +39,12 @@ def endpoint(*, local: bool, max_privacy: str = "L1", retries: int = 0) -> Model
 
 
 class FakeProvider:
-    def __init__(self, name: str, *, fail: bool = False) -> None:
+    def __init__(
+        self, name: str, *, fail: bool = False, fail_after_delta: bool = False
+    ) -> None:
         self.name = name
         self.fail = fail
+        self.fail_after_delta = fail_after_delta
         self.requests: list[CompletionRequest] = []
 
     async def complete(self, request: CompletionRequest) -> CompletionResult:
@@ -58,6 +62,26 @@ class FakeProvider:
 
     async def probe(self) -> None:
         return None
+
+    async def stream(
+        self,
+        request: CompletionRequest,
+        on_delta: Callable[[str], Awaitable[None]],
+    ) -> CompletionResult:
+        self.requests.append(request)
+        if self.fail:
+            raise RuntimeError("provider_failed_before_delta")
+        await on_delta(f"{self.name}-delta")
+        if self.fail_after_delta:
+            raise RuntimeError("provider_failed_after_delta")
+        return CompletionResult(
+            text=f"{self.name}-delta",
+            provider="openai_compatible",
+            model="test-model",
+            endpoint=self.name,
+            route=request.route,
+            latency_ms=1,
+        )
 
 
 def request(level: str, *, route: str = "dialogue") -> CompletionRequest:
@@ -139,6 +163,64 @@ async def test_fallback_and_retry_are_bounded() -> None:
     assert result.endpoint == "fallback"
     assert len(failed.requests) == 2
     assert len(fallback.requests) == 1
+
+
+async def test_stream_falls_back_only_before_first_visible_delta() -> None:
+    failed = FakeProvider("failed", fail=True)
+    fallback = FakeProvider("fallback")
+    instance = LLMRouter(
+        endpoints={
+            "failed": endpoint(local=False),
+            "fallback": endpoint(local=False),
+            "private": endpoint(local=True, max_privacy="L2"),
+        },
+        routes={
+            LLMRoute.DIALOGUE: RoutePolicy(primary="failed", fallbacks=["fallback"]),
+            LLMRoute.UTILITY: RoutePolicy(primary="fallback"),
+            LLMRoute.PRIVATE: RoutePolicy(primary="private"),
+        },
+        providers={
+            "failed": failed,
+            "fallback": fallback,
+            "private": FakeProvider("private"),
+        },
+    )
+    deltas: list[str] = []
+
+    result = await instance.stream(request("L1"), _append_to(deltas))
+
+    assert result.endpoint == "fallback"
+    assert deltas == ["fallback-delta"]
+
+
+async def test_stream_never_splices_fallback_after_visible_delta() -> None:
+    partial = FakeProvider("partial", fail_after_delta=True)
+    fallback = FakeProvider("fallback")
+    instance = LLMRouter(
+        endpoints={
+            "partial": endpoint(local=False),
+            "fallback": endpoint(local=False),
+            "private": endpoint(local=True, max_privacy="L2"),
+        },
+        routes={
+            LLMRoute.DIALOGUE: RoutePolicy(primary="partial", fallbacks=["fallback"]),
+            LLMRoute.UTILITY: RoutePolicy(primary="fallback"),
+            LLMRoute.PRIVATE: RoutePolicy(primary="private"),
+        },
+        providers={
+            "partial": partial,
+            "fallback": fallback,
+            "private": FakeProvider("private"),
+        },
+    )
+    deltas: list[str] = []
+
+    with pytest.raises(LLMRouteExhausted) as captured:
+        await instance.stream(request("L1"), _append_to(deltas))
+
+    assert captured.value.reason_code == "stream_interrupted"
+    assert deltas == ["partial-delta"]
+    assert fallback.requests == []
 
 
 async def test_trace_records_safe_metadata_only() -> None:
@@ -246,3 +328,54 @@ async def test_litellm_adapter_maps_openai_compatible_contract(
     assert result.request_id == "provider-request-id"
     assert result.usage.total_tokens == 7
     assert result.usage.estimated_cost == pytest.approx(0.00001)
+
+
+async def test_litellm_adapter_streams_real_deltas(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, Any] = {}
+
+    async def chunks() -> Any:
+        yield SimpleNamespace(
+            id="stream-id",
+            choices=[
+                SimpleNamespace(
+                    delta=SimpleNamespace(content="hello "), finish_reason=None
+                )
+            ],
+            usage=None,
+        )
+        yield SimpleNamespace(
+            id="stream-id",
+            choices=[
+                SimpleNamespace(delta=SimpleNamespace(content="world"), finish_reason="stop")
+            ],
+            usage=SimpleNamespace(prompt_tokens=3, completion_tokens=2),
+        )
+
+    async def fake_completion(**kwargs: Any) -> Any:
+        captured.update(kwargs)
+        return chunks()
+
+    monkeypatch.setattr("app.llm.provider.litellm.acompletion", fake_completion)
+    provider = LiteLLMProvider(
+        "cloud",
+        endpoint(local=False),
+        EnvSecretProvider({"TEST_MODEL_KEY": "test-only-key"}),
+    )
+    deltas: list[str] = []
+
+    result = await provider.stream(request("L0"), _append_to(deltas))
+
+    assert captured["stream"] is True
+    assert deltas == ["hello ", "world"]
+    assert result.text == "hello world"
+    assert result.finish_reason == "stop"
+    assert result.usage.total_tokens == 5
+
+
+def _append_to(target: list[str]) -> Callable[[str], Awaitable[None]]:
+    async def append(value: str) -> None:
+        target.append(value)
+
+    return append

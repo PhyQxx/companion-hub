@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncIterator, Mapping
+from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
 from contextlib import asynccontextmanager
 
 from app.observability import TraceRecorder
@@ -83,6 +83,57 @@ class LLMRouter:
                     failures += 1
                 except Exception:
                     failures += 1
+        if rejected_for_privacy and not failures:
+            raise LLMRouteExhausted("no_privacy_compatible_model")
+        raise LLMRouteExhausted("all_model_routes_failed")
+
+    async def stream(
+        self,
+        request: CompletionRequest,
+        on_delta: Callable[[str], Awaitable[None]],
+    ) -> CompletionResult:
+        privacy = PrivacyLevel(request.privacy_level)
+        if privacy is PrivacyLevel.L3:
+            raise EgressBlocked("l3_egress_blocked")
+        selected_route = LLMRoute.PRIVATE if privacy is PrivacyLevel.L2 else LLMRoute(request.route)
+        routed_request = CompletionRequest.model_validate(
+            {**request.model_dump(mode="python"), "route": selected_route}
+        )
+        policy = self._routes[selected_route]
+        rejected_for_privacy = 0
+        failures = 0
+        for endpoint_name in [policy.primary, *policy.fallbacks]:
+            endpoint = self._endpoints[endpoint_name]
+            try:
+                self._egress.authorize(
+                    privacy,
+                    EgressDestination(
+                        name=endpoint_name,
+                        runs_local=endpoint.runs_local,
+                        max_privacy_level=PrivacyLevel(endpoint.max_privacy_level),
+                    ),
+                )
+            except EgressBlocked:
+                rejected_for_privacy += 1
+                continue
+            provider = self._providers[endpoint_name]
+            for attempt in range(1, endpoint.max_retries + 2):
+                emitted = False
+
+                async def guarded_delta(delta: str) -> None:
+                    nonlocal emitted
+                    emitted = True
+                    await on_delta(delta)
+
+                timeout_ms = policy.timeout_ms or endpoint.timeout_ms
+                try:
+                    async with self._span(routed_request, endpoint_name, attempt):
+                        async with asyncio.timeout(timeout_ms / 1_000):
+                            return await provider.stream(routed_request, guarded_delta)
+                except Exception:
+                    failures += 1
+                    if emitted:
+                        raise LLMRouteExhausted("stream_interrupted") from None
         if rejected_for_privacy and not failures:
             raise LLMRouteExhausted("no_privacy_compatible_model")
         raise LLMRouteExhausted("all_model_routes_failed")
