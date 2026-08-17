@@ -16,6 +16,22 @@ from .models import HubConfig
 ConfigValidator = Callable[[HubConfig], Awaitable[None]]
 
 
+def hash_config(config: HubConfig) -> str:
+    canonical = json.dumps(
+        config.model_dump(mode="json"), sort_keys=True, separators=(",", ":")
+    )
+    return hashlib.sha256(canonical.encode()).hexdigest()
+
+
+def load_config_file(path: Path) -> tuple[HubConfig, str]:
+    raw = path.read_text(encoding="utf-8")
+    parsed = yaml.safe_load(raw)
+    if not isinstance(parsed, dict):
+        raise ValueError("configuration root must be a mapping")
+    config = HubConfig.model_validate(parsed)
+    return config, hash_config(config)
+
+
 @dataclass(frozen=True, slots=True)
 class ConfigSnapshot:
     version: int
@@ -110,15 +126,7 @@ class ConfigStore:
             return snapshot
 
     def _read_candidate(self) -> tuple[HubConfig, str]:
-        raw = self._path.read_text(encoding="utf-8")
-        parsed = yaml.safe_load(raw)
-        if not isinstance(parsed, dict):
-            raise ValueError("configuration root must be a mapping")
-        config = HubConfig.model_validate(parsed)
-        canonical = json.dumps(
-            config.model_dump(mode="json"), sort_keys=True, separators=(",", ":")
-        )
-        return config, hashlib.sha256(canonical.encode()).hexdigest()
+        return load_config_file(self._path)
 
 
 class ConfigWatcher:
