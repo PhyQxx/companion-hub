@@ -176,4 +176,3 @@ OutputContentPart: TypeAlias = Annotated[
     | DeviceCommandPart,
     Field(discriminator="type"),
 ]
-

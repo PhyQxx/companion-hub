@@ -21,6 +21,7 @@
 | [docs/12-安全边界同意与陪伴伦理.md](./docs/12-安全边界同意与陪伴伦理.md) | 用户控制、访客同意、录音/传感器、真人素材、高风险建议、非操纵关系与红队验收 |
 | [docs/13-需求追踪与架构决策.md](./docs/13-需求追踪与架构决策.md) | FR/NFR→设计→里程碑→测试追踪矩阵、发布定义、ADR、待决问题与设计冻结规则 |
 | [docs/14-输入输出扩展契约.md](./docs/14-输入输出扩展契约.md) | 统一多模态输入/输出协议、L3 临时信号管道、Adapter 生命周期、能力协商、路由降级与 M0 契约测试 |
+| [docs/15-M0输入输出骨架验收报告.md](./docs/15-M0输入输出骨架验收报告.md) | I/O 扩展、隐私隔离、可靠事件、故障恢复和容器鉴权的实现验收矩阵 |
 
 ## 一图速览
 
@@ -44,7 +45,12 @@
 - [x] 产品范围冻结（v1.3，2026-08-17；核心 v1 截止 M3A）
 - [x] M0.1 初始工程骨架 —— Python 3.11、FastAPI、uv、ruff、mypy、pytest、CI
 - [x] M0.3 协议首版 —— Pydantic → JSON Schema → TypeScript，含 UUIDv7、durable/ephemeral 分流和 mock adapter 测试
-- [ ] M0.2/M0.4 运行基础设施 —— 下一步接入 PostgreSQL、outbox/inbox、Mosquitto 和 Docker Compose
+- [x] M0.2/M0.4 基础实现 —— PostgreSQL/Alembic、event/outbox/inbox/dead-letter、dispatcher 租约恢复、Mosquitto 和 Docker Compose
+- [x] M0.4 单实例集成 —— 真实 PostgreSQL/Mosquitto 容器迁移、鉴权、幂等写入、outbox 发布与回收验证
+- [x] 入口隐私闸门 —— 服务端重分类、L3 落库阻断、带 TTL 和背压策略的有界内存信号缓冲
+- [x] 常驻事件分发 —— FastAPI 生命周期 worker、本地命名消费者、inbox 去重、失败重试与健康状态
+- [x] M0.4 并发恢复闸门 —— PostgreSQL `SKIP LOCKED` 多 worker 竞争和 lease 持有者终止恢复测试
+- [x] M0 I/O 契约闸门 —— 显式 registry、四个参考 adapter、能力交集、降级、取消和 unknown outcome
 
 ## 本地开发
 
@@ -64,5 +70,28 @@ uv run uvicorn app.main:app --app-dir server --reload
 
 - 健康检查：`GET /healthz`
 - 协议元数据：`GET /api/v1/meta/protocol`
+- 已登记 Adapter：`GET /api/v1/meta/adapters`
 - JSON Schema：`contracts/jsonschema/`
 - TypeScript 类型：`contracts/types/index.d.ts`
+
+`ARIA_RUN_DISPATCHER` 默认关闭。只有当应用已为所有会产生的 topic 注册命名消费者后才应开启；开启后 `/healthz` 会增加 `dispatcher` 运行状态。Adapter 输入必须经过 `GuardedInputSink`，设备声明的隐私等级只是下限，服务端策略可以上调，L3 数据不会进入 event/outbox 数据库。
+
+## 容器启动
+
+```bash
+cp .env.example .env
+# 编辑 .env，替换 PostgreSQL 和 MQTT 密码
+docker compose up --build -d
+curl http://localhost:8000/healthz
+docker compose logs -f hub
+```
+
+PostgreSQL 默认映射到宿主机 `5433`，可通过 `POSTGRES_PORT` 修改，避免占用本机常见的 `5432`。
+
+停止服务但保留数据：
+
+```bash
+docker compose down
+```
+
+开发 Compose 会自动执行 Alembic migration，并显式启用 `/api/v1/dev/events` 测试入口。该入口没有设计为生产 API；共享部署前必须关闭 `ARIA_ENABLE_DEV_ENDPOINTS` 并完成身份模块。

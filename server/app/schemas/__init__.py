@@ -6,6 +6,7 @@ from .adapter import (
     AdapterState,
     EndpointCapabilities,
 )
+from .common import PrivacyLevel
 from .input import EphemeralSignal, InputEnvelope
 from .output import DeliveryPlan, DeliveryReceipt, OutputIntent
 
@@ -33,5 +34,5 @@ __all__ = [
     "EphemeralSignal",
     "InputEnvelope",
     "OutputIntent",
+    "PrivacyLevel",
 ]
-
