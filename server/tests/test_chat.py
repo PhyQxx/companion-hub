@@ -9,9 +9,11 @@ from httpx import ASGITransport, AsyncClient
 from sqlalchemy import func, select
 
 from app.api import create_chat_router
+from app.auth import AuthService
 from app.chat import ChatService
 from app.config import DatabaseConfigStore, HubConfig
-from app.db import Base, Database, MessageRecord, create_database
+from app.db import AppUserRecord, Base, Database, MessageRecord, create_database
+from app.ids import uuid7
 from app.llm import (
     CompletionRequest,
     CompletionResult,
@@ -92,6 +94,13 @@ class FakeRouter:
         )
 
 
+async def create_user(database: Database, name: str = "Test") -> AppUserRecord:
+    user = AppUserRecord(id=uuid7(), display_name=name, status="active")
+    async with database.sessions.begin() as session:
+        session.add(user)
+    return user
+
+
 async def test_chat_persists_turn_and_uses_recent_context(
     database: Database, store: DatabaseConfigStore
 ) -> None:
@@ -101,17 +110,18 @@ async def test_chat_persists_turn_and_uses_recent_context(
         store,
         router_builder=lambda config: FakeRouter(config.models["cloud"].model, requests),
     )
+    user = await create_user(database)
     conversation = await service.create_conversation(
-        user_id=None, display_name="Test", title="Context test"
+        user_id=user.id, title="Context test"
     )
 
     first = await service.send_message(
-        conversation.id, text="hello", privacy_level=PrivacyLevel.L1
+        conversation.id, user_id=user.id, text="hello", privacy_level=PrivacyLevel.L1
     )
     second = await service.send_message(
-        conversation.id, text="again", privacy_level=PrivacyLevel.L1
+        conversation.id, user_id=user.id, text="again", privacy_level=PrivacyLevel.L1
     )
-    messages = await service.list_messages(conversation.id)
+    messages = await service.list_messages(conversation.id, user_id=user.id)
 
     assert [message.role for message in messages] == ["user", "assistant", "user", "assistant"]
     assert [message.seq for message in messages] == [1, 2, 3, 4]
@@ -149,11 +159,12 @@ async def test_published_database_config_is_used_on_next_turn(
         return FakeRouter(config.models["cloud"].model, [])
 
     service = ChatService(database, store, router_builder=builder)
+    user = await create_user(database)
     conversation = await service.create_conversation(
-        user_id=None, display_name="Test", title=None
+        user_id=user.id, title=None
     )
     await service.send_message(
-        conversation.id, text="before", privacy_level=PrivacyLevel.L1
+        conversation.id, user_id=user.id, text="before", privacy_level=PrivacyLevel.L1
     )
     candidate = store.current.config.model_dump(mode="python")
     candidate["models"]["cloud"]["model"] = "dialogue-v2"
@@ -161,7 +172,7 @@ async def test_published_database_config_is_used_on_next_turn(
     await store.publish(draft.version, actor="test")
 
     result = await service.send_message(
-        conversation.id, text="after", privacy_level=PrivacyLevel.L1
+        conversation.id, user_id=user.id, text="after", privacy_level=PrivacyLevel.L1
     )
 
     assert seen_models == ["dialogue-v1", "dialogue-v2"]
@@ -180,37 +191,74 @@ async def test_model_failure_keeps_user_message_for_retry(
     database: Database, store: DatabaseConfigStore
 ) -> None:
     service = ChatService(database, store, router_builder=lambda config: FailingRouter())
+    user = await create_user(database)
     conversation = await service.create_conversation(
-        user_id=None, display_name="Test", title=None
+        user_id=user.id, title=None
     )
 
     with pytest.raises(LLMRouteExhausted, match="all_model_routes_failed"):
         await service.send_message(
-            conversation.id, text="keep me", privacy_level=PrivacyLevel.L1
+            conversation.id,
+            user_id=user.id,
+            text="keep me",
+            privacy_level=PrivacyLevel.L1,
         )
 
-    messages = await service.list_messages(conversation.id)
+    messages = await service.list_messages(conversation.id, user_id=user.id)
     assert [(message.seq, message.role, message.content) for message in messages] == [
         (1, "user", "keep me")
     ]
+
+
+async def test_conversation_access_is_scoped_to_owning_user(
+    database: Database, store: DatabaseConfigStore
+) -> None:
+    service = ChatService(
+        database,
+        store,
+        router_builder=lambda config: FakeRouter(config.models["cloud"].model, []),
+    )
+    owner = await create_user(database, "Owner")
+    stranger = await create_user(database, "Stranger")
+    conversation = await service.create_conversation(user_id=owner.id, title="Private")
+
+    assert await service.list_conversations(user_id=stranger.id) == []
+    with pytest.raises(LookupError, match="conversation not found"):
+        await service.list_messages(conversation.id, user_id=stranger.id)
+    with pytest.raises(LookupError, match="conversation not found"):
+        await service.send_message(
+            conversation.id,
+            user_id=stranger.id,
+            text="unauthorized",
+            privacy_level=PrivacyLevel.L1,
+        )
+    assert await service.list_messages(conversation.id, user_id=owner.id) == []
 
 
 async def test_chat_api_auth_validation_and_stable_failure(
     database: Database, store: DatabaseConfigStore
 ) -> None:
     service = ChatService(database, store, router_builder=lambda config: FailingRouter())
+    auth_service = AuthService(database)
+    auth_session = await auth_service.setup(
+        display_name="Test", password="correct horse battery staple"
+    )
     app = FastAPI()
-    app.include_router(create_chat_router(service, admin_token="test-token"))
-    headers = {"Authorization": "Bearer test-token"}
+    app.include_router(create_chat_router(service, auth_service))
+    headers = {"Authorization": f"Bearer {auth_session.access_token}"}
 
     async with AsyncClient(
         transport=ASGITransport(app=app), base_url="http://test"
     ) as client:
         unauthorized = await client.get("/api/v1/chat/conversations")
+        admin_unauthorized = await client.get(
+            "/api/v1/chat/conversations",
+            headers={"Authorization": "Bearer test-admin-token"},
+        )
         created = await client.post(
             "/api/v1/chat/conversations",
             headers=headers,
-            json={"display_name": "Test", "title": "API test"},
+            json={"title": "API test"},
         )
         conversation_id = created.json()["id"]
         l3 = await client.post(
@@ -228,6 +276,7 @@ async def test_chat_api_auth_validation_and_stable_failure(
         )
 
     assert unauthorized.status_code == 401
+    assert admin_unauthorized.status_code == 401
     assert created.status_code == 201
     assert l3.status_code == 422
     assert failure.status_code == 503
