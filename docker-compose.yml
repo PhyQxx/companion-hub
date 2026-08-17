@@ -50,6 +50,8 @@ services:
       ARIA_MQTT_USERNAME: ${MQTT_USERNAME:-aria}
       ARIA_MQTT_PASSWORD: ${MQTT_PASSWORD}
       ARIA_LOG_LEVEL: ${ARIA_LOG_LEVEL:-INFO}
+      ARIA_CONFIG_PATH: ${ARIA_CONFIG_PATH:-config/hub.example.yaml}
+      ARIA_WATCH_CONFIG: ${ARIA_WATCH_CONFIG:-true}
     depends_on:
       postgres:
         condition: service_healthy

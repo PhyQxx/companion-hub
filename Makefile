@@ -1,4 +1,4 @@
-.PHONY: install lint test schemas types contracts migrate compose-check infra-up infra-down run
+.PHONY: install lint test schemas types contracts migrate compose-check infra-up infra-down llm-check run
 
 install:
 	uv sync --dev
@@ -31,6 +31,9 @@ infra-up:
 
 infra-down:
 	docker compose down
+
+llm-check:
+	uv run python server/scripts/check_llm.py
 
 run:
 	uv run uvicorn app.main:app --app-dir server --reload
