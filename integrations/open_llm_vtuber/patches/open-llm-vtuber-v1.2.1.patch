@@ -63,3 +63,47 @@ index 493fa9c..d083dc2 100644
              store_message(
                  conf_uid=context.character_config.conf_uid,
                  history_uid=context.history_uid,
+diff --git a/src/open_llm_vtuber/config_manager/agent.py b/src/open_llm_vtuber/config_manager/agent.py
+index b257d60..7810e93 100644
+--- a/src/open_llm_vtuber/config_manager/agent.py
++++ b/src/open_llm_vtuber/config_manager/agent.py
+@@ -172,6 +172,22 @@ class LettaConfig(I18nMixin, BaseModel):
+     }
+ 
+ 
++class AriaAgentConfig(I18nMixin, BaseModel):
++    """Configuration for the Aria Companion Hub bridge."""
++
++    base_url: str = Field("http://127.0.0.1:8000", alias="base_url")
++    password_env: str = Field("ARIA_CHAT_PASSWORD", alias="password_env")
++    privacy_level: Literal["L0", "L1", "L2"] = Field("L1", alias="privacy_level")
++    conversation_title: str = Field(
++        "Open-LLM-VTuber", alias="conversation_title"
++    )
++    mapping_path: str = Field(
++        ".aria/open_llm_vtuber_conversations.json", alias="mapping_path"
++    )
++    faster_first_response: Optional[bool] = Field(True, alias="faster_first_response")
++    segment_method: Literal["regex", "pysbd"] = Field("pysbd", alias="segment_method")
++
++
+ class AgentSettings(I18nMixin, BaseModel):
+     """Settings for different types of agents."""
+ 
+@@ -181,6 +197,7 @@ class AgentSettings(I18nMixin, BaseModel):
+     mem0_agent: Optional[Mem0Config] = Field(None, alias="mem0_agent")
+     hume_ai_agent: Optional[HumeAIConfig] = Field(None, alias="hume_ai_agent")
+     letta_agent: Optional[LettaConfig] = Field(None, alias="letta_agent")
++    aria_agent: Optional[AriaAgentConfig] = Field(None, alias="aria_agent")
+ 
+     DESCRIPTIONS: ClassVar[Dict[str, Description]] = {
+         "basic_memory_agent": Description(
+@@ -200,7 +217,7 @@ class AgentConfig(I18nMixin, BaseModel):
+     """This class contains all of the configurations related to agent."""
+ 
+     conversation_agent_choice: Literal[
+-        "basic_memory_agent", "mem0_agent", "hume_ai_agent", "letta_agent"
++        "basic_memory_agent", "mem0_agent", "hume_ai_agent", "letta_agent", "aria_agent"
+     ] = Field(..., alias="conversation_agent_choice")
+     agent_settings: AgentSettings = Field(..., alias="agent_settings")
+     llm_configs: StatelessLLMConfigs = Field(..., alias="llm_configs")
