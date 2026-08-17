@@ -1,0 +1,12 @@
+# Merge these values into Open-LLM-VTuber's conf.yaml.
+agent_config:
+  conversation_agent_choice: aria_agent
+  agent_settings:
+    aria_agent:
+      base_url: http://127.0.0.1:8000
+      password_env: ARIA_CHAT_PASSWORD
+      privacy_level: L1
+      conversation_title: Open-LLM-VTuber
+      mapping_path: .aria/open_llm_vtuber_conversations.json
+      faster_first_response: true
+      segment_method: pysbd

@@ -1,0 +1,17 @@
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+[project]
+name = "aria-open-llm-vtuber"
+version = "0.1.0"
+description = "Open-LLM-VTuber v1 agent bridge for Aria Companion Hub"
+readme = "README.md"
+requires-python = ">=3.10,<3.13"
+dependencies = [
+  "httpx>=0.27,<1",
+  "websockets>=13,<18",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/aria_olv_bridge"]

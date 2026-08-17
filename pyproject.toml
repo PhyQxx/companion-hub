@@ -31,14 +31,14 @@ package = false
 
 [tool.pytest.ini_options]
 addopts = "-q"
-pythonpath = ["server"]
+pythonpath = ["server", "integrations/open_llm_vtuber/src"]
 testpaths = ["server/tests"]
 asyncio_mode = "auto"
 
 [tool.ruff]
 target-version = "py311"
 line-length = 100
-src = ["server"]
+src = ["server", "integrations/open_llm_vtuber/src"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "SIM", "RUF"]
