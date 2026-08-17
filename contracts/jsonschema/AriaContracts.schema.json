@@ -1,0 +1,1846 @@
+{
+  "$defs": {
+    "AdapterCapabilities": {
+      "additionalProperties": false,
+      "properties": {
+        "critical": {
+          "items": {
+            "maxLength": 160,
+            "minLength": 1,
+            "pattern": "^[a-z][a-z0-9_-]*(\\.[a-z0-9_-]+)*$",
+            "type": "string"
+          },
+          "title": "Critical",
+          "type": "array"
+        },
+        "delivery": {
+          "$ref": "#/$defs/DeliveryCapabilities"
+        },
+        "input_parts": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Input Parts",
+          "type": "array"
+        },
+        "output_parts": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Output Parts",
+          "type": "array"
+        },
+        "presentation": {
+          "$ref": "#/$defs/PresentationCapabilities"
+        },
+        "streaming": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Streaming",
+          "type": "array"
+        }
+      },
+      "title": "AdapterCapabilities",
+      "type": "object"
+    },
+    "AdapterDirection": {
+      "enum": [
+        "input",
+        "output"
+      ],
+      "title": "AdapterDirection",
+      "type": "string"
+    },
+    "AdapterHealth": {
+      "additionalProperties": false,
+      "properties": {
+        "checked_at": {
+          "format": "date-time",
+          "title": "Checked At",
+          "type": "string"
+        },
+        "reason_code": {
+          "anyOf": [
+            {
+              "maxLength": 160,
+              "minLength": 1,
+              "pattern": "^[a-z][a-z0-9_-]*(\\.[a-z0-9_-]+)*$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Reason Code"
+        },
+        "state": {
+          "$ref": "#/$defs/AdapterState"
+        }
+      },
+      "required": [
+        "state",
+        "checked_at"
+      ],
+      "title": "AdapterHealth",
+      "type": "object"
+    },
+    "AdapterManifest": {
+      "additionalProperties": false,
+      "properties": {
+        "adapter_id": {
+          "maxLength": 160,
+          "minLength": 3,
+          "pattern": "^[a-z][a-z0-9_-]*(\\.[a-z0-9_-]+)+$",
+          "title": "Adapter Id",
+          "type": "string"
+        },
+        "adapter_version": {
+          "pattern": "^(0|[1-9]\\d*)\\.(0|[1-9]\\d*)\\.(0|[1-9]\\d*)(?:[-+][0-9A-Za-z.-]+)?$",
+          "title": "Adapter Version",
+          "type": "string"
+        },
+        "capabilities": {
+          "$ref": "#/$defs/AdapterCapabilities"
+        },
+        "config_schema_ref": {
+          "maxLength": 200,
+          "minLength": 3,
+          "pattern": "^[a-z][a-z0-9_.-]*/[1-9]\\d*$",
+          "title": "Config Schema Ref",
+          "type": "string"
+        },
+        "direction": {
+          "items": {
+            "$ref": "#/$defs/AdapterDirection"
+          },
+          "maxItems": 2,
+          "minItems": 1,
+          "title": "Direction",
+          "type": "array"
+        },
+        "input_policy": {
+          "$ref": "#/$defs/InputPolicy"
+        },
+        "max_tested_hub_version": {
+          "maxLength": 64,
+          "minLength": 1,
+          "title": "Max Tested Hub Version",
+          "type": "string"
+        },
+        "min_hub_version": {
+          "pattern": "^(0|[1-9]\\d*)\\.(0|[1-9]\\d*)\\.(0|[1-9]\\d*)(?:[-+][0-9A-Za-z.-]+)?$",
+          "title": "Min Hub Version",
+          "type": "string"
+        },
+        "permissions": {
+          "items": {
+            "maxLength": 160,
+            "minLength": 1,
+            "pattern": "^[a-z][a-z0-9_-]*(\\.[a-z0-9_-]+)*$",
+            "type": "string"
+          },
+          "maxItems": 32,
+          "title": "Permissions",
+          "type": "array"
+        },
+        "privacy": {
+          "$ref": "#/$defs/AdapterPrivacy"
+        },
+        "resource_profile": {
+          "maxLength": 160,
+          "minLength": 1,
+          "pattern": "^[a-z][a-z0-9_-]*(\\.[a-z0-9_-]+)*$",
+          "title": "Resource Profile",
+          "type": "string"
+        },
+        "schema_version": {
+          "const": 1,
+          "default": 1,
+          "title": "Schema Version",
+          "type": "integer"
+        },
+        "transport_bindings": {
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 16,
+          "title": "Transport Bindings",
+          "type": "array"
+        }
+      },
+      "required": [
+        "adapter_id",
+        "adapter_version",
+        "min_hub_version",
+        "max_tested_hub_version",
+        "direction",
+        "config_schema_ref",
+        "capabilities",
+        "privacy",
+        "resource_profile"
+      ],
+      "title": "AdapterManifest",
+      "type": "object"
+    },
+    "AdapterPrivacy": {
+      "additionalProperties": false,
+      "properties": {
+        "max_input_level": {
+          "$ref": "#/$defs/PrivacyLevel"
+        },
+        "max_output_level": {
+          "$ref": "#/$defs/PrivacyLevel"
+        },
+        "runs_local": {
+          "title": "Runs Local",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "runs_local",
+        "max_input_level",
+        "max_output_level"
+      ],
+      "title": "AdapterPrivacy",
+      "type": "object"
+    },
+    "AdapterState": {
+      "enum": [
+        "installed",
+        "configured",
+        "starting",
+        "ready",
+        "degraded",
+        "stopping",
+        "stopped",
+        "failed"
+      ],
+      "title": "AdapterState",
+      "type": "string"
+    },
+    "AssetPointer": {
+      "additionalProperties": false,
+      "properties": {
+        "asset_id": {
+          "format": "uuid7",
+          "title": "Asset Id",
+          "type": "string"
+        },
+        "content_hash": {
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "title": "Content Hash",
+          "type": "string"
+        },
+        "media_type": {
+          "pattern": "^[a-z0-9.+-]+/[a-z0-9.+-]+$",
+          "title": "Media Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "asset_id",
+        "media_type",
+        "content_hash"
+      ],
+      "title": "AssetPointer",
+      "type": "object"
+    },
+    "AssetRefPart": {
+      "additionalProperties": false,
+      "properties": {
+        "asset_ref": {
+          "$ref": "#/$defs/AssetPointer"
+        },
+        "type": {
+          "const": "asset_ref",
+          "default": "asset_ref",
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "asset_ref"
+      ],
+      "title": "AssetRefPart",
+      "type": "object"
+    },
+    "Audience": {
+      "additionalProperties": false,
+      "properties": {
+        "mode": {
+          "default": "user",
+          "enum": [
+            "user",
+            "admins",
+            "public"
+          ],
+          "title": "Mode",
+          "type": "string"
+        }
+      },
+      "title": "Audience",
+      "type": "object"
+    },
+    "AudioPart": {
+      "additionalProperties": false,
+      "properties": {
+        "asset_ref": {
+          "$ref": "#/$defs/AssetPointer"
+        },
+        "codec": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Codec"
+        },
+        "sample_rate": {
+          "anyOf": [
+            {
+              "exclusiveMinimum": 0,
+              "maximum": 384000,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Sample Rate"
+        },
+        "type": {
+          "const": "audio",
+          "default": "audio",
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "asset_ref"
+      ],
+      "title": "AudioPart",
+      "type": "object"
+    },
+    "AudioStreamPart": {
+      "additionalProperties": false,
+      "properties": {
+        "codec": {
+          "title": "Codec",
+          "type": "string"
+        },
+        "sample_rate": {
+          "exclusiveMinimum": 0,
+          "maximum": 384000,
+          "title": "Sample Rate",
+          "type": "integer"
+        },
+        "stream_id": {
+          "maxLength": 160,
+          "minLength": 1,
+          "title": "Stream Id",
+          "type": "string"
+        },
+        "type": {
+          "const": "audio_stream",
+          "default": "audio_stream",
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "stream_id",
+        "codec",
+        "sample_rate"
+      ],
+      "title": "AudioStreamPart",
+      "type": "object"
+    },
+    "ControlPart": {
+      "additionalProperties": false,
+      "properties": {
+        "args": {
+          "additionalProperties": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "integer"
+              },
+              {
+                "type": "number"
+              },
+              {
+                "type": "boolean"
+              },
+              {
+                "items": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "integer"
+                    },
+                    {
+                      "type": "number"
+                    },
+                    {
+                      "type": "boolean"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "title": "Args",
+          "type": "object"
+        },
+        "name": {
+          "maxLength": 160,
+          "minLength": 3,
+          "pattern": "^[a-z][a-z0-9_-]*(\\.[a-z0-9_-]+)+$",
+          "title": "Name",
+          "type": "string"
+        },
+        "type": {
+          "const": "control",
+          "default": "control",
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "name"
+      ],
+      "title": "ControlPart",
+      "type": "object"
+    },
+    "DeliveryCapabilities": {
+      "additionalProperties": false,
+      "properties": {
+        "proactive_reachable": {
+          "default": false,
+          "title": "Proactive Reachable",
+          "type": "boolean"
+        },
+        "supports_ack": {
+          "default": false,
+          "title": "Supports Ack",
+          "type": "boolean"
+        },
+        "supports_cancel": {
+          "default": false,
+          "title": "Supports Cancel",
+          "type": "boolean"
+        },
+        "supports_replace": {
+          "default": false,
+          "title": "Supports Replace",
+          "type": "boolean"
+        }
+      },
+      "title": "DeliveryCapabilities",
+      "type": "object"
+    },
+    "DeliveryPlan": {
+      "additionalProperties": false,
+      "properties": {
+        "adapter_instance_id": {
+          "format": "uuid7",
+          "title": "Adapter Instance Id",
+          "type": "string"
+        },
+        "attempt": {
+          "default": 1,
+          "minimum": 1,
+          "title": "Attempt",
+          "type": "integer"
+        },
+        "deadline_at": {
+          "format": "date-time",
+          "title": "Deadline At",
+          "type": "string"
+        },
+        "delivery_id": {
+          "format": "uuid7",
+          "title": "Delivery Id",
+          "type": "string"
+        },
+        "endpoint_id": {
+          "maxLength": 160,
+          "minLength": 1,
+          "title": "Endpoint Id",
+          "type": "string"
+        },
+        "generation_id": {
+          "anyOf": [
+            {
+              "format": "uuid7",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Generation Id"
+        },
+        "idempotency_key": {
+          "maxLength": 255,
+          "minLength": 8,
+          "title": "Idempotency Key",
+          "type": "string"
+        },
+        "intent_id": {
+          "format": "uuid7",
+          "title": "Intent Id",
+          "type": "string"
+        },
+        "presentation": {
+          "$ref": "#/$defs/Presentation"
+        },
+        "privacy_level": {
+          "$ref": "#/$defs/PrivacyLevel"
+        },
+        "selected_content": {
+          "items": {
+            "discriminator": {
+              "mapping": {
+                "audio": "#/$defs/AudioPart",
+                "device_command": "#/$defs/DeviceCommandPart",
+                "file": "#/$defs/FilePart",
+                "image": "#/$defs/ImagePart",
+                "notification": "#/$defs/NotificationPart",
+                "speech": "#/$defs/SpeechPart",
+                "text": "#/$defs/TextPart",
+                "video": "#/$defs/VideoPart"
+              },
+              "propertyName": "type"
+            },
+            "oneOf": [
+              {
+                "$ref": "#/$defs/TextPart"
+              },
+              {
+                "$ref": "#/$defs/SpeechPart"
+              },
+              {
+                "$ref": "#/$defs/AudioPart"
+              },
+              {
+                "$ref": "#/$defs/ImagePart"
+              },
+              {
+                "$ref": "#/$defs/VideoPart"
+              },
+              {
+                "$ref": "#/$defs/FilePart"
+              },
+              {
+                "$ref": "#/$defs/NotificationPart"
+              },
+              {
+                "$ref": "#/$defs/DeviceCommandPart"
+              }
+            ]
+          },
+          "maxItems": 32,
+          "minItems": 1,
+          "title": "Selected Content",
+          "type": "array"
+        }
+      },
+      "required": [
+        "delivery_id",
+        "intent_id",
+        "adapter_instance_id",
+        "endpoint_id",
+        "privacy_level",
+        "selected_content",
+        "deadline_at",
+        "idempotency_key"
+      ],
+      "title": "DeliveryPlan",
+      "type": "object"
+    },
+    "DeliveryPolicy": {
+      "additionalProperties": false,
+      "properties": {
+        "ack_policy": {
+          "default": "accepted",
+          "enum": [
+            "none",
+            "accepted",
+            "delivered",
+            "played"
+          ],
+          "title": "Ack Policy",
+          "type": "string"
+        },
+        "fallback": {
+          "items": {
+            "maxLength": 160,
+            "minLength": 1,
+            "pattern": "^[a-z][a-z0-9_-]*(\\.[a-z0-9_-]+)*$",
+            "type": "string"
+          },
+          "maxItems": 16,
+          "title": "Fallback",
+          "type": "array"
+        },
+        "interruptible": {
+          "default": true,
+          "title": "Interruptible",
+          "type": "boolean"
+        },
+        "priority": {
+          "$ref": "#/$defs/Priority",
+          "default": "normal"
+        },
+        "ttl_ms": {
+          "default": 8000,
+          "exclusiveMinimum": 0,
+          "maximum": 86400000,
+          "title": "Ttl Ms",
+          "type": "integer"
+        }
+      },
+      "title": "DeliveryPolicy",
+      "type": "object"
+    },
+    "DeliveryReceipt": {
+      "additionalProperties": false,
+      "properties": {
+        "adapter_instance_id": {
+          "format": "uuid7",
+          "title": "Adapter Instance Id",
+          "type": "string"
+        },
+        "attempt": {
+          "minimum": 1,
+          "title": "Attempt",
+          "type": "integer"
+        },
+        "delivery_id": {
+          "format": "uuid7",
+          "title": "Delivery Id",
+          "type": "string"
+        },
+        "endpoint_id": {
+          "maxLength": 160,
+          "minLength": 1,
+          "title": "Endpoint Id",
+          "type": "string"
+        },
+        "external_operation_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "External Operation Id"
+        },
+        "generation_id": {
+          "anyOf": [
+            {
+              "format": "uuid7",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Generation Id"
+        },
+        "intent_id": {
+          "format": "uuid7",
+          "title": "Intent Id",
+          "type": "string"
+        },
+        "occurred_at": {
+          "format": "date-time",
+          "title": "Occurred At",
+          "type": "string"
+        },
+        "reason_code": {
+          "anyOf": [
+            {
+              "maxLength": 160,
+              "minLength": 1,
+              "pattern": "^[a-z][a-z0-9_-]*(\\.[a-z0-9_-]+)*$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Reason Code"
+        },
+        "status": {
+          "$ref": "#/$defs/DeliveryStatus"
+        }
+      },
+      "required": [
+        "delivery_id",
+        "intent_id",
+        "adapter_instance_id",
+        "endpoint_id",
+        "status",
+        "attempt",
+        "occurred_at"
+      ],
+      "title": "DeliveryReceipt",
+      "type": "object"
+    },
+    "DeliveryStatus": {
+      "enum": [
+        "planned",
+        "sending",
+        "accepted",
+        "playing",
+        "delivered",
+        "dropped",
+        "failed",
+        "cancelled",
+        "unknown_outcome"
+      ],
+      "title": "DeliveryStatus",
+      "type": "string"
+    },
+    "DeviceCommandPart": {
+      "additionalProperties": false,
+      "properties": {
+        "args_redacted": {
+          "additionalProperties": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "integer"
+              },
+              {
+                "type": "number"
+              },
+              {
+                "type": "boolean"
+              },
+              {
+                "items": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "integer"
+                    },
+                    {
+                      "type": "number"
+                    },
+                    {
+                      "type": "boolean"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "title": "Args Redacted",
+          "type": "object"
+        },
+        "command": {
+          "maxLength": 160,
+          "minLength": 3,
+          "pattern": "^[a-z][a-z0-9_-]*(\\.[a-z0-9_-]+)+$",
+          "title": "Command",
+          "type": "string"
+        },
+        "tool_execution_id": {
+          "format": "uuid7",
+          "title": "Tool Execution Id",
+          "type": "string"
+        },
+        "type": {
+          "const": "device_command",
+          "default": "device_command",
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "tool_execution_id",
+        "command"
+      ],
+      "title": "DeviceCommandPart",
+      "type": "object"
+    },
+    "EndpointCapabilities": {
+      "additionalProperties": false,
+      "properties": {
+        "capabilities": {
+          "$ref": "#/$defs/AdapterCapabilities"
+        },
+        "endpoint_id": {
+          "maxLength": 160,
+          "minLength": 1,
+          "title": "Endpoint Id",
+          "type": "string"
+        },
+        "observed_at": {
+          "format": "date-time",
+          "title": "Observed At",
+          "type": "string"
+        }
+      },
+      "required": [
+        "endpoint_id",
+        "capabilities",
+        "observed_at"
+      ],
+      "title": "EndpointCapabilities",
+      "type": "object"
+    },
+    "EphemeralSignal": {
+      "additionalProperties": false,
+      "properties": {
+        "channel": {
+          "maxLength": 120,
+          "minLength": 1,
+          "title": "Channel",
+          "type": "string"
+        },
+        "content": {
+          "discriminator": {
+            "mapping": {
+              "audio_stream": "#/$defs/AudioStreamPart",
+              "telemetry": "#/$defs/TelemetryPart",
+              "video_stream": "#/$defs/VideoStreamPart"
+            },
+            "propertyName": "type"
+          },
+          "oneOf": [
+            {
+              "$ref": "#/$defs/TelemetryPart"
+            },
+            {
+              "$ref": "#/$defs/AudioStreamPart"
+            },
+            {
+              "$ref": "#/$defs/VideoStreamPart"
+            }
+          ],
+          "title": "Content"
+        },
+        "expires_at": {
+          "format": "date-time",
+          "title": "Expires At",
+          "type": "string"
+        },
+        "occurred_at": {
+          "format": "date-time",
+          "title": "Occurred At",
+          "type": "string"
+        },
+        "privacy_level": {
+          "$ref": "#/$defs/PrivacyLevel"
+        },
+        "signal_id": {
+          "format": "uuid7",
+          "title": "Signal Id",
+          "type": "string"
+        },
+        "source": {
+          "$ref": "#/$defs/SourceRef"
+        }
+      },
+      "required": [
+        "signal_id",
+        "source",
+        "channel",
+        "occurred_at",
+        "privacy_level",
+        "content",
+        "expires_at"
+      ],
+      "title": "EphemeralSignal",
+      "type": "object"
+    },
+    "FilePart": {
+      "additionalProperties": false,
+      "properties": {
+        "asset_ref": {
+          "$ref": "#/$defs/AssetPointer"
+        },
+        "display_name": {
+          "maxLength": 255,
+          "minLength": 1,
+          "title": "Display Name",
+          "type": "string"
+        },
+        "type": {
+          "const": "file",
+          "default": "file",
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "asset_ref",
+        "display_name"
+      ],
+      "title": "FilePart",
+      "type": "object"
+    },
+    "ImagePart": {
+      "additionalProperties": false,
+      "properties": {
+        "asset_ref": {
+          "$ref": "#/$defs/AssetPointer"
+        },
+        "height": {
+          "anyOf": [
+            {
+              "exclusiveMinimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Height"
+        },
+        "type": {
+          "const": "image",
+          "default": "image",
+          "title": "Type",
+          "type": "string"
+        },
+        "width": {
+          "anyOf": [
+            {
+              "exclusiveMinimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Width"
+        }
+      },
+      "required": [
+        "asset_ref"
+      ],
+      "title": "ImagePart",
+      "type": "object"
+    },
+    "InputEnvelope": {
+      "additionalProperties": false,
+      "properties": {
+        "causation_id": {
+          "anyOf": [
+            {
+              "format": "uuid7",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Causation Id"
+        },
+        "content": {
+          "items": {
+            "discriminator": {
+              "mapping": {
+                "asset_ref": "#/$defs/AssetRefPart",
+                "audio": "#/$defs/AudioPart",
+                "control": "#/$defs/ControlPart",
+                "file": "#/$defs/FilePart",
+                "image": "#/$defs/ImagePart",
+                "interaction": "#/$defs/InteractionPart",
+                "text": "#/$defs/TextPart",
+                "video": "#/$defs/VideoPart"
+              },
+              "propertyName": "type"
+            },
+            "oneOf": [
+              {
+                "$ref": "#/$defs/TextPart"
+              },
+              {
+                "$ref": "#/$defs/AudioPart"
+              },
+              {
+                "$ref": "#/$defs/ImagePart"
+              },
+              {
+                "$ref": "#/$defs/VideoPart"
+              },
+              {
+                "$ref": "#/$defs/FilePart"
+              },
+              {
+                "$ref": "#/$defs/InteractionPart"
+              },
+              {
+                "$ref": "#/$defs/ControlPart"
+              },
+              {
+                "$ref": "#/$defs/AssetRefPart"
+              }
+            ]
+          },
+          "maxItems": 32,
+          "minItems": 1,
+          "title": "Content",
+          "type": "array"
+        },
+        "conversation_id": {
+          "anyOf": [
+            {
+              "format": "uuid7",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Conversation Id"
+        },
+        "correlation_id": {
+          "format": "uuid7",
+          "title": "Correlation Id",
+          "type": "string"
+        },
+        "event_id": {
+          "format": "uuid7",
+          "title": "Event Id",
+          "type": "string"
+        },
+        "extensions": {
+          "additionalProperties": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "title": "Extensions",
+          "type": "object"
+        },
+        "kind": {
+          "maxLength": 160,
+          "minLength": 3,
+          "pattern": "^[a-z][a-z0-9_-]*(\\.[a-z0-9_-]+)+$",
+          "title": "Kind",
+          "type": "string"
+        },
+        "occurred_at": {
+          "format": "date-time",
+          "title": "Occurred At",
+          "type": "string"
+        },
+        "priority": {
+          "$ref": "#/$defs/Priority",
+          "default": "normal"
+        },
+        "privacy_level": {
+          "$ref": "#/$defs/PrivacyLevel"
+        },
+        "proto_version": {
+          "const": 1,
+          "default": 1,
+          "title": "Proto Version",
+          "type": "integer"
+        },
+        "received_at": {
+          "format": "date-time",
+          "title": "Received At",
+          "type": "string"
+        },
+        "schema_ref": {
+          "const": "aria.input-envelope/1",
+          "default": "aria.input-envelope/1",
+          "title": "Schema Ref",
+          "type": "string"
+        },
+        "source": {
+          "$ref": "#/$defs/SourceRef"
+        },
+        "turn_id": {
+          "anyOf": [
+            {
+              "format": "uuid7",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Turn Id"
+        },
+        "user_id": {
+          "format": "uuid7",
+          "title": "User Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "event_id",
+        "correlation_id",
+        "user_id",
+        "source",
+        "kind",
+        "occurred_at",
+        "received_at",
+        "privacy_level",
+        "content"
+      ],
+      "title": "InputEnvelope",
+      "type": "object"
+    },
+    "InputPolicy": {
+      "additionalProperties": false,
+      "properties": {
+        "backpressure": {
+          "default": "block",
+          "enum": [
+            "block",
+            "drop_oldest",
+            "sample",
+            "aggregate"
+          ],
+          "title": "Backpressure",
+          "type": "string"
+        },
+        "queue_limit": {
+          "default": 100,
+          "exclusiveMinimum": 0,
+          "maximum": 1000000,
+          "title": "Queue Limit",
+          "type": "integer"
+        }
+      },
+      "title": "InputPolicy",
+      "type": "object"
+    },
+    "InteractionPart": {
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "maxLength": 160,
+          "minLength": 3,
+          "pattern": "^[a-z][a-z0-9_-]*(\\.[a-z0-9_-]+)+$",
+          "title": "Name",
+          "type": "string"
+        },
+        "target": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Target"
+        },
+        "type": {
+          "const": "interaction",
+          "default": "interaction",
+          "title": "Type",
+          "type": "string"
+        },
+        "value": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "integer"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Value"
+        }
+      },
+      "required": [
+        "name"
+      ],
+      "title": "InteractionPart",
+      "type": "object"
+    },
+    "NotificationPart": {
+      "additionalProperties": false,
+      "properties": {
+        "body": {
+          "maxLength": 4000,
+          "minLength": 1,
+          "title": "Body",
+          "type": "string"
+        },
+        "category": {
+          "maxLength": 160,
+          "minLength": 3,
+          "pattern": "^[a-z][a-z0-9_-]*(\\.[a-z0-9_-]+)+$",
+          "title": "Category",
+          "type": "string"
+        },
+        "title": {
+          "maxLength": 200,
+          "minLength": 1,
+          "title": "Title",
+          "type": "string"
+        },
+        "type": {
+          "const": "notification",
+          "default": "notification",
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "title",
+        "body",
+        "category"
+      ],
+      "title": "NotificationPart",
+      "type": "object"
+    },
+    "OutputIntent": {
+      "additionalProperties": false,
+      "properties": {
+        "audience": {
+          "$ref": "#/$defs/Audience"
+        },
+        "causation_id": {
+          "anyOf": [
+            {
+              "format": "uuid7",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Causation Id"
+        },
+        "content": {
+          "items": {
+            "discriminator": {
+              "mapping": {
+                "audio": "#/$defs/AudioPart",
+                "device_command": "#/$defs/DeviceCommandPart",
+                "file": "#/$defs/FilePart",
+                "image": "#/$defs/ImagePart",
+                "notification": "#/$defs/NotificationPart",
+                "speech": "#/$defs/SpeechPart",
+                "text": "#/$defs/TextPart",
+                "video": "#/$defs/VideoPart"
+              },
+              "propertyName": "type"
+            },
+            "oneOf": [
+              {
+                "$ref": "#/$defs/TextPart"
+              },
+              {
+                "$ref": "#/$defs/SpeechPart"
+              },
+              {
+                "$ref": "#/$defs/AudioPart"
+              },
+              {
+                "$ref": "#/$defs/ImagePart"
+              },
+              {
+                "$ref": "#/$defs/VideoPart"
+              },
+              {
+                "$ref": "#/$defs/FilePart"
+              },
+              {
+                "$ref": "#/$defs/NotificationPart"
+              },
+              {
+                "$ref": "#/$defs/DeviceCommandPart"
+              }
+            ]
+          },
+          "maxItems": 32,
+          "minItems": 1,
+          "title": "Content",
+          "type": "array"
+        },
+        "conversation_id": {
+          "anyOf": [
+            {
+              "format": "uuid7",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Conversation Id"
+        },
+        "correlation_id": {
+          "format": "uuid7",
+          "title": "Correlation Id",
+          "type": "string"
+        },
+        "created_at": {
+          "format": "date-time",
+          "title": "Created At",
+          "type": "string"
+        },
+        "delivery": {
+          "$ref": "#/$defs/DeliveryPolicy"
+        },
+        "generation_id": {
+          "anyOf": [
+            {
+              "format": "uuid7",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Generation Id"
+        },
+        "intent_id": {
+          "format": "uuid7",
+          "title": "Intent Id",
+          "type": "string"
+        },
+        "kind": {
+          "$ref": "#/$defs/OutputKind"
+        },
+        "presentation": {
+          "$ref": "#/$defs/Presentation"
+        },
+        "privacy_level": {
+          "$ref": "#/$defs/PrivacyLevel",
+          "default": "L1"
+        },
+        "proto_version": {
+          "const": 1,
+          "default": 1,
+          "title": "Proto Version",
+          "type": "integer"
+        },
+        "schema_ref": {
+          "const": "aria.output-intent/1",
+          "default": "aria.output-intent/1",
+          "title": "Schema Ref",
+          "type": "string"
+        },
+        "target_selector": {
+          "$ref": "#/$defs/TargetSelector"
+        },
+        "turn_id": {
+          "anyOf": [
+            {
+              "format": "uuid7",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Turn Id"
+        },
+        "user_id": {
+          "format": "uuid7",
+          "title": "User Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "intent_id",
+        "correlation_id",
+        "user_id",
+        "kind",
+        "content",
+        "created_at"
+      ],
+      "title": "OutputIntent",
+      "type": "object"
+    },
+    "OutputKind": {
+      "enum": [
+        "reply",
+        "proactive",
+        "system",
+        "alert"
+      ],
+      "title": "OutputKind",
+      "type": "string"
+    },
+    "Presentation": {
+      "additionalProperties": false,
+      "properties": {
+        "emotion": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Emotion"
+        },
+        "gesture": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Gesture"
+        },
+        "intensity": {
+          "anyOf": [
+            {
+              "maximum": 1,
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Intensity"
+        }
+      },
+      "title": "Presentation",
+      "type": "object"
+    },
+    "PresentationCapabilities": {
+      "additionalProperties": false,
+      "properties": {
+        "emotions": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Emotions",
+          "type": "array"
+        },
+        "engine": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Engine"
+        },
+        "gestures": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Gestures",
+          "type": "array"
+        }
+      },
+      "title": "PresentationCapabilities",
+      "type": "object"
+    },
+    "Priority": {
+      "enum": [
+        "low",
+        "normal",
+        "high",
+        "critical"
+      ],
+      "title": "Priority",
+      "type": "string"
+    },
+    "PrivacyLevel": {
+      "enum": [
+        "L0",
+        "L1",
+        "L2",
+        "L3"
+      ],
+      "title": "PrivacyLevel",
+      "type": "string"
+    },
+    "SourceRef": {
+      "additionalProperties": false,
+      "properties": {
+        "adapter_id": {
+          "maxLength": 160,
+          "minLength": 3,
+          "pattern": "^[a-z][a-z0-9_-]*(\\.[a-z0-9_-]+)+$",
+          "title": "Adapter Id",
+          "type": "string"
+        },
+        "adapter_instance_id": {
+          "format": "uuid7",
+          "title": "Adapter Instance Id",
+          "type": "string"
+        },
+        "endpoint_id": {
+          "maxLength": 160,
+          "minLength": 1,
+          "title": "Endpoint Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "adapter_id",
+        "adapter_instance_id",
+        "endpoint_id"
+      ],
+      "title": "SourceRef",
+      "type": "object"
+    },
+    "SpeechPart": {
+      "additionalProperties": false,
+      "properties": {
+        "language": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Language"
+        },
+        "text": {
+          "maxLength": 20000,
+          "minLength": 1,
+          "title": "Text",
+          "type": "string"
+        },
+        "type": {
+          "const": "speech",
+          "default": "speech",
+          "title": "Type",
+          "type": "string"
+        },
+        "voice_profile": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Voice Profile"
+        }
+      },
+      "required": [
+        "text"
+      ],
+      "title": "SpeechPart",
+      "type": "object"
+    },
+    "TargetSelector": {
+      "additionalProperties": false,
+      "properties": {
+        "endpoint_ids": {
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 32,
+          "title": "Endpoint Ids",
+          "type": "array"
+        },
+        "mode": {
+          "default": "best_available",
+          "enum": [
+            "best_available",
+            "all_compatible",
+            "explicit"
+          ],
+          "title": "Mode",
+          "type": "string"
+        },
+        "prefer": {
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 16,
+          "title": "Prefer",
+          "type": "array"
+        }
+      },
+      "title": "TargetSelector",
+      "type": "object"
+    },
+    "TelemetryPart": {
+      "additionalProperties": false,
+      "properties": {
+        "channel": {
+          "maxLength": 120,
+          "minLength": 1,
+          "title": "Channel",
+          "type": "string"
+        },
+        "quality": {
+          "anyOf": [
+            {
+              "maximum": 1,
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Quality"
+        },
+        "type": {
+          "const": "telemetry",
+          "default": "telemetry",
+          "title": "Type",
+          "type": "string"
+        },
+        "unit": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Unit"
+        },
+        "value": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "integer"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Value"
+        }
+      },
+      "required": [
+        "channel",
+        "value"
+      ],
+      "title": "TelemetryPart",
+      "type": "object"
+    },
+    "TextPart": {
+      "additionalProperties": false,
+      "properties": {
+        "format": {
+          "default": "plain",
+          "enum": [
+            "plain",
+            "markdown"
+          ],
+          "title": "Format",
+          "type": "string"
+        },
+        "language": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Language"
+        },
+        "text": {
+          "maxLength": 200000,
+          "minLength": 1,
+          "title": "Text",
+          "type": "string"
+        },
+        "type": {
+          "const": "text",
+          "default": "text",
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "text"
+      ],
+      "title": "TextPart",
+      "type": "object"
+    },
+    "VideoPart": {
+      "additionalProperties": false,
+      "properties": {
+        "asset_ref": {
+          "$ref": "#/$defs/AssetPointer"
+        },
+        "duration_ms": {
+          "anyOf": [
+            {
+              "exclusiveMinimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Duration Ms"
+        },
+        "type": {
+          "const": "video",
+          "default": "video",
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "asset_ref"
+      ],
+      "title": "VideoPart",
+      "type": "object"
+    },
+    "VideoStreamPart": {
+      "additionalProperties": false,
+      "properties": {
+        "codec": {
+          "title": "Codec",
+          "type": "string"
+        },
+        "height": {
+          "exclusiveMinimum": 0,
+          "title": "Height",
+          "type": "integer"
+        },
+        "stream_id": {
+          "maxLength": 160,
+          "minLength": 1,
+          "title": "Stream Id",
+          "type": "string"
+        },
+        "type": {
+          "const": "video_stream",
+          "default": "video_stream",
+          "title": "Type",
+          "type": "string"
+        },
+        "width": {
+          "exclusiveMinimum": 0,
+          "title": "Width",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "stream_id",
+        "codec",
+        "width",
+        "height"
+      ],
+      "title": "VideoStreamPart",
+      "type": "object"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "properties": {
+    "AdapterHealth": {
+      "$ref": "#/$defs/AdapterHealth"
+    },
+    "AdapterManifest": {
+      "$ref": "#/$defs/AdapterManifest"
+    },
+    "DeliveryPlan": {
+      "$ref": "#/$defs/DeliveryPlan"
+    },
+    "DeliveryReceipt": {
+      "$ref": "#/$defs/DeliveryReceipt"
+    },
+    "EndpointCapabilities": {
+      "$ref": "#/$defs/EndpointCapabilities"
+    },
+    "EphemeralSignal": {
+      "$ref": "#/$defs/EphemeralSignal"
+    },
+    "InputEnvelope": {
+      "$ref": "#/$defs/InputEnvelope"
+    },
+    "OutputIntent": {
+      "$ref": "#/$defs/OutputIntent"
+    }
+  },
+  "title": "AriaContracts",
+  "type": "object"
+}

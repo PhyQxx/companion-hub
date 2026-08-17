@@ -1,0 +1,14 @@
+{
+  "bundle": "AriaContracts.schema.json",
+  "schema_version": 1,
+  "schemas": {
+    "AdapterHealth": "AdapterHealth.schema.json",
+    "AdapterManifest": "AdapterManifest.schema.json",
+    "DeliveryPlan": "DeliveryPlan.schema.json",
+    "DeliveryReceipt": "DeliveryReceipt.schema.json",
+    "EndpointCapabilities": "EndpointCapabilities.schema.json",
+    "EphemeralSignal": "EphemeralSignal.schema.json",
+    "InputEnvelope": "InputEnvelope.schema.json",
+    "OutputIntent": "OutputIntent.schema.json"
+  }
+}

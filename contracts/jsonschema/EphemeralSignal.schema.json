@@ -1,0 +1,249 @@
+{
+  "$defs": {
+    "AudioStreamPart": {
+      "additionalProperties": false,
+      "properties": {
+        "codec": {
+          "title": "Codec",
+          "type": "string"
+        },
+        "sample_rate": {
+          "exclusiveMinimum": 0,
+          "maximum": 384000,
+          "title": "Sample Rate",
+          "type": "integer"
+        },
+        "stream_id": {
+          "maxLength": 160,
+          "minLength": 1,
+          "title": "Stream Id",
+          "type": "string"
+        },
+        "type": {
+          "const": "audio_stream",
+          "default": "audio_stream",
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "stream_id",
+        "codec",
+        "sample_rate"
+      ],
+      "title": "AudioStreamPart",
+      "type": "object"
+    },
+    "PrivacyLevel": {
+      "enum": [
+        "L0",
+        "L1",
+        "L2",
+        "L3"
+      ],
+      "title": "PrivacyLevel",
+      "type": "string"
+    },
+    "SourceRef": {
+      "additionalProperties": false,
+      "properties": {
+        "adapter_id": {
+          "maxLength": 160,
+          "minLength": 3,
+          "pattern": "^[a-z][a-z0-9_-]*(\\.[a-z0-9_-]+)+$",
+          "title": "Adapter Id",
+          "type": "string"
+        },
+        "adapter_instance_id": {
+          "format": "uuid7",
+          "title": "Adapter Instance Id",
+          "type": "string"
+        },
+        "endpoint_id": {
+          "maxLength": 160,
+          "minLength": 1,
+          "title": "Endpoint Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "adapter_id",
+        "adapter_instance_id",
+        "endpoint_id"
+      ],
+      "title": "SourceRef",
+      "type": "object"
+    },
+    "TelemetryPart": {
+      "additionalProperties": false,
+      "properties": {
+        "channel": {
+          "maxLength": 120,
+          "minLength": 1,
+          "title": "Channel",
+          "type": "string"
+        },
+        "quality": {
+          "anyOf": [
+            {
+              "maximum": 1,
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Quality"
+        },
+        "type": {
+          "const": "telemetry",
+          "default": "telemetry",
+          "title": "Type",
+          "type": "string"
+        },
+        "unit": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Unit"
+        },
+        "value": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "integer"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Value"
+        }
+      },
+      "required": [
+        "channel",
+        "value"
+      ],
+      "title": "TelemetryPart",
+      "type": "object"
+    },
+    "VideoStreamPart": {
+      "additionalProperties": false,
+      "properties": {
+        "codec": {
+          "title": "Codec",
+          "type": "string"
+        },
+        "height": {
+          "exclusiveMinimum": 0,
+          "title": "Height",
+          "type": "integer"
+        },
+        "stream_id": {
+          "maxLength": 160,
+          "minLength": 1,
+          "title": "Stream Id",
+          "type": "string"
+        },
+        "type": {
+          "const": "video_stream",
+          "default": "video_stream",
+          "title": "Type",
+          "type": "string"
+        },
+        "width": {
+          "exclusiveMinimum": 0,
+          "title": "Width",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "stream_id",
+        "codec",
+        "width",
+        "height"
+      ],
+      "title": "VideoStreamPart",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "channel": {
+      "maxLength": 120,
+      "minLength": 1,
+      "title": "Channel",
+      "type": "string"
+    },
+    "content": {
+      "discriminator": {
+        "mapping": {
+          "audio_stream": "#/$defs/AudioStreamPart",
+          "telemetry": "#/$defs/TelemetryPart",
+          "video_stream": "#/$defs/VideoStreamPart"
+        },
+        "propertyName": "type"
+      },
+      "oneOf": [
+        {
+          "$ref": "#/$defs/TelemetryPart"
+        },
+        {
+          "$ref": "#/$defs/AudioStreamPart"
+        },
+        {
+          "$ref": "#/$defs/VideoStreamPart"
+        }
+      ],
+      "title": "Content"
+    },
+    "expires_at": {
+      "format": "date-time",
+      "title": "Expires At",
+      "type": "string"
+    },
+    "occurred_at": {
+      "format": "date-time",
+      "title": "Occurred At",
+      "type": "string"
+    },
+    "privacy_level": {
+      "$ref": "#/$defs/PrivacyLevel"
+    },
+    "signal_id": {
+      "format": "uuid7",
+      "title": "Signal Id",
+      "type": "string"
+    },
+    "source": {
+      "$ref": "#/$defs/SourceRef"
+    }
+  },
+  "required": [
+    "signal_id",
+    "source",
+    "channel",
+    "occurred_at",
+    "privacy_level",
+    "content",
+    "expires_at"
+  ],
+  "title": "EphemeralSignal",
+  "type": "object"
+}

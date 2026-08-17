@@ -1,0 +1,33 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  contracts-and-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.11"
+          enable-cache: true
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: pnpm
+          cache-dependency-path: contracts/pnpm-lock.yaml
+      - run: uv sync --dev --locked
+      - run: uv run ruff check server
+      - run: uv run mypy server/app
+      - run: uv run pytest
+      - run: uv run python server/scripts/export_schemas.py
+      - run: pnpm --dir contracts install --frozen-lockfile
+      - run: pnpm --dir contracts run generate
+      - run: pnpm --dir contracts run check
+      - name: Verify generated contracts are committed
+        run: git diff --exit-code -- contracts/jsonschema contracts/types
