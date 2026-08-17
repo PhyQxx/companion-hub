@@ -9,6 +9,7 @@ from .models import (
     ConversationRecord,
     DeadLetterRecord,
     EventRecord,
+    InteractionTurnRecord,
     MessageRecord,
     OutboxRecord,
 )
@@ -26,6 +27,7 @@ __all__ = [
     "Database",
     "DeadLetterRecord",
     "EventRecord",
+    "InteractionTurnRecord",
     "MessageRecord",
     "OutboxRecord",
     "create_database",

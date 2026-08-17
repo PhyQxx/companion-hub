@@ -229,6 +229,9 @@ class ConversationRecord(Base):
     title: Mapped[str | None] = mapped_column(String(240))
     status: Mapped[str] = mapped_column(String(16), nullable=False, server_default="active")
     last_seq: Mapped[int] = mapped_column(BigInteger, nullable=False, server_default="0")
+    last_turn_seq: Mapped[int] = mapped_column(
+        BigInteger, nullable=False, server_default="0"
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
@@ -262,3 +265,33 @@ class MessageRecord(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
+
+
+class InteractionTurnRecord(Base):
+    __tablename__ = "interaction_turn"
+    __table_args__ = (
+        CheckConstraint(
+            "state IN ('accepted','thinking','streaming','cancelled','failed','completed')",
+            name="ck_interaction_turn_state",
+        ),
+        UniqueConstraint("conversation_id", "turn_seq", name="uq_turn_conversation_seq"),
+        UniqueConstraint("generation_id", name="uq_turn_generation"),
+        Index("ix_turn_conversation_state", "conversation_id", "state", "created_at"),
+    )
+
+    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True)
+    conversation_id: Mapped[UUID] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("conversation.id", ondelete="RESTRICT"), nullable=False
+    )
+    turn_seq: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    generation_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
+    state: Mapped[str] = mapped_column(String(16), nullable=False)
+    state_version: Mapped[int] = mapped_column(Integer, nullable=False, server_default="1")
+    input_message_id: Mapped[UUID] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("message.id", ondelete="RESTRICT"), nullable=False
+    )
+    cancel_reason: Mapped[str | None] = mapped_column(String(160))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

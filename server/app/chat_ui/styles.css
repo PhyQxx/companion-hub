@@ -46,6 +46,7 @@ aside { padding: 16px; }
 .message { max-width: 82%; margin-bottom: 18px; }
 .message.user { margin-left: auto; }
 .bubble { white-space: pre-wrap; line-height: 1.55; padding: 12px 15px; border-radius: 14px; background: #1a2130; }
+.message.streaming .bubble::after { content: "▋"; color: #8ea8ff; animation: blink 1s step-end infinite; }
 .user .bubble { background: #405fda; }
 .meta { color: #788497; font-size: 12px; margin: 6px 4px 0; }
 .user .meta { text-align: right; }
@@ -54,7 +55,9 @@ aside { padding: 16px; }
 .compose-row { display: grid; grid-template-columns: 1fr auto; align-items: end; gap: 12px; }
 textarea { resize: vertical; min-height: 74px; }
 #send { height: 44px; }
+#cancel { height: 44px; }
 .error { color: #ff9f9f; }
+@keyframes blink { 50% { opacity: 0; } }
 
 @media (max-width: 760px) {
   .shell { width: min(100% - 20px, 620px); margin: 18px auto; }

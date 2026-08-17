@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import os
-from collections.abc import Mapping
+from collections.abc import Awaitable, Callable, Mapping
 from time import perf_counter
 from typing import Any, Protocol
 
@@ -35,6 +35,10 @@ class EnvSecretProvider:
 class LLMProvider(Protocol):
     async def complete(self, request: CompletionRequest) -> CompletionResult: ...
 
+    async def stream(
+        self, request: CompletionRequest, on_delta: Callable[[str], Awaitable[None]]
+    ) -> CompletionResult: ...
+
     async def probe(self) -> None: ...
 
 
@@ -54,6 +58,52 @@ class LiteLLMProvider:
 
     async def complete(self, request: CompletionRequest) -> CompletionResult:
         started = perf_counter()
+        arguments = self._arguments(request)
+        response = await litellm.acompletion(**arguments)
+        choice = response.choices[0]
+        content = choice.message.content or ""
+        return self._result(
+            request=request,
+            text=content,
+            request_id=response.id,
+            finish_reason=choice.finish_reason,
+            usage=response.usage,
+            started=started,
+        )
+
+    async def stream(
+        self, request: CompletionRequest, on_delta: Callable[[str], Awaitable[None]]
+    ) -> CompletionResult:
+        started = perf_counter()
+        response = await litellm.acompletion(**self._arguments(request), stream=True)
+        text_parts: list[str] = []
+        request_id: str | None = None
+        finish_reason: str | None = None
+        usage: Any = None
+        async for chunk in response:
+            request_id = getattr(chunk, "id", request_id)
+            chunk_usage = getattr(chunk, "usage", None)
+            if chunk_usage is not None:
+                usage = chunk_usage
+            choices = getattr(chunk, "choices", [])
+            if not choices:
+                continue
+            choice = choices[0]
+            finish_reason = getattr(choice, "finish_reason", None) or finish_reason
+            delta = getattr(getattr(choice, "delta", None), "content", None) or ""
+            if delta:
+                text_parts.append(delta)
+                await on_delta(delta)
+        return self._result(
+            request=request,
+            text="".join(text_parts),
+            request_id=request_id,
+            finish_reason=finish_reason,
+            usage=usage,
+            started=started,
+        )
+
+    def _arguments(self, request: CompletionRequest) -> dict[str, Any]:
         arguments: dict[str, Any] = {
             "model": f"openai/{self.endpoint.model}",
             "api_base": str(self.endpoint.base_url).rstrip("/"),
@@ -67,24 +117,32 @@ class LiteLLMProvider:
             arguments["api_key"] = self._secrets.resolve(self.endpoint.secret_ref)
         if request.json_mode and self.endpoint.supports_json_mode:
             arguments["response_format"] = {"type": "json_object"}
-        response = await litellm.acompletion(**arguments)
-        choice = response.choices[0]
-        content = choice.message.content or ""
-        usage = response.usage
-        input_tokens = int(usage.prompt_tokens or 0) if usage is not None else 0
-        output_tokens = int(usage.completion_tokens or 0) if usage is not None else 0
+        return arguments
+
+    def _result(
+        self,
+        *,
+        request: CompletionRequest,
+        text: str,
+        request_id: str | None,
+        finish_reason: str | None,
+        usage: Any,
+        started: float,
+    ) -> CompletionResult:
+        input_tokens = int(getattr(usage, "prompt_tokens", 0) or 0)
+        output_tokens = int(getattr(usage, "completion_tokens", 0) or 0)
         estimated_cost = (
             input_tokens * self.endpoint.input_cost_per_million
             + output_tokens * self.endpoint.output_cost_per_million
         ) / 1_000_000
         return CompletionResult(
-            text=content,
+            text=text,
             provider=self.endpoint.provider,
             model=self.endpoint.model,
             endpoint=self.endpoint_name,
             route=request.route,
-            request_id=response.id,
-            finish_reason=choice.finish_reason,
+            request_id=request_id,
+            finish_reason=finish_reason,
             usage=ModelUsage(
                 input_tokens=input_tokens,
                 output_tokens=output_tokens,
