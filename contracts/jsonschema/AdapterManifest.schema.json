@@ -1,0 +1,269 @@
+{
+  "$defs": {
+    "AdapterCapabilities": {
+      "additionalProperties": false,
+      "properties": {
+        "critical": {
+          "items": {
+            "maxLength": 160,
+            "minLength": 1,
+            "pattern": "^[a-z][a-z0-9_-]*(\\.[a-z0-9_-]+)*$",
+            "type": "string"
+          },
+          "title": "Critical",
+          "type": "array"
+        },
+        "delivery": {
+          "$ref": "#/$defs/DeliveryCapabilities"
+        },
+        "input_parts": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Input Parts",
+          "type": "array"
+        },
+        "output_parts": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Output Parts",
+          "type": "array"
+        },
+        "presentation": {
+          "$ref": "#/$defs/PresentationCapabilities"
+        },
+        "streaming": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Streaming",
+          "type": "array"
+        }
+      },
+      "title": "AdapterCapabilities",
+      "type": "object"
+    },
+    "AdapterDirection": {
+      "enum": [
+        "input",
+        "output"
+      ],
+      "title": "AdapterDirection",
+      "type": "string"
+    },
+    "AdapterPrivacy": {
+      "additionalProperties": false,
+      "properties": {
+        "max_input_level": {
+          "$ref": "#/$defs/PrivacyLevel"
+        },
+        "max_output_level": {
+          "$ref": "#/$defs/PrivacyLevel"
+        },
+        "runs_local": {
+          "title": "Runs Local",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "runs_local",
+        "max_input_level",
+        "max_output_level"
+      ],
+      "title": "AdapterPrivacy",
+      "type": "object"
+    },
+    "DeliveryCapabilities": {
+      "additionalProperties": false,
+      "properties": {
+        "proactive_reachable": {
+          "default": false,
+          "title": "Proactive Reachable",
+          "type": "boolean"
+        },
+        "supports_ack": {
+          "default": false,
+          "title": "Supports Ack",
+          "type": "boolean"
+        },
+        "supports_cancel": {
+          "default": false,
+          "title": "Supports Cancel",
+          "type": "boolean"
+        },
+        "supports_replace": {
+          "default": false,
+          "title": "Supports Replace",
+          "type": "boolean"
+        }
+      },
+      "title": "DeliveryCapabilities",
+      "type": "object"
+    },
+    "InputPolicy": {
+      "additionalProperties": false,
+      "properties": {
+        "backpressure": {
+          "default": "block",
+          "enum": [
+            "block",
+            "drop_oldest",
+            "sample",
+            "aggregate"
+          ],
+          "title": "Backpressure",
+          "type": "string"
+        },
+        "queue_limit": {
+          "default": 100,
+          "exclusiveMinimum": 0,
+          "maximum": 1000000,
+          "title": "Queue Limit",
+          "type": "integer"
+        }
+      },
+      "title": "InputPolicy",
+      "type": "object"
+    },
+    "PresentationCapabilities": {
+      "additionalProperties": false,
+      "properties": {
+        "emotions": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Emotions",
+          "type": "array"
+        },
+        "engine": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Engine"
+        },
+        "gestures": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Gestures",
+          "type": "array"
+        }
+      },
+      "title": "PresentationCapabilities",
+      "type": "object"
+    },
+    "PrivacyLevel": {
+      "enum": [
+        "L0",
+        "L1",
+        "L2",
+        "L3"
+      ],
+      "title": "PrivacyLevel",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "adapter_id": {
+      "maxLength": 160,
+      "minLength": 3,
+      "pattern": "^[a-z][a-z0-9_-]*(\\.[a-z0-9_-]+)+$",
+      "title": "Adapter Id",
+      "type": "string"
+    },
+    "adapter_version": {
+      "pattern": "^(0|[1-9]\\d*)\\.(0|[1-9]\\d*)\\.(0|[1-9]\\d*)(?:[-+][0-9A-Za-z.-]+)?$",
+      "title": "Adapter Version",
+      "type": "string"
+    },
+    "capabilities": {
+      "$ref": "#/$defs/AdapterCapabilities"
+    },
+    "config_schema_ref": {
+      "maxLength": 200,
+      "minLength": 3,
+      "pattern": "^[a-z][a-z0-9_.-]*/[1-9]\\d*$",
+      "title": "Config Schema Ref",
+      "type": "string"
+    },
+    "direction": {
+      "items": {
+        "$ref": "#/$defs/AdapterDirection"
+      },
+      "maxItems": 2,
+      "minItems": 1,
+      "title": "Direction",
+      "type": "array"
+    },
+    "input_policy": {
+      "$ref": "#/$defs/InputPolicy"
+    },
+    "max_tested_hub_version": {
+      "maxLength": 64,
+      "minLength": 1,
+      "title": "Max Tested Hub Version",
+      "type": "string"
+    },
+    "min_hub_version": {
+      "pattern": "^(0|[1-9]\\d*)\\.(0|[1-9]\\d*)\\.(0|[1-9]\\d*)(?:[-+][0-9A-Za-z.-]+)?$",
+      "title": "Min Hub Version",
+      "type": "string"
+    },
+    "permissions": {
+      "items": {
+        "maxLength": 160,
+        "minLength": 1,
+        "pattern": "^[a-z][a-z0-9_-]*(\\.[a-z0-9_-]+)*$",
+        "type": "string"
+      },
+      "maxItems": 32,
+      "title": "Permissions",
+      "type": "array"
+    },
+    "privacy": {
+      "$ref": "#/$defs/AdapterPrivacy"
+    },
+    "resource_profile": {
+      "maxLength": 160,
+      "minLength": 1,
+      "pattern": "^[a-z][a-z0-9_-]*(\\.[a-z0-9_-]+)*$",
+      "title": "Resource Profile",
+      "type": "string"
+    },
+    "schema_version": {
+      "const": 1,
+      "default": 1,
+      "title": "Schema Version",
+      "type": "integer"
+    },
+    "transport_bindings": {
+      "items": {
+        "type": "string"
+      },
+      "maxItems": 16,
+      "title": "Transport Bindings",
+      "type": "array"
+    }
+  },
+  "required": [
+    "adapter_id",
+    "adapter_version",
+    "min_hub_version",
+    "max_tested_hub_version",
+    "direction",
+    "config_schema_ref",
+    "capabilities",
+    "privacy",
+    "resource_profile"
+  ],
+  "title": "AdapterManifest",
+  "type": "object"
+}

@@ -1,0 +1,579 @@
+{
+  "$defs": {
+    "AssetPointer": {
+      "additionalProperties": false,
+      "properties": {
+        "asset_id": {
+          "format": "uuid7",
+          "title": "Asset Id",
+          "type": "string"
+        },
+        "content_hash": {
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "title": "Content Hash",
+          "type": "string"
+        },
+        "media_type": {
+          "pattern": "^[a-z0-9.+-]+/[a-z0-9.+-]+$",
+          "title": "Media Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "asset_id",
+        "media_type",
+        "content_hash"
+      ],
+      "title": "AssetPointer",
+      "type": "object"
+    },
+    "AssetRefPart": {
+      "additionalProperties": false,
+      "properties": {
+        "asset_ref": {
+          "$ref": "#/$defs/AssetPointer"
+        },
+        "type": {
+          "const": "asset_ref",
+          "default": "asset_ref",
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "asset_ref"
+      ],
+      "title": "AssetRefPart",
+      "type": "object"
+    },
+    "AudioPart": {
+      "additionalProperties": false,
+      "properties": {
+        "asset_ref": {
+          "$ref": "#/$defs/AssetPointer"
+        },
+        "codec": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Codec"
+        },
+        "sample_rate": {
+          "anyOf": [
+            {
+              "exclusiveMinimum": 0,
+              "maximum": 384000,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Sample Rate"
+        },
+        "type": {
+          "const": "audio",
+          "default": "audio",
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "asset_ref"
+      ],
+      "title": "AudioPart",
+      "type": "object"
+    },
+    "ControlPart": {
+      "additionalProperties": false,
+      "properties": {
+        "args": {
+          "additionalProperties": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "integer"
+              },
+              {
+                "type": "number"
+              },
+              {
+                "type": "boolean"
+              },
+              {
+                "items": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "integer"
+                    },
+                    {
+                      "type": "number"
+                    },
+                    {
+                      "type": "boolean"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "title": "Args",
+          "type": "object"
+        },
+        "name": {
+          "maxLength": 160,
+          "minLength": 3,
+          "pattern": "^[a-z][a-z0-9_-]*(\\.[a-z0-9_-]+)+$",
+          "title": "Name",
+          "type": "string"
+        },
+        "type": {
+          "const": "control",
+          "default": "control",
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "name"
+      ],
+      "title": "ControlPart",
+      "type": "object"
+    },
+    "FilePart": {
+      "additionalProperties": false,
+      "properties": {
+        "asset_ref": {
+          "$ref": "#/$defs/AssetPointer"
+        },
+        "display_name": {
+          "maxLength": 255,
+          "minLength": 1,
+          "title": "Display Name",
+          "type": "string"
+        },
+        "type": {
+          "const": "file",
+          "default": "file",
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "asset_ref",
+        "display_name"
+      ],
+      "title": "FilePart",
+      "type": "object"
+    },
+    "ImagePart": {
+      "additionalProperties": false,
+      "properties": {
+        "asset_ref": {
+          "$ref": "#/$defs/AssetPointer"
+        },
+        "height": {
+          "anyOf": [
+            {
+              "exclusiveMinimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Height"
+        },
+        "type": {
+          "const": "image",
+          "default": "image",
+          "title": "Type",
+          "type": "string"
+        },
+        "width": {
+          "anyOf": [
+            {
+              "exclusiveMinimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Width"
+        }
+      },
+      "required": [
+        "asset_ref"
+      ],
+      "title": "ImagePart",
+      "type": "object"
+    },
+    "InteractionPart": {
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "maxLength": 160,
+          "minLength": 3,
+          "pattern": "^[a-z][a-z0-9_-]*(\\.[a-z0-9_-]+)+$",
+          "title": "Name",
+          "type": "string"
+        },
+        "target": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Target"
+        },
+        "type": {
+          "const": "interaction",
+          "default": "interaction",
+          "title": "Type",
+          "type": "string"
+        },
+        "value": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "integer"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Value"
+        }
+      },
+      "required": [
+        "name"
+      ],
+      "title": "InteractionPart",
+      "type": "object"
+    },
+    "Priority": {
+      "enum": [
+        "low",
+        "normal",
+        "high",
+        "critical"
+      ],
+      "title": "Priority",
+      "type": "string"
+    },
+    "PrivacyLevel": {
+      "enum": [
+        "L0",
+        "L1",
+        "L2",
+        "L3"
+      ],
+      "title": "PrivacyLevel",
+      "type": "string"
+    },
+    "SourceRef": {
+      "additionalProperties": false,
+      "properties": {
+        "adapter_id": {
+          "maxLength": 160,
+          "minLength": 3,
+          "pattern": "^[a-z][a-z0-9_-]*(\\.[a-z0-9_-]+)+$",
+          "title": "Adapter Id",
+          "type": "string"
+        },
+        "adapter_instance_id": {
+          "format": "uuid7",
+          "title": "Adapter Instance Id",
+          "type": "string"
+        },
+        "endpoint_id": {
+          "maxLength": 160,
+          "minLength": 1,
+          "title": "Endpoint Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "adapter_id",
+        "adapter_instance_id",
+        "endpoint_id"
+      ],
+      "title": "SourceRef",
+      "type": "object"
+    },
+    "TextPart": {
+      "additionalProperties": false,
+      "properties": {
+        "format": {
+          "default": "plain",
+          "enum": [
+            "plain",
+            "markdown"
+          ],
+          "title": "Format",
+          "type": "string"
+        },
+        "language": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Language"
+        },
+        "text": {
+          "maxLength": 200000,
+          "minLength": 1,
+          "title": "Text",
+          "type": "string"
+        },
+        "type": {
+          "const": "text",
+          "default": "text",
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "text"
+      ],
+      "title": "TextPart",
+      "type": "object"
+    },
+    "VideoPart": {
+      "additionalProperties": false,
+      "properties": {
+        "asset_ref": {
+          "$ref": "#/$defs/AssetPointer"
+        },
+        "duration_ms": {
+          "anyOf": [
+            {
+              "exclusiveMinimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Duration Ms"
+        },
+        "type": {
+          "const": "video",
+          "default": "video",
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "asset_ref"
+      ],
+      "title": "VideoPart",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "causation_id": {
+      "anyOf": [
+        {
+          "format": "uuid7",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Causation Id"
+    },
+    "content": {
+      "items": {
+        "discriminator": {
+          "mapping": {
+            "asset_ref": "#/$defs/AssetRefPart",
+            "audio": "#/$defs/AudioPart",
+            "control": "#/$defs/ControlPart",
+            "file": "#/$defs/FilePart",
+            "image": "#/$defs/ImagePart",
+            "interaction": "#/$defs/InteractionPart",
+            "text": "#/$defs/TextPart",
+            "video": "#/$defs/VideoPart"
+          },
+          "propertyName": "type"
+        },
+        "oneOf": [
+          {
+            "$ref": "#/$defs/TextPart"
+          },
+          {
+            "$ref": "#/$defs/AudioPart"
+          },
+          {
+            "$ref": "#/$defs/ImagePart"
+          },
+          {
+            "$ref": "#/$defs/VideoPart"
+          },
+          {
+            "$ref": "#/$defs/FilePart"
+          },
+          {
+            "$ref": "#/$defs/InteractionPart"
+          },
+          {
+            "$ref": "#/$defs/ControlPart"
+          },
+          {
+            "$ref": "#/$defs/AssetRefPart"
+          }
+        ]
+      },
+      "maxItems": 32,
+      "minItems": 1,
+      "title": "Content",
+      "type": "array"
+    },
+    "conversation_id": {
+      "anyOf": [
+        {
+          "format": "uuid7",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Conversation Id"
+    },
+    "correlation_id": {
+      "format": "uuid7",
+      "title": "Correlation Id",
+      "type": "string"
+    },
+    "event_id": {
+      "format": "uuid7",
+      "title": "Event Id",
+      "type": "string"
+    },
+    "extensions": {
+      "additionalProperties": {
+        "additionalProperties": true,
+        "type": "object"
+      },
+      "title": "Extensions",
+      "type": "object"
+    },
+    "kind": {
+      "maxLength": 160,
+      "minLength": 3,
+      "pattern": "^[a-z][a-z0-9_-]*(\\.[a-z0-9_-]+)+$",
+      "title": "Kind",
+      "type": "string"
+    },
+    "occurred_at": {
+      "format": "date-time",
+      "title": "Occurred At",
+      "type": "string"
+    },
+    "priority": {
+      "$ref": "#/$defs/Priority",
+      "default": "normal"
+    },
+    "privacy_level": {
+      "$ref": "#/$defs/PrivacyLevel"
+    },
+    "proto_version": {
+      "const": 1,
+      "default": 1,
+      "title": "Proto Version",
+      "type": "integer"
+    },
+    "received_at": {
+      "format": "date-time",
+      "title": "Received At",
+      "type": "string"
+    },
+    "schema_ref": {
+      "const": "aria.input-envelope/1",
+      "default": "aria.input-envelope/1",
+      "title": "Schema Ref",
+      "type": "string"
+    },
+    "source": {
+      "$ref": "#/$defs/SourceRef"
+    },
+    "turn_id": {
+      "anyOf": [
+        {
+          "format": "uuid7",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Turn Id"
+    },
+    "user_id": {
+      "format": "uuid7",
+      "title": "User Id",
+      "type": "string"
+    }
+  },
+  "required": [
+    "event_id",
+    "correlation_id",
+    "user_id",
+    "source",
+    "kind",
+    "occurred_at",
+    "received_at",
+    "privacy_level",
+    "content"
+  ],
+  "title": "InputEnvelope",
+  "type": "object"
+}

@@ -1,0 +1,107 @@
+{
+  "$defs": {
+    "DeliveryStatus": {
+      "enum": [
+        "planned",
+        "sending",
+        "accepted",
+        "playing",
+        "delivered",
+        "dropped",
+        "failed",
+        "cancelled",
+        "unknown_outcome"
+      ],
+      "title": "DeliveryStatus",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "adapter_instance_id": {
+      "format": "uuid7",
+      "title": "Adapter Instance Id",
+      "type": "string"
+    },
+    "attempt": {
+      "minimum": 1,
+      "title": "Attempt",
+      "type": "integer"
+    },
+    "delivery_id": {
+      "format": "uuid7",
+      "title": "Delivery Id",
+      "type": "string"
+    },
+    "endpoint_id": {
+      "maxLength": 160,
+      "minLength": 1,
+      "title": "Endpoint Id",
+      "type": "string"
+    },
+    "external_operation_id": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "External Operation Id"
+    },
+    "generation_id": {
+      "anyOf": [
+        {
+          "format": "uuid7",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Generation Id"
+    },
+    "intent_id": {
+      "format": "uuid7",
+      "title": "Intent Id",
+      "type": "string"
+    },
+    "occurred_at": {
+      "format": "date-time",
+      "title": "Occurred At",
+      "type": "string"
+    },
+    "reason_code": {
+      "anyOf": [
+        {
+          "maxLength": 160,
+          "minLength": 1,
+          "pattern": "^[a-z][a-z0-9_-]*(\\.[a-z0-9_-]+)*$",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Reason Code"
+    },
+    "status": {
+      "$ref": "#/$defs/DeliveryStatus"
+    }
+  },
+  "required": [
+    "delivery_id",
+    "intent_id",
+    "adapter_instance_id",
+    "endpoint_id",
+    "status",
+    "attempt",
+    "occurred_at"
+  ],
+  "title": "DeliveryReceipt",
+  "type": "object"
+}

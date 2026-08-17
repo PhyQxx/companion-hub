@@ -1,0 +1,50 @@
+{
+  "$defs": {
+    "AdapterState": {
+      "enum": [
+        "installed",
+        "configured",
+        "starting",
+        "ready",
+        "degraded",
+        "stopping",
+        "stopped",
+        "failed"
+      ],
+      "title": "AdapterState",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "checked_at": {
+      "format": "date-time",
+      "title": "Checked At",
+      "type": "string"
+    },
+    "reason_code": {
+      "anyOf": [
+        {
+          "maxLength": 160,
+          "minLength": 1,
+          "pattern": "^[a-z][a-z0-9_-]*(\\.[a-z0-9_-]+)*$",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Reason Code"
+    },
+    "state": {
+      "$ref": "#/$defs/AdapterState"
+    }
+  },
+  "required": [
+    "state",
+    "checked_at"
+  ],
+  "title": "AdapterHealth",
+  "type": "object"
+}

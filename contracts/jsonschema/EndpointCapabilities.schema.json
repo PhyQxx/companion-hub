@@ -1,0 +1,132 @@
+{
+  "$defs": {
+    "AdapterCapabilities": {
+      "additionalProperties": false,
+      "properties": {
+        "critical": {
+          "items": {
+            "maxLength": 160,
+            "minLength": 1,
+            "pattern": "^[a-z][a-z0-9_-]*(\\.[a-z0-9_-]+)*$",
+            "type": "string"
+          },
+          "title": "Critical",
+          "type": "array"
+        },
+        "delivery": {
+          "$ref": "#/$defs/DeliveryCapabilities"
+        },
+        "input_parts": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Input Parts",
+          "type": "array"
+        },
+        "output_parts": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Output Parts",
+          "type": "array"
+        },
+        "presentation": {
+          "$ref": "#/$defs/PresentationCapabilities"
+        },
+        "streaming": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Streaming",
+          "type": "array"
+        }
+      },
+      "title": "AdapterCapabilities",
+      "type": "object"
+    },
+    "DeliveryCapabilities": {
+      "additionalProperties": false,
+      "properties": {
+        "proactive_reachable": {
+          "default": false,
+          "title": "Proactive Reachable",
+          "type": "boolean"
+        },
+        "supports_ack": {
+          "default": false,
+          "title": "Supports Ack",
+          "type": "boolean"
+        },
+        "supports_cancel": {
+          "default": false,
+          "title": "Supports Cancel",
+          "type": "boolean"
+        },
+        "supports_replace": {
+          "default": false,
+          "title": "Supports Replace",
+          "type": "boolean"
+        }
+      },
+      "title": "DeliveryCapabilities",
+      "type": "object"
+    },
+    "PresentationCapabilities": {
+      "additionalProperties": false,
+      "properties": {
+        "emotions": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Emotions",
+          "type": "array"
+        },
+        "engine": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Engine"
+        },
+        "gestures": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Gestures",
+          "type": "array"
+        }
+      },
+      "title": "PresentationCapabilities",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "capabilities": {
+      "$ref": "#/$defs/AdapterCapabilities"
+    },
+    "endpoint_id": {
+      "maxLength": 160,
+      "minLength": 1,
+      "title": "Endpoint Id",
+      "type": "string"
+    },
+    "observed_at": {
+      "format": "date-time",
+      "title": "Observed At",
+      "type": "string"
+    }
+  },
+  "required": [
+    "endpoint_id",
+    "capabilities",
+    "observed_at"
+  ],
+  "title": "EndpointCapabilities",
+  "type": "object"
+}

@@ -1,0 +1,14 @@
+{
+  "name": "@aria/contracts",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "generate": "node scripts/generate-types.mjs",
+    "check": "tsc --noEmit --skipLibCheck false types/index.d.ts"
+  },
+  "devDependencies": {
+    "json-schema-to-typescript": "^15.0.4",
+    "typescript": "^5.9.2"
+  }
+}
