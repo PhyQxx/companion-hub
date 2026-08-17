@@ -1,14 +1,19 @@
 from __future__ import annotations
 
+import asyncio
+from collections.abc import AsyncIterator
 from datetime import UTC, datetime, timedelta
 
 import pytest
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy import func, select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.bus.dispatcher import claim_batch, dispatch_once
+from app.bus.router import LocalEventPublisher
 from app.bus.service import append_event, consume_event
-from app.db import Base, DeadLetterRecord, EventRecord, OutboxRecord, create_database
+from app.bus.worker import DispatcherWorker
+from app.db import Base, Database, DeadLetterRecord, EventRecord, OutboxRecord, create_database
 from app.main import create_app
 from app.schemas import InputEnvelope
 
@@ -25,7 +30,7 @@ class RecordingPublisher:
 
 
 @pytest.fixture
-async def database():
+async def database() -> AsyncIterator[Database]:
     db = create_database("sqlite+aiosqlite:///:memory:")
     async with db.engine.begin() as connection:
         await connection.run_sync(Base.metadata.create_all)
@@ -36,7 +41,7 @@ async def database():
 
 
 async def test_append_event_and_outbox_are_atomic_and_idempotent(
-    database, input_event: InputEnvelope
+    database: Database, input_event: InputEnvelope
 ) -> None:
     async with database.sessions.begin() as session:
         assert await append_event(session, input_event, topics=["hub.internal", "hub.internal"])
@@ -49,13 +54,15 @@ async def test_append_event_and_outbox_are_atomic_and_idempotent(
     assert outbox_count == 1
 
 
-async def test_consumer_inbox_runs_handler_once(database, input_event: InputEnvelope) -> None:
+async def test_consumer_inbox_runs_handler_once(
+    database: Database, input_event: InputEnvelope
+) -> None:
     async with database.sessions.begin() as session:
         await append_event(session, input_event, topics=[])
 
     handled: list[str] = []
 
-    async def handler(session, event: InputEnvelope) -> None:
+    async def handler(session: AsyncSession, event: InputEnvelope) -> None:
         del session
         handled.append(str(event.event_id))
 
@@ -76,7 +83,41 @@ async def test_consumer_inbox_runs_handler_once(database, input_event: InputEnve
     assert handled == [str(input_event.event_id)]
 
 
-async def test_dispatcher_marks_success(database, input_event: InputEnvelope) -> None:
+async def test_failed_consumer_does_not_claim_inbox(
+    database: Database, input_event: InputEnvelope
+) -> None:
+    async with database.sessions.begin() as session:
+        await append_event(session, input_event, topics=[])
+    attempts = 0
+
+    async def handler(session: AsyncSession, event: InputEnvelope) -> None:
+        nonlocal attempts
+        del session, event
+        attempts += 1
+        if attempts == 1:
+            raise RuntimeError("synthetic handler failure")
+
+    with pytest.raises(RuntimeError, match="synthetic handler failure"):
+        async with database.sessions.begin() as session:
+            await consume_event(
+                session,
+                consumer_name="test.retrying-consumer",
+                event_id=input_event.event_id,
+                handler=handler,
+            )
+    async with database.sessions.begin() as session:
+        assert await consume_event(
+            session,
+            consumer_name="test.retrying-consumer",
+            event_id=input_event.event_id,
+            handler=handler,
+        )
+    assert attempts == 2
+
+
+async def test_dispatcher_marks_success(
+    database: Database, input_event: InputEnvelope
+) -> None:
     async with database.sessions.begin() as session:
         await append_event(session, input_event, topics=["hub.internal"])
     publisher = RecordingPublisher()
@@ -90,7 +131,7 @@ async def test_dispatcher_marks_success(database, input_event: InputEnvelope) ->
 
 
 async def test_dispatcher_moves_terminal_failure_to_dead_letter(
-    database, input_event: InputEnvelope
+    database: Database, input_event: InputEnvelope
 ) -> None:
     async with database.sessions.begin() as session:
         await append_event(session, input_event, topics=["hub.internal"])
@@ -109,7 +150,7 @@ async def test_dispatcher_moves_terminal_failure_to_dead_letter(
 
 
 async def test_expired_dispatch_lease_can_be_reclaimed(
-    database, input_event: InputEnvelope
+    database: Database, input_event: InputEnvelope
 ) -> None:
     async with database.sessions.begin() as session:
         await append_event(session, input_event, topics=["hub.internal"])
@@ -128,7 +169,55 @@ async def test_expired_dispatch_lease_can_be_reclaimed(
     assert second[0].attempt == 2
 
 
-async def test_dev_event_endpoint_appends_event(database, input_event: InputEnvelope) -> None:
+async def test_resident_worker_drains_outbox_and_stops(
+    database: Database, input_event: InputEnvelope
+) -> None:
+    async with database.sessions.begin() as session:
+        await append_event(session, input_event, topics=["hub.internal"])
+    handled = asyncio.Event()
+
+    async def handler(session: AsyncSession, event: InputEnvelope) -> None:
+        del session, event
+        handled.set()
+
+    publisher = LocalEventPublisher(database)
+    publisher.subscribe("hub.internal", "test.worker-consumer", handler)
+    worker = DispatcherWorker(database.sessions, publisher, poll_seconds=0.01)
+    await worker.start()
+    await asyncio.wait_for(handled.wait(), timeout=1)
+    await worker.stop()
+
+    assert not worker.state.running
+    assert worker.state.dispatched == 1
+    async with database.sessions() as session:
+        outbox = (await session.scalars(select(OutboxRecord))).one()
+    assert outbox.status == "dispatched"
+
+
+async def test_app_lifespan_exposes_dispatcher_health(
+    database: Database, input_event: InputEnvelope
+) -> None:
+    async with database.sessions.begin() as session:
+        await append_event(session, input_event, topics=["hub.internal"])
+    publisher = RecordingPublisher()
+    app = create_app(database, run_dispatcher=True, event_publisher=publisher)
+
+    async def wait_until_published() -> None:
+        while not publisher.events:
+            await asyncio.sleep(0.01)
+
+    async with app.router.lifespan_context(app):
+        await asyncio.wait_for(wait_until_published(), timeout=1)
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            response = await client.get("/healthz")
+        assert response.json()["dispatcher"]["running"] is True
+
+    assert app.state.dispatcher.state.running is False
+
+
+async def test_dev_event_endpoint_appends_event(
+    database: Database, input_event: InputEnvelope
+) -> None:
     app = create_app(database, enable_dev_endpoints=True)
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         response = await client.post(
