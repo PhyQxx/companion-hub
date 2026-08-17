@@ -55,6 +55,7 @@
 - [x] WebSocket 真实流式回复、取消和消息补拉。
 - [x] 模型配置后台与文字聊天调试台。
 - [x] 调试台固定视口、回车发送和消息自动贴底。
+- [x] Open-LLM-VTuber v1.2.1 macOS 源码安装及真实 HTTP/WebSocket、Live2D、ASR、TTS、Aria PostgreSQL 端到端验证。
 
 ## 暂缓事项
 
