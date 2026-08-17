@@ -152,3 +152,67 @@ class ConfigPointerRecord(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now()
     )
+
+
+class AppUserRecord(Base):
+    __tablename__ = "app_user"
+
+    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True)
+    display_name: Mapped[str] = mapped_column(String(160), nullable=False)
+    locale: Mapped[str] = mapped_column(String(32), nullable=False, server_default="zh-CN")
+    timezone: Mapped[str] = mapped_column(
+        String(64), nullable=False, server_default="Asia/Shanghai"
+    )
+    status: Mapped[str] = mapped_column(String(16), nullable=False, server_default="active")
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+
+class ConversationRecord(Base):
+    __tablename__ = "conversation"
+    __table_args__ = (
+        CheckConstraint("status IN ('active','archived')", name="ck_conversation_status"),
+        Index("ix_conversation_user_active", "user_id", "last_active_at"),
+    )
+
+    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True)
+    user_id: Mapped[UUID] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("app_user.id", ondelete="RESTRICT"), nullable=False
+    )
+    title: Mapped[str | None] = mapped_column(String(240))
+    status: Mapped[str] = mapped_column(String(16), nullable=False, server_default="active")
+    last_seq: Mapped[int] = mapped_column(BigInteger, nullable=False, server_default="0")
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    last_active_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+
+class MessageRecord(Base):
+    __tablename__ = "message"
+    __table_args__ = (
+        CheckConstraint(
+            "role IN ('user','assistant','system','tool')", name="ck_message_role"
+        ),
+        CheckConstraint("privacy_level IN ('L0','L1','L2')", name="ck_message_privacy"),
+        UniqueConstraint("conversation_id", "seq", name="uq_message_conversation_seq"),
+        Index("ix_message_conversation_seq", "conversation_id", "seq"),
+    )
+
+    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True)
+    conversation_id: Mapped[UUID] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("conversation.id", ondelete="RESTRICT"), nullable=False
+    )
+    turn_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
+    seq: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    role: Mapped[str] = mapped_column(String(16), nullable=False)
+    content: Mapped[str] = mapped_column(Text, nullable=False)
+    privacy_level: Mapped[str] = mapped_column(String(2), nullable=False)
+    generation_id: Mapped[UUID | None] = mapped_column(Uuid(as_uuid=True))
+    decision_meta: Mapped[dict[str, Any] | None] = mapped_column(JSON)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
