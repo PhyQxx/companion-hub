@@ -22,6 +22,7 @@
 | [docs/13-需求追踪与架构决策.md](./docs/13-需求追踪与架构决策.md) | FR/NFR→设计→里程碑→测试追踪矩阵、发布定义、ADR、待决问题与设计冻结规则 |
 | [docs/14-输入输出扩展契约.md](./docs/14-输入输出扩展契约.md) | 统一多模态输入/输出协议、L3 临时信号管道、Adapter 生命周期、能力协商、路由降级与 M0 契约测试 |
 | [docs/15-M0输入输出骨架验收报告.md](./docs/15-M0输入输出骨架验收报告.md) | I/O 扩展、隐私隔离、可靠事件、故障恢复和容器鉴权的实现验收矩阵 |
+| [docs/16-M0模型路由与配置中心.md](./docs/16-M0模型路由与配置中心.md) | 商汤 / GLM / 本地模型分工、隐私路由、配置热更新、回滚、观测与连通性验证 |
 
 ## 一图速览
 
@@ -51,6 +52,8 @@
 - [x] 常驻事件分发 —— FastAPI 生命周期 worker、本地命名消费者、inbox 去重、失败重试与健康状态
 - [x] M0.4 并发恢复闸门 —— PostgreSQL `SKIP LOCKED` 多 worker 竞争和 lease 持有者终止恢复测试
 - [x] M0 I/O 契约闸门 —— 显式 registry、四个参考 adapter、能力交集、降级、取消和 unknown outcome
+- [x] M0.5 模型适配与双路由 —— OpenAI-compatible 适配、对话/后台/私密路由、重试降级和 L2/L3 出站闸门
+- [x] M0.6 配置与最小观测 —— YAML 强校验、原子热更新、版本回滚、安全元数据、结构化日志和耗时 span
 
 ## 本地开发
 
@@ -71,10 +74,22 @@ uv run uvicorn app.main:app --app-dir server --reload
 - 健康检查：`GET /healthz`
 - 协议元数据：`GET /api/v1/meta/protocol`
 - 已登记 Adapter：`GET /api/v1/meta/adapters`
+- 已发布模型配置（不返回密钥引用）：`GET /api/v1/meta/config`
 - JSON Schema：`contracts/jsonschema/`
 - TypeScript 类型：`contracts/types/index.d.ts`
 
 `ARIA_RUN_DISPATCHER` 默认关闭。只有当应用已为所有会产生的 topic 注册命名消费者后才应开启；开启后 `/healthz` 会增加 `dispatcher` 运行状态。Adapter 输入必须经过 `GuardedInputSink`，设备声明的隐私等级只是下限，服务端策略可以上调，L3 数据不会进入 event/outbox 数据库。
+
+模型配置默认读取 `config/hub.example.yaml`。`ARIA_WATCH_CONFIG=true` 时，合法变更会原子发布；校验失败时继续使用上一版并在健康检查中标记 degraded。密钥只允许通过 `env:变量名` 引用。手工验证商汤连接：
+
+```bash
+set -a
+. ./.env.local
+set +a
+make llm-check
+```
+
+不要把 `.env.local` 提交到仓库。若要启用预留的 GLM-5.3 运行时配置，必须使用独立的普通 API 授权密钥；GLM Coding Plan Pro 密钥只用于其官方支持的编码工具。
 
 ## 容器启动
 

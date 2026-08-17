@@ -9,6 +9,7 @@ COPY pyproject.toml uv.lock ./
 RUN uv sync --locked --no-dev
 
 COPY alembic.ini ./
+COPY config ./config
 COPY server ./server
 COPY deploy/hub-entrypoint.sh /usr/local/bin/hub-entrypoint
 RUN chmod +x /usr/local/bin/hub-entrypoint
