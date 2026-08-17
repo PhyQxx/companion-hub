@@ -3,14 +3,26 @@ from __future__ import annotations
 from collections.abc import AsyncIterator
 from pathlib import Path
 
-from open_llm_vtuber.agent.agents.agent_interface import AgentInterface
-from open_llm_vtuber.agent.input_types import BatchInput, TextSource
-from open_llm_vtuber.agent.transformers import (
-    actions_extractor,
-    display_processor,
-    sentence_divider,
-    tts_filter,
-)
+try:
+    # Open-LLM-VTuber's documented source launch imports the package through `src`.
+    from src.open_llm_vtuber.agent.agents.agent_interface import AgentInterface
+    from src.open_llm_vtuber.agent.input_types import BatchInput, TextSource
+    from src.open_llm_vtuber.agent.transformers import (
+        actions_extractor,
+        display_processor,
+        sentence_divider,
+        tts_filter,
+    )
+except ModuleNotFoundError:
+    # Keep compatibility with environments that install open_llm_vtuber as a package.
+    from open_llm_vtuber.agent.agents.agent_interface import AgentInterface
+    from open_llm_vtuber.agent.input_types import BatchInput, TextSource
+    from open_llm_vtuber.agent.transformers import (
+        actions_extractor,
+        display_processor,
+        sentence_divider,
+        tts_filter,
+    )
 
 from .client import AriaBridgeClient, AriaBridgeConfig
 
