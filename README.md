@@ -53,7 +53,7 @@
 - [x] M0.4 并发恢复闸门 —— PostgreSQL `SKIP LOCKED` 多 worker 竞争和 lease 持有者终止恢复测试
 - [x] M0 I/O 契约闸门 —— 显式 registry、四个参考 adapter、能力交集、降级、取消和 unknown outcome
 - [x] M0.5 模型适配与双路由 —— OpenAI-compatible 适配、对话/后台/私密路由、重试降级和 L2/L3 出站闸门
-- [x] M0.6 配置与最小观测 —— YAML 强校验、原子热更新、版本回滚、安全元数据、结构化日志和耗时 span
+- [x] M0.6 配置与最小观测 —— 数据库版本、事务发布/回滚、可视化后台、安全元数据、结构化日志和耗时 span
 
 ## 本地开发
 
@@ -75,12 +75,13 @@ uv run uvicorn app.main:app --app-dir server --reload
 - 协议元数据：`GET /api/v1/meta/protocol`
 - 已登记 Adapter：`GET /api/v1/meta/adapters`
 - 已发布模型配置（不返回密钥引用）：`GET /api/v1/meta/config`
+- 模型配置后台：`GET /admin/models`
 - JSON Schema：`contracts/jsonschema/`
 - TypeScript 类型：`contracts/types/index.d.ts`
 
 `ARIA_RUN_DISPATCHER` 默认关闭。只有当应用已为所有会产生的 topic 注册命名消费者后才应开启；开启后 `/healthz` 会增加 `dispatcher` 运行状态。Adapter 输入必须经过 `GuardedInputSink`，设备声明的隐私等级只是下限，服务端策略可以上调，L3 数据不会进入 event/outbox 数据库。
 
-模型配置默认读取 `config/hub.example.yaml`。`ARIA_WATCH_CONFIG=true` 时，合法变更会原子发布；校验失败时继续使用上一版并在健康检查中标记 degraded。密钥只允许通过 `env:变量名` 引用。手工验证商汤连接：
+连接数据库时，首次启动从 `config/hub.example.yaml` 引导版本 1，之后模型配置、草稿、发布指针和回滚历史都保存在数据库。后台地址为 `/admin/models`，管理 API 必须配置 `ARIA_ADMIN_TOKEN` 才会启用；未连接数据库时仍保留 YAML 文件模式。密钥只允许通过 `env:变量名` 引用，不保存明文。手工验证商汤连接：
 
 ```bash
 set -a
@@ -95,7 +96,7 @@ make llm-check
 
 ```bash
 cp .env.example .env
-# 编辑 .env，替换 PostgreSQL 和 MQTT 密码
+# 编辑 .env，替换 PostgreSQL、MQTT 密码和 ARIA_ADMIN_TOKEN
 docker compose up --build -d
 curl http://localhost:8000/healthz
 docker compose logs -f hub
