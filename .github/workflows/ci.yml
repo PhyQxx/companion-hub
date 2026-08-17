@@ -25,6 +25,8 @@ jobs:
       - run: uv run ruff check server
       - run: uv run mypy server/app
       - run: uv run pytest
+      - run: uv run alembic upgrade head --sql > /tmp/aria-migration.sql
+      - run: POSTGRES_PASSWORD=ci-postgres MQTT_PASSWORD=ci-mqtt docker compose config --quiet
       - run: uv run python server/scripts/export_schemas.py
       - run: pnpm --dir contracts install --frozen-lockfile
       - run: pnpm --dir contracts run generate

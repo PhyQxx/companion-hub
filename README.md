@@ -44,7 +44,8 @@
 - [x] 产品范围冻结（v1.3，2026-08-17；核心 v1 截止 M3A）
 - [x] M0.1 初始工程骨架 —— Python 3.11、FastAPI、uv、ruff、mypy、pytest、CI
 - [x] M0.3 协议首版 —— Pydantic → JSON Schema → TypeScript，含 UUIDv7、durable/ephemeral 分流和 mock adapter 测试
-- [ ] M0.2/M0.4 运行基础设施 —— 下一步接入 PostgreSQL、outbox/inbox、Mosquitto 和 Docker Compose
+- [x] M0.2/M0.4 基础实现 —— PostgreSQL/Alembic、event/outbox/inbox/dead-letter、dispatcher 租约恢复、Mosquitto 和 Docker Compose
+- [ ] M0.4 集成闸门 —— 下一步在真实 PostgreSQL/Mosquitto 容器上跑并发、kill/recover 和消息发布测试
 
 ## 本地开发
 
@@ -66,3 +67,21 @@ uv run uvicorn app.main:app --app-dir server --reload
 - 协议元数据：`GET /api/v1/meta/protocol`
 - JSON Schema：`contracts/jsonschema/`
 - TypeScript 类型：`contracts/types/index.d.ts`
+
+## 容器启动
+
+```bash
+cp .env.example .env
+# 编辑 .env，替换 PostgreSQL 和 MQTT 密码
+docker compose up --build -d
+curl http://localhost:8000/healthz
+docker compose logs -f hub
+```
+
+停止服务但保留数据：
+
+```bash
+docker compose down
+```
+
+开发 Compose 会自动执行 Alembic migration，并显式启用 `/api/v1/dev/events` 测试入口。该入口没有设计为生产 API；共享部署前必须关闭 `ARIA_ENABLE_DEV_ENDPOINTS` 并完成身份模块。
