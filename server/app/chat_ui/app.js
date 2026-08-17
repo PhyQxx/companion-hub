@@ -5,9 +5,24 @@ const state = {
   socket: null,
   socketReady: false,
   activeGeneration: null,
+  pendingSend: false,
   streamDrafts: new Map(),
 };
 const el = (id) => document.getElementById(id);
+
+function resizeComposer() {
+  const input = el("text");
+  input.style.height = "auto";
+  input.style.height = `${Math.min(input.scrollHeight, 128)}px`;
+}
+
+function updateControls() {
+  const authenticated = Boolean(state.token);
+  document.body.classList.toggle("is-authenticated", authenticated);
+  el("new-conversation").disabled = !authenticated;
+  el("send").disabled = !state.activeId || !el("text").value.trim() || state.pendingSend || Boolean(state.activeGeneration);
+  el("logout").disabled = !authenticated;
+}
 
 async function request(path, options = {}, token = state.token) {
   const headers = { "Content-Type": "application/json", ...(options.headers || {}) };
@@ -23,7 +38,7 @@ async function request(path, options = {}, token = state.token) {
 
 function setStatus(text, error = false) {
   el("status").textContent = text;
-  el("status").className = error ? "error" : "muted";
+  el("status").className = error ? "status-pill error" : "status-pill";
 }
 
 async function initialize() {
@@ -78,6 +93,7 @@ function acceptSession(session) {
   sessionStorage.setItem("ariaChatToken", state.token);
   el("password").value = "";
   setStatus(`已登录 · ${session.user.display_name}`);
+  updateControls();
 }
 
 async function connect() {
@@ -110,12 +126,13 @@ function clearSession() {
   }
   state.socketReady = false;
   state.activeGeneration = null;
+  state.pendingSend = false;
   el("cancel").hidden = true;
-  el("send").disabled = false;
   state.token = "";
   state.conversations = [];
   state.activeId = null;
   sessionStorage.removeItem("ariaChatToken");
+  updateControls();
 }
 
 async function loadConversations() {
@@ -139,6 +156,8 @@ function connectSocket() {
   socket.addEventListener("message", (event) => handleSocketEvent(JSON.parse(event.data)));
   socket.addEventListener("close", () => {
     state.socketReady = false;
+    state.pendingSend = false;
+    updateControls();
     if (state.token) {
       setStatus("实时连接已断开，发送将使用 REST");
       setTimeout(connectSocket, 1500);
@@ -159,8 +178,10 @@ function handleSocketEvent(event) {
     updateConversationSeq(message.conversation_id || event.stream.split(":")[1], message.seq);
     if (event.stream === `conversation:${state.activeId}`) appendMessage(message);
   } else if (event.type === "turn.accepted") {
+    state.pendingSend = false;
     state.activeGeneration = event.generation_id;
     el("cancel").hidden = false;
+    updateControls();
   } else if (event.type === "reply.delta") {
     appendDelta(event.generation_id, event.payload.delta, event.stream);
   } else if (event.type === "reply.committed" && message) {
@@ -175,6 +196,8 @@ function handleSocketEvent(event) {
     removeDraft(event.generation_id);
     finishGeneration(event.payload.reason_code || "生成失败", true);
   } else if (event.type === "protocol.error") {
+    state.pendingSend = false;
+    updateControls();
     setStatus(event.payload.reason_code || "协议错误", true);
   }
 }
@@ -204,8 +227,9 @@ function removeDraft(generationId) {
 
 function finishGeneration(text, error = false) {
   state.activeGeneration = null;
+  state.pendingSend = false;
   el("cancel").hidden = true;
-  el("send").disabled = false;
+  updateControls();
   setStatus(text, error);
 }
 
@@ -249,6 +273,7 @@ async function createConversation() {
 
 async function openConversation(id) {
   state.activeId = id;
+  updateControls();
   renderConversations();
   try {
     renderMessages(await request(`/api/v1/chat/conversations/${id}/messages`));
@@ -280,9 +305,9 @@ function appendMessage(message) {
 async function send(event) {
   event.preventDefault();
   const text = el("text").value.trim();
-  if (!state.activeId || !text) return;
-  const button = el("send");
-  button.disabled = true;
+  if (!state.activeId || !text || state.pendingSend || state.activeGeneration) return;
+  state.pendingSend = true;
+  updateControls();
   setStatus("模型生成中…");
   if (state.socketReady) {
     state.socket.send(JSON.stringify({
@@ -292,6 +317,8 @@ async function send(event) {
       privacy_level: el("privacy").value,
     }));
     el("text").value = "";
+    resizeComposer();
+    updateControls();
     return;
   }
   try {
@@ -300,6 +327,7 @@ async function send(event) {
       body: JSON.stringify({ text, privacy_level: el("privacy").value }),
     });
     el("text").value = "";
+    resizeComposer();
     appendMessage(turn.user_message);
     appendMessage(turn.assistant_message);
     const conversation = state.conversations.find((item) => item.id === state.activeId);
@@ -311,7 +339,8 @@ async function send(event) {
     setStatus(error.message, true);
     await openConversation(state.activeId);
   } finally {
-    button.disabled = false;
+    state.pendingSend = false;
+    updateControls();
   }
 }
 
@@ -330,10 +359,21 @@ el("logout").addEventListener("click", logout);
 el("cancel").addEventListener("click", cancelGeneration);
 el("new-conversation").addEventListener("click", createConversation);
 el("composer").addEventListener("submit", send);
+el("text").addEventListener("input", () => {
+  resizeComposer();
+  updateControls();
+});
+el("text").addEventListener("keydown", (event) => {
+  if (event.key !== "Enter" || event.shiftKey || event.isComposing || event.keyCode === 229) return;
+  event.preventDefault();
+  el("composer").requestSubmit();
+});
 el("privacy").addEventListener("change", (event) => {
   el("privacy-note").textContent = event.target.value === "L2"
     ? "L2 强制仅用本地模型；本地不可用时会明确失败。"
     : "L1 可按配置使用云模型。";
 });
 
+resizeComposer();
+updateControls();
 initialize();

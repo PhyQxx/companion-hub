@@ -8,23 +8,25 @@
   </head>
   <body>
     <main class="shell">
-      <header>
-        <div>
+      <header class="app-header">
+        <div class="brand-copy">
           <p class="eyebrow">ARIA COMPANION HUB</p>
           <h1>文字聊天调试台</h1>
           <p class="subtitle">验证会话持久化、隐私路由和数据库模型配置是否即时生效。</p>
         </div>
-        <a href="/admin/models">模型配置</a>
+        <a class="model-link" href="/admin/models">模型配置</a>
       </header>
 
       <section class="auth card">
-        <label>
+        <label class="password-field">
           聊天密码
           <input id="password" type="password" autocomplete="current-password" placeholder="至少 12 位（首次设置）" />
         </label>
-        <button id="login">登录</button>
-        <button id="logout" class="secondary">退出</button>
-        <span id="status" class="muted">未连接</span>
+        <div class="auth-actions">
+          <button id="login">登录</button>
+          <button id="logout" class="secondary">退出</button>
+        </div>
+        <span id="status" class="status-pill" role="status" aria-live="polite">未连接</span>
       </section>
 
       <details id="setup-panel" class="card setup-panel">
@@ -46,13 +48,13 @@
         <aside class="card">
           <div class="section-head">
             <h2>会话</h2>
-            <button id="new-conversation" class="small">新建</button>
+            <button id="new-conversation" class="small" disabled>新建</button>
           </div>
           <div id="conversations" class="conversation-list"></div>
         </aside>
 
         <section class="card chat-card">
-          <div id="messages" class="messages">
+          <div id="messages" class="messages" role="log" aria-live="polite" aria-label="聊天消息">
             <div class="empty">连接后新建或选择一个会话。</div>
           </div>
           <form id="composer">
@@ -68,9 +70,14 @@
               <span id="privacy-note" class="muted">L1 可按配置使用云模型。</span>
             </div>
             <div class="compose-row">
-              <textarea id="text" rows="3" maxlength="20000" placeholder="输入一条测试消息…"></textarea>
-              <button id="cancel" type="button" class="secondary" hidden>取消</button>
-              <button id="send" type="submit">发送</button>
+              <div class="composer-input">
+                <textarea id="text" rows="1" maxlength="20000" placeholder="输入一条测试消息…" aria-label="消息内容"></textarea>
+                <span class="keyboard-hint">Enter 发送 · Shift + Enter 换行</span>
+              </div>
+              <div class="compose-actions">
+                <button id="cancel" type="button" class="secondary" hidden>取消</button>
+                <button id="send" type="submit" disabled>发送</button>
+              </div>
             </div>
           </form>
         </section>
