@@ -6,13 +6,16 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI
+from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 
 from app import __version__
 from app.adapters import AdapterRegistry
 from app.adapters.builtin import create_builtin_registry
+from app.api import create_admin_config_router
 from app.api.events import create_event_router
 from app.bus import DispatcherWorker, EventPublisher, LocalEventPublisher
-from app.config import ConfigStore, ConfigWatcher
+from app.config import ConfigStore, ConfigWatcher, DatabaseConfigStore
 from app.db import Database, create_database
 
 
@@ -23,21 +26,29 @@ def create_app(
     run_dispatcher: bool | None = None,
     event_publisher: EventPublisher | None = None,
     adapter_registry: AdapterRegistry | None = None,
-    config_store: ConfigStore | None = None,
+    config_store: ConfigStore | DatabaseConfigStore | None = None,
     watch_config: bool | None = None,
+    admin_token: str | None = None,
 ) -> FastAPI:
     database_url = os.getenv("ARIA_DATABASE_URL")
     runtime_database = database or (create_database(database_url) if database_url else None)
     owns_database = database is None and runtime_database is not None
     runtime_adapters = adapter_registry or create_builtin_registry()
     config_path = os.getenv("ARIA_CONFIG_PATH")
-    runtime_config = config_store or (ConfigStore(Path(config_path)) if config_path else None)
+    if config_store is not None:
+        runtime_config: ConfigStore | DatabaseConfigStore | None = config_store
+    elif config_path and runtime_database is not None:
+        runtime_config = DatabaseConfigStore(runtime_database, Path(config_path))
+    elif config_path:
+        runtime_config = ConfigStore(Path(config_path))
+    else:
+        runtime_config = None
     config_watch_enabled = watch_config
     if config_watch_enabled is None:
         config_watch_enabled = os.getenv("ARIA_WATCH_CONFIG", "true").lower() == "true"
     config_watcher = (
         ConfigWatcher(runtime_config)
-        if runtime_config is not None and config_watch_enabled
+        if isinstance(runtime_config, ConfigStore) and config_watch_enabled
         else None
     )
     dispatcher_enabled = run_dispatcher
@@ -72,6 +83,13 @@ def create_app(
     app.state.adapter_registry = runtime_adapters
     app.state.config_store = runtime_config
     app.state.config_watcher = config_watcher
+
+    admin_root = Path(__file__).parent / "admin"
+    app.mount("/admin/assets", StaticFiles(directory=admin_root), name="admin-assets")
+
+    @app.get("/admin/models", include_in_schema=False)
+    async def model_admin() -> FileResponse:
+        return FileResponse(admin_root / "models.html")
 
     @app.get("/healthz", tags=["system"])
     async def health() -> dict[str, object]:
@@ -147,6 +165,16 @@ def create_app(
         dev_enabled = os.getenv("ARIA_ENABLE_DEV_ENDPOINTS", "false").lower() == "true"
     if dev_enabled and runtime_database is not None:
         app.include_router(create_event_router(runtime_database))
+    if isinstance(runtime_config, DatabaseConfigStore):
+        runtime_admin_token = (
+            admin_token if admin_token is not None else os.getenv("ARIA_ADMIN_TOKEN")
+        )
+        app.include_router(
+            create_admin_config_router(
+                runtime_config,
+                admin_token=runtime_admin_token,
+            )
+        )
 
     return app
 

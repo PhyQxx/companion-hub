@@ -52,6 +52,7 @@ services:
       ARIA_LOG_LEVEL: ${ARIA_LOG_LEVEL:-INFO}
       ARIA_CONFIG_PATH: ${ARIA_CONFIG_PATH:-config/hub.example.yaml}
       ARIA_WATCH_CONFIG: ${ARIA_WATCH_CONFIG:-true}
+      ARIA_ADMIN_TOKEN: ${ARIA_ADMIN_TOKEN:-}
     depends_on:
       postgres:
         condition: service_healthy

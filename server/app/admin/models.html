@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Aria · 模型配置</title>
+    <link rel="stylesheet" href="/admin/assets/models.css" />
+  </head>
+  <body>
+    <aside class="sidebar">
+      <div class="brand"><span class="brand-mark">A</span><span>Aria Hub</span></div>
+      <nav>
+        <a href="#">总览</a><a class="active" href="/admin/models">模型与路由</a>
+        <a href="#">记忆质量</a><a href="#">设备</a><a href="#">日志追踪</a>
+        <a href="#">隐私审计</a><a href="#">系统配置</a>
+      </nav>
+      <div class="privacy-note"><span class="dot"></span>L2/L3 隐私闸门已启用</div>
+    </aside>
+
+    <main>
+      <header class="topbar">
+        <div><p class="eyebrow">SYSTEM CONFIGURATION</p><h1>模型与路由</h1></div>
+        <div class="actions">
+          <button class="secondary" id="reload">重新载入</button>
+          <button class="primary" id="save-draft">校验并保存草稿</button>
+        </div>
+      </header>
+
+      <section id="auth-panel" class="auth-panel">
+        <div><strong>连接管理 API</strong><p>管理 token 仅保存在当前浏览器会话中。</p></div>
+        <form id="auth-form"><input id="admin-token" type="password" autocomplete="current-password" placeholder="ARIA_ADMIN_TOKEN" required /><button class="primary">连接</button></form>
+      </section>
+
+      <div id="workspace" hidden>
+        <section class="stats">
+          <article><span>当前版本</span><strong id="current-version">—</strong><small id="published-time">尚未载入</small></article>
+          <article><span>已启用模型</span><strong id="enabled-count">—</strong><small>云端与本地端点</small></article>
+          <article><span>隐私路由</span><strong class="safe">本地强制</strong><small>L2 本地 · L3 阻断</small></article>
+          <article><span>配置来源</span><strong>Database</strong><small id="config-hash">—</small></article>
+        </section>
+
+        <section class="section-heading"><div><p class="eyebrow">ENDPOINTS</p><h2>模型端点</h2><p>密钥只填写环境变量引用，例如 <code>env:SENSENOVA_API_KEY</code>。</p></div><button class="secondary" id="add-model">＋ 添加端点</button></section>
+        <section id="models" class="model-grid"></section>
+
+        <section class="section-heading"><div><p class="eyebrow">ROUTING POLICY</p><h2>场景路由</h2><p>L2 会无条件改走 private；private 路由不能选择云端模型。</p></div></section>
+        <section id="routes" class="route-grid"></section>
+
+        <section class="section-heading"><div><p class="eyebrow">VERSION HISTORY</p><h2>版本历史</h2><p>发布与回滚都会留下新版本，不覆盖历史。</p></div></section>
+        <section class="history-card"><table><thead><tr><th>版本</th><th>状态</th><th>创建人</th><th>创建时间</th><th>内容哈希</th><th>操作</th></tr></thead><tbody id="versions"></tbody></table></section>
+      </div>
+    </main>
+    <div id="toast" role="status" aria-live="polite"></div>
+    <script src="/admin/assets/models.js" defer></script>
+  </body>
+</html>
