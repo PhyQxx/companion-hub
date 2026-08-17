@@ -72,28 +72,14 @@ class ChatService:
     async def create_conversation(
         self,
         *,
-        user_id: UUID | None,
-        display_name: str,
+        user_id: UUID,
         title: str | None,
     ) -> ConversationView:
         now = datetime.now(UTC)
         async with self._database.sessions.begin() as session:
-            if user_id is None:
-                user_id = uuid7()
-                session.add(
-                    AppUserRecord(
-                        id=user_id,
-                        display_name=display_name,
-                        locale="zh-CN",
-                        timezone="Asia/Shanghai",
-                        status="active",
-                        created_at=now,
-                    )
-                )
-            else:
-                user = await session.get(AppUserRecord, user_id)
-                if user is None or user.status != "active":
-                    raise LookupError("active user not found")
+            user = await session.get(AppUserRecord, user_id)
+            if user is None or user.status != "active":
+                raise LookupError("active user not found")
             record = ConversationRecord(
                 id=uuid7(),
                 user_id=user_id,
@@ -107,22 +93,24 @@ class ChatService:
         return self._conversation_view(record)
 
     async def list_conversations(
-        self, *, user_id: UUID | None = None, limit: int = 50
+        self, *, user_id: UUID, limit: int = 50
     ) -> list[ConversationView]:
-        query = select(ConversationRecord)
-        if user_id is not None:
-            query = query.where(ConversationRecord.user_id == user_id)
-        query = query.order_by(ConversationRecord.last_active_at.desc()).limit(limit)
+        query = (
+            select(ConversationRecord)
+            .where(ConversationRecord.user_id == user_id)
+            .order_by(ConversationRecord.last_active_at.desc())
+            .limit(limit)
+        )
         async with self._database.sessions() as session:
             records = list(await session.scalars(query))
         return [self._conversation_view(record) for record in records]
 
     async def list_messages(
-        self, conversation_id: UUID, *, limit: int = 100
+        self, conversation_id: UUID, *, user_id: UUID, limit: int = 100
     ) -> list[MessageView]:
         async with self._database.sessions() as session:
             conversation = await session.get(ConversationRecord, conversation_id)
-            if conversation is None:
+            if conversation is None or conversation.user_id != user_id:
                 raise LookupError("conversation not found")
             records = list(
                 await session.scalars(
@@ -139,6 +127,7 @@ class ChatService:
         self,
         conversation_id: UUID,
         *,
+        user_id: UUID,
         text: str,
         privacy_level: PrivacyLevel,
     ) -> ChatTurn:
@@ -152,7 +141,7 @@ class ChatService:
                 .where(ConversationRecord.id == conversation_id)
                 .with_for_update()
             )
-            if conversation is None:
+            if conversation is None or conversation.user_id != user_id:
                 raise LookupError("conversation not found")
             if conversation.status != "active":
                 raise ValueError("conversation is archived")
@@ -213,7 +202,7 @@ class ChatService:
                 .where(ConversationRecord.id == conversation_id)
                 .with_for_update()
             )
-            if conversation is None:
+            if conversation is None or conversation.user_id != user_id:
                 raise LookupError("conversation not found")
             conversation.last_seq += 1
             conversation.last_active_at = assistant_time
