@@ -8,41 +8,34 @@
 | 阶段 | 状态 | 目标 |
 |---|---|---|
 | P0 Open-LLM-VTuber 集成验证 | 已完成 | 通过自定义 Agent 接入 Aria 实时聊天 |
-| P1 结构化回复与 Persona | 待开始 | 统一文本、情绪、语音和动作输出 |
+| P1 结构化回复与 Persona | 已完成 | 统一文本、情绪、语音和动作输出 |
 | P2 记忆系统 v1 | 待开始 | 可检索、可溯源、可纠错的长期记忆 |
 | P3 删除闭环与记忆后台 | 待开始 | 跨存储删除与可视化管理 |
 | P4 正式前端决策 | 待开始 | 决定 Vue 3 与 Open-LLM-VTuber 的边界 |
 | P5 文字稳定性闸门 | 待开始 | 连续 14 天真实使用验证 |
 | P6 语音与 Live2D 产品化 | 待开始 | 完整语音、打断、表情与桌宠体验 |
 
-## 当前批次：P0
+## 当前批次：P1
 
-### 正在进行
+### 已完成
 
-- [x] 核对 Open-LLM-VTuber v1 Agent 抽象、输入输出类型和生命周期。
-- [x] 核对 Open-LLM-VTuber 配置注册方式和 WebSocket 中断语义。
+- [x] 定义并导出 `AgentReply` v1：字幕、TTS、情绪、表情和动作。
+- [x] 实现尾部控制块解析、跨 chunk 过滤和普通文本安全降级。
+- [x] 每轮锁定 Persona 版本并记录在消息决策元数据中。
+- [x] 实现 Persona 数据库草稿、发布、回滚和当前版本指针。
+- [x] 实现 `/admin/personas` 可视化管理后台。
+- [x] 增加 WebSocket `reply.control` 事件且保持旧客户端兼容。
+- [x] Open-LLM-VTuber 结构化模式映射原生 `SentenceOutput`。
+- [x] 增加协议、存储、API、WebSocket 和桥接回归测试。
 
-### 接下来
+### P1 验收条件
 
-- [x] 设计 Aria 与 Open-LLM-VTuber 之间的协议映射。
-- [x] 实现独立 `AriaAgent` 适配器。
-- [x] 支持 Aria 聊天身份登录和 Token 生命周期。
-- [x] 支持文字输入与流式文字回复。
-- [x] 支持 Open-LLM-VTuber interrupt 向 Aria generation cancel 传播。
-- [x] 保证模型密钥仅保留在 Aria 服务端。
-- [x] 增加单元测试、配置示例和运行文档。
-- [x] 运行本地端到端验证。
-- [x] 提交 GitHub PR，CI 与 compose smoke 全部通过。
-
-### P0 验收条件
-
-- [x] Open-LLM-VTuber 与 Aria 可以独立启动和升级。
-- [x] 文字输入经 Aria `/ws/chat` 获得真实流式回复。
-- [x] 回复可进入 Open-LLM-VTuber 的后续 TTS/Live2D 管线。
-- [x] 取消生成不会提交迟到的助手消息。
-- [x] 会话和消息仍由 Aria PostgreSQL 持久化。
-- [x] 模型选择仍由 Aria 数据库配置中心控制。
-- [x] Open-LLM-VTuber 不持有模型供应商 API Key。
+- [x] 控制 JSON 不出现在调试台或持久化消息正文中。
+- [x] 结构化解析失败不导致整轮失败。
+- [x] 字幕和朗读文本可以不同。
+- [x] 情绪与动作能进入 Open-LLM-VTuber 原生输出类型。
+- [x] Persona 变更必须先保存草稿再发布，且可以回滚。
+- [x] 历史消息可追溯当时使用的 Persona 版本。
 
 ## 已完成
 

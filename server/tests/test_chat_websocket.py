@@ -135,10 +135,11 @@ def test_websocket_stream_cancel_and_cursor_catchup(tmp_path: Path) -> None:
         assert [event["type"] for event in events] == [
             "message.committed",
             "turn.accepted",
-            "reply.delta",
-            "reply.delta",
-            "reply.committed",
-        ]
+                "reply.delta",
+                "reply.delta",
+                "reply.control",
+                "reply.committed",
+            ]
         assert [
             event["payload"]["delta"]
             for event in events

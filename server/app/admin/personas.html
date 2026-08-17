@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Aria · Persona 管理</title>
+    <link rel="stylesheet" href="/admin/assets/models.css" />
+    <link rel="stylesheet" href="/admin/assets/personas.css" />
+  </head>
+  <body>
+    <aside class="sidebar">
+      <div class="brand"><span class="brand-mark">A</span><span>Aria Hub</span></div>
+      <nav>
+        <a href="#">总览</a><a href="/admin/models">模型与路由</a>
+        <a class="active" href="/admin/personas">Persona</a><a href="#">记忆质量</a>
+        <a href="#">设备</a><a href="#">日志追踪</a><a href="#">隐私审计</a>
+      </nav>
+      <div class="privacy-note"><span class="dot"></span>Persona 版本化已启用</div>
+    </aside>
+
+    <main>
+      <header class="topbar">
+        <div><p class="eyebrow">PERSONA CONFIGURATION</p><h1>角色与表达</h1></div>
+        <div class="actions">
+          <button class="secondary" id="reload">重新载入</button>
+          <button class="primary" id="save-draft">校验并保存草稿</button>
+        </div>
+      </header>
+
+      <section id="auth-panel" class="auth-panel">
+        <div><strong>连接管理 API</strong><p>与模型后台共用管理 token，仅保存在当前浏览器会话中。</p></div>
+        <form id="auth-form"><input id="admin-token" type="password" autocomplete="current-password" placeholder="ARIA_ADMIN_TOKEN" required /><button class="primary">连接</button></form>
+      </section>
+
+      <div id="workspace" hidden>
+        <section class="stats">
+          <article><span>当前版本</span><strong id="current-version">—</strong><small id="published-time">尚未载入</small></article>
+          <article><span>角色名称</span><strong id="persona-name">—</strong><small>当前发布 Persona</small></article>
+          <article><span>默认情绪</span><strong id="default-emotion">—</strong><small>解析失败时安全降级</small></article>
+          <article><span>配置来源</span><strong>Database</strong><small id="persona-hash">—</small></article>
+        </section>
+
+        <section class="section-heading"><div><p class="eyebrow">IDENTITY & VOICE</p><h2>人格定义</h2><p>保存只产生草稿，发布后才会用于新对话轮次。</p></div></section>
+        <section class="persona-card">
+          <div class="fields">
+            <div class="field"><label for="name">名称</label><input id="name" maxlength="80" /></div>
+            <div class="field"><label for="default-emotion">默认情绪</label><select id="emotion"><option>neutral</option><option>happy</option><option>sad</option><option>angry</option><option>surprised</option><option>thinking</option><option>concerned</option></select></div>
+            <div class="field wide"><label for="identity">身份定位</label><textarea id="identity" rows="3"></textarea></div>
+            <div class="field wide"><label for="system-prompt">核心提示词</label><textarea id="system-prompt" rows="7"></textarea></div>
+            <div class="field"><label for="speaking-style">表达风格</label><textarea id="speaking-style" rows="4"></textarea></div>
+            <div class="field"><label for="relationship">与用户的关系</label><textarea id="relationship" rows="4"></textarea></div>
+            <div class="field wide"><label for="boundaries">行为边界（每行一条）</label><textarea id="boundaries" rows="5"></textarea></div>
+            <div class="field"><label for="voice-profile">声音配置标识</label><input id="voice-profile" placeholder="可选，例如 aria_zh_v1" /></div>
+            <div class="field"><label for="expression-map">情绪 → Live2D 表情映射（JSON）</label><textarea id="expression-map" rows="5" spellcheck="false"></textarea></div>
+          </div>
+        </section>
+
+        <section class="section-heading"><div><p class="eyebrow">VERSION HISTORY</p><h2>版本历史</h2><p>发布和回滚是原子操作，历史版本不会被覆盖。</p></div></section>
+        <section class="history-card"><table><thead><tr><th>版本</th><th>状态</th><th>创建人</th><th>创建时间</th><th>内容哈希</th><th>操作</th></tr></thead><tbody id="versions"></tbody></table></section>
+      </div>
+    </main>
+    <div id="toast" role="status" aria-live="polite"></div>
+    <script src="/admin/assets/personas.js" defer></script>
+  </body>
+</html>
