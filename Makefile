@@ -1,4 +1,4 @@
-.PHONY: install lint test schemas types contracts run
+.PHONY: install lint test schemas types contracts migrate compose-check infra-up infra-down run
 
 install:
 	uv sync --dev
@@ -19,6 +19,18 @@ types: schemas
 	pnpm --dir contracts run check
 
 contracts: schemas types test
+
+migrate:
+	uv run alembic upgrade head
+
+compose-check:
+	docker compose config --quiet
+
+infra-up:
+	docker compose up --build -d
+
+infra-down:
+	docker compose down
 
 run:
 	uv run uvicorn app.main:app --app-dir server --reload

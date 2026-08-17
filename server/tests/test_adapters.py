@@ -55,4 +55,3 @@ async def test_output_adapter_can_cancel_generation(
     receipt = await adapter.cancel(str(delivery_plan.generation_id), delivery_plan.endpoint_id)
     assert receipt.status == "cancelled"
     assert receipt.reason_code == "generation_cancelled"
-

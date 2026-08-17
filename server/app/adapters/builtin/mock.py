@@ -150,4 +150,3 @@ class MockOutputAdapter:
         )
         self._receipts[matching.idempotency_key] = receipt
         return receipt
-

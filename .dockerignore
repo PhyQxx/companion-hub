@@ -1,0 +1,14 @@
+.git
+.github
+.idea
+.venv
+**/__pycache__
+.mypy_cache
+.pytest_cache
+.ruff_cache
+contracts/node_modules
+docs
+web
+firmware
+*.pyc
+
