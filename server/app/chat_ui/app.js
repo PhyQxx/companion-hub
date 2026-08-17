@@ -2,6 +2,10 @@ const state = {
   token: sessionStorage.getItem("ariaChatToken") || "",
   conversations: [],
   activeId: null,
+  socket: null,
+  socketReady: false,
+  activeGeneration: null,
+  streamDrafts: new Map(),
 };
 const el = (id) => document.getElementById(id);
 
@@ -100,6 +104,14 @@ async function logout() {
 }
 
 function clearSession() {
+  if (state.socket) {
+    state.socket.close();
+    state.socket = null;
+  }
+  state.socketReady = false;
+  state.activeGeneration = null;
+  el("cancel").hidden = true;
+  el("send").disabled = false;
   state.token = "";
   state.conversations = [];
   state.activeId = null;
@@ -112,6 +124,95 @@ async function loadConversations() {
   renderConversations();
   if (state.conversations.length) await openConversation(state.conversations[0].id);
   else renderMessages([]);
+  connectSocket();
+}
+
+function connectSocket() {
+  if (!state.token || state.socket?.readyState === WebSocket.OPEN) return;
+  const scheme = location.protocol === "https:" ? "wss" : "ws";
+  const socket = new WebSocket(`${scheme}://${location.host}/ws/chat`);
+  state.socket = socket;
+  state.socketReady = false;
+  socket.addEventListener("open", () => {
+    socket.send(JSON.stringify({ type: "authenticate", access_token: state.token }));
+  });
+  socket.addEventListener("message", (event) => handleSocketEvent(JSON.parse(event.data)));
+  socket.addEventListener("close", () => {
+    state.socketReady = false;
+    if (state.token) {
+      setStatus("实时连接已断开，发送将使用 REST");
+      setTimeout(connectSocket, 1500);
+    }
+  });
+}
+
+function handleSocketEvent(event) {
+  if (event.type === "auth.accepted") {
+    state.socketReady = true;
+    const cursors = Object.fromEntries(state.conversations.map((item) => [item.id, item.last_seq]));
+    state.socket.send(JSON.stringify({ type: "client_hello", cursors }));
+    setStatus("实时连接已建立");
+    return;
+  }
+  const message = event.payload?.message;
+  if (event.type === "message.committed" && message) {
+    updateConversationSeq(message.conversation_id || event.stream.split(":")[1], message.seq);
+    if (event.stream === `conversation:${state.activeId}`) appendMessage(message);
+  } else if (event.type === "turn.accepted") {
+    state.activeGeneration = event.generation_id;
+    el("cancel").hidden = false;
+  } else if (event.type === "reply.delta") {
+    appendDelta(event.generation_id, event.payload.delta, event.stream);
+  } else if (event.type === "reply.committed" && message) {
+    removeDraft(event.generation_id);
+    updateConversationSeq(event.stream.split(":")[1], message.seq);
+    if (event.stream === `conversation:${state.activeId}`) appendMessage(message);
+    finishGeneration("回复已保存");
+  } else if (event.type === "turn.cancelled") {
+    removeDraft(event.generation_id);
+    finishGeneration("生成已取消");
+  } else if (event.type === "turn.failed") {
+    removeDraft(event.generation_id);
+    finishGeneration(event.payload.reason_code || "生成失败", true);
+  } else if (event.type === "protocol.error") {
+    setStatus(event.payload.reason_code || "协议错误", true);
+  }
+}
+
+function appendDelta(generationId, delta, stream) {
+  if (stream !== `conversation:${state.activeId}`) return;
+  let draft = state.streamDrafts.get(generationId);
+  if (!draft) {
+    const item = document.createElement("article");
+    item.className = "message assistant streaming";
+    item.innerHTML = '<div class="bubble"></div><div class="meta">正在生成…</div>';
+    el("messages").querySelector(".empty")?.remove();
+    el("messages").appendChild(item);
+    draft = { content: "", element: item };
+    state.streamDrafts.set(generationId, draft);
+  }
+  draft.content += delta;
+  draft.element.querySelector(".bubble").textContent = draft.content;
+  el("messages").scrollTop = el("messages").scrollHeight;
+}
+
+function removeDraft(generationId) {
+  const draft = state.streamDrafts.get(generationId);
+  draft?.element.remove();
+  state.streamDrafts.delete(generationId);
+}
+
+function finishGeneration(text, error = false) {
+  state.activeGeneration = null;
+  el("cancel").hidden = true;
+  el("send").disabled = false;
+  setStatus(text, error);
+}
+
+function updateConversationSeq(conversationId, seq) {
+  const conversation = state.conversations.find((item) => item.id === conversationId);
+  if (conversation) conversation.last_seq = Math.max(conversation.last_seq, seq);
+  renderConversations();
 }
 
 function renderConversations() {
@@ -138,6 +239,9 @@ async function createConversation() {
     });
     state.conversations.unshift(conversation);
     await openConversation(conversation.id);
+    if (state.socketReady) {
+      state.socket.send(JSON.stringify({ type: "sync.request", conversation_id: conversation.id, after_seq: 0 }));
+    }
   } catch (error) {
     setStatus(error.message, true);
   }
@@ -162,9 +266,11 @@ function renderMessages(messages) {
 
 function appendMessage(message) {
   const root = el("messages");
+  if (root.querySelector(`[data-seq="${message.seq}"]`)) return;
   root.querySelector(".empty")?.remove();
   const item = document.createElement("article");
   item.className = `message ${message.role}`;
+  item.dataset.seq = message.seq;
   const meta = message.decision_meta;
   const route = meta ? `${meta.endpoint} · ${meta.model} · ${Math.round(meta.latency_ms)}ms · cfg v${meta.config_version}` : message.privacy_level;
   item.innerHTML = `<div class="bubble">${escapeHtml(message.content)}</div><div class="meta">${escapeHtml(route)}</div>`;
@@ -178,6 +284,16 @@ async function send(event) {
   const button = el("send");
   button.disabled = true;
   setStatus("模型生成中…");
+  if (state.socketReady) {
+    state.socket.send(JSON.stringify({
+      type: "message.send",
+      conversation_id: state.activeId,
+      text,
+      privacy_level: el("privacy").value,
+    }));
+    el("text").value = "";
+    return;
+  }
   try {
     const turn = await request(`/api/v1/chat/conversations/${state.activeId}/messages`, {
       method: "POST",
@@ -199,6 +315,11 @@ async function send(event) {
   }
 }
 
+function cancelGeneration() {
+  if (!state.socketReady || !state.activeGeneration) return;
+  state.socket.send(JSON.stringify({ type: "turn.cancel", generation_id: state.activeGeneration }));
+}
+
 function escapeHtml(value) {
   return String(value).replace(/[&<>'"]/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", "'": "&#39;", '"': "&quot;" })[char]);
 }
@@ -206,6 +327,7 @@ function escapeHtml(value) {
 el("setup").addEventListener("click", setup);
 el("login").addEventListener("click", login);
 el("logout").addEventListener("click", logout);
+el("cancel").addEventListener("click", cancelGeneration);
 el("new-conversation").addEventListener("click", createConversation);
 el("composer").addEventListener("submit", send);
 el("privacy").addEventListener("change", (event) => {

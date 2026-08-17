@@ -1,15 +1,21 @@
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Protocol
 from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 
 from app.config import ConfigStore, DatabaseConfigStore, HubConfig
-from app.db import AppUserRecord, ConversationRecord, Database, MessageRecord
+from app.db import (
+    AppUserRecord,
+    ConversationRecord,
+    Database,
+    InteractionTurnRecord,
+    MessageRecord,
+)
 from app.ids import uuid7
 from app.llm import CompletionRequest, CompletionResult, LLMMessage, LLMRoute
 from app.llm.factory import build_router
@@ -21,6 +27,10 @@ MAX_CONTEXT_MESSAGES = 20
 
 class CompletionBackend(Protocol):
     async def complete(self, request: CompletionRequest) -> CompletionResult: ...
+
+    async def stream(
+        self, request: CompletionRequest, on_delta: Callable[[str], Awaitable[None]]
+    ) -> CompletionResult: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -52,6 +62,23 @@ class MessageView:
 class ChatTurn:
     user_message: MessageView
     assistant_message: MessageView
+
+
+@dataclass(frozen=True, slots=True)
+class PendingTurn:
+    turn_id: UUID
+    generation_id: UUID
+    conversation_id: UUID
+    user_id: UUID
+    turn_seq: int
+    user_message: MessageView
+    request: CompletionRequest
+    config: HubConfig
+    config_version: int
+
+
+class TurnCancelled(RuntimeError):
+    pass
 
 
 class ChatService:
@@ -86,6 +113,7 @@ class ChatService:
                 title=title,
                 status="active",
                 last_seq=0,
+                last_turn_seq=0,
                 created_at=now,
                 last_active_at=now,
             )
@@ -131,10 +159,33 @@ class ChatService:
         text: str,
         privacy_level: PrivacyLevel,
     ) -> ChatTurn:
+        pending = await self.start_turn(
+            conversation_id,
+            user_id=user_id,
+            text=text,
+            privacy_level=privacy_level,
+        )
+        await self._transition(pending.turn_id, {"accepted"}, "thinking")
+        try:
+            result = await self._router_builder(pending.config).complete(pending.request)
+            return await self._commit_turn(pending, result)
+        except BaseException:
+            await self._fail_if_active(pending.turn_id)
+            raise
+
+    async def start_turn(
+        self,
+        conversation_id: UUID,
+        *,
+        user_id: UUID,
+        text: str,
+        privacy_level: PrivacyLevel,
+    ) -> PendingTurn:
         if privacy_level is PrivacyLevel.L3:
             raise ValueError("L3 durable chat is not allowed")
         now = datetime.now(UTC)
         turn_id = uuid7()
+        generation_id = uuid7()
         async with self._database.sessions.begin() as session:
             conversation = await session.scalar(
                 select(ConversationRecord)
@@ -146,6 +197,7 @@ class ChatService:
             if conversation.status != "active":
                 raise ValueError("conversation is archived")
             conversation.last_seq += 1
+            conversation.last_turn_seq += 1
             conversation.last_active_at = now
             user_record = MessageRecord(
                 id=uuid7(),
@@ -158,6 +210,19 @@ class ChatService:
                 created_at=now,
             )
             session.add(user_record)
+            await session.flush()
+            session.add(
+                InteractionTurnRecord(
+                    id=turn_id,
+                    conversation_id=conversation_id,
+                    turn_seq=conversation.last_turn_seq,
+                    generation_id=generation_id,
+                    state="accepted",
+                    state_version=1,
+                    input_message_id=user_record.id,
+                    created_at=now,
+                )
+            )
 
         history = await self._context_messages(conversation_id)
         snapshot = self._config_store.current
@@ -182,11 +247,112 @@ class ChatService:
             max_tokens=512,
             temperature=0.7,
         )
-        result = await self._router_builder(snapshot.config).complete(request)
-        generation_id = uuid7()
+        return PendingTurn(
+            turn_id=turn_id,
+            generation_id=generation_id,
+            conversation_id=conversation_id,
+            user_id=user_id,
+            turn_seq=conversation.last_turn_seq,
+            user_message=self._message_view(user_record),
+            request=request,
+            config=snapshot.config,
+            config_version=snapshot.version,
+        )
+
+    async def run_stream(
+        self,
+        pending: PendingTurn,
+        on_delta: Callable[[str], Awaitable[None]],
+    ) -> ChatTurn:
+        await self._transition(pending.turn_id, {"accepted"}, "thinking")
+        emitted = False
+
+        async def guarded_delta(delta: str) -> None:
+            nonlocal emitted
+            if not emitted:
+                await self._transition(pending.turn_id, {"thinking"}, "streaming")
+                emitted = True
+            elif not await self._turn_is_active(pending.turn_id):
+                raise TurnCancelled("generation_cancelled")
+            await on_delta(delta)
+
+        try:
+            backend = self._router_builder(pending.config)
+            result = await backend.stream(pending.request, guarded_delta)
+            return await self._commit_turn(pending, result)
+        except BaseException:
+            await self._fail_if_active(pending.turn_id)
+            raise
+
+    async def cancel_turn(
+        self, generation_id: UUID, *, user_id: UUID, reason: str = "user_cancelled"
+    ) -> bool:
+        now = datetime.now(UTC)
+        async with self._database.sessions.begin() as session:
+            row = (
+                await session.execute(
+                    select(InteractionTurnRecord, ConversationRecord)
+                    .join(
+                        ConversationRecord,
+                        ConversationRecord.id == InteractionTurnRecord.conversation_id,
+                    )
+                    .where(InteractionTurnRecord.generation_id == generation_id)
+                    .with_for_update()
+                )
+            ).one_or_none()
+            if row is None or row[1].user_id != user_id:
+                raise LookupError("generation not found")
+            turn = row[0]
+            if turn.state in {"cancelled", "failed", "completed"}:
+                return False
+            turn.state = "cancelled"
+            turn.state_version += 1
+            turn.cancel_reason = reason
+            turn.completed_at = now
+        return True
+
+    async def list_messages_after(
+        self, conversation_id: UUID, *, user_id: UUID, after_seq: int, limit: int = 200
+    ) -> list[MessageView]:
+        async with self._database.sessions() as session:
+            conversation = await session.get(ConversationRecord, conversation_id)
+            if conversation is None or conversation.user_id != user_id:
+                raise LookupError("conversation not found")
+            records = list(
+                await session.scalars(
+                    select(MessageRecord)
+                    .where(
+                        MessageRecord.conversation_id == conversation_id,
+                        MessageRecord.seq > after_seq,
+                    )
+                    .order_by(MessageRecord.seq)
+                    .limit(limit)
+                )
+            )
+        return [self._message_view(record) for record in records]
+
+    async def recover_incomplete_turns(self) -> None:
+        now = datetime.now(UTC)
+        async with self._database.sessions.begin() as session:
+            await session.execute(
+                update(InteractionTurnRecord)
+                .where(
+                    InteractionTurnRecord.state.in_({"accepted", "thinking", "streaming"})
+                )
+                .values(
+                    state="cancelled",
+                    state_version=InteractionTurnRecord.state_version + 1,
+                    cancel_reason="process_restarted",
+                    completed_at=now,
+                )
+            )
+
+    async def _commit_turn(
+        self, pending: PendingTurn, result: CompletionResult
+    ) -> ChatTurn:
         decision_meta: dict[str, object] = {
             "schema_version": 1,
-            "config_version": snapshot.version,
+            "config_version": pending.config_version,
             "endpoint": result.endpoint,
             "provider": result.provider,
             "model": result.model,
@@ -199,30 +365,80 @@ class ChatService:
         async with self._database.sessions.begin() as session:
             conversation = await session.scalar(
                 select(ConversationRecord)
-                .where(ConversationRecord.id == conversation_id)
+                .where(ConversationRecord.id == pending.conversation_id)
                 .with_for_update()
             )
-            if conversation is None or conversation.user_id != user_id:
+            turn = await session.scalar(
+                select(InteractionTurnRecord)
+                .where(InteractionTurnRecord.id == pending.turn_id)
+                .with_for_update()
+            )
+            if conversation is None or conversation.user_id != pending.user_id or turn is None:
                 raise LookupError("conversation not found")
+            if turn.state == "cancelled":
+                raise TurnCancelled("generation_cancelled")
+            if turn.state not in {"thinking", "streaming"}:
+                raise RuntimeError("turn is not committable")
             conversation.last_seq += 1
             conversation.last_active_at = assistant_time
             assistant_record = MessageRecord(
                 id=uuid7(),
-                conversation_id=conversation_id,
-                turn_id=turn_id,
+                conversation_id=pending.conversation_id,
+                turn_id=pending.turn_id,
                 seq=conversation.last_seq,
                 role="assistant",
                 content=result.text,
-                privacy_level=privacy_level.value,
-                generation_id=generation_id,
+                privacy_level=str(pending.request.privacy_level),
+                generation_id=pending.generation_id,
                 decision_meta=decision_meta,
                 created_at=assistant_time,
             )
             session.add(assistant_record)
+            turn.state = "completed"
+            turn.state_version += 1
+            turn.completed_at = assistant_time
         return ChatTurn(
-            user_message=self._message_view(user_record),
+            user_message=pending.user_message,
             assistant_message=self._message_view(assistant_record),
         )
+
+    async def _transition(
+        self, turn_id: UUID, from_states: set[str], target: str
+    ) -> None:
+        async with self._database.sessions.begin() as session:
+            turn = await session.scalar(
+                select(InteractionTurnRecord)
+                .where(InteractionTurnRecord.id == turn_id)
+                .with_for_update()
+            )
+            if turn is None:
+                raise LookupError("turn not found")
+            if turn.state == "cancelled":
+                raise TurnCancelled("generation_cancelled")
+            if turn.state not in from_states:
+                raise RuntimeError("invalid turn state transition")
+            turn.state = target
+            turn.state_version += 1
+
+    async def _turn_is_active(self, turn_id: UUID) -> bool:
+        async with self._database.sessions() as session:
+            state = await session.scalar(
+                select(InteractionTurnRecord.state).where(InteractionTurnRecord.id == turn_id)
+            )
+        return state in {"thinking", "streaming"}
+
+    async def _fail_if_active(self, turn_id: UUID) -> None:
+        now = datetime.now(UTC)
+        async with self._database.sessions.begin() as session:
+            turn = await session.scalar(
+                select(InteractionTurnRecord)
+                .where(InteractionTurnRecord.id == turn_id)
+                .with_for_update()
+            )
+            if turn is not None and turn.state in {"accepted", "thinking", "streaming"}:
+                turn.state = "failed"
+                turn.state_version += 1
+                turn.completed_at = now
 
     async def _context_messages(self, conversation_id: UUID) -> list[MessageRecord]:
         async with self._database.sessions() as session:

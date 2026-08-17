@@ -12,7 +12,12 @@ from fastapi.staticfiles import StaticFiles
 from app import __version__
 from app.adapters import AdapterRegistry
 from app.adapters.builtin import create_builtin_registry
-from app.api import create_admin_config_router, create_auth_router, create_chat_router
+from app.api import (
+    create_admin_config_router,
+    create_auth_router,
+    create_chat_router,
+    create_chat_websocket_router,
+)
 from app.api.events import create_event_router
 from app.auth import AuthService
 from app.bus import DispatcherWorker, EventPublisher, LocalEventPublisher
@@ -57,6 +62,7 @@ def create_app(
     if dispatcher_enabled is None:
         dispatcher_enabled = os.getenv("ARIA_RUN_DISPATCHER", "false").lower() == "true"
     worker = None
+    runtime_chat_service: ChatService | None = None
     if dispatcher_enabled and runtime_database is not None:
         publisher = event_publisher or LocalEventPublisher(runtime_database)
         worker = DispatcherWorker(runtime_database.sessions, publisher)
@@ -65,6 +71,8 @@ def create_app(
     async def lifespan(_: FastAPI) -> AsyncIterator[None]:
         if runtime_config is not None:
             await runtime_config.load()
+        if runtime_chat_service is not None:
+            await runtime_chat_service.recover_incomplete_turns()
         if config_watcher is not None:
             await config_watcher.start()
         if worker is not None:
@@ -185,16 +193,18 @@ def create_app(
         )
         if runtime_database is not None:
             auth_service = AuthService(runtime_database)
+            runtime_chat_service = ChatService(runtime_database, runtime_config)
             app.state.auth_service = auth_service
+            app.state.chat_service = runtime_chat_service
             app.include_router(
                 create_auth_router(auth_service, admin_token=runtime_admin_token)
             )
-            app.include_router(
-                create_chat_router(
-                    ChatService(runtime_database, runtime_config),
-                    auth_service,
-                )
+            app.include_router(create_chat_router(runtime_chat_service, auth_service))
+            websocket_router, websocket_manager = create_chat_websocket_router(
+                runtime_chat_service, auth_service
             )
+            app.state.chat_websocket_manager = websocket_manager
+            app.include_router(websocket_router)
 
     return app
 

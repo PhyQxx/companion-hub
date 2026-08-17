@@ -4,6 +4,8 @@ from .service import (
     CompletionBackend,
     ConversationView,
     MessageView,
+    PendingTurn,
+    TurnCancelled,
 )
 
 __all__ = [
@@ -12,4 +14,6 @@ __all__ = [
     "CompletionBackend",
     "ConversationView",
     "MessageView",
+    "PendingTurn",
+    "TurnCancelled",
 ]
