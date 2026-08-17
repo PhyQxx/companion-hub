@@ -16,6 +16,13 @@ function resizeComposer() {
   input.style.height = `${Math.min(input.scrollHeight, 128)}px`;
 }
 
+function scrollMessagesToBottom(behavior = "auto") {
+  requestAnimationFrame(() => {
+    const root = el("messages");
+    root.scrollTo({ top: root.scrollHeight, behavior });
+  });
+}
+
 function updateControls() {
   const authenticated = Boolean(state.token);
   document.body.classList.toggle("is-authenticated", authenticated);
@@ -216,7 +223,7 @@ function appendDelta(generationId, delta, stream) {
   }
   draft.content += delta;
   draft.element.querySelector(".bubble").textContent = draft.content;
-  el("messages").scrollTop = el("messages").scrollHeight;
+  scrollMessagesToBottom();
 }
 
 function removeDraft(generationId) {
@@ -285,11 +292,11 @@ async function openConversation(id) {
 function renderMessages(messages) {
   const root = el("messages");
   root.innerHTML = messages.length ? "" : '<div class="empty">这个会话还没有消息。</div>';
-  for (const message of messages) appendMessage(message);
-  root.scrollTop = root.scrollHeight;
+  for (const message of messages) appendMessage(message, false);
+  scrollMessagesToBottom();
 }
 
-function appendMessage(message) {
+function appendMessage(message, autoScroll = true) {
   const root = el("messages");
   if (root.querySelector(`[data-seq="${message.seq}"]`)) return;
   root.querySelector(".empty")?.remove();
@@ -300,6 +307,7 @@ function appendMessage(message) {
   const route = meta ? `${meta.endpoint} · ${meta.model} · ${Math.round(meta.latency_ms)}ms · cfg v${meta.config_version}` : message.privacy_level;
   item.innerHTML = `<div class="bubble">${escapeHtml(message.content)}</div><div class="meta">${escapeHtml(route)}</div>`;
   root.appendChild(item);
+  if (autoScroll) scrollMessagesToBottom("smooth");
 }
 
 async function send(event) {
@@ -333,7 +341,6 @@ async function send(event) {
     const conversation = state.conversations.find((item) => item.id === state.activeId);
     if (conversation) conversation.last_seq += 2;
     renderConversations();
-    el("messages").scrollTop = el("messages").scrollHeight;
     setStatus("回复已保存");
   } catch (error) {
     setStatus(error.message, true);
