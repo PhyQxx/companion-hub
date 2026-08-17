@@ -14,6 +14,7 @@ from app.adapters import AdapterRegistry
 from app.adapters.builtin import create_builtin_registry
 from app.api import (
     create_admin_config_router,
+    create_admin_persona_router,
     create_auth_router,
     create_chat_router,
     create_chat_websocket_router,
@@ -24,6 +25,7 @@ from app.bus import DispatcherWorker, EventPublisher, LocalEventPublisher
 from app.chat import ChatService
 from app.config import ConfigStore, ConfigWatcher, DatabaseConfigStore
 from app.db import Database, create_database
+from app.persona import PersonaStore
 
 
 def create_app(
@@ -63,6 +65,7 @@ def create_app(
         dispatcher_enabled = os.getenv("ARIA_RUN_DISPATCHER", "false").lower() == "true"
     worker = None
     runtime_chat_service: ChatService | None = None
+    persona_store = PersonaStore(runtime_database) if runtime_database is not None else None
     if dispatcher_enabled and runtime_database is not None:
         publisher = event_publisher or LocalEventPublisher(runtime_database)
         worker = DispatcherWorker(runtime_database.sessions, publisher)
@@ -71,6 +74,8 @@ def create_app(
     async def lifespan(_: FastAPI) -> AsyncIterator[None]:
         if runtime_config is not None:
             await runtime_config.load()
+        if persona_store is not None:
+            await persona_store.load()
         if runtime_chat_service is not None:
             await runtime_chat_service.recover_incomplete_turns()
         if config_watcher is not None:
@@ -93,6 +98,7 @@ def create_app(
     app.state.adapter_registry = runtime_adapters
     app.state.config_store = runtime_config
     app.state.config_watcher = config_watcher
+    app.state.persona_store = persona_store
 
     admin_root = Path(__file__).parent / "admin"
     app.mount("/admin/assets", StaticFiles(directory=admin_root), name="admin-assets")
@@ -102,6 +108,10 @@ def create_app(
     @app.get("/admin/models", include_in_schema=False)
     async def model_admin() -> FileResponse:
         return FileResponse(admin_root / "models.html")
+
+    @app.get("/admin/personas", include_in_schema=False)
+    async def persona_admin() -> FileResponse:
+        return FileResponse(admin_root / "personas.html")
 
     @app.get("/chat", include_in_schema=False)
     async def chat_debug() -> FileResponse:
@@ -131,6 +141,12 @@ def create_app(
             result["configuration"] = config_status
             if runtime_config.last_error is not None:
                 result["status"] = "degraded"
+        if persona_store is not None:
+            result["persona"] = {
+                "version": persona_store.current.version,
+                "content_hash": persona_store.current.content_hash,
+                "name": persona_store.current.persona.name,
+            }
         return result
 
     @app.get("/api/v1/meta/protocol", tags=["system"])
@@ -138,7 +154,11 @@ def create_app(
         return {
             "protocol_version": 1,
             "supported_protocol_versions": [1],
-            "schemas": ["aria.input-envelope/1", "aria.output-intent/1"],
+            "schemas": [
+                "aria.input-envelope/1",
+                "aria.agent-reply/1",
+                "aria.output-intent/1",
+            ],
         }
 
     @app.get("/api/v1/meta/adapters", tags=["system"])
@@ -191,9 +211,20 @@ def create_app(
                 admin_token=runtime_admin_token,
             )
         )
+        if persona_store is not None:
+            app.include_router(
+                create_admin_persona_router(
+                    persona_store,
+                    admin_token=runtime_admin_token,
+                )
+            )
         if runtime_database is not None:
             auth_service = AuthService(runtime_database)
-            runtime_chat_service = ChatService(runtime_database, runtime_config)
+            runtime_chat_service = ChatService(
+                runtime_database,
+                runtime_config,
+                persona_store=persona_store,
+            )
             app.state.auth_service = auth_service
             app.state.chat_service = runtime_chat_service
             app.include_router(

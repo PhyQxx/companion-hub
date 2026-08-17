@@ -140,6 +140,7 @@ async def test_admin_api_requires_token_and_manages_drafts(
         )
         versions = await client.get("/api/v1/admin/config/versions", headers=headers)
         page = await client.get("/admin/models")
+        persona_page = await client.get("/admin/personas")
         chat_page = await client.get("/chat")
 
     assert unauthorized.status_code == 401
@@ -150,6 +151,8 @@ async def test_admin_api_requires_token_and_manages_drafts(
     assert [item["status"] for item in versions.json()] == ["published", "superseded"]
     assert page.status_code == 200
     assert "模型与路由" in page.text
+    assert persona_page.status_code == 200
+    assert "角色与表达" in persona_page.text
     assert chat_page.status_code == 200
     assert "文字聊天调试台" in chat_page.text
 

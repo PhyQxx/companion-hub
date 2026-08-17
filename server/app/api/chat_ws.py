@@ -158,6 +158,19 @@ class ChatWebSocketManager:
                 )
 
             turn = await self._service.run_stream(pending, on_delta)
+            reply_meta = (turn.assistant_message.decision_meta or {}).get("agent_reply")
+            if isinstance(reply_meta, dict):
+                await self.broadcast(
+                    connection.principal.user_id,
+                    frame.conversation_id,
+                    _event(
+                        conversation_id=frame.conversation_id,
+                        event_type="reply.control",
+                        seq=None,
+                        generation_id=pending.generation_id,
+                        payload={"agent_reply": reply_meta},
+                    ),
+                )
             await self.broadcast(
                 connection.principal.user_id,
                 frame.conversation_id,

@@ -152,6 +152,18 @@ async def test_streams_reply_and_keeps_provider_credentials_outside_bridge(
             event("reply.delta", payload={"delta": "你"}),
             event("reply.delta", payload={"delta": "好"}),
             event(
+                "reply.control",
+                payload={
+                    "agent_reply": {
+                        "text": "你好",
+                        "tts_text": "你好呀",
+                        "emotion": "happy",
+                        "expressions": ["smile"],
+                        "actions": [],
+                    }
+                },
+            ),
+            event(
                 "reply.committed",
                 seq=2,
                 generation_id=GENERATION_ID,
@@ -174,6 +186,13 @@ async def test_streams_reply_and_keeps_provider_credentials_outside_bridge(
     result = "".join([delta async for delta in client.stream_message("你好")])
 
     assert result == "你好"
+    assert client.last_agent_reply == {
+        "text": "你好",
+        "tts_text": "你好呀",
+        "emotion": "happy",
+        "expressions": ["smile"],
+        "actions": [],
+    }
     assert [frame["type"] for frame in socket.sent] == [
         "authenticate",
         "client_hello",

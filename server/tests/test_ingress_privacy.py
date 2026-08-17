@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import AsyncIterator
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
 
 import pytest
 from sqlalchemy import func, select
@@ -72,8 +72,14 @@ async def test_ephemeral_policy_upgrade_and_bounded_overflow(
     database: Database,
     ephemeral_signal: EphemeralSignal,
 ) -> None:
+    now = datetime.now(UTC)
     first = EphemeralSignal.model_validate(
-        {**ephemeral_signal.model_dump(mode="python"), "privacy_level": "L0"}
+        {
+            **ephemeral_signal.model_dump(mode="python"),
+            "occurred_at": now,
+            "expires_at": now + timedelta(minutes=2),
+            "privacy_level": "L0",
+        }
     )
     second = EphemeralSignal.model_validate(
         {

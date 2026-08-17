@@ -20,7 +20,10 @@ from app.ids import uuid7
 from app.llm import CompletionRequest, CompletionResult, LLMMessage, LLMRoute
 from app.llm.factory import build_router
 from app.llm.provider import EnvSecretProvider
+from app.persona import PersonaConfig, PersonaStore
 from app.schemas import PrivacyLevel
+
+from .reply import ControlStreamFilter, parse_agent_reply, structured_reply_instruction
 
 MAX_CONTEXT_MESSAGES = 20
 
@@ -75,6 +78,8 @@ class PendingTurn:
     request: CompletionRequest
     config: HubConfig
     config_version: int
+    persona: PersonaConfig
+    persona_version: int
 
 
 class TurnCancelled(RuntimeError):
@@ -88,9 +93,11 @@ class ChatService:
         config_store: ConfigStore | DatabaseConfigStore,
         *,
         router_builder: Callable[[HubConfig], CompletionBackend] | None = None,
+        persona_store: PersonaStore | None = None,
     ) -> None:
         self._database = database
         self._config_store = config_store
+        self._persona_store = persona_store
         secrets = EnvSecretProvider()
         self._router_builder = router_builder or (
             lambda config: build_router(config, secrets)
@@ -226,15 +233,15 @@ class ChatService:
 
         history = await self._context_messages(conversation_id)
         snapshot = self._config_store.current
+        persona_snapshot = self._persona_store.current if self._persona_store else None
+        persona = persona_snapshot.persona if persona_snapshot else PersonaConfig()
         request = CompletionRequest(
             trace_id=turn_id,
             messages=[
                 LLMMessage(
                     role="system",
-                    content=(
-                        "你是 Aria: 一个可靠、自然的个人陪伴助手。"
-                        "直接回答用户，不要声称拥有未提供的记忆或能力。"  # noqa: RUF001
-                    ),
+                    content=persona.render_system_prompt()
+                    + structured_reply_instruction(persona),
                 ),
                 *[
                     LLMMessage(role=message.role, content=message.content)
@@ -257,6 +264,8 @@ class ChatService:
             request=request,
             config=snapshot.config,
             config_version=snapshot.version,
+            persona=persona,
+            persona_version=persona_snapshot.version if persona_snapshot else 0,
         )
 
     async def run_stream(
@@ -266,6 +275,7 @@ class ChatService:
     ) -> ChatTurn:
         await self._transition(pending.turn_id, {"accepted"}, "thinking")
         emitted = False
+        stream_filter = ControlStreamFilter()
 
         async def guarded_delta(delta: str) -> None:
             nonlocal emitted
@@ -276,9 +286,15 @@ class ChatService:
                 raise TurnCancelled("generation_cancelled")
             await on_delta(delta)
 
+        async def filtered_delta(delta: str) -> None:
+            for visible in stream_filter.feed(delta):
+                await guarded_delta(visible)
+
         try:
             backend = self._router_builder(pending.config)
-            result = await backend.stream(pending.request, guarded_delta)
+            result = await backend.stream(pending.request, filtered_delta)
+            for visible in stream_filter.finish():
+                await guarded_delta(visible)
             return await self._commit_turn(pending, result)
         except BaseException:
             await self._fail_if_active(pending.turn_id)
@@ -350,9 +366,12 @@ class ChatService:
     async def _commit_turn(
         self, pending: PendingTurn, result: CompletionResult
     ) -> ChatTurn:
+        reply = parse_agent_reply(result.text, pending.persona)
         decision_meta: dict[str, object] = {
             "schema_version": 1,
             "config_version": pending.config_version,
+            "persona_version": pending.persona_version,
+            "agent_reply": reply.model_dump(mode="json"),
             "endpoint": result.endpoint,
             "provider": result.provider,
             "model": result.model,
@@ -387,7 +406,7 @@ class ChatService:
                 turn_id=pending.turn_id,
                 seq=conversation.last_seq,
                 role="assistant",
-                content=result.text,
+                content=reply.text,
                 privacy_level=str(pending.request.privacy_level),
                 generation_id=pending.generation_id,
                 decision_meta=decision_meta,

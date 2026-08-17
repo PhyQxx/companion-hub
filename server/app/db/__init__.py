@@ -12,6 +12,8 @@ from .models import (
     InteractionTurnRecord,
     MessageRecord,
     OutboxRecord,
+    PersonaPointerRecord,
+    PersonaVersionRecord,
 )
 from .session import Database, create_database
 
@@ -30,5 +32,7 @@ __all__ = [
     "InteractionTurnRecord",
     "MessageRecord",
     "OutboxRecord",
+    "PersonaPointerRecord",
+    "PersonaVersionRecord",
     "create_database",
 ]

@@ -81,6 +81,7 @@ class AriaBridgeClient:
         self._active_socket: WebSocketLike | None = None
         self._active_generation_id: str | None = None
         self._active_loop: asyncio.AbstractEventLoop | None = None
+        self.last_agent_reply: dict[str, Any] | None = None
 
     def select_history(self, conf_uid: str, history_uid: str) -> None:
         self._history_key = f"{conf_uid}:{history_uid}"
@@ -117,6 +118,7 @@ class AriaBridgeClient:
         if not text.strip():
             raise ValueError("message text cannot be empty")
         token = await self._access_token_value()
+        self.last_agent_reply = None
         conversation = await self._conversation(token)
         connector = self._websocket_connector(self.config.websocket_url)
         async with connector as socket:
@@ -153,6 +155,10 @@ class AriaBridgeClient:
                         if delta:
                             emitted = True
                             yield delta
+                    elif event_type == "reply.control":
+                        reply = _payload(event).get("agent_reply")
+                        if isinstance(reply, dict):
+                            self.last_agent_reply = reply
                     elif event_type == "reply.committed":
                         message = _payload(event).get("message")
                         if not emitted and isinstance(message, dict):

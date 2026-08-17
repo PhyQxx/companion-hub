@@ -9,6 +9,7 @@ from .adapter import (
 from .common import PrivacyLevel
 from .input import EphemeralSignal, InputEnvelope
 from .output import DeliveryPlan, DeliveryReceipt, OutputIntent
+from .reply import AgentAction, AgentReply
 
 SCHEMA_MODELS = (
     InputEnvelope,
@@ -19,6 +20,7 @@ SCHEMA_MODELS = (
     AdapterManifest,
     AdapterHealth,
     EndpointCapabilities,
+    AgentReply,
 )
 
 __all__ = [
@@ -28,6 +30,8 @@ __all__ = [
     "AdapterManifest",
     "AdapterPrivacy",
     "AdapterState",
+    "AgentAction",
+    "AgentReply",
     "DeliveryPlan",
     "DeliveryReceipt",
     "EndpointCapabilities",
