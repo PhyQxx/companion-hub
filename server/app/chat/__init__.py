@@ -1,3 +1,6 @@
+from app.schemas.reply import AgentAction, AgentReply
+
+from .reply import ControlStreamFilter, parse_agent_reply
 from .service import (
     ChatService,
     ChatTurn,
@@ -9,11 +12,15 @@ from .service import (
 )
 
 __all__ = [
+    "AgentAction",
+    "AgentReply",
     "ChatService",
     "ChatTurn",
     "CompletionBackend",
+    "ControlStreamFilter",
     "ConversationView",
     "MessageView",
     "PendingTurn",
     "TurnCancelled",
+    "parse_agent_reply",
 ]

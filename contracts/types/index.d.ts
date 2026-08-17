@@ -102,6 +102,156 @@ export type TransportBindings =
       string,
       string
     ];
+/**
+ * @maxItems 16
+ */
+export type Actions =
+  | []
+  | [AgentAction]
+  | [AgentAction, AgentAction]
+  | [AgentAction, AgentAction, AgentAction]
+  | [AgentAction, AgentAction, AgentAction, AgentAction]
+  | [AgentAction, AgentAction, AgentAction, AgentAction, AgentAction]
+  | [AgentAction, AgentAction, AgentAction, AgentAction, AgentAction, AgentAction]
+  | [AgentAction, AgentAction, AgentAction, AgentAction, AgentAction, AgentAction, AgentAction]
+  | [AgentAction, AgentAction, AgentAction, AgentAction, AgentAction, AgentAction, AgentAction, AgentAction]
+  | [
+      AgentAction,
+      AgentAction,
+      AgentAction,
+      AgentAction,
+      AgentAction,
+      AgentAction,
+      AgentAction,
+      AgentAction,
+      AgentAction
+    ]
+  | [
+      AgentAction,
+      AgentAction,
+      AgentAction,
+      AgentAction,
+      AgentAction,
+      AgentAction,
+      AgentAction,
+      AgentAction,
+      AgentAction,
+      AgentAction
+    ]
+  | [
+      AgentAction,
+      AgentAction,
+      AgentAction,
+      AgentAction,
+      AgentAction,
+      AgentAction,
+      AgentAction,
+      AgentAction,
+      AgentAction,
+      AgentAction,
+      AgentAction
+    ]
+  | [
+      AgentAction,
+      AgentAction,
+      AgentAction,
+      AgentAction,
+      AgentAction,
+      AgentAction,
+      AgentAction,
+      AgentAction,
+      AgentAction,
+      AgentAction,
+      AgentAction,
+      AgentAction
+    ]
+  | [
+      AgentAction,
+      AgentAction,
+      AgentAction,
+      AgentAction,
+      AgentAction,
+      AgentAction,
+      AgentAction,
+      AgentAction,
+      AgentAction,
+      AgentAction,
+      AgentAction,
+      AgentAction,
+      AgentAction
+    ]
+  | [
+      AgentAction,
+      AgentAction,
+      AgentAction,
+      AgentAction,
+      AgentAction,
+      AgentAction,
+      AgentAction,
+      AgentAction,
+      AgentAction,
+      AgentAction,
+      AgentAction,
+      AgentAction,
+      AgentAction,
+      AgentAction
+    ]
+  | [
+      AgentAction,
+      AgentAction,
+      AgentAction,
+      AgentAction,
+      AgentAction,
+      AgentAction,
+      AgentAction,
+      AgentAction,
+      AgentAction,
+      AgentAction,
+      AgentAction,
+      AgentAction,
+      AgentAction,
+      AgentAction,
+      AgentAction
+    ]
+  | [
+      AgentAction,
+      AgentAction,
+      AgentAction,
+      AgentAction,
+      AgentAction,
+      AgentAction,
+      AgentAction,
+      AgentAction,
+      AgentAction,
+      AgentAction,
+      AgentAction,
+      AgentAction,
+      AgentAction,
+      AgentAction,
+      AgentAction,
+      AgentAction
+    ];
+export type Type = "expression" | "animation" | "sound" | "picture";
+export type Value = string;
+export type Emotion = "neutral" | "happy" | "sad" | "angry" | "surprised" | "thinking" | "concerned";
+/**
+ * @maxItems 8
+ */
+export type Expressions =
+  | []
+  | [string]
+  | [string, string]
+  | [string, string, string]
+  | [string, string, string, string]
+  | [string, string, string, string, string]
+  | [string, string, string, string, string, string]
+  | [string, string, string, string, string, string, string]
+  | [string, string, string, string, string, string, string, string];
+export type ParseStatus = "structured" | "fallback";
+export type SchemaRef = "aria.agent-reply/1";
+export type SchemaVersion1 = 1;
+export type Text = string;
+export type TtsText = string;
 export type AdapterInstanceId = string;
 export type Attempt = number;
 export type DeadlineAt = string;
@@ -110,7 +260,7 @@ export type EndpointId = string;
 export type GenerationId = string | null;
 export type IdempotencyKey = string;
 export type IntentId = string;
-export type Emotion = string | null;
+export type Emotion1 = string | null;
 export type Gesture = string | null;
 export type Intensity = number | null;
 /**
@@ -123,32 +273,32 @@ export type SelectedContent = [
 ];
 export type Format = "plain" | "markdown";
 export type Language = string | null;
-export type Text = string;
-export type Type = "text";
-export type Language1 = string | null;
 export type Text1 = string;
-export type Type1 = "speech";
+export type Type1 = "text";
+export type Language1 = string | null;
+export type Text2 = string;
+export type Type2 = "speech";
 export type VoiceProfile = string | null;
 export type AssetId = string;
 export type ContentHash = string;
 export type MediaType = string;
 export type Codec = string | null;
 export type SampleRate = number | null;
-export type Type2 = "audio";
+export type Type3 = "audio";
 export type Height = number | null;
-export type Type3 = "image";
+export type Type4 = "image";
 export type Width = number | null;
 export type DurationMs = number | null;
-export type Type4 = "video";
+export type Type5 = "video";
 export type DisplayName = string;
-export type Type5 = "file";
+export type Type6 = "file";
 export type Body = string;
 export type Category = string;
 export type Title = string;
-export type Type6 = "notification";
+export type Type7 = "notification";
 export type Command = string;
 export type ToolExecutionId = string;
-export type Type7 = "device_command";
+export type Type8 = "device_command";
 export type AdapterInstanceId1 = string;
 export type Attempt1 = number;
 export type DeliveryId1 = string;
@@ -170,17 +320,17 @@ export type Channel = string;
 export type Content = TelemetryPart | AudioStreamPart | VideoStreamPart;
 export type Channel1 = string;
 export type Quality = number | null;
-export type Type8 = "telemetry";
+export type Type9 = "telemetry";
 export type Unit = string | null;
-export type Value = string | number | boolean | null;
+export type Value1 = string | number | boolean | null;
 export type Codec1 = string;
 export type SampleRate1 = number;
 export type StreamId = string;
-export type Type9 = "audio_stream";
+export type Type10 = "audio_stream";
 export type Codec2 = string;
 export type Height1 = number;
 export type StreamId1 = string;
-export type Type10 = "video_stream";
+export type Type11 = "video_stream";
 export type Width1 = number;
 export type ExpiresAt = string;
 export type OccurredAt1 = string;
@@ -199,11 +349,11 @@ export type Content1 = [
 ];
 export type Name = string;
 export type Target = string | null;
-export type Type11 = "interaction";
-export type Value1 = string | number | boolean | null;
+export type Type12 = "interaction";
+export type Value2 = string | number | boolean | null;
 export type Name1 = string;
-export type Type12 = "control";
-export type Type13 = "asset_ref";
+export type Type13 = "control";
+export type Type14 = "asset_ref";
 export type ConversationId = string | null;
 export type CorrelationId = string;
 export type EventId = string;
@@ -212,7 +362,7 @@ export type OccurredAt2 = string;
 export type Priority = "low" | "normal" | "high" | "critical";
 export type ProtoVersion = 1;
 export type ReceivedAt = string;
-export type SchemaRef = "aria.input-envelope/1";
+export type SchemaRef1 = "aria.input-envelope/1";
 export type TurnId = string | null;
 export type UserId = string;
 export type Mode = "user" | "admins" | "public";
@@ -295,7 +445,7 @@ export type IntentId2 = string;
 export type OutputKind = "reply" | "proactive" | "system" | "alert";
 export type PrivacyLevel1 = "L0" | "L1" | "L2" | "L3";
 export type ProtoVersion1 = 1;
-export type SchemaRef1 = "aria.output-intent/1";
+export type SchemaRef2 = "aria.output-intent/1";
 /**
  * @maxItems 32
  */
@@ -366,6 +516,7 @@ export type Priority2 = "low" | "normal" | "high" | "critical";
 export interface AriaContracts {
   AdapterHealth?: AdapterHealth;
   AdapterManifest?: AdapterManifest;
+  AgentReply?: AgentReply;
   DeliveryPlan?: DeliveryPlan;
   DeliveryReceipt?: DeliveryReceipt;
   EndpointCapabilities?: EndpointCapabilities;
@@ -452,6 +603,28 @@ export interface AdapterPrivacy {
 }
 /**
  * This interface was referenced by `AriaContracts`'s JSON-Schema
+ * via the `definition` "AgentReply".
+ */
+export interface AgentReply {
+  actions?: Actions;
+  emotion?: Emotion;
+  expressions?: Expressions;
+  parse_status?: ParseStatus;
+  schema_ref?: SchemaRef;
+  schema_version?: SchemaVersion1;
+  text: Text;
+  tts_text: TtsText;
+}
+/**
+ * This interface was referenced by `AriaContracts`'s JSON-Schema
+ * via the `definition` "AgentAction".
+ */
+export interface AgentAction {
+  type: Type;
+  value: Value;
+}
+/**
+ * This interface was referenced by `AriaContracts`'s JSON-Schema
  * via the `definition` "DeliveryPlan".
  */
 export interface DeliveryPlan {
@@ -472,7 +645,7 @@ export interface DeliveryPlan {
  * via the `definition` "Presentation".
  */
 export interface Presentation {
-  emotion?: Emotion;
+  emotion?: Emotion1;
   gesture?: Gesture;
   intensity?: Intensity;
 }
@@ -483,8 +656,8 @@ export interface Presentation {
 export interface TextPart {
   format?: Format;
   language?: Language;
-  text: Text;
-  type?: Type;
+  text: Text1;
+  type?: Type1;
 }
 /**
  * This interface was referenced by `AriaContracts`'s JSON-Schema
@@ -492,8 +665,8 @@ export interface TextPart {
  */
 export interface SpeechPart {
   language?: Language1;
-  text: Text1;
-  type?: Type1;
+  text: Text2;
+  type?: Type2;
   voice_profile?: VoiceProfile;
 }
 /**
@@ -504,7 +677,7 @@ export interface AudioPart {
   asset_ref: AssetPointer;
   codec?: Codec;
   sample_rate?: SampleRate;
-  type?: Type2;
+  type?: Type3;
 }
 /**
  * This interface was referenced by `AriaContracts`'s JSON-Schema
@@ -522,7 +695,7 @@ export interface AssetPointer {
 export interface ImagePart {
   asset_ref: AssetPointer;
   height?: Height;
-  type?: Type3;
+  type?: Type4;
   width?: Width;
 }
 /**
@@ -532,7 +705,7 @@ export interface ImagePart {
 export interface VideoPart {
   asset_ref: AssetPointer;
   duration_ms?: DurationMs;
-  type?: Type4;
+  type?: Type5;
 }
 /**
  * This interface was referenced by `AriaContracts`'s JSON-Schema
@@ -541,7 +714,7 @@ export interface VideoPart {
 export interface FilePart {
   asset_ref: AssetPointer;
   display_name: DisplayName;
-  type?: Type5;
+  type?: Type6;
 }
 /**
  * This interface was referenced by `AriaContracts`'s JSON-Schema
@@ -551,7 +724,7 @@ export interface NotificationPart {
   body: Body;
   category: Category;
   title: Title;
-  type?: Type6;
+  type?: Type7;
 }
 /**
  * This interface was referenced by `AriaContracts`'s JSON-Schema
@@ -561,7 +734,7 @@ export interface DeviceCommandPart {
   args_redacted?: ArgsRedacted;
   command: Command;
   tool_execution_id: ToolExecutionId;
-  type?: Type7;
+  type?: Type8;
 }
 export interface ArgsRedacted {
   [k: string]: string | number | boolean | (string | number | boolean | null)[] | null;
@@ -611,9 +784,9 @@ export interface EphemeralSignal {
 export interface TelemetryPart {
   channel: Channel1;
   quality?: Quality;
-  type?: Type8;
+  type?: Type9;
   unit?: Unit;
-  value: Value;
+  value: Value1;
 }
 /**
  * This interface was referenced by `AriaContracts`'s JSON-Schema
@@ -623,7 +796,7 @@ export interface AudioStreamPart {
   codec: Codec1;
   sample_rate: SampleRate1;
   stream_id: StreamId;
-  type?: Type9;
+  type?: Type10;
 }
 /**
  * This interface was referenced by `AriaContracts`'s JSON-Schema
@@ -633,7 +806,7 @@ export interface VideoStreamPart {
   codec: Codec2;
   height: Height1;
   stream_id: StreamId1;
-  type?: Type10;
+  type?: Type11;
   width: Width1;
 }
 /**
@@ -662,7 +835,7 @@ export interface InputEnvelope {
   privacy_level: PrivacyLevel;
   proto_version?: ProtoVersion;
   received_at: ReceivedAt;
-  schema_ref?: SchemaRef;
+  schema_ref?: SchemaRef1;
   source: SourceRef;
   turn_id?: TurnId;
   user_id: UserId;
@@ -674,8 +847,8 @@ export interface InputEnvelope {
 export interface InteractionPart {
   name: Name;
   target?: Target;
-  type?: Type11;
-  value?: Value1;
+  type?: Type12;
+  value?: Value2;
 }
 /**
  * This interface was referenced by `AriaContracts`'s JSON-Schema
@@ -684,7 +857,7 @@ export interface InteractionPart {
 export interface ControlPart {
   args?: Args;
   name: Name1;
-  type?: Type12;
+  type?: Type13;
 }
 export interface Args {
   [k: string]: string | number | boolean | (string | number | boolean | null)[] | null;
@@ -695,7 +868,7 @@ export interface Args {
  */
 export interface AssetRefPart {
   asset_ref: AssetPointer;
-  type?: Type13;
+  type?: Type14;
 }
 export interface Extensions {
   [k: string]: {
@@ -720,7 +893,7 @@ export interface OutputIntent {
   presentation?: Presentation;
   privacy_level?: PrivacyLevel1;
   proto_version?: ProtoVersion1;
-  schema_ref?: SchemaRef1;
+  schema_ref?: SchemaRef2;
   target_selector?: TargetSelector;
   turn_id?: TurnId1;
   user_id: UserId1;

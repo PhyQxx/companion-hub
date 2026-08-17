@@ -42,8 +42,13 @@ uv run run_server.py
 | `BatchInput.texts` | `message.send.text` |
 | history UID | PostgreSQL conversation ID（本地仅保存 ID 映射） |
 | Agent token stream | `reply.delta` |
+| 字幕、TTS 与 Live2D 动作 | `reply.control.agent_reply` |
 | interrupt / task cancel | `turn.cancel(generation_id)` |
 | TTS / Live2D | 保持在 Open-LLM-VTuber 输出管线 |
+
+`structured_reply: true` 默认启用。桥接端会等待最终控制事件，再生成 Open-LLM-VTuber
+原生 `SentenceOutput`，因此字幕、朗读文本、表情、图片和音效可以分别控制。若某个场景更重视
+最低首字延迟，可设为 `false`，继续使用旧的 token 流和 Open-LLM-VTuber 分句管线。
 
 补丁中的 `manages_history` 检查会关闭 Open-LLM-VTuber 对该 Agent 的消息正文 JSON 副本，
 避免形成第二份聊天记录；会话正文仍以 Aria PostgreSQL 为准。

@@ -220,6 +220,109 @@
       "title": "AdapterState",
       "type": "string"
     },
+    "AgentAction": {
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "enum": [
+            "expression",
+            "animation",
+            "sound",
+            "picture"
+          ],
+          "title": "Type",
+          "type": "string"
+        },
+        "value": {
+          "maxLength": 160,
+          "minLength": 1,
+          "title": "Value",
+          "type": "string"
+        }
+      },
+      "required": [
+        "type",
+        "value"
+      ],
+      "title": "AgentAction",
+      "type": "object"
+    },
+    "AgentReply": {
+      "additionalProperties": false,
+      "properties": {
+        "actions": {
+          "items": {
+            "$ref": "#/$defs/AgentAction"
+          },
+          "maxItems": 16,
+          "title": "Actions",
+          "type": "array"
+        },
+        "emotion": {
+          "default": "neutral",
+          "enum": [
+            "neutral",
+            "happy",
+            "sad",
+            "angry",
+            "surprised",
+            "thinking",
+            "concerned"
+          ],
+          "title": "Emotion",
+          "type": "string"
+        },
+        "expressions": {
+          "items": {
+            "maxLength": 80,
+            "minLength": 1,
+            "type": "string"
+          },
+          "maxItems": 8,
+          "title": "Expressions",
+          "type": "array"
+        },
+        "parse_status": {
+          "default": "structured",
+          "enum": [
+            "structured",
+            "fallback"
+          ],
+          "title": "Parse Status",
+          "type": "string"
+        },
+        "schema_ref": {
+          "const": "aria.agent-reply/1",
+          "default": "aria.agent-reply/1",
+          "title": "Schema Ref",
+          "type": "string"
+        },
+        "schema_version": {
+          "const": 1,
+          "default": 1,
+          "title": "Schema Version",
+          "type": "integer"
+        },
+        "text": {
+          "maxLength": 20000,
+          "minLength": 1,
+          "title": "Text",
+          "type": "string"
+        },
+        "tts_text": {
+          "maxLength": 20000,
+          "minLength": 1,
+          "title": "Tts Text",
+          "type": "string"
+        }
+      },
+      "required": [
+        "text",
+        "tts_text"
+      ],
+      "title": "AgentReply",
+      "type": "object"
+    },
     "AssetPointer": {
       "additionalProperties": false,
       "properties": {
@@ -1821,6 +1924,9 @@
     },
     "AdapterManifest": {
       "$ref": "#/$defs/AdapterManifest"
+    },
+    "AgentReply": {
+      "$ref": "#/$defs/AgentReply"
     },
     "DeliveryPlan": {
       "$ref": "#/$defs/DeliveryPlan"

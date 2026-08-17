@@ -128,6 +128,17 @@ async def test_chat_persists_turn_and_uses_recent_context(
     assert first.assistant_message.decision_meta == {
         "schema_version": 1,
         "config_version": 1,
+        "persona_version": 0,
+        "agent_reply": {
+            "schema_version": 1,
+            "schema_ref": "aria.agent-reply/1",
+            "text": "reply from dialogue-v1",
+            "tts_text": "reply from dialogue-v1",
+            "emotion": "neutral",
+            "expressions": [],
+            "actions": [],
+            "parse_status": "fallback",
+        },
         "endpoint": "cloud",
         "provider": "openai_compatible",
         "model": "dialogue-v1",

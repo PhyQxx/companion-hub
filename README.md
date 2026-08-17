@@ -26,6 +26,7 @@
 | [docs/17-M1文字聊天闭环.md](./docs/17-M1文字聊天闭环.md) | 会话与消息持久化、聊天 API、动态模型路由、隐私约束、调试页与当前边界 |
 | [docs/18-本地聊天身份边界.md](./docs/18-本地聊天身份边界.md) | 首次设置、密码哈希、短期聊天会话、资源归属、撤销、限流和后续身份演进 |
 | [docs/19-WebSocket流式回合.md](./docs/19-WebSocket流式回合.md) | 真实模型流、回合状态、取消隔离、多端广播、消息游标补拉和协议边界 |
+| [docs/20-结构化回复与Persona.md](./docs/20-结构化回复与Persona.md) | AgentReply 控制协议、Persona 数据库版本、管理后台与 Open-LLM-VTuber 映射 |
 
 ## 一图速览
 
@@ -60,6 +61,7 @@
 - [x] M1 文字闭环第一阶段 —— 会话/消息落库、最近 20 条上下文、动态读取已发布模型配置、L2 本地强制路由、L3 持久聊天阻断和调试页
 - [x] 本地聊天身份第一阶段 —— 管理员授权首次设置、scrypt 密码哈希、8 小时随机会话、退出撤销、登录限流及会话归属隔离
 - [x] M1 WebSocket 回合第一阶段 —— 首帧认证、真实供应商 delta、generation 取消、迟到提交阻断、多连接广播和已提交消息补拉
+- [x] P1 结构化回复与 Persona —— 字幕/TTS/情绪/动作协议、数据库草稿发布回滚、管理后台和 Open-LLM-VTuber 原生输出映射
 
 ## 本地开发
 
@@ -82,6 +84,7 @@ uv run uvicorn app.main:app --app-dir server --reload
 - 已登记 Adapter：`GET /api/v1/meta/adapters`
 - 已发布模型配置（不返回密钥引用）：`GET /api/v1/meta/config`
 - 模型配置后台：`GET /admin/models`
+- Persona 管理后台：`GET /admin/personas`
 - 文字聊天调试页：`GET /chat`
 - 聊天身份 API：`/api/v1/auth/status|setup|login|me|logout`
 - 文字聊天 API：`/api/v1/chat/conversations*`（仅接受独立聊天会话 Token）
@@ -91,7 +94,7 @@ uv run uvicorn app.main:app --app-dir server --reload
 
 `ARIA_RUN_DISPATCHER` 默认关闭。只有当应用已为所有会产生的 topic 注册命名消费者后才应开启；开启后 `/healthz` 会增加 `dispatcher` 运行状态。Adapter 输入必须经过 `GuardedInputSink`，设备声明的隐私等级只是下限，服务端策略可以上调，L3 数据不会进入 event/outbox 数据库。
 
-连接数据库时，首次启动从 `config/hub.example.yaml` 引导版本 1，之后模型配置、草稿、发布指针和回滚历史都保存在数据库。后台地址为 `/admin/models`，管理 API 必须配置 `ARIA_ADMIN_TOKEN` 才会启用；未连接数据库时仍保留 YAML 文件模式。密钥只允许通过 `env:变量名` 引用，不保存明文。手工验证商汤连接：
+连接数据库时，首次启动从 `config/hub.example.yaml` 引导模型配置版本 1，并自动建立默认 Aria Persona；之后模型与 Persona 的草稿、发布指针和回滚历史都保存在数据库。后台地址为 `/admin/models` 和 `/admin/personas`，管理 API 必须配置 `ARIA_ADMIN_TOKEN` 才会启用；未连接数据库时仍保留 YAML 文件模式。密钥只允许通过 `env:变量名` 引用，不保存明文。手工验证商汤连接：
 
 ```bash
 set -a
@@ -102,7 +105,7 @@ make llm-check
 
 不要把 `.env.local` 提交到仓库。若要启用预留的 GLM-5.3 运行时配置，必须使用独立的普通 API 授权密钥；GLM Coding Plan Pro 密钥只用于其官方支持的编码工具。
 
-源码启动后打开 `http://127.0.0.1:8000/chat`。首次使用时通过 `ARIA_ADMIN_TOKEN` 授权创建聊天密码；之后管理 Token 不能读取或发送聊天内容，只能使用 8 小时有效、可撤销的独立聊天会话。页面优先使用 WebSocket 展示真实模型 delta 并支持取消，连接不可用时退回同步 REST。L0/L1 可使用数据库当前发布的云模型；L2 强制走 `private` 本地路由，本地模型不可用时返回明确失败，不会降级到云端。refresh 轮换/设备配对、结构化 `AgentReply` 和记忆检索仍属于后续工作。
+源码启动后打开 `http://127.0.0.1:8000/chat`。首次使用时通过 `ARIA_ADMIN_TOKEN` 授权创建聊天密码；之后管理 Token 不能读取或发送聊天内容，只能使用 8 小时有效、可撤销的独立聊天会话。页面优先使用 WebSocket 展示真实模型 delta 并支持取消，连接不可用时退回同步 REST。L0/L1 可使用数据库当前发布的云模型；L2 强制走 `private` 本地路由，本地模型不可用时返回明确失败，不会降级到云端。AgentReply 控制块会从可见流中剥离并作为 `reply.control` 单独广播；解析失败自动降级为普通文本。refresh 轮换、设备配对和记忆检索仍属于后续工作。
 
 ## 容器启动
 

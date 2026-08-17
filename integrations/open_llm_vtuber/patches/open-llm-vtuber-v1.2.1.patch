@@ -10,7 +10,7 @@ index 4892a23..34cf94d 100644
  
  from ..mcpp.tool_manager import ToolManager
  from ..mcpp.tool_executor import ToolExecutor
-@@ -128,5 +129,23 @@ class AgentFactory:
+@@ -128,5 +129,24 @@ class AgentFactory:
                  port=settings.get("port"),
              )
  
@@ -30,6 +30,7 @@ index 4892a23..34cf94d 100644
 +                ),
 +                faster_first_response=settings.get("faster_first_response", True),
 +                segment_method=settings.get("segment_method", "pysbd"),
++                structured_reply=settings.get("structured_reply", True),
 +            )
 +
          else:
@@ -67,7 +68,7 @@ diff --git a/src/open_llm_vtuber/config_manager/agent.py b/src/open_llm_vtuber/c
 index b257d60..7810e93 100644
 --- a/src/open_llm_vtuber/config_manager/agent.py
 +++ b/src/open_llm_vtuber/config_manager/agent.py
-@@ -172,6 +172,22 @@ class LettaConfig(I18nMixin, BaseModel):
+@@ -172,6 +172,23 @@ class LettaConfig(I18nMixin, BaseModel):
      }
  
  
@@ -85,6 +86,7 @@ index b257d60..7810e93 100644
 +    )
 +    faster_first_response: Optional[bool] = Field(True, alias="faster_first_response")
 +    segment_method: Literal["regex", "pysbd"] = Field("pysbd", alias="segment_method")
++    structured_reply: Optional[bool] = Field(True, alias="structured_reply")
 +
 +
  class AgentSettings(I18nMixin, BaseModel):

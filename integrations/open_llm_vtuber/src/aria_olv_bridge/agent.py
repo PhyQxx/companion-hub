@@ -7,6 +7,7 @@ try:
     # Open-LLM-VTuber's documented source launch imports the package through `src`.
     from src.open_llm_vtuber.agent.agents.agent_interface import AgentInterface
     from src.open_llm_vtuber.agent.input_types import BatchInput, TextSource
+    from src.open_llm_vtuber.agent.output_types import Actions, DisplayText, SentenceOutput
     from src.open_llm_vtuber.agent.transformers import (
         actions_extractor,
         display_processor,
@@ -17,6 +18,7 @@ except ModuleNotFoundError:
     # Keep compatibility with environments that install open_llm_vtuber as a package.
     from open_llm_vtuber.agent.agents.agent_interface import AgentInterface
     from open_llm_vtuber.agent.input_types import BatchInput, TextSource
+    from open_llm_vtuber.agent.output_types import Actions, DisplayText, SentenceOutput
     from open_llm_vtuber.agent.transformers import (
         actions_extractor,
         display_processor,
@@ -44,6 +46,7 @@ class AriaAgent(AgentInterface):
         mapping_path: str = ".aria/open_llm_vtuber_conversations.json",
         faster_first_response: bool = True,
         segment_method: str = "pysbd",
+        structured_reply: bool = True,
     ) -> None:
         super().__init__()
         self._client = AriaBridgeClient(
@@ -55,17 +58,20 @@ class AriaAgent(AgentInterface):
                 mapping_path=Path(mapping_path),
             )
         )
-        self.chat = tts_filter(tts_preprocessor_config)(
-            display_processor()(
-                actions_extractor(live2d_model)(
-                    sentence_divider(
-                        faster_first_response=faster_first_response,
-                        segment_method=segment_method,
-                        valid_tags=["think"],
-                    )(self.chat)
+        self._live2d_model = live2d_model
+        self._structured_reply = structured_reply
+        if not structured_reply:
+            self.chat = tts_filter(tts_preprocessor_config)(
+                display_processor()(
+                    actions_extractor(live2d_model)(
+                        sentence_divider(
+                            faster_first_response=faster_first_response,
+                            segment_method=segment_method,
+                            valid_tags=["think"],
+                        )(self.chat)
+                    )
                 )
             )
-        )
 
     def set_memory_from_history(self, conf_uid: str, history_uid: str) -> None:
         self._client.select_history(conf_uid, history_uid)
@@ -77,10 +83,49 @@ class AriaAgent(AgentInterface):
     async def close(self) -> None:
         await self._client.close()
 
-    async def chat(self, input_data: BatchInput) -> AsyncIterator[str]:
+    async def chat(self, input_data: BatchInput) -> AsyncIterator[str | SentenceOutput]:
         prompt = self._to_text_prompt(input_data)
+        if not self._structured_reply:
+            async for delta in self._client.stream_message(prompt):
+                yield delta
+            return
+
+        chunks: list[str] = []
         async for delta in self._client.stream_message(prompt):
-            yield delta
+            chunks.append(delta)
+        text = "".join(chunks)
+        reply = self._client.last_agent_reply or {}
+        display_text = str(reply.get("text") or text)
+        tts_text = str(reply.get("tts_text") or display_text)
+        expressions = self._expression_values(reply.get("expressions"))
+        pictures: list[str] = []
+        sounds: list[str] = []
+        actions = reply.get("actions", [])
+        if isinstance(actions, list):
+            for action in actions:
+                if not isinstance(action, dict) or not isinstance(action.get("value"), str):
+                    continue
+                if action.get("type") == "picture":
+                    pictures.append(action["value"])
+                elif action.get("type") == "sound":
+                    sounds.append(action["value"])
+                elif action.get("type") == "expression":
+                    expressions.extend(self._expression_values([action["value"]]))
+        yield SentenceOutput(
+            display_text=DisplayText(text=display_text),
+            tts_text=tts_text,
+            actions=Actions(
+                expressions=expressions or None,
+                pictures=pictures or None,
+                sounds=sounds or None,
+            ),
+        )
+
+    def _expression_values(self, values) -> list[str | int]:
+        if not isinstance(values, list):
+            return []
+        emotion_map = getattr(self._live2d_model, "emo_map", {}) or {}
+        return [emotion_map.get(value, value) for value in values if isinstance(value, str)]
 
     @staticmethod
     def _to_text_prompt(input_data: BatchInput) -> str:

@@ -10,3 +10,4 @@ agent_config:
       mapping_path: .aria/open_llm_vtuber_conversations.json
       faster_first_response: true
       segment_method: pysbd
+      structured_reply: true
