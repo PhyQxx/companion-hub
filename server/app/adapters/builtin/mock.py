@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from typing import Literal
 from uuid import UUID
 
 from app.schemas import (
+    AdapterCapabilities,
     AdapterHealth,
     AdapterManifest,
+    AdapterPrivacy,
     AdapterState,
     DeliveryPlan,
     DeliveryReceipt,
@@ -13,6 +16,7 @@ from app.schemas import (
     EphemeralSignal,
     InputEnvelope,
 )
+from app.schemas.adapter import DeliveryCapabilities
 from app.schemas.output import DeliveryStatus
 
 UTC = UTC
@@ -39,8 +43,8 @@ class MockInputAdapter:
         ephemeral: list[EphemeralSignal] | None = None,
     ) -> None:
         self.manifest = manifest
-        self._durable = durable or []
-        self._ephemeral = ephemeral or []
+        self._durable = durable if durable is not None else []
+        self._ephemeral = ephemeral if ephemeral is not None else []
         self._state = AdapterState.INSTALLED
         self._paused = False
 
@@ -151,3 +155,101 @@ class MockOutputAdapter:
         self._receipts[matching.idempotency_key] = receipt
         return receipt
 
+
+def _manifest(
+    adapter_id: str,
+    direction: str,
+    *,
+    input_parts: list[str] | None = None,
+    output_parts: list[str] | None = None,
+    streaming: list[str] | None = None,
+    max_input_level: str = "L2",
+    backpressure: Literal["block", "drop_oldest", "sample", "aggregate"] = "block",
+    queue_limit: int = 100,
+) -> AdapterManifest:
+    return AdapterManifest(
+        adapter_id=adapter_id,
+        adapter_version="0.1.0",
+        min_hub_version="0.1.0",
+        max_tested_hub_version="0.1.x",
+        direction=[direction],
+        transport_bindings=["local"],
+        config_schema_ref=f"aria.adapter.{adapter_id.removeprefix('builtin.')}-config/1",
+        capabilities=AdapterCapabilities(
+            input_parts=input_parts or [],
+            output_parts=output_parts or [],
+            streaming=streaming or [],
+            delivery=DeliveryCapabilities(
+                supports_ack=direction == "output",
+                supports_cancel=direction == "output",
+            ),
+        ),
+        privacy=AdapterPrivacy(
+            runs_local=True,
+            max_input_level=max_input_level,
+            max_output_level="L2",
+        ),
+        input_policy={"backpressure": backpressure, "queue_limit": queue_limit},
+        resource_profile="test-small",
+    )
+
+
+class MockTextInputAdapter(MockInputAdapter):
+    def __init__(self, durable: list[InputEnvelope] | None = None) -> None:
+        super().__init__(
+            _manifest("builtin.mock_text_input", "input", input_parts=["text"]),
+            durable=durable,
+        )
+
+
+class MockEphemeralSensorAdapter(MockInputAdapter):
+    def __init__(self, ephemeral: list[EphemeralSignal] | None = None) -> None:
+        super().__init__(
+            _manifest(
+                "builtin.mock_ephemeral_sensor",
+                "input",
+                input_parts=["telemetry"],
+                max_input_level="L3",
+                backpressure="drop_oldest",
+                queue_limit=32,
+            ),
+            ephemeral=ephemeral,
+        )
+
+
+class MockTextOutputAdapter(MockOutputAdapter):
+    def __init__(self) -> None:
+        capabilities = EndpointCapabilities(
+            endpoint_id="mock-text",
+            capabilities=AdapterCapabilities(
+                output_parts=["text"],
+                delivery=DeliveryCapabilities(supports_ack=True, supports_cancel=True),
+            ),
+            observed_at=datetime.now(UTC),
+        )
+        super().__init__(
+            _manifest("builtin.mock_text_output", "output", output_parts=["text"]),
+            capabilities,
+        )
+
+
+class MockStreamingOutputAdapter(MockOutputAdapter):
+    def __init__(self) -> None:
+        capabilities = EndpointCapabilities(
+            endpoint_id="mock-streaming",
+            capabilities=AdapterCapabilities(
+                output_parts=["text", "speech"],
+                streaming=["text"],
+                delivery=DeliveryCapabilities(supports_ack=True, supports_cancel=True),
+            ),
+            observed_at=datetime.now(UTC),
+        )
+        super().__init__(
+            _manifest(
+                "builtin.mock_streaming_output",
+                "output",
+                output_parts=["text", "speech"],
+                streaming=["text"],
+            ),
+            capabilities,
+        )

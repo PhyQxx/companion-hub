@@ -5,13 +5,17 @@ description = "Local-first companion hub with extensible input and output adapte
 readme = "README.md"
 requires-python = ">=3.11,<3.13"
 dependencies = [
+  "alembic>=1.16,<2",
+  "asyncpg>=0.30,<1",
   "fastapi>=0.116,<1",
   "pydantic>=2.11,<3",
+  "sqlalchemy[asyncio]>=2.0.41,<3",
   "uvicorn[standard]>=0.35,<1",
 ]
 
 [dependency-groups]
 dev = [
+  "aiosqlite>=0.21,<1",
   "httpx>=0.28,<1",
   "mypy>=1.17,<2",
   "pytest>=8.4,<9",

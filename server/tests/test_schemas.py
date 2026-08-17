@@ -72,4 +72,3 @@ def test_extensions_must_be_namespaced(input_event: InputEnvelope) -> None:
     payload["extensions"] = {"camera": {"model": "test"}}
     with pytest.raises(ValidationError, match="namespaced"):
         InputEnvelope.model_validate(payload)
-

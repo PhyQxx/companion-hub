@@ -130,4 +130,3 @@ def delivery_plan() -> DeliveryPlan:
         deadline_at=NOW + timedelta(seconds=8),
         idempotency_key="intent:endpoint:hash",
     )
-
