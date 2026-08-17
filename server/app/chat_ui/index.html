@@ -1,0 +1,64 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Aria · 文字聊天调试台</title>
+    <link rel="stylesheet" href="/chat/assets/styles.css" />
+  </head>
+  <body>
+    <main class="shell">
+      <header>
+        <div>
+          <p class="eyebrow">ARIA COMPANION HUB</p>
+          <h1>文字聊天调试台</h1>
+          <p class="subtitle">验证会话持久化、隐私路由和数据库模型配置是否即时生效。</p>
+        </div>
+        <a href="/admin/models">模型配置</a>
+      </header>
+
+      <section class="auth card">
+        <label>
+          管理 Token
+          <input id="token" type="password" autocomplete="off" placeholder="ARIA_ADMIN_TOKEN" />
+        </label>
+        <button id="connect">连接</button>
+        <span id="status" class="muted">未连接</span>
+      </section>
+
+      <section class="workspace">
+        <aside class="card">
+          <div class="section-head">
+            <h2>会话</h2>
+            <button id="new-conversation" class="small">新建</button>
+          </div>
+          <div id="conversations" class="conversation-list"></div>
+        </aside>
+
+        <section class="card chat-card">
+          <div id="messages" class="messages">
+            <div class="empty">连接后新建或选择一个会话。</div>
+          </div>
+          <form id="composer">
+            <div class="privacy-row">
+              <label>
+                隐私级别
+                <select id="privacy">
+                  <option value="L0">L0 · 可公开</option>
+                  <option value="L1" selected>L1 · 普通私密</option>
+                  <option value="L2">L2 · 仅本地模型</option>
+                </select>
+              </label>
+              <span id="privacy-note" class="muted">L1 可按配置使用云模型。</span>
+            </div>
+            <div class="compose-row">
+              <textarea id="text" rows="3" maxlength="20000" placeholder="输入一条测试消息…"></textarea>
+              <button id="send" type="submit">发送</button>
+            </div>
+          </form>
+        </section>
+      </section>
+    </main>
+    <script src="/chat/assets/app.js" defer></script>
+  </body>
+</html>
