@@ -24,6 +24,7 @@
 | [docs/15-M0输入输出骨架验收报告.md](./docs/15-M0输入输出骨架验收报告.md) | I/O 扩展、隐私隔离、可靠事件、故障恢复和容器鉴权的实现验收矩阵 |
 | [docs/16-M0模型路由与配置中心.md](./docs/16-M0模型路由与配置中心.md) | 商汤 / GLM / 本地模型分工、隐私路由、配置热更新、回滚、观测与连通性验证 |
 | [docs/17-M1文字聊天闭环.md](./docs/17-M1文字聊天闭环.md) | 会话与消息持久化、聊天 API、动态模型路由、隐私约束、调试页与当前边界 |
+| [docs/18-本地聊天身份边界.md](./docs/18-本地聊天身份边界.md) | 首次设置、密码哈希、短期聊天会话、资源归属、撤销、限流和后续身份演进 |
 
 ## 一图速览
 
@@ -56,6 +57,7 @@
 - [x] M0.5 模型适配与双路由 —— OpenAI-compatible 适配、对话/后台/私密路由、重试降级和 L2/L3 出站闸门
 - [x] M0.6 配置与最小观测 —— 数据库版本、事务发布/回滚、可视化后台、安全元数据、结构化日志和耗时 span
 - [x] M1 文字闭环第一阶段 —— 会话/消息落库、最近 20 条上下文、动态读取已发布模型配置、L2 本地强制路由、L3 持久聊天阻断和调试页
+- [x] 本地聊天身份第一阶段 —— 管理员授权首次设置、scrypt 密码哈希、8 小时随机会话、退出撤销、登录限流及会话归属隔离
 
 ## 本地开发
 
@@ -79,7 +81,8 @@ uv run uvicorn app.main:app --app-dir server --reload
 - 已发布模型配置（不返回密钥引用）：`GET /api/v1/meta/config`
 - 模型配置后台：`GET /admin/models`
 - 文字聊天调试页：`GET /chat`
-- 文字聊天 API：`/api/v1/chat/conversations*`（当前开发阶段复用 `ARIA_ADMIN_TOKEN`）
+- 聊天身份 API：`/api/v1/auth/status|setup|login|me|logout`
+- 文字聊天 API：`/api/v1/chat/conversations*`（仅接受独立聊天会话 Token）
 - JSON Schema：`contracts/jsonschema/`
 - TypeScript 类型：`contracts/types/index.d.ts`
 
@@ -96,7 +99,7 @@ make llm-check
 
 不要把 `.env.local` 提交到仓库。若要启用预留的 GLM-5.3 运行时配置，必须使用独立的普通 API 授权密钥；GLM Coding Plan Pro 密钥只用于其官方支持的编码工具。
 
-源码启动后打开 `http://127.0.0.1:8000/chat`，输入 `ARIA_ADMIN_TOKEN` 即可验证真实对话。L0/L1 可使用数据库当前发布的云模型；L2 强制走 `private` 本地路由，本地模型不可用时返回明确失败，不会降级到云端。当前页面采用同步 REST，流式 WebSocket、独立用户身份、结构化 `AgentReply` 和记忆检索仍属于后续 M1 工作。
+源码启动后打开 `http://127.0.0.1:8000/chat`。首次使用时通过 `ARIA_ADMIN_TOKEN` 授权创建聊天密码；之后管理 Token 不能读取或发送聊天内容，只能使用 8 小时有效、可撤销的独立聊天会话。L0/L1 可使用数据库当前发布的云模型；L2 强制走 `private` 本地路由，本地模型不可用时返回明确失败，不会降级到云端。当前页面采用同步 REST，流式 WebSocket、refresh 轮换/设备配对、结构化 `AgentReply` 和记忆检索仍属于后续工作。
 
 ## 容器启动
 

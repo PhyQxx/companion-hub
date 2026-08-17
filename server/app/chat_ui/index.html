@@ -19,12 +19,28 @@
 
       <section class="auth card">
         <label>
-          管理 Token
-          <input id="token" type="password" autocomplete="off" placeholder="ARIA_ADMIN_TOKEN" />
+          聊天密码
+          <input id="password" type="password" autocomplete="current-password" placeholder="至少 12 位（首次设置）" />
         </label>
-        <button id="connect">连接</button>
+        <button id="login">登录</button>
+        <button id="logout" class="secondary">退出</button>
         <span id="status" class="muted">未连接</span>
       </section>
+
+      <details id="setup-panel" class="card setup-panel">
+        <summary>首次设置聊天身份</summary>
+        <div class="setup-fields">
+          <label>
+            显示名称
+            <input id="display-name" value="主人" maxlength="160" />
+          </label>
+          <label>
+            管理 Token（仅首次设置）
+            <input id="admin-token" type="password" autocomplete="off" placeholder="ARIA_ADMIN_TOKEN" />
+          </label>
+          <button id="setup">创建身份</button>
+        </div>
+      </details>
 
       <section class="workspace">
         <aside class="card">

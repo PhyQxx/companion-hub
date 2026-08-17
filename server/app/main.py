@@ -12,8 +12,9 @@ from fastapi.staticfiles import StaticFiles
 from app import __version__
 from app.adapters import AdapterRegistry
 from app.adapters.builtin import create_builtin_registry
-from app.api import create_admin_config_router, create_chat_router
+from app.api import create_admin_config_router, create_auth_router, create_chat_router
 from app.api.events import create_event_router
+from app.auth import AuthService
 from app.bus import DispatcherWorker, EventPublisher, LocalEventPublisher
 from app.chat import ChatService
 from app.config import ConfigStore, ConfigWatcher, DatabaseConfigStore
@@ -183,10 +184,15 @@ def create_app(
             )
         )
         if runtime_database is not None:
+            auth_service = AuthService(runtime_database)
+            app.state.auth_service = auth_service
+            app.include_router(
+                create_auth_router(auth_service, admin_token=runtime_admin_token)
+            )
             app.include_router(
                 create_chat_router(
                     ChatService(runtime_database, runtime_config),
-                    admin_token=runtime_admin_token,
+                    auth_service,
                 )
             )
 

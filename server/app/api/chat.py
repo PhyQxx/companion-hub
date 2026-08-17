@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 from datetime import datetime
 from typing import Annotated, Literal
 from uuid import UUID
@@ -7,18 +5,17 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import Field
 
+from app.auth import AuthService, ChatPrincipal
 from app.chat import ChatService, ChatTurn, ConversationView, MessageView
 from app.llm import LLMRouteExhausted
 from app.privacy import EgressBlocked
 from app.schemas import PrivacyLevel
 from app.schemas.common import StrictModel
 
-from .admin_config import AdminTokenGuard
+from .auth import ChatSessionGuard
 
 
 class CreateConversationRequest(StrictModel):
-    user_id: UUID | None = None
-    display_name: Annotated[str, Field(min_length=1, max_length=160)] = "主人"
     title: Annotated[str, Field(min_length=1, max_length=240)] | None = None
 
 
@@ -55,11 +52,11 @@ class ChatTurnResponse(StrictModel):
     assistant_message: MessageResponse
 
 
-def create_chat_router(service: ChatService, *, admin_token: str | None) -> APIRouter:
+def create_chat_router(service: ChatService, auth_service: AuthService) -> APIRouter:
+    chat_guard = ChatSessionGuard(auth_service)
     router = APIRouter(
         prefix="/api/v1/chat",
         tags=["chat"],
-        dependencies=[Depends(AdminTokenGuard(admin_token))],
     )
 
     @router.post(
@@ -67,11 +64,13 @@ def create_chat_router(service: ChatService, *, admin_token: str | None) -> APIR
         response_model=ConversationResponse,
         status_code=status.HTTP_201_CREATED,
     )
-    async def create_conversation(body: CreateConversationRequest) -> ConversationResponse:
+    async def create_conversation(
+        body: CreateConversationRequest,
+        principal: Annotated[ChatPrincipal, Depends(chat_guard)],
+    ) -> ConversationResponse:
         try:
             result = await service.create_conversation(
-                user_id=body.user_id,
-                display_name=body.display_name,
+                user_id=principal.user_id,
                 title=body.title,
             )
         except LookupError as error:
@@ -80,12 +79,14 @@ def create_chat_router(service: ChatService, *, admin_token: str | None) -> APIR
 
     @router.get("/conversations", response_model=list[ConversationResponse])
     async def list_conversations(
-        user_id: UUID | None = None,
+        principal: Annotated[ChatPrincipal, Depends(chat_guard)],
         limit: Annotated[int, Query(ge=1, le=100)] = 50,
     ) -> list[ConversationResponse]:
         return [
             _conversation_response(item)
-            for item in await service.list_conversations(user_id=user_id, limit=limit)
+            for item in await service.list_conversations(
+                user_id=principal.user_id, limit=limit
+            )
         ]
 
     @router.get(
@@ -94,10 +95,13 @@ def create_chat_router(service: ChatService, *, admin_token: str | None) -> APIR
     )
     async def list_messages(
         conversation_id: UUID,
+        principal: Annotated[ChatPrincipal, Depends(chat_guard)],
         limit: Annotated[int, Query(ge=1, le=500)] = 100,
     ) -> list[MessageResponse]:
         try:
-            result = await service.list_messages(conversation_id, limit=limit)
+            result = await service.list_messages(
+                conversation_id, user_id=principal.user_id, limit=limit
+            )
         except LookupError as error:
             raise HTTPException(status.HTTP_404_NOT_FOUND, detail=str(error)) from error
         return [_message_response(item) for item in result]
@@ -107,11 +111,14 @@ def create_chat_router(service: ChatService, *, admin_token: str | None) -> APIR
         response_model=ChatTurnResponse,
     )
     async def send_message(
-        conversation_id: UUID, body: SendMessageRequest
+        conversation_id: UUID,
+        body: SendMessageRequest,
+        principal: Annotated[ChatPrincipal, Depends(chat_guard)],
     ) -> ChatTurnResponse:
         try:
             result = await service.send_message(
                 conversation_id,
+                user_id=principal.user_id,
                 text=body.text,
                 privacy_level=PrivacyLevel(body.privacy_level),
             )

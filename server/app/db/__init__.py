@@ -1,5 +1,7 @@
 from .models import (
     AppUserRecord,
+    AuthCredentialRecord,
+    AuthSessionRecord,
     Base,
     ConfigPointerRecord,
     ConfigVersionRecord,
@@ -14,6 +16,8 @@ from .session import Database, create_database
 
 __all__ = [
     "AppUserRecord",
+    "AuthCredentialRecord",
+    "AuthSessionRecord",
     "Base",
     "ConfigPointerRecord",
     "ConfigVersionRecord",

@@ -169,6 +169,52 @@ class AppUserRecord(Base):
     )
 
 
+class AuthCredentialRecord(Base):
+    __tablename__ = "auth_credential"
+    __table_args__ = (
+        CheckConstraint("kind IN ('password','passkey')", name="ck_auth_credential_kind"),
+        CheckConstraint(
+            "setup_slot IS NULL OR setup_slot = 1", name="ck_auth_credential_setup_slot"
+        ),
+        UniqueConstraint("setup_slot", name="uq_auth_credential_setup_slot"),
+        Index("ix_auth_credential_user", "user_id", "revoked_at"),
+    )
+
+    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True)
+    user_id: Mapped[UUID] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("app_user.id", ondelete="RESTRICT"), nullable=False
+    )
+    kind: Mapped[str] = mapped_column(String(16), nullable=False)
+    credential_id: Mapped[bytes | None]
+    public_data: Mapped[dict[str, Any] | None] = mapped_column(JSON)
+    secret_hash: Mapped[str | None] = mapped_column(Text)
+    setup_slot: Mapped[int | None] = mapped_column(Integer)
+    params_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class AuthSessionRecord(Base):
+    __tablename__ = "auth_session"
+    __table_args__ = (
+        UniqueConstraint("access_hash", name="uq_auth_session_access_hash"),
+        Index("ix_auth_session_user_active", "user_id", "expires_at", "revoked_at"),
+    )
+
+    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True)
+    user_id: Mapped[UUID] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("app_user.id", ondelete="RESTRICT"), nullable=False
+    )
+    device_id: Mapped[UUID | None] = mapped_column(Uuid(as_uuid=True))
+    access_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    issued_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
 class ConversationRecord(Base):
     __tablename__ = "conversation"
     __table_args__ = (
