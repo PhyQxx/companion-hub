@@ -12,9 +12,10 @@ from fastapi.staticfiles import StaticFiles
 from app import __version__
 from app.adapters import AdapterRegistry
 from app.adapters.builtin import create_builtin_registry
-from app.api import create_admin_config_router
+from app.api import create_admin_config_router, create_chat_router
 from app.api.events import create_event_router
 from app.bus import DispatcherWorker, EventPublisher, LocalEventPublisher
+from app.chat import ChatService
 from app.config import ConfigStore, ConfigWatcher, DatabaseConfigStore
 from app.db import Database, create_database
 
@@ -86,10 +87,16 @@ def create_app(
 
     admin_root = Path(__file__).parent / "admin"
     app.mount("/admin/assets", StaticFiles(directory=admin_root), name="admin-assets")
+    chat_root = Path(__file__).parent / "chat_ui"
+    app.mount("/chat/assets", StaticFiles(directory=chat_root), name="chat-assets")
 
     @app.get("/admin/models", include_in_schema=False)
     async def model_admin() -> FileResponse:
         return FileResponse(admin_root / "models.html")
+
+    @app.get("/chat", include_in_schema=False)
+    async def chat_debug() -> FileResponse:
+        return FileResponse(chat_root / "index.html")
 
     @app.get("/healthz", tags=["system"])
     async def health() -> dict[str, object]:
@@ -175,6 +182,13 @@ def create_app(
                 admin_token=runtime_admin_token,
             )
         )
+        if runtime_database is not None:
+            app.include_router(
+                create_chat_router(
+                    ChatService(runtime_database, runtime_config),
+                    admin_token=runtime_admin_token,
+                )
+            )
 
     return app
 
