@@ -49,6 +49,7 @@
 - [x] 模型配置后台与文字聊天调试台。
 - [x] 调试台固定视口、回车发送和消息自动贴底。
 - [x] Open-LLM-VTuber v1.2.1 macOS 源码安装及真实 HTTP/WebSocket、Live2D、ASR、TTS、Aria PostgreSQL 端到端验证。
+- [x] 管理后台导航闭环：总览与规划中模块均有明确页面、状态和后续交付说明。
 
 ## 暂缓事项
 

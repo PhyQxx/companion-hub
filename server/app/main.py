@@ -109,6 +109,15 @@ def create_app(
     async def model_admin() -> FileResponse:
         return FileResponse(admin_root / "models.html")
 
+    @app.get("/admin", include_in_schema=False)
+    @app.get("/admin/memory", include_in_schema=False)
+    @app.get("/admin/devices", include_in_schema=False)
+    @app.get("/admin/logs", include_in_schema=False)
+    @app.get("/admin/privacy", include_in_schema=False)
+    @app.get("/admin/settings", include_in_schema=False)
+    async def admin_module() -> FileResponse:
+        return FileResponse(admin_root / "module.html")
+
     @app.get("/admin/personas", include_in_schema=False)
     async def persona_admin() -> FileResponse:
         return FileResponse(admin_root / "personas.html")
