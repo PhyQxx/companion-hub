@@ -16,6 +16,7 @@ from sqlalchemy import (
     Text,
     UniqueConstraint,
     Uuid,
+    false,
     func,
 )
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
@@ -299,6 +300,86 @@ class MessageRecord(Base):
     privacy_level: Mapped[str] = mapped_column(String(2), nullable=False)
     generation_id: Mapped[UUID | None] = mapped_column(Uuid(as_uuid=True))
     decision_meta: Mapped[dict[str, Any] | None] = mapped_column(JSON)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+
+class MemoryRecord(Base):
+    __tablename__ = "memory"
+    __table_args__ = (
+        CheckConstraint(
+            "type IN ('episodic','semantic','preference','commitment','emotional')",
+            name="ck_memory_type",
+        ),
+        CheckConstraint("privacy_level IN ('L0','L1','L2')", name="ck_memory_privacy"),
+        CheckConstraint(
+            "status IN ('active','archived','superseded','conflict')",
+            name="ck_memory_status",
+        ),
+        CheckConstraint("importance >= 0 AND importance <= 1", name="ck_memory_importance"),
+        Index("ix_memory_user_type_status", "user_id", "type", "status", "importance"),
+        Index("ix_memory_superseded_by", "superseded_by"),
+        Index("ix_memory_created", "created_at"),
+    )
+
+    id: Mapped[int] = mapped_column(BIGINT_PK, primary_key=True, autoincrement=True)
+    user_id: Mapped[UUID] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("app_user.id", ondelete="RESTRICT"), nullable=False
+    )
+    type: Mapped[str] = mapped_column(String(16), nullable=False)
+    content: Mapped[str] = mapped_column(Text, nullable=False)
+    summary: Mapped[str | None] = mapped_column(Text)
+    privacy_level: Mapped[str] = mapped_column(String(2), nullable=False)
+    embedding: Mapped[list[float] | None] = mapped_column(JSON)
+    embedding_model: Mapped[str | None] = mapped_column(String(160))
+    embedding_dimension: Mapped[int | None] = mapped_column(Integer)
+    embedding_version: Mapped[str | None] = mapped_column(String(64))
+    importance: Mapped[float] = mapped_column(nullable=False, default=0.5, server_default="0.5")
+    pin: Mapped[bool] = mapped_column(nullable=False, default=False, server_default=false())
+    status: Mapped[str] = mapped_column(
+        String(16), nullable=False, default="active", server_default="active"
+    )
+    confidence: Mapped[float | None] = mapped_column()
+    valid_from: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    valid_to: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    superseded_by: Mapped[int | None] = mapped_column(
+        BigInteger, ForeignKey("memory.id", ondelete="RESTRICT")
+    )
+    supersede_reason: Mapped[str | None] = mapped_column(String(400))
+    conflict_with: Mapped[int | None] = mapped_column(BigInteger)
+    extractor_version: Mapped[str | None] = mapped_column(String(64))
+    created_by: Mapped[str] = mapped_column(String(160), nullable=False, server_default="system")
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now()
+    )
+    last_accessed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    access_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default="0"
+    )
+
+
+class MemorySourceRecord(Base):
+    __tablename__ = "memory_source"
+    __table_args__ = (
+        CheckConstraint(
+            "source_kind IN ('message','event','memory','manual')",
+            name="ck_memory_source_kind",
+        ),
+        Index("ix_memory_source_lookup", "source_kind", "source_id"),
+    )
+
+    memory_id: Mapped[int] = mapped_column(
+        BIGINT_PK,
+        ForeignKey("memory.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    source_kind: Mapped[str] = mapped_column(String(16), primary_key=True)
+    source_id: Mapped[str] = mapped_column(String(200), primary_key=True)
+    excerpt_hash: Mapped[str | None] = mapped_column(String(80))
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )

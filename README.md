@@ -27,6 +27,7 @@
 | [docs/18-本地聊天身份边界.md](./docs/18-本地聊天身份边界.md) | 首次设置、密码哈希、短期聊天会话、资源归属、撤销、限流和后续身份演进 |
 | [docs/19-WebSocket流式回合.md](./docs/19-WebSocket流式回合.md) | 真实模型流、回合状态、取消隔离、多端广播、消息游标补拉和协议边界 |
 | [docs/20-结构化回复与Persona.md](./docs/20-结构化回复与Persona.md) | AgentReply 控制协议、Persona 数据库版本、管理后台与 Open-LLM-VTuber 映射 |
+| [docs/21-记忆系统v1.md](./docs/21-记忆系统v1.md) | 记忆存储与溯源、混合检索重排、候选沉淀判定、纠错闭环与隐私闸门 |
 
 ## 一图速览
 
@@ -62,6 +63,7 @@
 - [x] 本地聊天身份第一阶段 —— 管理员授权首次设置、scrypt 密码哈希、8 小时随机会话、退出撤销、登录限流及会话归属隔离
 - [x] M1 WebSocket 回合第一阶段 —— 首帧认证、真实供应商 delta、generation 取消、迟到提交阻断、多连接广播和已提交消息补拉
 - [x] P1 结构化回复与 Persona —— 字幕/TTS/情绪/动作协议、数据库草稿发布回滚、管理后台和 Open-LLM-VTuber 原生输出映射
+- [x] P2 记忆系统 v1 —— 可检索/可溯源/可纠错长期记忆：混合召回重排、来源版本链、冲突裁决、聊天注入与隐私闸门
 
 ## 本地开发
 
@@ -85,6 +87,7 @@ uv run uvicorn app.main:app --app-dir server --reload
 - 已发布模型配置（不返回密钥引用）：`GET /api/v1/meta/config`
 - 模型配置后台：`GET /admin/models`
 - Persona 管理后台：`GET /admin/personas`
+- 记忆管理 API：`/api/v1/admin/memories*`（查询、手动添加、编辑、归档、冲突裁决与检索调试）
 - 文字聊天调试页：`GET /chat`
 - 聊天身份 API：`/api/v1/auth/status|setup|login|me|logout`
 - 文字聊天 API：`/api/v1/chat/conversations*`（仅接受独立聊天会话 Token）
@@ -105,7 +108,7 @@ make llm-check
 
 不要把 `.env.local` 提交到仓库。若要启用预留的 GLM-5.3 运行时配置，必须使用独立的普通 API 授权密钥；GLM Coding Plan Pro 密钥只用于其官方支持的编码工具。
 
-源码启动后打开 `http://127.0.0.1:8000/chat`。首次使用时通过 `ARIA_ADMIN_TOKEN` 授权创建聊天密码；之后管理 Token 不能读取或发送聊天内容，只能使用 8 小时有效、可撤销的独立聊天会话。页面优先使用 WebSocket 展示真实模型 delta 并支持取消，连接不可用时退回同步 REST。L0/L1 可使用数据库当前发布的云模型；L2 强制走 `private` 本地路由，本地模型不可用时返回明确失败，不会降级到云端。AgentReply 控制块会从可见流中剥离并作为 `reply.control` 单独广播；解析失败自动降级为普通文本。refresh 轮换、设备配对和记忆检索仍属于后续工作。
+源码启动后打开 `http://127.0.0.1:8000/chat`。首次使用时通过 `ARIA_ADMIN_TOKEN` 授权创建聊天密码；之后管理 Token 不能读取或发送聊天内容，只能使用 8 小时有效、可撤销的独立聊天会话。页面优先使用 WebSocket 展示真实模型 delta 并支持取消，连接不可用时退回同步 REST。L0/L1 可使用数据库当前发布的云模型；L2 强制走 `private` 本地路由，本地模型不可用时返回明确失败，不会降级到云端。AgentReply 控制块会从可见流中剥离并作为 `reply.control` 单独广播；解析失败自动降级为普通文本。每轮对话会检索长期记忆注入系统提示（`decision_meta.memory` 记录命中 ID 与策略版本），回合提交后规则提取器异步沉淀候选记忆；L2/L3 内容不进入自动沉淀，L2 记忆不会出现在 L0/L1 云端上下文。refresh 轮换和设备配对仍属于后续工作。
 
 ## 容器启动
 

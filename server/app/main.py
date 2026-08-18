@@ -14,6 +14,7 @@ from app.adapters import AdapterRegistry
 from app.adapters.builtin import create_builtin_registry
 from app.api import (
     create_admin_config_router,
+    create_admin_memory_router,
     create_admin_persona_router,
     create_auth_router,
     create_chat_router,
@@ -25,6 +26,7 @@ from app.bus import DispatcherWorker, EventPublisher, LocalEventPublisher
 from app.chat import ChatService
 from app.config import ConfigStore, ConfigWatcher, DatabaseConfigStore
 from app.db import Database, create_database
+from app.memory import MemoryStore
 from app.persona import PersonaStore
 
 
@@ -66,6 +68,7 @@ def create_app(
     worker = None
     runtime_chat_service: ChatService | None = None
     persona_store = PersonaStore(runtime_database) if runtime_database is not None else None
+    memory_store = MemoryStore(runtime_database) if runtime_database is not None else None
     if dispatcher_enabled and runtime_database is not None:
         publisher = event_publisher or LocalEventPublisher(runtime_database)
         worker = DispatcherWorker(runtime_database.sessions, publisher)
@@ -99,6 +102,7 @@ def create_app(
     app.state.config_store = runtime_config
     app.state.config_watcher = config_watcher
     app.state.persona_store = persona_store
+    app.state.memory_store = memory_store
 
     admin_root = Path(__file__).parent / "admin"
     app.mount("/admin/assets", StaticFiles(directory=admin_root), name="admin-assets")
@@ -227,12 +231,20 @@ def create_app(
                     admin_token=runtime_admin_token,
                 )
             )
+        if memory_store is not None:
+            app.include_router(
+                create_admin_memory_router(
+                    memory_store,
+                    admin_token=runtime_admin_token,
+                )
+            )
         if runtime_database is not None:
             auth_service = AuthService(runtime_database)
             runtime_chat_service = ChatService(
                 runtime_database,
                 runtime_config,
                 persona_store=persona_store,
+                memory_store=memory_store,
             )
             app.state.auth_service = auth_service
             app.state.chat_service = runtime_chat_service

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -20,12 +21,15 @@ from app.ids import uuid7
 from app.llm import CompletionRequest, CompletionResult, LLMMessage, LLMRoute
 from app.llm.factory import build_router
 from app.llm.provider import EnvSecretProvider
+from app.memory import MemoryIngester, MemoryRetriever, MemoryStore, RetrievalResult
 from app.persona import PersonaConfig, PersonaStore
 from app.schemas import PrivacyLevel
 
 from .reply import ControlStreamFilter, parse_agent_reply, structured_reply_instruction
 
 MAX_CONTEXT_MESSAGES = 20
+
+logger = logging.getLogger(__name__)
 
 
 class CompletionBackend(Protocol):
@@ -80,6 +84,7 @@ class PendingTurn:
     config_version: int
     persona: PersonaConfig
     persona_version: int
+    memory_retrieval: RetrievalResult | None = None
 
 
 class TurnCancelled(RuntimeError):
@@ -94,10 +99,14 @@ class ChatService:
         *,
         router_builder: Callable[[HubConfig], CompletionBackend] | None = None,
         persona_store: PersonaStore | None = None,
+        memory_store: MemoryStore | None = None,
     ) -> None:
         self._database = database
         self._config_store = config_store
         self._persona_store = persona_store
+        self._memory_store = memory_store
+        self._memory_retriever = MemoryRetriever(memory_store) if memory_store else None
+        self._memory_ingester = MemoryIngester(memory_store) if memory_store else None
         secrets = EnvSecretProvider()
         self._router_builder = router_builder or (
             lambda config: build_router(config, secrets)
@@ -235,13 +244,21 @@ class ChatService:
         snapshot = self._config_store.current
         persona_snapshot = self._persona_store.current if self._persona_store else None
         persona = persona_snapshot.persona if persona_snapshot else PersonaConfig()
+        memory_retrieval: RetrievalResult | None = None
+        memory_block = ""
+        if self._memory_retriever is not None:
+            memory_retrieval = await self._memory_retriever.retrieve(
+                text, user_id=user_id, privacy_level=privacy_level
+            )
+            memory_block = MemoryRetriever.render_context(memory_retrieval)
         request = CompletionRequest(
             trace_id=turn_id,
             messages=[
                 LLMMessage(
                     role="system",
                     content=persona.render_system_prompt()
-                    + structured_reply_instruction(persona),
+                    + structured_reply_instruction(persona)
+                    + (f"\n\n{memory_block}" if memory_block else ""),
                 ),
                 *[
                     LLMMessage(role=message.role, content=message.content)
@@ -266,6 +283,7 @@ class ChatService:
             config_version=snapshot.version,
             persona=persona,
             persona_version=persona_snapshot.version if persona_snapshot else 0,
+            memory_retrieval=memory_retrieval,
         )
 
     async def run_stream(
@@ -380,6 +398,20 @@ class ChatService:
             "usage": result.usage.model_dump(mode="json"),
             "latency_ms": result.latency_ms,
         }
+        if pending.memory_retrieval is not None:
+            decision_meta["memory"] = {
+                "policy_version": pending.memory_retrieval.policy_version,
+                "candidate_count": pending.memory_retrieval.candidate_count,
+                "hits": [
+                    {
+                        "id": hit.memory.id,
+                        "type": hit.memory.type,
+                        "score": round(hit.final_score, 4),
+                        "reasons": list(hit.reasons),
+                    }
+                    for hit in pending.memory_retrieval.hits
+                ],
+            }
         assistant_time = datetime.now(UTC)
         async with self._database.sessions.begin() as session:
             conversation = await session.scalar(
@@ -416,10 +448,30 @@ class ChatService:
             turn.state = "completed"
             turn.state_version += 1
             turn.completed_at = assistant_time
-        return ChatTurn(
+        turn_result = ChatTurn(
             user_message=pending.user_message,
             assistant_message=self._message_view(assistant_record),
         )
+        await self._consolidate_memory(pending)
+        return turn_result
+
+    async def _consolidate_memory(self, pending: PendingTurn) -> None:
+        if self._memory_ingester is None:
+            return
+        try:
+            await self._memory_ingester.ingest_message(
+                user_id=pending.user_id,
+                message_id=pending.user_message.id,
+                text=pending.user_message.content,
+                privacy_level=pending.request.privacy_level,
+                occurred_at=pending.user_message.created_at,
+            )
+        except Exception:
+            # A committed reply must never fail because memory consolidation
+            # broke; the next turn re-ingests from its own message anyway.
+            logger.warning(
+                "memory consolidation failed for turn %s", pending.turn_id, exc_info=True
+            )
 
     async def _transition(
         self, turn_id: UUID, from_states: set[str], target: str
