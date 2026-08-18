@@ -32,6 +32,7 @@
 | [docs/23-utility提取器与L2脱敏.md](./docs/23-utility提取器与L2脱敏.md) | LLM 结构化记忆提取、L2 事件级脱敏沉淀与规则回退 |
 | [docs/24-消息删除级联与台账重放.md](./docs/24-消息删除级联与台账重放.md) | 会话删除级联清理记忆、删除台账重放与 dry-run 验证 |
 | [docs/25-嵌入升级评估pgvector.md](./docs/25-嵌入升级评估pgvector.md) | pgvector 向量列与双写、ANN 召回、迁移回填与真实环境验证 |
+| [docs/26-前端决策ADR-018.md](./docs/26-前端决策ADR-018.md) | Vue 3 正式前端与 Open-LLM-VTuber 边界决策、分阶段迁移计划 |
 
 ## 一图速览
 
@@ -72,6 +73,7 @@
 - [x] P3 utility 提取器 —— LLM 结构化提取（`ARIA_MEMORY_EXTRACTOR=llm` 启用）、L2 事件级脱敏沉淀、规则回退
 - [x] P3 删除闭环收口 —— 会话删除级联清理沉淀记忆、台账重放（API + `server/scripts/replay_deletions.py`）
 - [x] P3 嵌入升级 —— pgvector 向量列双写 + ANN 召回（迁移 0009，PostgreSQL 专属，真实容器验证）
+- [x] P4 前端决策（ADR-018）—— Vue 3 自建 chat/admin 正式前端，Open-LLM-VTuber 仅作 P6 渲染/语音端
 
 ## 本地开发
 

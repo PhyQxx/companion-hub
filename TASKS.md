@@ -1,7 +1,7 @@
 # Aria 开发任务清单
 
 > 最后更新：2026-08-18
-> 当前阶段：P4 · 正式前端决策
+> 当前阶段：P4 · Vue 3 正式前端（决策已定，实施中）
 
 ## 进度概览
 
@@ -43,10 +43,12 @@
 - [x] 嵌入升级评估：pgvector 向量列双写 + ANN 召回 + 迁移回填（迁移 0009，真实 pgvector 容器验证；真实嵌入模型切换路径见 docs/25）。
 - [x] 消息删除级联与备份恢复后的台账重放工具（会话 DELETE API + UI 删除按钮 + `replay_deletions` 脚本与管理端点，dry-run 幂等）。
 
-## 当前批次：P4（待开始）
+## 当前批次：P4（进行中）
 
-- [ ] 前端技术决策：Vue 3 正式前端的范围与 Open-LLM-VTuber 渲染端的边界。
-- [ ] 决策记录（ADR）与迁移计划。
+- [x] 前端技术决策：ADR-018 —— Vue 3 自建 chat/admin 正式前端，Open-LLM-VTuber 仅作 P6 渲染/语音端（详见 docs/26）。
+- [ ] P4a：`web/` monorepo 脚手架（Vite + TS + pnpm workspace）+ chat MVP（登录、会话、流式、取消、删除、隐私等级），FastAPI 托管构建产物，调试页保留为 `/chat/debug`。
+- [ ] P4b：admin 迁移（模型路由、Persona、记忆库、总览）到 `web/apps/admin`。
+- [ ] Dockerfile 增加 pnpm build 阶段；`packages/shared` 抽取 API 客户端与类型。
 
 ## 已完成
 
