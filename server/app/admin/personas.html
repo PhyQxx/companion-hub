@@ -10,10 +10,11 @@
   <body>
     <aside class="sidebar">
       <div class="brand"><span class="brand-mark">A</span><span>Aria Hub</span></div>
-      <nav>
-        <a href="#">总览</a><a href="/admin/models">模型与路由</a>
-        <a class="active" href="/admin/personas">Persona</a><a href="#">记忆质量</a>
-        <a href="#">设备</a><a href="#">日志追踪</a><a href="#">隐私审计</a>
+      <nav aria-label="后台主导航">
+        <a href="/admin">总览</a><a href="/admin/models">模型与路由</a>
+        <a class="active" aria-current="page" href="/admin/personas">Persona</a><a href="/admin/memory">记忆质量</a>
+        <a href="/admin/devices">设备</a><a href="/admin/logs">日志追踪</a><a href="/admin/privacy">隐私审计</a>
+        <a href="/admin/settings">系统配置</a>
       </nav>
       <div class="privacy-note"><span class="dot"></span>Persona 版本化已启用</div>
     </aside>

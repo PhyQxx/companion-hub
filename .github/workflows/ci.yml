@@ -49,6 +49,7 @@ jobs:
       - run: pnpm --dir contracts run check
       - run: node --check server/app/admin/models.js
       - run: node --check server/app/admin/personas.js
+      - run: node --check server/app/admin/module.js
       - run: node --check server/app/chat_ui/app.js
       - name: Verify generated contracts are committed
         run: git diff --exit-code -- contracts/jsonschema contracts/types

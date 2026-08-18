@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Aria · 管理后台</title>
+    <link rel="stylesheet" href="/admin/assets/models.css" />
+    <link rel="stylesheet" href="/admin/assets/module.css" />
+  </head>
+  <body>
+    <aside class="sidebar">
+      <div class="brand"><span class="brand-mark">A</span><span>Aria Hub</span></div>
+      <nav aria-label="后台主导航">
+        <a data-nav="overview" href="/admin">总览</a>
+        <a data-nav="models" href="/admin/models">模型与路由</a>
+        <a data-nav="personas" href="/admin/personas">Persona</a>
+        <a data-nav="memory" href="/admin/memory">记忆质量</a>
+        <a data-nav="devices" href="/admin/devices">设备</a>
+        <a data-nav="logs" href="/admin/logs">日志追踪</a>
+        <a data-nav="privacy" href="/admin/privacy">隐私审计</a>
+        <a data-nav="settings" href="/admin/settings">系统配置</a>
+      </nav>
+      <div class="privacy-note"><span class="dot"></span><span id="sidebar-status">后台服务连接中</span></div>
+    </aside>
+
+    <main>
+      <header class="topbar module-topbar">
+        <div><p class="eyebrow" id="eyebrow">ADMIN CONSOLE</p><h1 id="title">后台总览</h1><p class="page-description" id="description"></p></div>
+        <div class="module-state" id="module-state">载入中</div>
+      </header>
+      <section class="stats" id="stats" aria-label="模块状态"></section>
+      <section class="module-layout">
+        <article class="module-panel primary-panel">
+          <div class="panel-heading"><div><p class="eyebrow">CURRENT CAPABILITIES</p><h2>当前能力</h2></div></div>
+          <div id="capabilities" class="capability-list"></div>
+        </article>
+        <article class="module-panel">
+          <div class="panel-heading"><div><p class="eyebrow">DELIVERY PLAN</p><h2>后续交付</h2></div></div>
+          <ol id="roadmap" class="roadmap"></ol>
+        </article>
+      </section>
+      <section class="module-panel dependency-panel">
+        <div><p class="eyebrow">DEPENDENCIES</p><h2>依赖与边界</h2><p id="dependencies" class="page-description"></p></div>
+        <a class="secondary action-link" id="primary-action" href="/admin/models">查看已上线功能</a>
+      </section>
+    </main>
+    <script src="/admin/assets/module.js" defer></script>
+  </body>
+</html>

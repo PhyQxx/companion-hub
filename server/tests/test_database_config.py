@@ -142,6 +142,17 @@ async def test_admin_api_requires_token_and_manages_drafts(
         page = await client.get("/admin/models")
         persona_page = await client.get("/admin/personas")
         chat_page = await client.get("/chat")
+        module_pages = {
+            path: await client.get(path)
+            for path in (
+                "/admin",
+                "/admin/memory",
+                "/admin/devices",
+                "/admin/logs",
+                "/admin/privacy",
+                "/admin/settings",
+            )
+        }
 
     assert unauthorized.status_code == 401
     assert current.status_code == 200
@@ -153,6 +164,10 @@ async def test_admin_api_requires_token_and_manages_drafts(
     assert "模型与路由" in page.text
     assert persona_page.status_code == 200
     assert "角色与表达" in persona_page.text
+    assert all(response.status_code == 200 for response in module_pages.values())
+    assert all("后台主导航" in response.text for response in module_pages.values())
+    assert 'href="#"' not in page.text
+    assert 'href="#"' not in persona_page.text
     assert chat_page.status_code == 200
     assert "文字聊天调试台" in chat_page.text
 
