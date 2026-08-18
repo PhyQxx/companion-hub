@@ -33,6 +33,7 @@
 | [docs/24-消息删除级联与台账重放.md](./docs/24-消息删除级联与台账重放.md) | 会话删除级联清理记忆、删除台账重放与 dry-run 验证 |
 | [docs/25-嵌入升级评估pgvector.md](./docs/25-嵌入升级评估pgvector.md) | pgvector 向量列与双写、ANN 召回、迁移回填与真实环境验证 |
 | [docs/26-前端决策ADR-018.md](./docs/26-前端决策ADR-018.md) | Vue 3 正式前端与 Open-LLM-VTuber 边界决策、分阶段迁移计划 |
+| [docs/27-Vue聊天前端P4a.md](./docs/27-Vue聊天前端P4a.md) | web monorepo、shared API/WS 客户端与 Vue 聊天前端落地 |
 
 ## 一图速览
 
@@ -74,6 +75,7 @@
 - [x] P3 删除闭环收口 —— 会话删除级联清理沉淀记忆、台账重放（API + `server/scripts/replay_deletions.py`）
 - [x] P3 嵌入升级 —— pgvector 向量列双写 + ANN 召回（迁移 0009，PostgreSQL 专属，真实容器验证）
 - [x] P4 前端决策（ADR-018）—— Vue 3 自建 chat/admin 正式前端，Open-LLM-VTuber 仅作 P6 渲染/语音端
+- [x] P4a Vue 聊天前端 —— `web/` monorepo、shared 客户端、登录/会话/流式/取消/删除/隐私等级，`/chat` 服务构建产物（旧调试页保留于 `/chat/debug`）
 
 ## 本地开发
 
@@ -88,6 +90,9 @@ uv run python server/scripts/export_schemas.py
 pnpm --dir contracts install --frozen-lockfile
 pnpm --dir contracts run generate
 pnpm --dir contracts run check
+pnpm --dir web install
+pnpm --dir web run build
+pnpm --dir web run typecheck
 uv run uvicorn app.main:app --app-dir server --reload
 ```
 
@@ -99,7 +104,7 @@ uv run uvicorn app.main:app --app-dir server --reload
 - Persona 管理后台：`GET /admin/personas`
 - 记忆库后台：`GET /admin/memory`（过滤、溯源、纠错、冲突裁决、检索调试与硬删除台账）
 - 记忆管理 API：`/api/v1/admin/memories*` 与 `/api/v1/admin/deletion-ledger`
-- 文字聊天调试页：`GET /chat`
+- 文字聊天调试页：`GET /chat`（Vue 正式前端，未构建时回退旧页；调试页在 `GET /chat/debug`）
 - 聊天身份 API：`/api/v1/auth/status|setup|login|me|logout`
 - 文字聊天 API：`/api/v1/chat/conversations*`（仅接受独立聊天会话 Token；`DELETE` 删除会话并级联清理其沉淀记忆）
 - 实时聊天：`WS /ws/chat`（连接后 5 秒内发送 `authenticate` 首帧）

@@ -111,7 +111,13 @@ def create_app(
     admin_root = Path(__file__).parent / "admin"
     app.mount("/admin/assets", StaticFiles(directory=admin_root), name="admin-assets")
     chat_root = Path(__file__).parent / "chat_ui"
-    app.mount("/chat/assets", StaticFiles(directory=chat_root), name="chat-assets")
+    app.mount("/chat/debug/assets", StaticFiles(directory=chat_root), name="chat-debug-assets")
+    chat_dist = Path(__file__).resolve().parents[2] / "web" / "apps" / "chat" / "dist"
+    chat_dist_assets = chat_dist / "assets"
+    if chat_dist_assets.is_dir():
+        app.mount(
+            "/chat/assets", StaticFiles(directory=chat_dist_assets), name="chat-assets"
+        )
 
     @app.get("/admin/models", include_in_schema=False)
     async def model_admin() -> FileResponse:
@@ -134,6 +140,12 @@ def create_app(
         return FileResponse(admin_root / "memory.html")
 
     @app.get("/chat", include_in_schema=False)
+    async def chat_entry() -> FileResponse:
+        if (chat_dist / "index.html").is_file():
+            return FileResponse(chat_dist / "index.html")
+        return FileResponse(chat_root / "index.html")
+
+    @app.get("/chat/debug", include_in_schema=False)
     async def chat_debug() -> FileResponse:
         return FileResponse(chat_root / "index.html")
 

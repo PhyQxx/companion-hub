@@ -8,7 +8,8 @@
 .ruff_cache
 contracts/node_modules
 docs
-web
+web/node_modules
+web/**/node_modules
+web/**/dist
 firmware
 *.pyc
-

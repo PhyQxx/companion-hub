@@ -46,7 +46,7 @@
 ## 当前批次：P4（进行中）
 
 - [x] 前端技术决策：ADR-018 —— Vue 3 自建 chat/admin 正式前端，Open-LLM-VTuber 仅作 P6 渲染/语音端（详见 docs/26）。
-- [ ] P4a：`web/` monorepo 脚手架（Vite + TS + pnpm workspace）+ chat MVP（登录、会话、流式、取消、删除、隐私等级），FastAPI 托管构建产物，调试页保留为 `/chat/debug`。
+- [x] P4a：`web/` monorepo 脚手架（Vite + TS + pnpm workspace）+ chat MVP（登录、会话、流式、取消、删除、隐私等级），FastAPI 托管构建产物，调试页保留为 `/chat/debug`（详见 docs/27）。
 - [ ] P4b：admin 迁移（模型路由、Persona、记忆库、总览）到 `web/apps/admin`。
 - [ ] Dockerfile 增加 pnpm build 阶段；`packages/shared` 抽取 API 客户端与类型。
 

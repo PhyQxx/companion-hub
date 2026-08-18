@@ -1,3 +1,9 @@
+FROM node:20-bookworm-slim AS web-build
+WORKDIR /web
+RUN corepack enable
+COPY web ./
+RUN pnpm install --no-frozen-lockfile && pnpm --filter @aria/chat build
+
 FROM ghcr.io/astral-sh/uv:python3.11-bookworm-slim
 
 ENV PYTHONUNBUFFERED=1 \
@@ -11,6 +17,7 @@ RUN uv sync --locked --no-dev
 COPY alembic.ini ./
 COPY config ./config
 COPY server ./server
+COPY --from=web-build /web/apps/chat/dist ./web/apps/chat/dist
 COPY deploy/hub-entrypoint.sh /usr/local/bin/hub-entrypoint
 RUN chmod +x /usr/local/bin/hub-entrypoint
 

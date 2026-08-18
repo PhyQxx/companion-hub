@@ -142,6 +142,7 @@ async def test_admin_api_requires_token_and_manages_drafts(
         page = await client.get("/admin/models")
         persona_page = await client.get("/admin/personas")
         chat_page = await client.get("/chat")
+        chat_debug_page = await client.get("/chat/debug")
         module_pages = {
             path: await client.get(path)
             for path in (
@@ -160,6 +161,8 @@ async def test_admin_api_requires_token_and_manages_drafts(
     assert published.status_code == 200
     assert published.json()["config"]["models"]["cloud"]["model"] == "dialogue-v2"
     assert [item["status"] for item in versions.json()] == ["published", "superseded"]
+    assert chat_debug_page.status_code == 200
+    assert "聊天密码" in chat_debug_page.text
     assert page.status_code == 200
     assert "模型与路由" in page.text
     assert persona_page.status_code == 200
@@ -169,7 +172,11 @@ async def test_admin_api_requires_token_and_manages_drafts(
     assert 'href="#"' not in page.text
     assert 'href="#"' not in persona_page.text
     assert chat_page.status_code == 200
-    assert "文字聊天调试台" in chat_page.text
+    # /chat serves the Vue build when web/apps/chat/dist exists and falls
+    # back to the vanilla debug page in source-only checkouts.
+    assert (
+        '<div id="app"></div>' in chat_page.text or "文字聊天调试台" in chat_page.text
+    )
 
 
 async def test_failed_publish_keeps_database_pointer_and_draft_state(
