@@ -7,14 +7,21 @@ from datetime import UTC, datetime
 from typing import cast
 from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import delete, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db import Database, MemoryRecord, MemorySourceRecord
+from app.db import (
+    Database,
+    DeletionLedgerRecord,
+    MemoryRecord,
+    MemorySourceRecord,
+)
 from app.schemas.common import PrivacyLevel
 
 from .embeddings import EmbeddingProvider, HashingEmbeddingProvider, cosine_similarity
 from .models import (
+    DeletionLedgerEntry,
+    DeletionReceipt,
     MemoryCandidate,
     MemoryEntry,
     MemorySourceEntry,
@@ -367,6 +374,99 @@ class MemoryStore:
                 record.supersede_reason = f"conflict resolved by {actor}: kept existing"
                 record.updated_at = now
         return self._entry(record)
+
+    async def hard_delete(
+        self, memory_id: int, *, actor: str, reason: str | None = None
+    ) -> DeletionReceipt:
+        """Removes the full version chain of a memory and records the ledger.
+
+        Deletion always covers the whole supersede lineage plus every stored
+        source reference; surviving memories that link to a deleted version
+        (derived `memory` sources or `conflict_with` pointers) are detached
+        inside the same transaction. The ledger row keeps identifiers only.
+        """
+        now = datetime.now(UTC)
+        async with self._database.sessions.begin() as session:
+            record = await session.get(MemoryRecord, memory_id)
+            if record is None:
+                raise LookupError(f"memory not found: {memory_id}")
+            related: dict[int, MemoryRecord] = {}
+            frontier: list[MemoryRecord] = [record]
+            while frontier:
+                successors: list[MemoryRecord] = []
+                for item in frontier:
+                    if item.id in related:
+                        continue
+                    related[item.id] = item
+                    if item.superseded_by is not None:
+                        successor = await session.get(MemoryRecord, item.superseded_by)
+                        if successor is not None:
+                            successors.append(successor)
+                    successors.extend(
+                        await session.scalars(
+                            select(MemoryRecord).where(MemoryRecord.superseded_by == item.id)
+                        )
+                    )
+                frontier = successors
+            deleted_ids = sorted(related)
+            deleted_id_strings = [str(item) for item in deleted_ids]
+
+            await session.execute(
+                delete(MemorySourceRecord).where(
+                    MemorySourceRecord.source_kind == "memory",
+                    MemorySourceRecord.source_id.in_(deleted_id_strings),
+                )
+            )
+            await session.execute(
+                delete(MemorySourceRecord).where(
+                    MemorySourceRecord.memory_id.in_(deleted_ids)
+                )
+            )
+            await session.execute(
+                update(MemoryRecord)
+                .where(MemoryRecord.conflict_with.in_(deleted_ids))
+                .values(conflict_with=None)
+            )
+            await session.execute(
+                delete(MemoryRecord).where(MemoryRecord.id.in_(deleted_ids))
+            )
+            ledger = DeletionLedgerRecord(
+                entity_kind="memory",
+                entity_id=str(memory_id),
+                deleted_ids=deleted_ids,
+                requested_by=actor,
+                reason=reason,
+                created_at=now,
+            )
+            session.add(ledger)
+            await session.flush()
+        return DeletionReceipt(
+            ledger_id=ledger.id,
+            entity_id=str(memory_id),
+            deleted_ids=tuple(deleted_ids),
+        )
+
+    async def list_deletion_ledger(self, *, limit: int = 50) -> list[DeletionLedgerEntry]:
+        async with self._database.sessions() as session:
+            records = list(
+                await session.scalars(
+                    select(DeletionLedgerRecord)
+                    .order_by(DeletionLedgerRecord.id.desc())
+                    .limit(limit)
+                )
+            )
+        return [
+            DeletionLedgerEntry(
+                id=item.id,
+                entity_kind=item.entity_kind,
+                entity_id=item.entity_id,
+                deleted_ids=tuple(item.deleted_ids),
+                requested_by=item.requested_by,
+                reason=item.reason,
+                created_at=cast(datetime, _aware(item.created_at)),
+            )
+            for item in records
+        ]
 
     async def lineage(self, memory_id: int) -> list[MemoryEntry]:
         async with self._database.sessions() as session:

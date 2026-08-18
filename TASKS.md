@@ -10,7 +10,7 @@
 | P0 Open-LLM-VTuber 集成验证 | 已完成 | 通过自定义 Agent 接入 Aria 实时聊天 |
 | P1 结构化回复与 Persona | 已完成 | 统一文本、情绪、语音和动作输出 |
 | P2 记忆系统 v1 | 已完成 | 可检索、可溯源、可纠错的长期记忆 |
-| P3 删除闭环与记忆后台 | 待开始 | 跨存储删除与可视化管理 |
+| P3 删除闭环与记忆后台 | 进行中 | 跨存储删除与可视化管理 |
 | P4 正式前端决策 | 待开始 | 决定 Vue 3 与 Open-LLM-VTuber 的边界 |
 | P5 文字稳定性闸门 | 待开始 | 连续 14 天真实使用验证 |
 | P6 语音与 Live2D 产品化 | 待开始 | 完整语音、打断、表情与桌宠体验 |
@@ -34,12 +34,14 @@
 - [x] 纠错保留历史版本与来源，可回溯旧内容。
 - [x] 全部闸门通过：pytest 99 通过、ruff、mypy、迁移升降级验证。
 
-## 当前批次：P3（待开始）
+## 当前批次：P3（进行中）
 
-- [ ] 删除台账（deletion ledger）与硬删除任务：原文、向量、摘要引用、缓存与衍生记忆。
-- [ ] `/admin/memory` 可视化后台：检索过滤、编辑、手动添加、冲突裁决与溯源查看。
+- [x] 删除台账（deletion_ledger）与硬删除：整条版本链 + 来源 + 衍生引用，单事务完成（迁移 0008）。
+- [x] `/admin/memory` 可视化后台：统计、过滤列表、溯源详情、手动添加、纠错编辑、冲突裁决、检索调试与台账展示。
+- [x] 删除 API：`DELETE /api/v1/admin/memories/{id}` 与 `GET /api/v1/admin/deletion-ledger`。
 - [ ] L2 脱敏 utility 提取器接入（LLM 结构化提取，utility 路由 + json_mode）。
 - [ ] 嵌入升级评估：utility 嵌入模型 + pgvector 全文/向量双召回与版本回填。
+- [ ] 消息删除级联与备份恢复后的台账重放工具。
 
 ## 已完成
 
@@ -52,6 +54,7 @@
 - [x] WebSocket 真实流式回复、取消和消息补拉。
 - [x] P1 结构化回复与 Persona：AgentReply 控制协议、Persona 数据库草稿/发布/回滚、`/admin/personas`、Open-LLM-VTuber 原生输出映射（详见 docs/20）。
 - [x] P2 记忆系统 v1：混合检索重排、来源版本链溯源、沉淀判定与冲突裁决、聊天注入、管理 API（详见 docs/21）。
+- [x] P3 第一批：硬删除版本链/来源/衍生引用 + 删除台账 + `/admin/memory` 可视化后台（详见 docs/22）。
 - [x] 模型配置后台与文字聊天调试台。
 - [x] 调试台固定视口、回车发送和消息自动贴底。
 - [x] Open-LLM-VTuber v1.2.1 macOS 源码安装及真实 HTTP/WebSocket、Live2D、ASR、TTS、Aria PostgreSQL 端到端验证。

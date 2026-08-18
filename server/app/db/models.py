@@ -385,6 +385,29 @@ class MemorySourceRecord(Base):
     )
 
 
+class DeletionLedgerRecord(Base):
+    __tablename__ = "deletion_ledger"
+    __table_args__ = (
+        CheckConstraint(
+            "entity_kind IN ('memory','message')", name="ck_deletion_ledger_entity_kind"
+        ),
+        Index("ix_deletion_ledger_created", "created_at"),
+        Index("ix_deletion_ledger_entity", "entity_kind", "entity_id"),
+    )
+
+    id: Mapped[int] = mapped_column(BIGINT_PK, primary_key=True, autoincrement=True)
+    entity_kind: Mapped[str] = mapped_column(String(16), nullable=False)
+    # The ledger stores identifiers only — never the deleted content itself —
+    # so a restored backup can replay deletions without resurrecting it.
+    entity_id: Mapped[str] = mapped_column(String(200), nullable=False)
+    deleted_ids: Mapped[list[int]] = mapped_column(JSON, nullable=False)
+    requested_by: Mapped[str] = mapped_column(String(160), nullable=False)
+    reason: Mapped[str | None] = mapped_column(String(400))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+
 class InteractionTurnRecord(Base):
     __tablename__ = "interaction_turn"
     __table_args__ = (

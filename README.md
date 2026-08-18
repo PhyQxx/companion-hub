@@ -28,6 +28,7 @@
 | [docs/19-WebSocket流式回合.md](./docs/19-WebSocket流式回合.md) | 真实模型流、回合状态、取消隔离、多端广播、消息游标补拉和协议边界 |
 | [docs/20-结构化回复与Persona.md](./docs/20-结构化回复与Persona.md) | AgentReply 控制协议、Persona 数据库版本、管理后台与 Open-LLM-VTuber 映射 |
 | [docs/21-记忆系统v1.md](./docs/21-记忆系统v1.md) | 记忆存储与溯源、混合检索重排、候选沉淀判定、纠错闭环与隐私闸门 |
+| [docs/22-删除闭环与记忆后台.md](./docs/22-删除闭环与记忆后台.md) | 硬删除台账、版本链删除、删除 API 与 `/admin/memory` 可视化后台 |
 
 ## 一图速览
 
@@ -64,6 +65,7 @@
 - [x] M1 WebSocket 回合第一阶段 —— 首帧认证、真实供应商 delta、generation 取消、迟到提交阻断、多连接广播和已提交消息补拉
 - [x] P1 结构化回复与 Persona —— 字幕/TTS/情绪/动作协议、数据库草稿发布回滚、管理后台和 Open-LLM-VTuber 原生输出映射
 - [x] P2 记忆系统 v1 —— 可检索/可溯源/可纠错长期记忆：混合召回重排、来源版本链、冲突裁决、聊天注入与隐私闸门
+- [x] P3 删除闭环与记忆后台（第一批）—— 硬删除版本链与来源、删除台账、`/admin/memory` 可视化管理
 
 ## 本地开发
 
@@ -87,7 +89,8 @@ uv run uvicorn app.main:app --app-dir server --reload
 - 已发布模型配置（不返回密钥引用）：`GET /api/v1/meta/config`
 - 模型配置后台：`GET /admin/models`
 - Persona 管理后台：`GET /admin/personas`
-- 记忆管理 API：`/api/v1/admin/memories*`（查询、手动添加、编辑、归档、冲突裁决与检索调试）
+- 记忆库后台：`GET /admin/memory`（过滤、溯源、纠错、冲突裁决、检索调试与硬删除台账）
+- 记忆管理 API：`/api/v1/admin/memories*` 与 `/api/v1/admin/deletion-ledger`
 - 文字聊天调试页：`GET /chat`
 - 聊天身份 API：`/api/v1/auth/status|setup|login|me|logout`
 - 文字聊天 API：`/api/v1/chat/conversations*`（仅接受独立聊天会话 Token）

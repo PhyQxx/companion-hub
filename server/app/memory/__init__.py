@@ -15,6 +15,8 @@ from .embeddings import (
 from .models import (
     ConsolidateDecision,
     ConsolidateOutcome,
+    DeletionLedgerEntry,
+    DeletionReceipt,
     MemoryCandidate,
     MemoryEntry,
     MemorySourceEntry,
@@ -41,6 +43,8 @@ __all__ = [
     "ConsolidateDecision",
     "ConsolidateOutcome",
     "ConsolidationPolicy",
+    "DeletionLedgerEntry",
+    "DeletionReceipt",
     "EmbeddingProvider",
     "HashingEmbeddingProvider",
     "MemoryCandidate",

@@ -19,6 +19,7 @@ from app.api import (
     create_auth_router,
     create_chat_router,
     create_chat_websocket_router,
+    create_deletion_ledger_router,
 )
 from app.api.events import create_event_router
 from app.auth import AuthService
@@ -114,7 +115,6 @@ def create_app(
         return FileResponse(admin_root / "models.html")
 
     @app.get("/admin", include_in_schema=False)
-    @app.get("/admin/memory", include_in_schema=False)
     @app.get("/admin/devices", include_in_schema=False)
     @app.get("/admin/logs", include_in_schema=False)
     @app.get("/admin/privacy", include_in_schema=False)
@@ -125,6 +125,10 @@ def create_app(
     @app.get("/admin/personas", include_in_schema=False)
     async def persona_admin() -> FileResponse:
         return FileResponse(admin_root / "personas.html")
+
+    @app.get("/admin/memory", include_in_schema=False)
+    async def memory_admin() -> FileResponse:
+        return FileResponse(admin_root / "memory.html")
 
     @app.get("/chat", include_in_schema=False)
     async def chat_debug() -> FileResponse:
@@ -234,6 +238,12 @@ def create_app(
         if memory_store is not None:
             app.include_router(
                 create_admin_memory_router(
+                    memory_store,
+                    admin_token=runtime_admin_token,
+                )
+            )
+            app.include_router(
+                create_deletion_ledger_router(
                     memory_store,
                     admin_token=runtime_admin_token,
                 )

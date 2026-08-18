@@ -530,3 +530,109 @@ async def test_admin_memory_api_manages_lifecycle(
     assert queried.json()["hits"]
     assert l3_rejected.status_code == 422
     assert archived.json()["status"] == "archived"
+
+
+async def test_hard_delete_removes_chain_sources_and_records_ledger(
+    store: MemoryStore, user: AppUserRecord
+) -> None:
+    original = await store.add(
+        MemoryCandidate(
+            type=MemoryType.SEMANTIC,
+            content="用户在杭州工作",
+            privacy_level=PrivacyLevel.L1,
+            sources=[
+                MemorySourceRef(
+                    source_kind=MemorySourceKind.MESSAGE,
+                    source_id=str(uuid4()),
+                    excerpt="我在杭州工作",
+                )
+            ],
+        ),
+        user_id=user.id,
+    )
+    replacement = await store.edit(
+        original.id, content="用户在上海工作", actor="admin", reason="用户纠正了城市"
+    )
+    target = await store.add(candidate("用户不吃香菜"), user_id=user.id)
+    conflict_row = await store.add(
+        candidate("用户其实住在别的城市"),
+        user_id=user.id,
+        status=MemoryStatus.CONFLICT,
+        conflict_with=original.id,
+    )
+
+    receipt = await store.hard_delete(original.id, actor="admin", reason="用户要求清除")
+
+    assert receipt.entity_id == str(original.id)
+    assert receipt.deleted_ids == (original.id, replacement.id)
+    with pytest.raises(LookupError):
+        await store.get(original.id)
+    with pytest.raises(LookupError):
+        await store.get(replacement.id)
+    assert await store.get_sources(original.id) == []
+    assert await store.get_sources(replacement.id) == []
+
+    result = await MemoryRetriever(store).retrieve(
+        "用户在哪个城市工作", user_id=user.id, privacy_level=PrivacyLevel.L1, now=NOW
+    )
+    assert all(hit.memory.id not in receipt.deleted_ids for hit in result.hits)
+
+    detached = await store.get(conflict_row.id)
+    assert detached.status == "conflict"
+    assert detached.conflict_with is None
+    survivor = await store.get(target.id)
+    assert survivor.status == "active"
+
+    ledger = await store.list_deletion_ledger()
+    assert len(ledger) == 1
+    assert ledger[0].entity_kind == "memory"
+    assert ledger[0].entity_id == str(original.id)
+    assert ledger[0].deleted_ids == (original.id, replacement.id)
+    assert ledger[0].requested_by == "admin"
+    assert ledger[0].reason == "用户要求清除"
+
+    with pytest.raises(LookupError):
+        await store.hard_delete(original.id, actor="admin")
+
+
+async def test_admin_delete_and_ledger_api(
+    database: Database, user: AppUserRecord, tmp_path: Path
+) -> None:
+    config_path = tmp_path / "hub.yaml"
+    config_path.write_text(config_yaml(), encoding="utf-8")
+    config_store = DatabaseConfigStore(database, config_path)
+    app = create_app(
+        database,
+        config_store=config_store,
+        watch_config=False,
+        admin_token="test-admin-token",
+    )
+    headers = {"Authorization": "Bearer test-admin-token"}
+    store = MemoryStore(database)
+    first = await store.add(candidate("用户在杭州工作"), user_id=user.id)
+    second = await store.edit(
+        first.id, content="用户在上海工作", actor="admin", reason="纠正"
+    )
+
+    async with app.router.lifespan_context(app), AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        page = await client.get("/admin/memory")
+        unauthorized = await client.get("/api/v1/admin/deletion-ledger")
+        deleted = await client.delete(
+            f"/api/v1/admin/memories/{first.id}",
+            headers=headers,
+            params={"reason": "用户要求清除"},
+        )
+        missing = await client.get(f"/api/v1/admin/memories/{first.id}", headers=headers)
+        ledger = await client.get("/api/v1/admin/deletion-ledger", headers=headers)
+
+    assert page.status_code == 200
+    assert "记忆库" in page.text
+    assert unauthorized.status_code == 401
+    assert deleted.status_code == 200
+    assert deleted.json()["deleted_ids"] == [first.id, second.id]
+    assert deleted.json()["ledger_id"] == ledger.json()[0]["id"]
+    assert missing.status_code == 404
+    assert ledger.json()[0]["reason"] == "用户要求清除"
+    assert ledger.json()[0]["deleted_ids"] == [first.id, second.id]

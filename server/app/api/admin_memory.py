@@ -106,6 +106,22 @@ class RetrievalQueryResult(StrictModel):
     hits: list[MemoryHitView]
 
 
+class DeletionReceiptView(StrictModel):
+    ledger_id: int
+    entity_id: str
+    deleted_ids: list[int]
+
+
+class DeletionLedgerView(StrictModel):
+    id: int
+    entity_kind: str
+    entity_id: str
+    deleted_ids: list[int]
+    requested_by: str
+    reason: str | None
+    created_at: datetime
+
+
 def _view(entry: MemoryEntry) -> MemoryView:
     return MemoryView(
         id=entry.id,
@@ -267,5 +283,46 @@ def create_admin_memory_router(store: MemoryStore, *, admin_token: str | None) -
         except ValueError as error:
             raise HTTPException(status.HTTP_409_CONFLICT, detail=str(error)) from error
         return _view(entry)
+
+    @router.delete("/{memory_id}", response_model=DeletionReceiptView)
+    async def hard_delete_memory(
+        memory_id: int, reason: Annotated[str | None, Query(max_length=400)] = None
+    ) -> DeletionReceiptView:
+        try:
+            receipt = await store.hard_delete(memory_id, actor="admin", reason=reason)
+        except LookupError as error:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, detail=str(error)) from error
+        return DeletionReceiptView(
+            ledger_id=receipt.ledger_id,
+            entity_id=receipt.entity_id,
+            deleted_ids=list(receipt.deleted_ids),
+        )
+
+    return router
+
+
+def create_deletion_ledger_router(store: MemoryStore, *, admin_token: str | None) -> APIRouter:
+    router = APIRouter(
+        prefix="/api/v1/admin/deletion-ledger",
+        tags=["admin-memories"],
+        dependencies=[Depends(AdminTokenGuard(admin_token))],
+    )
+
+    @router.get("", response_model=list[DeletionLedgerView])
+    async def ledger_entries(
+        limit: Annotated[int, Query(ge=1, le=200)] = 50,
+    ) -> list[DeletionLedgerView]:
+        return [
+            DeletionLedgerView(
+                id=item.id,
+                entity_kind=item.entity_kind,
+                entity_id=item.entity_id,
+                deleted_ids=list(item.deleted_ids),
+                requested_by=item.requested_by,
+                reason=item.reason,
+                created_at=item.created_at,
+            )
+            for item in await store.list_deletion_ledger(limit=limit)
+        ]
 
     return router

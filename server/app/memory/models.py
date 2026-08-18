@@ -106,3 +106,21 @@ class ConsolidateOutcome:
     decision: ConsolidateDecision
     memory: MemoryEntry
     related: MemoryEntry | None
+
+
+@dataclass(frozen=True, slots=True)
+class DeletionReceipt:
+    ledger_id: int
+    entity_id: str
+    deleted_ids: tuple[int, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class DeletionLedgerEntry:
+    id: int
+    entity_kind: str
+    entity_id: str
+    deleted_ids: tuple[int, ...]
+    requested_by: str
+    reason: str | None
+    created_at: datetime
