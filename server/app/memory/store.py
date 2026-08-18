@@ -7,7 +7,7 @@ from datetime import UTC, datetime
 from typing import cast
 from uuid import UUID
 
-from sqlalchemy import delete, select, update
+from sqlalchemy import bindparam, delete, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db import (
@@ -56,6 +56,11 @@ class MemoryStore:
         return self._database
 
     @property
+    def vector_sql_enabled(self) -> bool:
+        """True when the pgvector column exists (PostgreSQL after 0009)."""
+        return self._database.engine.dialect.name == "postgresql"
+
+    @property
     def embedding_provider(self) -> EmbeddingProvider:
         return self._embedding_provider
 
@@ -99,6 +104,7 @@ class MemoryStore:
             session.add(record)
             await session.flush()
             await self._write_sources(session, record.id, candidate.sources)
+            await self._sync_vector_column(session, record.id, vector)
             await session.refresh(record)
         return self._entry(record)
 
@@ -185,6 +191,50 @@ class MemoryStore:
             RetrievalCandidate(entry=self._entry(record), embedding=record.embedding)
             for record in records
         ]
+
+    async def vector_recall(
+        self,
+        query_vector: Sequence[float],
+        *,
+        user_id: UUID,
+        embedding_version: str,
+        privacy_levels: Sequence[str],
+        valid_at: datetime,
+        limit: int,
+    ) -> list[tuple[int, float]]:
+        """pgvector ANN recall; empty on dialects without the vector column."""
+        if not self.vector_sql_enabled or not privacy_levels:
+            return []
+        statement = text(
+            """
+            SELECT id, 1 - (embedding_vec <=> CAST(:qv AS vector)) AS similarity
+            FROM memory
+            WHERE user_id = :uid
+              AND status = 'active'
+              AND embedding_version = :version
+              AND privacy_level IN :levels
+              AND (valid_from IS NULL OR valid_from <= :now)
+              AND (valid_to IS NULL OR valid_to > :now)
+              AND embedding_vec IS NOT NULL
+            ORDER BY embedding_vec <=> CAST(:qv AS vector)
+            LIMIT :lim
+            """
+        ).bindparams(bindparam("levels", expanding=True))
+        async with self._database.sessions() as session:
+            rows = (
+                await session.execute(
+                    statement,
+                    {
+                        "qv": _vector_literal(query_vector),
+                        "uid": user_id,
+                        "version": embedding_version,
+                        "levels": list(privacy_levels),
+                        "now": valid_at,
+                        "lim": limit,
+                    },
+                )
+            ).all()
+        return [(int(row[0]), float(row[1])) for row in rows]
 
     async def find_similar(
         self,
@@ -326,6 +376,7 @@ class MemoryStore:
                     select(MemorySourceRecord).where(MemorySourceRecord.memory_id == memory_id)
                 )
             )
+            await self._sync_vector_column(session, replacement.id, vector)
             for source in old_sources:
                 session.add(
                     MemorySourceRecord(
@@ -621,6 +672,16 @@ class MemoryStore:
                 frontier = successors
         return [self._entry(related[key]) for key in sorted(related)]
 
+    async def _sync_vector_column(
+        self, session: AsyncSession, memory_id: int, vector: Sequence[float]
+    ) -> None:
+        if not self.vector_sql_enabled:
+            return
+        await session.execute(
+            text("UPDATE memory SET embedding_vec = CAST(:vec AS vector) WHERE id = :mid"),
+            {"vec": _vector_literal(vector), "mid": memory_id},
+        )
+
     async def _write_sources(
         self,
         session: AsyncSession,
@@ -677,6 +738,10 @@ class MemoryStore:
             embedding_dimension=record.embedding_dimension,
             embedding_version=record.embedding_version,
         )
+
+
+def _vector_literal(vector: Sequence[float]) -> str:
+    return "[" + ",".join(f"{value:.6f}" for value in vector) + "]"
 
 
 def _excerpt_hash(excerpt: str | None) -> str | None:

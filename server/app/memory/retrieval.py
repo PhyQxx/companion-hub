@@ -98,7 +98,19 @@ class MemoryRetriever:
                 return 0.0
             return cosine_similarity(query_vector, item.embedding)
 
-        vector_ranked = _rank(candidates, similarity_of)
+        if self._store.vector_sql_enabled:
+            # pgvector ANN recall replaces the in-process scan on PostgreSQL;
+            # both paths feed the same merge/rerank below.
+            vector_ranked = await self._store.vector_recall(
+                query_vector,
+                user_id=user_id,
+                embedding_version=provider.version,
+                privacy_levels=[level.value for level in allowed_levels],
+                valid_at=moment,
+                limit=self._policy.recall_k,
+            )
+        else:
+            vector_ranked = _rank(candidates, similarity_of)
         lexical_ranked = _rank(
             candidates,
             lambda item: lexical_cosine(query_tokens, text_tokens(item.entry.content)),
@@ -109,7 +121,10 @@ class MemoryRetriever:
         by_id = {item.entry.id: item for item in candidates}
         ranked: list[MemoryHit] = []
         for memory_id in set(vector_top) | set(lexical_top):
-            entry = by_id[memory_id].entry
+            item = by_id.get(memory_id)
+            if item is None:
+                continue
+            entry = item.entry
             vector_score = min(vector_top.get(memory_id, 0.0), 1.0)
             lexical_score = min(lexical_top.get(memory_id, 0.0), 1.0)
             relevance = max(vector_score, lexical_score)
