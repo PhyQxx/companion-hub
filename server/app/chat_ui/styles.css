@@ -48,9 +48,12 @@ button:disabled { opacity: .42; cursor: not-allowed; }
 aside { min-height: 0; padding: 14px; display: flex; flex-direction: column; overflow: hidden; }
 .section-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 14px; }
 .conversation-list { min-height: 0; display: grid; align-content: start; gap: 8px; overflow-y: auto; }
-.conversation { width: 100%; text-align: left; background: #121722; border: 1px solid #252d3b; }
+.conversation-item { position: relative; }
+.conversation { width: 100%; text-align: left; background: #121722; border: 1px solid #252d3b; padding-right: 34px; }
 .conversation.active { background: #1b2540; border-color: #5876ee; }
 .conversation small { display: block; color: #8590a2; margin-top: 5px; }
+.conversation-delete { position: absolute; top: 50%; right: 8px; transform: translateY(-50%); width: 22px; height: 22px; padding: 0; border: none; border-radius: 6px; background: transparent; color: #6d7889; font-size: 12px; cursor: pointer; }
+.conversation-delete:hover { background: #3a2230; color: #e58aa0; }
 .chat-card { min-width: 0; min-height: 0; display: grid; grid-template-rows: minmax(0, 1fr) auto; overflow: hidden; }
 .messages { min-height: 0; padding: 20px; overflow-y: auto; overscroll-behavior: contain; }
 .empty { min-height: 100%; display: grid; place-items: center; color: #7f8998; text-align: center; padding: 32px 20px; }

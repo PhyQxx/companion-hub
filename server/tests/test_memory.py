@@ -12,7 +12,14 @@ from test_chat import FakeRouter, config_yaml
 
 from app.chat import ChatService
 from app.config import DatabaseConfigStore
-from app.db import AppUserRecord, Base, Database, create_database
+from app.db import (
+    AppUserRecord,
+    Base,
+    ConversationRecord,
+    Database,
+    MessageRecord,
+    create_database,
+)
 from app.ids import uuid7
 from app.llm import CompletionRequest, CompletionResult, ModelUsage
 from app.main import create_app
@@ -29,6 +36,7 @@ from app.memory import (
     MemoryStore,
     MemoryType,
     cosine_similarity,
+    replay_deletions,
 )
 from app.schemas import PrivacyLevel
 
@@ -773,3 +781,171 @@ async def test_llm_extractor_with_empty_candidates_stores_nothing(
     assert turn.assistant_message.content == "好的。"
     memories = await MemoryStore(database).list_memories(user_id=user.id)
     assert memories == []
+
+
+async def test_delete_conversation_cascades_and_replay_is_idempotent(
+    database: Database, user: AppUserRecord, tmp_path: Path
+) -> None:
+    config_path = tmp_path / "hub.yaml"
+    config_path.write_text(config_yaml(), encoding="utf-8")
+    config_store = DatabaseConfigStore(database, config_path)
+    await config_store.load()
+    requests: list[CompletionRequest] = []
+    service = ChatService(
+        database,
+        config_store,
+        router_builder=lambda config: FakeRouter(config.models["cloud"].model, requests),
+        memory_store=MemoryStore(database),
+    )
+    conversation_a = await service.create_conversation(user_id=user.id, title="A")
+    conversation_b = await service.create_conversation(user_id=user.id, title="B")
+    turn_a = await service.send_message(
+        conversation_a.id, user_id=user.id, text="我不吃香菜。", privacy_level=PrivacyLevel.L1
+    )
+    await service.send_message(
+        conversation_b.id, user_id=user.id, text="我叫小雷。", privacy_level=PrivacyLevel.L1
+    )
+
+    store = MemoryStore(database)
+    memories = {
+        item.content: item
+        for item in await store.list_memories(user_id=user.id, status=MemoryStatus.ACTIVE)
+    }
+    assert set(memories) == {"用户不吃香菜", "用户叫小雷"}
+    memory_a = memories["用户不吃香菜"]
+
+    receipt = await service.delete_conversation(conversation_a.id, user_id=user.id)
+
+    assert receipt.entity_id == str(conversation_a.id)
+    assert receipt.deleted_ids == (memory_a.id,)
+    assert receipt.ledger_id > 0
+    assert [item.id for item in await service.list_conversations(user_id=user.id)] == [
+        conversation_b.id
+    ]
+    with pytest.raises(LookupError):
+        await service.list_messages(conversation_a.id, user_id=user.id)
+    remaining = await store.list_memories(user_id=user.id, status=MemoryStatus.ACTIVE)
+    assert [item.content for item in remaining] == ["用户叫小雷"]
+    ledger = await store.list_deletion_ledger()
+    assert ledger[0].entity_kind == "message"
+    assert ledger[0].entity_id == str(conversation_a.id)
+    assert ledger[0].deleted_ids == (memory_a.id,)
+
+    # Simulate a backup restore resurrecting the conversation and its memory.
+    async with database.sessions.begin() as session:
+        session.add(
+            ConversationRecord(
+                id=conversation_a.id,
+                user_id=user.id,
+                title="A",
+                status="active",
+                last_seq=2,
+                last_turn_seq=1,
+            )
+        )
+        session.add(
+            MessageRecord(
+                id=turn_a.user_message.id,
+                conversation_id=conversation_a.id,
+                turn_id=uuid4(),
+                seq=1,
+                role="user",
+                content="我不吃香菜。",
+                privacy_level="L1",
+            )
+        )
+    await store.add(
+        MemoryCandidate(
+            type=MemoryType.PREFERENCE,
+            content="用户不吃香菜",
+            privacy_level=PrivacyLevel.L1,
+            sources=[
+                MemorySourceRef(
+                    source_kind=MemorySourceKind.MESSAGE,
+                    source_id=str(turn_a.user_message.id),
+                )
+            ],
+        ),
+        user_id=user.id,
+    )
+
+    dry = await replay_deletions(database, dry_run=True)
+    assert dry.dry_run is True
+    assert dry.conversations_deleted == 1
+    assert dry.memories_deleted == 1
+    async with database.sessions() as session:
+        assert await session.get(ConversationRecord, conversation_a.id) is not None
+
+    applied = await replay_deletions(database, dry_run=False)
+    assert applied.conversations_deleted == 1
+    assert applied.memories_deleted == 1
+    async with database.sessions() as session:
+        assert await session.get(ConversationRecord, conversation_a.id) is None
+    survivors = await store.list_memories(user_id=user.id, status=MemoryStatus.ACTIVE)
+    assert [item.content for item in survivors] == ["用户叫小雷"]
+
+    again = await replay_deletions(database, dry_run=False)
+    assert again.conversations_deleted == 0
+    assert again.memories_deleted == 0
+
+
+async def test_delete_conversation_rejects_other_users(
+    database: Database, user: AppUserRecord, tmp_path: Path
+) -> None:
+    config_path = tmp_path / "hub.yaml"
+    config_path.write_text(config_yaml(), encoding="utf-8")
+    config_store = DatabaseConfigStore(database, config_path)
+    await config_store.load()
+    service = ChatService(database, config_store)
+    conversation = await service.create_conversation(user_id=user.id, title="mine")
+    with pytest.raises(LookupError):
+        await service.delete_conversation(conversation.id, user_id=uuid4())
+    assert await service.list_conversations(user_id=user.id)
+
+
+async def test_admin_replay_endpoint_reports_and_is_idempotent(
+    database: Database, user: AppUserRecord, tmp_path: Path
+) -> None:
+    config_path = tmp_path / "hub.yaml"
+    config_path.write_text(config_yaml(), encoding="utf-8")
+    config_store = DatabaseConfigStore(database, config_path)
+    app = create_app(
+        database,
+        config_store=config_store,
+        watch_config=False,
+        admin_token="test-admin-token",
+    )
+    headers = {"Authorization": "Bearer test-admin-token"}
+    store = MemoryStore(database)
+    created = await store.add(candidate("用户在杭州工作"), user_id=user.id)
+
+    async with app.router.lifespan_context(app), AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        unauthorized = await client.post(
+            "/api/v1/admin/deletion-ledger/replay", json={"dry_run": True}
+        )
+        deleted = await client.delete(
+            f"/api/v1/admin/memories/{created.id}", headers=headers
+        )
+        dry = await client.post(
+            "/api/v1/admin/deletion-ledger/replay",
+            headers=headers,
+            json={"dry_run": True},
+        )
+        applied = await client.post(
+            "/api/v1/admin/deletion-ledger/replay",
+            headers=headers,
+            json={"dry_run": False},
+        )
+
+    assert unauthorized.status_code == 401
+    assert deleted.status_code == 200
+    assert dry.json() == {
+        "ledger_rows": 1,
+        "conversations_deleted": 0,
+        "memories_deleted": 0,
+        "dry_run": True,
+    }
+    assert applied.json()["dry_run"] is False
+    assert applied.json()["memories_deleted"] == 0

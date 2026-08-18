@@ -52,6 +52,11 @@ class ChatTurnResponse(StrictModel):
     assistant_message: MessageResponse
 
 
+class ConversationDeletionResponse(StrictModel):
+    ledger_id: int
+    deleted_memory_ids: list[int]
+
+
 def create_chat_router(service: ChatService, auth_service: AuthService) -> APIRouter:
     chat_guard = ChatSessionGuard(auth_service)
     router = APIRouter(
@@ -105,6 +110,25 @@ def create_chat_router(service: ChatService, auth_service: AuthService) -> APIRo
         except LookupError as error:
             raise HTTPException(status.HTTP_404_NOT_FOUND, detail=str(error)) from error
         return [_message_response(item) for item in result]
+
+    @router.delete(
+        "/conversations/{conversation_id}",
+        response_model=ConversationDeletionResponse,
+    )
+    async def delete_conversation(
+        conversation_id: UUID,
+        principal: Annotated[ChatPrincipal, Depends(chat_guard)],
+    ) -> ConversationDeletionResponse:
+        try:
+            receipt = await service.delete_conversation(
+                conversation_id, user_id=principal.user_id
+            )
+        except LookupError as error:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, detail=str(error)) from error
+        return ConversationDeletionResponse(
+            ledger_id=receipt.ledger_id,
+            deleted_memory_ids=list(receipt.deleted_ids),
+        )
 
     @router.post(
         "/conversations/{conversation_id}/messages",

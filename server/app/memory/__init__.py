@@ -30,6 +30,7 @@ from .models import (
     MemoryType,
     SimilarMemory,
 )
+from .replay import ReplayReport, replay_deletions
 from .retrieval import (
     DEFAULT_TYPE_QUOTAS,
     RETRIEVAL_POLICY_VERSION,
@@ -67,6 +68,7 @@ __all__ = [
     "MemoryStatus",
     "MemoryStore",
     "MemoryType",
+    "ReplayReport",
     "RetrievalPolicy",
     "RetrievalResult",
     "RuleBasedExtractor",
@@ -74,5 +76,6 @@ __all__ = [
     "cosine_similarity",
     "extraction_instruction",
     "lexical_cosine",
+    "replay_deletions",
     "text_tokens",
 ]

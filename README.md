@@ -30,6 +30,7 @@
 | [docs/21-记忆系统v1.md](./docs/21-记忆系统v1.md) | 记忆存储与溯源、混合检索重排、候选沉淀判定、纠错闭环与隐私闸门 |
 | [docs/22-删除闭环与记忆后台.md](./docs/22-删除闭环与记忆后台.md) | 硬删除台账、版本链删除、删除 API 与 `/admin/memory` 可视化后台 |
 | [docs/23-utility提取器与L2脱敏.md](./docs/23-utility提取器与L2脱敏.md) | LLM 结构化记忆提取、L2 事件级脱敏沉淀与规则回退 |
+| [docs/24-消息删除级联与台账重放.md](./docs/24-消息删除级联与台账重放.md) | 会话删除级联清理记忆、删除台账重放与 dry-run 验证 |
 
 ## 一图速览
 
@@ -68,6 +69,7 @@
 - [x] P2 记忆系统 v1 —— 可检索/可溯源/可纠错长期记忆：混合召回重排、来源版本链、冲突裁决、聊天注入与隐私闸门
 - [x] P3 删除闭环与记忆后台（第一批）—— 硬删除版本链与来源、删除台账、`/admin/memory` 可视化管理
 - [x] P3 utility 提取器 —— LLM 结构化提取（`ARIA_MEMORY_EXTRACTOR=llm` 启用）、L2 事件级脱敏沉淀、规则回退
+- [x] P3 删除闭环收口 —— 会话删除级联清理沉淀记忆、台账重放（API + `server/scripts/replay_deletions.py`）
 
 ## 本地开发
 
@@ -95,7 +97,7 @@ uv run uvicorn app.main:app --app-dir server --reload
 - 记忆管理 API：`/api/v1/admin/memories*` 与 `/api/v1/admin/deletion-ledger`
 - 文字聊天调试页：`GET /chat`
 - 聊天身份 API：`/api/v1/auth/status|setup|login|me|logout`
-- 文字聊天 API：`/api/v1/chat/conversations*`（仅接受独立聊天会话 Token）
+- 文字聊天 API：`/api/v1/chat/conversations*`（仅接受独立聊天会话 Token；`DELETE` 删除会话并级联清理其沉淀记忆）
 - 实时聊天：`WS /ws/chat`（连接后 5 秒内发送 `authenticate` 首帧）
 - JSON Schema：`contracts/jsonschema/`
 - TypeScript 类型：`contracts/types/index.d.ts`

@@ -17,6 +17,7 @@ from app.memory import (
     MemoryStatus,
     MemoryStore,
     MemoryType,
+    replay_deletions,
 )
 from app.schemas.common import PrivacyLevel, StrictModel
 
@@ -120,6 +121,17 @@ class DeletionLedgerView(StrictModel):
     requested_by: str
     reason: str | None
     created_at: datetime
+
+
+class ReplayRequest(StrictModel):
+    dry_run: bool = True
+
+
+class ReplayResponse(StrictModel):
+    ledger_rows: int
+    conversations_deleted: int
+    memories_deleted: int
+    dry_run: bool
 
 
 def _view(entry: MemoryEntry) -> MemoryView:
@@ -324,5 +336,15 @@ def create_deletion_ledger_router(store: MemoryStore, *, admin_token: str | None
             )
             for item in await store.list_deletion_ledger(limit=limit)
         ]
+
+    @router.post("/replay", response_model=ReplayResponse)
+    async def replay(payload: ReplayRequest) -> ReplayResponse:
+        report = await replay_deletions(store.database, dry_run=payload.dry_run)
+        return ReplayResponse(
+            ledger_rows=report.ledger_rows,
+            conversations_deleted=report.conversations_deleted,
+            memories_deleted=report.memories_deleted,
+            dry_run=report.dry_run,
+        )
 
     return router

@@ -7,7 +7,7 @@ from datetime import UTC, datetime
 from typing import Protocol
 from uuid import UUID
 
-from sqlalchemy import select, update
+from sqlalchemy import delete, select, update
 
 from app.config import ConfigStore, DatabaseConfigStore, HubConfig
 from app.db import (
@@ -22,6 +22,7 @@ from app.llm import CompletionRequest, CompletionResult, LLMMessage, LLMRoute
 from app.llm.factory import build_router
 from app.llm.provider import EnvSecretProvider
 from app.memory import (
+    DeletionReceipt,
     ExtractionBackend,
     MemoryExtractor,
     MemoryIngester,
@@ -377,6 +378,59 @@ class ChatService:
                 )
             )
         return [self._message_view(record) for record in records]
+
+    async def delete_conversation(
+        self, conversation_id: UUID, *, user_id: UUID
+    ) -> DeletionReceipt:
+        """Hard-deletes a conversation with its turns, messages and memories.
+
+        Memory chains sourced from these messages are purged first and the
+        whole action lands in the deletion ledger as entity message/<id>, so
+        a restored backup can replay the deletion without resurrection.
+        """
+        async with self._database.sessions() as session:
+            conversation = await session.get(ConversationRecord, conversation_id)
+            if conversation is None or conversation.user_id != user_id:
+                raise LookupError("conversation not found")
+            message_ids = [
+                str(row)
+                for row in await session.scalars(
+                    select(MessageRecord.id).where(
+                        MessageRecord.conversation_id == conversation_id
+                    )
+                )
+            ]
+        receipt = DeletionReceipt(ledger_id=0, entity_id=str(conversation_id), deleted_ids=())
+        if self._memory_store is not None:
+            receipt = await self._memory_store.hard_delete_by_source(
+                "message",
+                message_ids,
+                entity_kind="message",
+                entity_id=str(conversation_id),
+                actor="user",
+                reason="conversation deleted by user",
+                always_record=True,
+            )
+        async with self._database.sessions.begin() as session:
+            conversation = await session.scalar(
+                select(ConversationRecord)
+                .where(ConversationRecord.id == conversation_id)
+                .with_for_update()
+            )
+            if conversation is None or conversation.user_id != user_id:
+                raise LookupError("conversation not found")
+            await session.execute(
+                delete(InteractionTurnRecord).where(
+                    InteractionTurnRecord.conversation_id == conversation_id
+                )
+            )
+            await session.execute(
+                delete(MessageRecord).where(
+                    MessageRecord.conversation_id == conversation_id
+                )
+            )
+            await session.delete(conversation)
+        return receipt
 
     async def recover_incomplete_turns(self) -> None:
         now = datetime.now(UTC)

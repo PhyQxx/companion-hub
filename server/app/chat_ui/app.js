@@ -250,11 +250,42 @@ function renderConversations() {
   const root = el("conversations");
   root.innerHTML = "";
   for (const conversation of state.conversations) {
+    const item = document.createElement("div");
+    item.className = `conversation-item${conversation.id === state.activeId ? " active" : ""}`;
     const button = document.createElement("button");
-    button.className = `conversation${conversation.id === state.activeId ? " active" : ""}`;
+    button.className = "conversation";
     button.innerHTML = `${escapeHtml(conversation.title || "新会话")}<small>${conversation.last_seq} 条消息</small>`;
     button.addEventListener("click", () => openConversation(conversation.id));
-    root.appendChild(button);
+    const remove = document.createElement("button");
+    remove.className = "conversation-delete";
+    remove.title = "删除会话及其沉淀记忆";
+    remove.textContent = "✕";
+    remove.addEventListener("click", (event) => {
+      event.stopPropagation();
+      deleteConversation(conversation.id);
+    });
+    item.appendChild(button);
+    item.appendChild(remove);
+    root.appendChild(item);
+  }
+}
+
+async function deleteConversation(id) {
+  const conversation = state.conversations.find((item) => item.id === id);
+  const label = conversation ? conversation.title || "新会话" : "该会话";
+  if (!confirm(`删除「${label}」？消息与由它沉淀的记忆会被一并删除并记入台账，不可恢复。`)) return;
+  try {
+    await request(`/api/v1/chat/conversations/${id}`, { method: "DELETE" });
+    state.conversations = state.conversations.filter((item) => item.id !== id);
+    if (state.activeId === id) {
+      state.activeId = null;
+      if (state.conversations.length) await openConversation(state.conversations[0].id);
+      else renderMessages([]);
+    }
+    renderConversations();
+    setStatus("会话已删除");
+  } catch (error) {
+    setStatus(error.message, true);
   }
 }
 

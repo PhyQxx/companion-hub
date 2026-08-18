@@ -41,7 +41,7 @@
 - [x] 删除 API：`DELETE /api/v1/admin/memories/{id}` 与 `GET /api/v1/admin/deletion-ledger`。
 - [x] L2 脱敏 utility 提取器接入（LLM 结构化提取，utility 路由 + json_mode，坏输出回退规则提取；`ARIA_MEMORY_EXTRACTOR=llm` 启用）。
 - [ ] 嵌入升级评估：utility 嵌入模型 + pgvector 全文/向量双召回与版本回填。
-- [ ] 消息删除级联与备份恢复后的台账重放工具。
+- [x] 消息删除级联与备份恢复后的台账重放工具（会话 DELETE API + UI 删除按钮 + `replay_deletions` 脚本与管理端点，dry-run 幂等）。
 
 ## 已完成
 
@@ -56,6 +56,7 @@
 - [x] P2 记忆系统 v1：混合检索重排、来源版本链溯源、沉淀判定与冲突裁决、聊天注入、管理 API（详见 docs/21）。
 - [x] P3 第一批：硬删除版本链/来源/衍生引用 + 删除台账 + `/admin/memory` 可视化后台（详见 docs/22）。
 - [x] P3 第二批：utility 提取器 + L2 事件级脱敏沉淀 + 规则回退（详见 docs/23）。
+- [x] P3 第三批：会话删除级联清理记忆 + 台账重放（详见 docs/24）。
 - [x] 模型配置后台与文字聊天调试台。
 - [x] 调试台固定视口、回车发送和消息自动贴底。
 - [x] Open-LLM-VTuber v1.2.1 macOS 源码安装及真实 HTTP/WebSocket、Live2D、ASR、TTS、Aria PostgreSQL 端到端验证。
