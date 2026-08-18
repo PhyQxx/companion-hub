@@ -60,6 +60,17 @@ class MemoryCandidate(StrictModel):
     valid_to: datetime | None = None
 
 
+class ExtractedCandidate(StrictModel):
+    type: MemoryType
+    content: Annotated[str, Field(min_length=2, max_length=200)]
+    importance: float = 0.5
+    confidence: float | None = None
+
+
+class ExtractedCandidates(StrictModel):
+    candidates: list[ExtractedCandidate] = Field(default_factory=list, max_length=16)
+
+
 @dataclass(frozen=True, slots=True)
 class MemoryEntry:
     id: int

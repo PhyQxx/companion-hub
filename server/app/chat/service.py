@@ -21,7 +21,14 @@ from app.ids import uuid7
 from app.llm import CompletionRequest, CompletionResult, LLMMessage, LLMRoute
 from app.llm.factory import build_router
 from app.llm.provider import EnvSecretProvider
-from app.memory import MemoryIngester, MemoryRetriever, MemoryStore, RetrievalResult
+from app.memory import (
+    ExtractionBackend,
+    MemoryExtractor,
+    MemoryIngester,
+    MemoryRetriever,
+    MemoryStore,
+    RetrievalResult,
+)
 from app.persona import PersonaConfig, PersonaStore
 from app.schemas import PrivacyLevel
 
@@ -100,13 +107,18 @@ class ChatService:
         router_builder: Callable[[HubConfig], CompletionBackend] | None = None,
         persona_store: PersonaStore | None = None,
         memory_store: MemoryStore | None = None,
+        memory_extractor: MemoryExtractor | None = None,
     ) -> None:
         self._database = database
         self._config_store = config_store
         self._persona_store = persona_store
         self._memory_store = memory_store
         self._memory_retriever = MemoryRetriever(memory_store) if memory_store else None
-        self._memory_ingester = MemoryIngester(memory_store) if memory_store else None
+        self._memory_ingester = (
+            MemoryIngester(memory_store, extractor=memory_extractor)
+            if memory_store
+            else None
+        )
         secrets = EnvSecretProvider()
         self._router_builder = router_builder or (
             lambda config: build_router(config, secrets)
@@ -183,8 +195,9 @@ class ChatService:
         )
         await self._transition(pending.turn_id, {"accepted"}, "thinking")
         try:
-            result = await self._router_builder(pending.config).complete(pending.request)
-            return await self._commit_turn(pending, result)
+            backend = self._router_builder(pending.config)
+            result = await backend.complete(pending.request)
+            return await self._commit_turn(pending, result, backend=backend)
         except BaseException:
             await self._fail_if_active(pending.turn_id)
             raise
@@ -313,7 +326,7 @@ class ChatService:
             result = await backend.stream(pending.request, filtered_delta)
             for visible in stream_filter.finish():
                 await guarded_delta(visible)
-            return await self._commit_turn(pending, result)
+            return await self._commit_turn(pending, result, backend=backend)
         except BaseException:
             await self._fail_if_active(pending.turn_id)
             raise
@@ -382,7 +395,11 @@ class ChatService:
             )
 
     async def _commit_turn(
-        self, pending: PendingTurn, result: CompletionResult
+        self,
+        pending: PendingTurn,
+        result: CompletionResult,
+        *,
+        backend: CompletionBackend | None = None,
     ) -> ChatTurn:
         reply = parse_agent_reply(result.text, pending.persona)
         decision_meta: dict[str, object] = {
@@ -452,10 +469,12 @@ class ChatService:
             user_message=pending.user_message,
             assistant_message=self._message_view(assistant_record),
         )
-        await self._consolidate_memory(pending)
+        await self._consolidate_memory(pending, backend=backend)
         return turn_result
 
-    async def _consolidate_memory(self, pending: PendingTurn) -> None:
+    async def _consolidate_memory(
+        self, pending: PendingTurn, *, backend: ExtractionBackend | None = None
+    ) -> None:
         if self._memory_ingester is None:
             return
         try:
@@ -465,6 +484,7 @@ class ChatService:
                 text=pending.user_message.content,
                 privacy_level=pending.request.privacy_level,
                 occurred_at=pending.user_message.created_at,
+                backend=backend,
             )
         except Exception:
             # A committed reply must never fail because memory consolidation

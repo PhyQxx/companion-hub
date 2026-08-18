@@ -1,10 +1,5 @@
 """Long-term memory system: retrieval, traceable sources and correction."""
-from .consolidation import (
-    RULE_EXTRACTOR_VERSION,
-    ConsolidationPolicy,
-    MemoryIngester,
-    RuleBasedExtractor,
-)
+from .consolidation import ConsolidateOutcome, ConsolidationPolicy, MemoryIngester
 from .embeddings import (
     EmbeddingProvider,
     HashingEmbeddingProvider,
@@ -12,11 +7,20 @@ from .embeddings import (
     lexical_cosine,
     text_tokens,
 )
+from .extraction import (
+    LLM_EXTRACTOR_VERSION,
+    RULE_EXTRACTOR_VERSION,
+    ExtractionBackend,
+    LlmMemoryExtractor,
+    MemoryExtractor,
+    RuleBasedExtractor,
+    extraction_instruction,
+)
 from .models import (
     ConsolidateDecision,
-    ConsolidateOutcome,
     DeletionLedgerEntry,
     DeletionReceipt,
+    ExtractedCandidates,
     MemoryCandidate,
     MemoryEntry,
     MemorySourceEntry,
@@ -38,6 +42,7 @@ from .store import MemoryStore
 
 __all__ = [
     "DEFAULT_TYPE_QUOTAS",
+    "LLM_EXTRACTOR_VERSION",
     "RETRIEVAL_POLICY_VERSION",
     "RULE_EXTRACTOR_VERSION",
     "ConsolidateDecision",
@@ -46,9 +51,13 @@ __all__ = [
     "DeletionLedgerEntry",
     "DeletionReceipt",
     "EmbeddingProvider",
+    "ExtractedCandidates",
+    "ExtractionBackend",
     "HashingEmbeddingProvider",
+    "LlmMemoryExtractor",
     "MemoryCandidate",
     "MemoryEntry",
+    "MemoryExtractor",
     "MemoryHit",
     "MemoryIngester",
     "MemoryRetriever",
@@ -63,6 +72,7 @@ __all__ = [
     "RuleBasedExtractor",
     "SimilarMemory",
     "cosine_similarity",
+    "extraction_instruction",
     "lexical_cosine",
     "text_tokens",
 ]

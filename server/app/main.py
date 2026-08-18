@@ -27,7 +27,7 @@ from app.bus import DispatcherWorker, EventPublisher, LocalEventPublisher
 from app.chat import ChatService
 from app.config import ConfigStore, ConfigWatcher, DatabaseConfigStore
 from app.db import Database, create_database
-from app.memory import MemoryStore
+from app.memory import LlmMemoryExtractor, MemoryExtractor, MemoryStore
 from app.persona import PersonaStore
 
 
@@ -70,6 +70,9 @@ def create_app(
     runtime_chat_service: ChatService | None = None
     persona_store = PersonaStore(runtime_database) if runtime_database is not None else None
     memory_store = MemoryStore(runtime_database) if runtime_database is not None else None
+    memory_extractor: MemoryExtractor | None = None
+    if memory_store is not None and os.getenv("ARIA_MEMORY_EXTRACTOR", "rule") == "llm":
+        memory_extractor = LlmMemoryExtractor()
     if dispatcher_enabled and runtime_database is not None:
         publisher = event_publisher or LocalEventPublisher(runtime_database)
         worker = DispatcherWorker(runtime_database.sessions, publisher)
@@ -255,6 +258,7 @@ def create_app(
                 runtime_config,
                 persona_store=persona_store,
                 memory_store=memory_store,
+                memory_extractor=memory_extractor,
             )
             app.state.auth_service = auth_service
             app.state.chat_service = runtime_chat_service

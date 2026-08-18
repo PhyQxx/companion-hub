@@ -14,11 +14,12 @@ from app.chat import ChatService
 from app.config import DatabaseConfigStore
 from app.db import AppUserRecord, Base, Database, create_database
 from app.ids import uuid7
-from app.llm import CompletionRequest
+from app.llm import CompletionRequest, CompletionResult, ModelUsage
 from app.main import create_app
 from app.memory import (
     ConsolidateDecision,
     HashingEmbeddingProvider,
+    LlmMemoryExtractor,
     MemoryCandidate,
     MemoryIngester,
     MemoryRetriever,
@@ -346,9 +347,10 @@ async def test_rule_extractor_classifies_and_privacy_skips(store: MemoryStore) -
 
     extractor = RuleBasedExtractor()
     message_id = uuid4()
-    results = extractor.extract(
+    results = await extractor.extract(
         "我不吃香菜。我喜欢你。我周五要汇报 PPT。随便聊聊。我叫小明。",
         message_id=message_id,
+        privacy_level=PrivacyLevel.L1,
         occurred_at=NOW,
     )
     by_type = {item.type: item for item in results}
@@ -636,3 +638,138 @@ async def test_admin_delete_and_ledger_api(
     assert missing.status_code == 404
     assert ledger.json()[0]["reason"] == "用户要求清除"
     assert ledger.json()[0]["deleted_ids"] == [first.id, second.id]
+
+
+class ScriptedRouter:
+    """Returns fixed payloads in order; used for reply then extraction calls."""
+
+    def __init__(self, replies: list[str]) -> None:
+        self._replies = list(replies)
+        self.requests: list[CompletionRequest] = []
+
+    async def complete(self, request: CompletionRequest) -> CompletionResult:
+        self.requests.append(request)
+        text = self._replies.pop(0) if self._replies else "好的。"
+        return CompletionResult(
+            text=text,
+            provider="openai_compatible",
+            model="utility-v1",
+            endpoint="cloud",
+            route=request.route,
+            finish_reason="stop",
+            usage=ModelUsage(),
+            latency_ms=3.0,
+        )
+
+    async def stream(self, request: CompletionRequest, on_delta: object) -> CompletionResult:
+        return await self.complete(request)
+
+
+async def _chat_service(
+    database: Database,
+    tmp_path: Path,
+    router: ScriptedRouter,
+    *,
+    extractor: object,
+) -> ChatService:
+    config_path = tmp_path / "hub.yaml"
+    config_path.write_text(config_yaml(), encoding="utf-8")
+    config_store = DatabaseConfigStore(database, config_path)
+    await config_store.load()
+    return ChatService(
+        database,
+        config_store,
+        router_builder=lambda config: router,  # type: ignore[arg-type]
+        memory_store=MemoryStore(database),
+        memory_extractor=extractor,  # type: ignore[arg-type]
+    )
+
+
+async def test_llm_extractor_stores_desensitized_l2_memory(
+    database: Database, user: AppUserRecord, tmp_path: Path
+) -> None:
+    router = ScriptedRouter(
+        [
+            "我在呢。",
+            '{"candidates":[{"type":"emotional","content":"用户与Aria进行了一次长时间温暖的对话，情绪放松","importance":0.6,"confidence":0.8}]}',
+        ]
+    )
+    service = await _chat_service(
+        database, tmp_path, router, extractor=LlmMemoryExtractor()
+    )
+    conversation = await service.create_conversation(user_id=user.id, title="l2")
+
+    await service.send_message(
+        conversation.id,
+        user_id=user.id,
+        text="（亲密对话占位文本）今晚聊了很久",
+        privacy_level=PrivacyLevel.L2,
+    )
+
+    assert len(router.requests) == 2
+    reply_request, extraction_request = router.requests
+    assert reply_request.privacy_level == "L2"
+    assert extraction_request.route == "utility"
+    assert extraction_request.privacy_level == "L2"
+    assert extraction_request.json_mode is True
+    assert "隐私约束" in extraction_request.messages[0].content
+
+    store = MemoryStore(database)
+    memories = await store.list_memories(user_id=user.id, status=MemoryStatus.ACTIVE)
+    assert [item.content for item in memories] == [
+        "用户与Aria进行了一次长时间温暖的对话，情绪放松"
+    ]
+    assert memories[0].privacy_level == "L2"
+    assert memories[0].extractor_version == "llm-utility-v1"
+
+    public = await MemoryRetriever(store).retrieve(
+        "最近聊了什么", user_id=user.id, privacy_level=PrivacyLevel.L1, now=NOW
+    )
+    private = await MemoryRetriever(store).retrieve(
+        "最近聊了什么", user_id=user.id, privacy_level=PrivacyLevel.L2, now=NOW
+    )
+    assert public.hits == ()
+    assert private.hits
+
+
+async def test_llm_extractor_falls_back_to_rules_on_bad_output(
+    database: Database, user: AppUserRecord, tmp_path: Path
+) -> None:
+    router = ScriptedRouter(["好的。", "模型抽风了，这不是 JSON"])
+    service = await _chat_service(
+        database, tmp_path, router, extractor=LlmMemoryExtractor()
+    )
+    conversation = await service.create_conversation(user_id=user.id, title="fallback")
+
+    await service.send_message(
+        conversation.id,
+        user_id=user.id,
+        text="记住：我不吃香菜。",
+        privacy_level=PrivacyLevel.L1,
+    )
+
+    memories = await MemoryStore(database).list_memories(
+        user_id=user.id, status=MemoryStatus.ACTIVE
+    )
+    assert [item.content for item in memories] == ["用户不吃香菜"]
+    assert memories[0].extractor_version == "rule-v1"
+
+
+async def test_llm_extractor_with_empty_candidates_stores_nothing(
+    database: Database, user: AppUserRecord, tmp_path: Path
+) -> None:
+    router = ScriptedRouter(["好的。", '{"candidates":[]}'])
+    service = await _chat_service(
+        database, tmp_path, router, extractor=LlmMemoryExtractor()
+    )
+    conversation = await service.create_conversation(user_id=user.id, title="empty")
+
+    turn = await service.send_message(
+        conversation.id,
+        user_id=user.id,
+        text="今天天气不错",
+        privacy_level=PrivacyLevel.L1,
+    )
+    assert turn.assistant_message.content == "好的。"
+    memories = await MemoryStore(database).list_memories(user_id=user.id)
+    assert memories == []
