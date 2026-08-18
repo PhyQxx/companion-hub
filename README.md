@@ -34,6 +34,7 @@
 | [docs/25-嵌入升级评估pgvector.md](./docs/25-嵌入升级评估pgvector.md) | pgvector 向量列与双写、ANN 召回、迁移回填与真实环境验证 |
 | [docs/26-前端决策ADR-018.md](./docs/26-前端决策ADR-018.md) | Vue 3 正式前端与 Open-LLM-VTuber 边界决策、分阶段迁移计划 |
 | [docs/27-Vue聊天前端P4a.md](./docs/27-Vue聊天前端P4a.md) | web monorepo、shared API/WS 客户端与 Vue 聊天前端落地 |
+| [docs/28-管理后台Vue迁移P4b.md](./docs/28-管理后台Vue迁移P4b.md) | admin SPA、FastAPI 双模式托管、迁移修复与浏览器实测 |
 
 ## 一图速览
 
@@ -76,10 +77,13 @@
 - [x] P3 嵌入升级 —— pgvector 向量列双写 + ANN 召回（迁移 0009，PostgreSQL 专属，真实容器验证）
 - [x] P4 前端决策（ADR-018）—— Vue 3 自建 chat/admin 正式前端，Open-LLM-VTuber 仅作 P6 渲染/语音端
 - [x] P4a Vue 聊天前端 —— `web/` monorepo、shared 客户端、登录/会话/流式/取消/删除/隐私等级，`/chat` 服务构建产物（旧调试页保留于 `/chat/debug`）
+- [x] P4b Vue 管理后台 —— 总览/模型/Persona/记忆库/占位页迁入 `web/apps/admin`，`/admin/*` 双模式托管，浏览器实测通过
 
 ## 本地开发
 
 要求：Python 3.11、[uv](https://docs.astral.sh/uv/)、Node 20、pnpm 10。
+
+代码规范：界面与提示文案使用中文；代码注释统一使用中文并尽量详尽（模块 docstring 说明设计意图，关键分支加行内注释），ruff 已豁免中文全角标点（RUF001/002/003）。
 
 ```bash
 uv sync --dev
@@ -100,7 +104,7 @@ uv run uvicorn app.main:app --app-dir server --reload
 - 协议元数据：`GET /api/v1/meta/protocol`
 - 已登记 Adapter：`GET /api/v1/meta/adapters`
 - 已发布模型配置（不返回密钥引用）：`GET /api/v1/meta/config`
-- 模型配置后台：`GET /admin/models`
+- 模型配置后台：`GET /admin/models`（Vue SPA；未构建时回退 vanilla 页面）
 - Persona 管理后台：`GET /admin/personas`
 - 记忆库后台：`GET /admin/memory`（过滤、溯源、纠错、冲突裁决、检索调试与硬删除台账）
 - 记忆管理 API：`/api/v1/admin/memories*` 与 `/api/v1/admin/deletion-ledger`

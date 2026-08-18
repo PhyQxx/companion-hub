@@ -638,7 +638,8 @@ async def test_admin_delete_and_ledger_api(
         ledger = await client.get("/api/v1/admin/deletion-ledger", headers=headers)
 
     assert page.status_code == 200
-    assert "记忆库" in page.text
+    # Vue SPA when the admin dist exists, vanilla page otherwise.
+    assert '<div id="app"></div>' in page.text or "记忆库" in page.text
     assert unauthorized.status_code == 401
     assert deleted.status_code == 200
     assert deleted.json()["deleted_ids"] == [first.id, second.id]

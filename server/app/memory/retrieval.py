@@ -1,4 +1,9 @@
-# ruff: noqa: RUF001
+# ruff: noqa: RUF001, RUF002, RUF003
+"""混合检索器：双路召回 → 硬过滤 → 归一化重排 → 类型配额 Top-K。
+
+策略版本 hybrid-quota-v1 会随 decision_meta 一起落库，任何打分或
+过滤规则的修改都必须 bump 版本号，保证历史回合可追溯当时的检索行为。
+"""
 from __future__ import annotations
 
 import math
@@ -72,7 +77,8 @@ class MemoryRetriever:
         now: datetime | None = None,
     ) -> RetrievalResult:
         moment = now or datetime.now(UTC)
-        # L2 memories may only join contexts that stay on the private route.
+        # 隐私闸门：L2 记忆只能进入强制本地路由的 L2 上下文，
+        # 绝不允许随 L0/L1 云端调用出站
         allowed_levels = (
             (PrivacyLevel.L0, PrivacyLevel.L1, PrivacyLevel.L2)
             if privacy_level is PrivacyLevel.L2
@@ -99,8 +105,8 @@ class MemoryRetriever:
             return cosine_similarity(query_vector, item.embedding)
 
         if self._store.vector_sql_enabled:
-            # pgvector ANN recall replaces the in-process scan on PostgreSQL;
-            # both paths feed the same merge/rerank below.
+            # PostgreSQL 上用 pgvector ANN 替换全量扫描；
+            # 两条路径产出同构的 (id, 相似度) 列表，进入同一套合并/重排
             vector_ranked = await self._store.vector_recall(
                 query_vector,
                 user_id=user_id,
@@ -138,8 +144,10 @@ class MemoryRetriever:
             if lexical_score > 0:
                 reasons.append("lexical")
             if entry.pin:
+                # 置顶加成：用户手动固定的关键事实优先进入上下文
                 score += self._policy.pin_bonus
                 reasons.append("pin")
+            # 新近度只作用于情景记忆：稳定事实（语义/偏好）不随时间衰减
             if entry.type == MemoryType.EPISODIC.value and entry.created_at is not None:
                 age_days = max((moment - entry.created_at).total_seconds() / 86_400.0, 0.0)
                 score += self._policy.episodic_recency_weight * math.exp(
@@ -159,6 +167,7 @@ class MemoryRetriever:
 
         selected: list[MemoryHit] = []
         used: Counter[str] = Counter()
+        # 按类型配额截取 Top-K：单一类型不能挤占全部上下文位
         for hit in ranked:
             quota = self._policy.quotas.get(hit.memory.type)
             if quota is not None and used[hit.memory.type] >= quota:
@@ -179,6 +188,7 @@ class MemoryRetriever:
 
     @staticmethod
     def render_context(result: RetrievalResult) -> str:
+        """把命中记忆渲染成注入系统提示的【相关记忆】块；无命中返回空串。"""
         if not result.hits:
             return ""
         lines = [

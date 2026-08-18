@@ -1,3 +1,4 @@
+# ruff: noqa: RUF002, RUF003
 from __future__ import annotations
 
 import logging
@@ -382,11 +383,10 @@ class ChatService:
     async def delete_conversation(
         self, conversation_id: UUID, *, user_id: UUID
     ) -> DeletionReceipt:
-        """Hard-deletes a conversation with its turns, messages and memories.
+        """硬删除会话：连同回合、消息与沉淀记忆一起清除。
 
-        Memory chains sourced from these messages are purged first and the
-        whole action lands in the deletion ledger as entity message/<id>, so
-        a restored backup can replay the deletion without resurrection.
+        先按消息来源清除记忆链，整个动作以 message/<会话ID> 实体记入
+        删除台账；备份恢复后可按台账重放，被删内容不会复活。
         """
         async with self._database.sessions() as session:
             conversation = await session.get(ConversationRecord, conversation_id)
@@ -541,8 +541,8 @@ class ChatService:
                 backend=backend,
             )
         except Exception:
-            # A committed reply must never fail because memory consolidation
-            # broke; the next turn re-ingests from its own message anyway.
+            # 已提交的回复绝不能因为记忆沉淀失败而失败；
+            # 下一轮会基于自己的消息重新沉淀，这里只记日志
             logger.warning(
                 "memory consolidation failed for turn %s", pending.turn_id, exc_info=True
             )

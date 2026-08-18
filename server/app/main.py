@@ -109,7 +109,15 @@ def create_app(
     app.state.memory_store = memory_store
 
     admin_root = Path(__file__).parent / "admin"
-    app.mount("/admin/assets", StaticFiles(directory=admin_root), name="admin-assets")
+    app.mount("/admin/legacy", StaticFiles(directory=admin_root), name="admin-legacy")
+    admin_dist = Path(__file__).resolve().parents[2] / "web" / "apps" / "admin" / "dist"
+    admin_spa_ready = (admin_dist / "index.html").is_file()
+    if admin_spa_ready:
+        app.mount(
+            "/admin/assets",
+            StaticFiles(directory=admin_dist / "assets"),
+            name="admin-assets",
+        )
     chat_root = Path(__file__).parent / "chat_ui"
     app.mount("/chat/debug/assets", StaticFiles(directory=chat_root), name="chat-debug-assets")
     chat_dist = Path(__file__).resolve().parents[2] / "web" / "apps" / "chat" / "dist"
@@ -119,25 +127,34 @@ def create_app(
             "/chat/assets", StaticFiles(directory=chat_dist_assets), name="chat-assets"
         )
 
-    @app.get("/admin/models", include_in_schema=False)
-    async def model_admin() -> FileResponse:
-        return FileResponse(admin_root / "models.html")
+    if admin_spa_ready:
 
-    @app.get("/admin", include_in_schema=False)
-    @app.get("/admin/devices", include_in_schema=False)
-    @app.get("/admin/logs", include_in_schema=False)
-    @app.get("/admin/privacy", include_in_schema=False)
-    @app.get("/admin/settings", include_in_schema=False)
-    async def admin_module() -> FileResponse:
-        return FileResponse(admin_root / "module.html")
+        @app.get("/admin", include_in_schema=False)
+        @app.get("/admin/{rest:path}", include_in_schema=False)
+        async def admin_spa(rest: str = "") -> FileResponse:
+            return FileResponse(admin_dist / "index.html")
 
-    @app.get("/admin/personas", include_in_schema=False)
-    async def persona_admin() -> FileResponse:
-        return FileResponse(admin_root / "personas.html")
+    else:
 
-    @app.get("/admin/memory", include_in_schema=False)
-    async def memory_admin() -> FileResponse:
-        return FileResponse(admin_root / "memory.html")
+        @app.get("/admin/models", include_in_schema=False)
+        async def model_admin() -> FileResponse:
+            return FileResponse(admin_root / "models.html")
+
+        @app.get("/admin", include_in_schema=False)
+        @app.get("/admin/devices", include_in_schema=False)
+        @app.get("/admin/logs", include_in_schema=False)
+        @app.get("/admin/privacy", include_in_schema=False)
+        @app.get("/admin/settings", include_in_schema=False)
+        async def admin_module() -> FileResponse:
+            return FileResponse(admin_root / "module.html")
+
+        @app.get("/admin/personas", include_in_schema=False)
+        async def persona_admin() -> FileResponse:
+            return FileResponse(admin_root / "personas.html")
+
+        @app.get("/admin/memory", include_in_schema=False)
+        async def memory_admin() -> FileResponse:
+            return FileResponse(admin_root / "memory.html")
 
     @app.get("/chat", include_in_schema=False)
     async def chat_entry() -> FileResponse:

@@ -46,7 +46,12 @@ def upgrade() -> None:
 
     op.create_table(
         "outbox",
-        sa.Column("id", sa.BigInteger(), autoincrement=True, nullable=False),
+        sa.Column(
+            "id",
+            sa.BigInteger().with_variant(sa.Integer(), "sqlite"),
+            autoincrement=True,
+            nullable=False,
+        ),
         sa.Column("event_id", sa.Uuid(), nullable=False),
         sa.Column("topic", sa.String(length=200), nullable=False),
         sa.Column("status", sa.String(length=16), server_default="pending", nullable=False),
@@ -84,7 +89,12 @@ def upgrade() -> None:
 
     op.create_table(
         "dead_letter",
-        sa.Column("id", sa.BigInteger(), autoincrement=True, nullable=False),
+        sa.Column(
+            "id",
+            sa.BigInteger().with_variant(sa.Integer(), "sqlite"),
+            autoincrement=True,
+            nullable=False,
+        ),
         sa.Column("outbox_id", sa.BigInteger(), nullable=False),
         sa.Column("event_id", sa.Uuid(), nullable=False),
         sa.Column("topic", sa.String(length=200), nullable=False),

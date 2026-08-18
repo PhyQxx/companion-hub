@@ -1,3 +1,11 @@
+# ruff: noqa: RUF002, RUF003
+"""MemoryStore：记忆的持久化、纠错、硬删除与台账。
+
+所有写入都在事务内完成；嵌入向量同时写入 JSON 列（通用）与
+PostgreSQL 的 vector 列（迁移 0009，双写），检索按方言自动选择
+pgvector ANN 或进程内余弦。删除操作只经 hard_delete* 入口进入，
+保证台账语义一致；重放工具走无台账的 purge_* 变体避免台账自我膨胀。
+"""
 from __future__ import annotations
 
 import hashlib
@@ -57,7 +65,7 @@ class MemoryStore:
 
     @property
     def vector_sql_enabled(self) -> bool:
-        """True when the pgvector column exists (PostgreSQL after 0009)."""
+        """当前数据库是否可用 pgvector 通道（PostgreSQL 且已应用迁移 0009）。"""
         return self._database.engine.dialect.name == "postgresql"
 
     @property
@@ -74,6 +82,7 @@ class MemoryStore:
         conflict_with: int | None = None,
     ) -> MemoryEntry:
         privacy = PrivacyLevel(candidate.privacy_level)
+        # L3（原始传感器遥测）在任何路径下都禁止成为持久记忆
         if privacy is PrivacyLevel.L3:
             raise ValueError("L3 content must never become a durable memory")
         vector = (await self._embedding_provider.embed([candidate.content]))[0]
@@ -202,7 +211,7 @@ class MemoryStore:
         valid_at: datetime,
         limit: int,
     ) -> list[tuple[int, float]]:
-        """pgvector ANN recall; empty on dialects without the vector column."""
+        """pgvector ANN 召回：按余弦距离取 Top-K，非 PostgreSQL 方言返回空。"""
         if not self.vector_sql_enabled or not privacy_levels:
             return []
         statement = text(
@@ -330,11 +339,10 @@ class MemoryStore:
         actor: str,
         reason: str,
     ) -> MemoryEntry:
-        """Creates a corrected version that supersedes the original.
+        """纠错编辑：生成替代版本，旧版本转入 superseded 并保留溯源。
 
-        The original row stays queryable for traceability: it keeps its
-        content, gains status superseded and points at the replacement.
-        Omitted fields carry over from the current version.
+        原行不会被删除或覆盖：它保留原内容与来源，状态变为 superseded
+        并通过 superseded_by 指向新版本。未显式提供的字段沿用当前值。
         """
         current = await self.get(memory_id, user_id=user_id)
         if current.status == MemoryStatus.SUPERSEDED.value:
@@ -433,12 +441,11 @@ class MemoryStore:
     async def hard_delete(
         self, memory_id: int, *, actor: str, reason: str | None = None
     ) -> DeletionReceipt:
-        """Removes the full version chain of a memory and records the ledger.
+        """硬删除整条版本链并写入删除台账。
 
-        Deletion always covers the whole supersede lineage plus every stored
-        source reference; surviving memories that link to a deleted version
-        (derived `memory` sources or `conflict_with` pointers) are detached
-        inside the same transaction. The ledger row keeps identifiers only.
+        删除范围始终是该记忆的完整 supersede 链（前驱 + 后继）及其全部
+        来源行；其他存活记忆上指向被删版本的引用（衍生 memory 来源、
+        conflict_with 指针）在同一事务内摘除。台账行只保存标识符。
         """
         now = datetime.now(UTC)
         async with self._database.sessions.begin() as session:
@@ -484,11 +491,10 @@ class MemoryStore:
         reason: str | None = None,
         always_record: bool = False,
     ) -> DeletionReceipt:
-        """Deletes every memory chain rooted at the given source references.
+        """按来源引用删除所有相关记忆链并记录台账。
 
-        Used by conversation deletion: entity_kind='message' with the
-        conversation id gives the ledger a stable replay handle even when no
-        memory was ever consolidated from those messages.
+        会话删除的入口：entity_kind='message' + 会话 ID 作为台账实体，
+        即使该会话从未沉淀过记忆也会留下一行，保证备份重放句柄稳定。
         """
         now = datetime.now(UTC)
         seed_ids = await self.memory_ids_by_source(source_kind, source_ids)
@@ -512,7 +518,7 @@ class MemoryStore:
         )
 
     async def purge_by_source(self, source_kind: str, source_ids: Sequence[str]) -> int:
-        """Ledger-free variant used by the deletion replay tool."""
+        """无台账变体：按来源引用清除记忆链，供台账重放工具使用。"""
         source_id_list = list(source_ids)
         if not source_id_list:
             return 0
@@ -533,7 +539,7 @@ class MemoryStore:
             return len(deleted_ids)
 
     async def purge_by_ids(self, memory_ids: Sequence[int]) -> int:
-        """Ledger-free removal of whole chains by memory id (replay tool)."""
+        """无台账变体：按记忆 ID 直接清除整条版本链（重放工具使用）。"""
         if not memory_ids:
             return 0
         async with self._database.sessions.begin() as session:
@@ -579,6 +585,7 @@ class MemoryStore:
     async def _collect_lineage_ids(
         self, session: AsyncSession, seed_ids: Sequence[int]
     ) -> list[int]:
+        """从种子 ID 出发沿 supersede 链双向遍历，收集整条版本链的 ID。"""
         related: dict[int, MemoryRecord] = {}
         frontier: list[MemoryRecord] = []
         for seed_id in dict.fromkeys(seed_ids):
@@ -606,6 +613,11 @@ class MemoryStore:
     async def _purge_memory_ids(
         self, session: AsyncSession, deleted_ids: Sequence[int]
     ) -> None:
+        """物理删除记忆行：自身来源、衍生链接、冲突指针与行本体。
+
+        注意必须显式删除 memory_source 行：sqlite 测试环境不强制外键
+        级联，依赖 CASCADE 会导致孤儿来源行残留。
+        """
         deleted_id_strings = [str(item) for item in deleted_ids]
         await session.execute(
             delete(MemorySourceRecord).where(

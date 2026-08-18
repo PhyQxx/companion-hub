@@ -1,7 +1,7 @@
 # Aria 开发任务清单
 
 > 最后更新：2026-08-18
-> 当前阶段：P4 · Vue 3 正式前端（决策已定，实施中）
+> 当前阶段：P5 · 文字稳定性闸门（真实使用观察期）
 
 ## 进度概览
 
@@ -11,8 +11,8 @@
 | P1 结构化回复与 Persona | 已完成 | 统一文本、情绪、语音和动作输出 |
 | P2 记忆系统 v1 | 已完成 | 可检索、可溯源、可纠错的长期记忆 |
 | P3 删除闭环与记忆后台 | 已完成 | 跨存储删除与可视化管理 |
-| P4 正式前端决策 | 待开始 | 决定 Vue 3 与 Open-LLM-VTuber 的边界 |
-| P5 文字稳定性闸门 | 待开始 | 连续 14 天真实使用验证 |
+| P4 正式前端决策 | 已完成 | 决定 Vue 3 与 Open-LLM-VTuber 的边界 |
+| P5 文字稳定性闸门 | 进行中 | 连续 14 天真实使用验证 |
 | P6 语音与 Live2D 产品化 | 待开始 | 完整语音、打断、表情与桌宠体验 |
 
 ## 上一批次：P2（已完成）
@@ -43,12 +43,19 @@
 - [x] 嵌入升级评估：pgvector 向量列双写 + ANN 召回 + 迁移回填（迁移 0009，真实 pgvector 容器验证；真实嵌入模型切换路径见 docs/25）。
 - [x] 消息删除级联与备份恢复后的台账重放工具（会话 DELETE API + UI 删除按钮 + `replay_deletions` 脚本与管理端点，dry-run 幂等）。
 
-## 当前批次：P4（进行中）
+## 上一批次：P4（已完成）
 
 - [x] 前端技术决策：ADR-018 —— Vue 3 自建 chat/admin 正式前端，Open-LLM-VTuber 仅作 P6 渲染/语音端（详见 docs/26）。
 - [x] P4a：`web/` monorepo 脚手架（Vite + TS + pnpm workspace）+ chat MVP（登录、会话、流式、取消、删除、隐私等级），FastAPI 托管构建产物，调试页保留为 `/chat/debug`（详见 docs/27）。
-- [ ] P4b：admin 迁移（模型路由、Persona、记忆库、总览）到 `web/apps/admin`。
-- [ ] Dockerfile 增加 pnpm build 阶段；`packages/shared` 抽取 API 客户端与类型。
+- [x] P4b：admin 迁移（总览、模型路由、Persona、记忆库、占位页）到 `web/apps/admin`；FastAPI 双模式托管；迁移 BIGINT 主键 sqlite 变体修复；浏览器实测（详见 docs/28）。
+- [x] Dockerfile pnpm build 阶段；`packages/shared` 抽取 API 客户端与类型。
+- [x] 注释与文案规范确立：界面文案与代码注释统一中文，memory 包与前端核心文件已补齐。
+
+## 当前批次：P5（进行中）
+
+- [ ] 以 Vue chat 前端为载体连续 14 天真实文字使用（记录问题清单：检索质量、沉淀误判、隐私路由、前端体验）。
+- [ ] 记忆正/负例/冲突/删除/敏感隔离回归集在真实数据上的评估（docs/03 §1.8 的最小版）。
+- [ ] 只修问题不扩功能；结束时输出 P5 闸门报告。
 
 ## 已完成
 
@@ -65,6 +72,7 @@
 - [x] P3 第二批：utility 提取器 + L2 事件级脱敏沉淀 + 规则回退（详见 docs/23）。
 - [x] P3 第三批：会话删除级联清理记忆 + 台账重放（详见 docs/24）。
 - [x] P3 第四批：pgvector 向量列双写 + ANN 召回 + 真实容器验证（详见 docs/25）。
+- [x] P4：前端决策 ADR-018 + Vue chat/admin 正式前端（详见 docs/26～28）。
 - [x] 模型配置后台与文字聊天调试台。
 - [x] 调试台固定视口、回车发送和消息自动贴底。
 - [x] Open-LLM-VTuber v1.2.1 macOS 源码安装及真实 HTTP/WebSocket、Live2D、ASR、TTS、Aria PostgreSQL 端到端验证。

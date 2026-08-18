@@ -20,7 +20,12 @@ depends_on: str | Sequence[str] | None = None
 def upgrade() -> None:
     op.create_table(
         "deletion_ledger",
-        sa.Column("id", sa.BigInteger(), autoincrement=True, nullable=False),
+        sa.Column(
+            "id",
+            sa.BigInteger().with_variant(sa.Integer(), "sqlite"),
+            autoincrement=True,
+            nullable=False,
+        ),
         sa.Column("entity_kind", sa.String(length=16), nullable=False),
         sa.Column("entity_id", sa.String(length=200), nullable=False),
         sa.Column("deleted_ids", sa.JSON(), nullable=False),

@@ -1,3 +1,10 @@
+# ruff: noqa: RUF002
+"""删除台账重放：备份恢复后重新施加删除，防止已删内容复活。
+
+按台账时间正序逐条重放：memory 实体按 ID 清链、message 实体连同
+消息与其沉淀记忆一起清除。每一步都幂等——已删除的目标直接跳过，
+重复重放计数归零。dry_run 只统计将要删除的对象，不产生任何写入。
+"""
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -21,11 +28,10 @@ class ReplayReport:
 
 
 async def replay_deletions(database: Database, *, dry_run: bool = True) -> ReplayReport:
-    """Re-applies the deletion ledger against the current database.
+    """对当前数据库重放删除台账。
 
-    After restoring a backup, rows deleted before the backup snapshot may be
-    alive again. Replaying the ledger oldest-first removes them once more;
-    every step is idempotent, so already-deleted targets are simply skipped.
+    备份恢复后，快照之前删除的行可能重新存活。按时间正序重放会把
+    它们再次清除；每步幂等，已删除的目标直接跳过。
     """
     store = MemoryStore(database)
     entries = await store.list_deletion_ledger(limit=REPLAY_LEDGER_LIMIT)

@@ -1,3 +1,9 @@
+/**
+ * @aria/shared：chat 与 admin 前端共用的 API 客户端、WS 客户端与协议类型。
+ * 类型与后端 Pydantic 模型一一对应，改动时保持两端同步。
+ */
+
+/** 隐私等级：L0 可上云 / L1 常规 / L2 仅本地模型 */
 export type PrivacyLevel = "L0" | "L1" | "L2";
 
 export interface SetupStatus {
@@ -70,6 +76,7 @@ export interface SocketEvent {
   };
 }
 
+/** 后端返回非 2xx 时抛出；message 已尽量展开 detail/reason_code */
 export class ApiError extends Error {
   constructor(
     readonly status: number,
@@ -79,9 +86,11 @@ export class ApiError extends Error {
   }
 }
 
+/** 聊天侧 REST 客户端：身份、会话与消息（不含管理端点） */
 export class ChatApi {
   constructor(private baseUrl = "") {}
 
+  /** 统一请求封装：附加 JSON 头与 Bearer 令牌，统一错误展开 */
   private async request<T>(path: string, init: RequestInit, token?: string): Promise<T> {
     const headers: Record<string, string> = {
       "Content-Type": "application/json",
@@ -163,11 +172,44 @@ export class ChatApi {
   }
 }
 
+/** 管理端 REST 客户端：令牌保存在实例上（来自 sessionStorage） */
+export class AdminApi {
+  constructor(
+    private baseUrl = "",
+    public token = "",
+  ) {}
+
+  async request<T>(path: string, init: RequestInit = {}): Promise<T> {
+    const headers: Record<string, string> = {
+      "Content-Type": "application/json",
+      ...(init.headers as Record<string, string> | undefined),
+    };
+    if (this.token) headers.Authorization = `Bearer ${this.token}`;
+    const response = await fetch(`${this.baseUrl}${path}`, { ...init, headers });
+    if (!response.ok) {
+      const body = (await response.json().catch(() => ({}))) as { detail?: unknown };
+      const detail = body.detail;
+      const message =
+        typeof detail === "string"
+          ? detail
+          : ((detail as { reason_code?: string } | null)?.reason_code ??
+            `HTTP ${response.status}`);
+      throw new ApiError(response.status, message);
+    }
+    if (response.status === 204) return {} as T;
+    return (await response.json()) as T;
+  }
+}
+
 export interface ChatSocketHandlers {
   onEvent: (event: SocketEvent) => void;
   onClose: (code: number) => void;
 }
 
+/**
+ * 聊天 WebSocket 客户端：封装 authenticate 首帧、发送/取消/补拉帧
+ * 与服务端事件的回调分发。断线重连策略由调用方决定。
+ */
 export class ChatSocket {
   private socket: WebSocket | null = null;
 
@@ -177,6 +219,7 @@ export class ChatSocket {
     private handlers: ChatSocketHandlers,
   ) {}
 
+  /** 建立连接并完成 5 秒内的 authenticate 首帧鉴权，成功后 resolve */
   connect(): Promise<void> {
     return new Promise((resolve, reject) => {
       const socket = new WebSocket(this.url);

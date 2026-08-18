@@ -20,7 +20,12 @@ depends_on: str | Sequence[str] | None = None
 def upgrade() -> None:
     op.create_table(
         "persona_version",
-        sa.Column("id", sa.BigInteger(), autoincrement=True, nullable=False),
+        sa.Column(
+            "id",
+            sa.BigInteger().with_variant(sa.Integer(), "sqlite"),
+            autoincrement=True,
+            nullable=False,
+        ),
         sa.Column("status", sa.String(length=16), nullable=False),
         sa.Column("content", sa.JSON(), nullable=False),
         sa.Column("content_hash", sa.String(length=64), nullable=False),

@@ -1,3 +1,4 @@
+# ruff: noqa: RUF002, RUF003
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -40,11 +41,11 @@ class ConsolidationPolicy:
 
 @final
 class MemoryIngester:
-    """Adjudicates incoming candidates against same-type active memories.
+    """对候选记忆做同类型相似度判定后入库。
 
-    Model- or rule-derived candidates never overwrite a stable fact directly:
-    a related-but-different statement parks as a conflicted memory and waits
-    for an explicit resolution, matching the memory design in docs/02 §3.6.
+    模型或规则产出的候选永远不会直接覆盖稳定事实：相似但不同的表述
+    会以 conflict 状态挂起，等待显式裁决——这正是 docs/02 §3.6 的
+    "冲突时保留版本并等待确认"语义。
     """
 
     def __init__(
@@ -103,6 +104,7 @@ class MemoryIngester:
         occurred_at: datetime,
         backend: ExtractionBackend | None = None,
     ) -> list[ConsolidateOutcome]:
+        # 归一化隐私等级（上游传来的可能是 pydantic 展开后的字符串）
         privacy = PrivacyLevel(privacy_level)
         candidates = await self._extractor.extract(
             text,

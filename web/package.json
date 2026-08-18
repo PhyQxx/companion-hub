@@ -2,7 +2,7 @@
   "name": "aria-web",
   "private": true,
   "scripts": {
-    "build": "pnpm --filter @aria/chat build",
+    "build": "pnpm -r build",
     "typecheck": "pnpm -r typecheck"
   }
 }

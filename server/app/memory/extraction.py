@@ -1,4 +1,11 @@
-# ruff: noqa: RUF001
+# ruff: noqa: RUF001, RUF002, RUF003
+"""记忆提取器：从聊天消息中产出候选记忆。
+
+两个实现共用 MemoryExtractor 协议：
+- RuleBasedExtractor（rule-v1）：确定性规则，离线可用，L2/L3 直接跳过；
+- LlmMemoryExtractor（llm-utility-v1）：utility 路由 + json_mode 的结构化
+  提取，L2 场景带强制脱敏提示词；任何模型故障自动回退规则提取器。
+"""
 from __future__ import annotations
 
 import json
@@ -55,6 +62,7 @@ class MemoryExtractor(Protocol):
 
 
 def extraction_instruction(privacy_level: PrivacyLevel) -> str:
+    """构造提取提示词；L2 附加事件级脱敏约束（禁止生理/身体细节）。"""
     instruction = (
         "你是长期记忆提取器。从用户消息中提取值得长期记住的内容，只输出严格 JSON：\n"
         '{"candidates":[{"type":"semantic|preference|commitment|episodic|emotional",'
@@ -73,10 +81,11 @@ def extraction_instruction(privacy_level: PrivacyLevel) -> str:
 
 @final
 class LlmMemoryExtractor:
-    """Utility-model extraction with the deterministic rule extractor as fallback.
+    """utility 模型结构化提取，规则提取器兜底。
 
-    Any model failure — network, malformed JSON, schema violation — degrades to
-    the rule extractor instead of losing the turn's consolidation entirely.
+    任何模型故障——网络错误、非 JSON 输出、schema 校验失败——都会降级到
+    规则提取器，而不是让这一轮的沉淀完全丢失；回退记忆保留 rule-v1
+    版本标记，便于事后区分提取路径。
     """
 
     def __init__(self, *, fallback: RuleBasedExtractor | None = None) -> None:
@@ -91,8 +100,10 @@ class LlmMemoryExtractor:
         occurred_at: datetime,
         backend: ExtractionBackend | None = None,
     ) -> list[MemoryCandidate]:
+        # L3 全链路阻断：任何提取器都不处理
         if privacy_level is PrivacyLevel.L3:
             return []
+        # 没有可用后端（如未接线 utility 路由）时直接走规则提取
         if backend is None:
             return await self._fallback.extract(
                 text,
@@ -114,8 +125,10 @@ class LlmMemoryExtractor:
         )
         try:
             result = await backend.complete(request)
+            # 输出先剥掉可能的 markdown 代码围栏再严格校验 schema
             payload = ExtractedCandidates.model_validate(_load_json_object(result.text))
         except Exception:
+            # 坏输出一律降级规则提取，绝不让提取失败影响回合提交
             return await self._fallback.extract(
                 text,
                 message_id=message_id,
@@ -144,10 +157,10 @@ class LlmMemoryExtractor:
 
 @final
 class RuleBasedExtractor:
-    """Conservative deterministic extractor for first-person stable statements.
+    """保守的确定性提取器：只识别第一人称稳定陈述。
 
-    L2/L3 conversations are skipped: without the desensitizing utility model
-    they must not persist anything.
+    L2/L3 会话一律跳过——没有脱敏能力的内容不允许落库；L2 的脱敏
+    沉淀由 LlmMemoryExtractor 承担。
     """
 
     async def extract(
@@ -159,6 +172,7 @@ class RuleBasedExtractor:
         occurred_at: datetime,
         backend: ExtractionBackend | None = None,
     ) -> list[MemoryCandidate]:
+        # 规则路径没有脱敏能力：L2/L3 不产生任何候选
         if privacy_level in {PrivacyLevel.L2, PrivacyLevel.L3}:
             return []
         results: list[MemoryCandidate] = []
@@ -202,6 +216,7 @@ class RuleBasedExtractor:
 
 
 def _load_json_object(raw: str) -> dict[str, object]:
+    """从模型输出中提取第一个 JSON 对象；容忍 markdown 代码围栏。"""
     stripped = raw.strip()
     if stripped.startswith("```"):
         stripped = stripped.strip("`")

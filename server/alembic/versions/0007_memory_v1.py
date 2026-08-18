@@ -20,7 +20,12 @@ depends_on: str | Sequence[str] | None = None
 def upgrade() -> None:
     op.create_table(
         "memory",
-        sa.Column("id", sa.BigInteger(), autoincrement=True, nullable=False),
+        sa.Column(
+            "id",
+            sa.BigInteger().with_variant(sa.Integer(), "sqlite"),
+            autoincrement=True,
+            nullable=False,
+        ),
         sa.Column(
             "user_id",
             sa.Uuid(),
@@ -82,7 +87,11 @@ def upgrade() -> None:
     op.create_index("ix_memory_created", "memory", ["created_at"])
     op.create_table(
         "memory_source",
-        sa.Column("memory_id", sa.BigInteger(), nullable=False),
+        sa.Column(
+            "memory_id",
+            sa.BigInteger().with_variant(sa.Integer(), "sqlite"),
+            nullable=False,
+        ),
         sa.Column("source_kind", sa.String(length=16), nullable=False),
         sa.Column("source_id", sa.String(length=200), nullable=False),
         sa.Column("excerpt_hash", sa.String(length=80), nullable=True),

@@ -12,6 +12,8 @@ import {
   type SocketEvent,
 } from "@aria/shared";
 
+// 聊天前端主组件：登录 → 会话侧栏 → 流式消息区 → 发送区。
+// 令牌持久化在 localStorage；WS 断线自动重连（最多 3 次）。
 const api = new ChatApi();
 const TOKEN_KEY = "ariaChatToken";
 
@@ -186,6 +188,7 @@ async function removeConversation(id: string) {
   }
 }
 
+/** 建立实时连接；失败时保留基础 REST 可用性并提示 */
 function connectSocket() {
   closeSocket();
   socket = new ChatSocket(
@@ -215,6 +218,7 @@ function handleClose(code: number) {
   reconnectTimer = window.setTimeout(connectSocket, 3000);
 }
 
+/** WS 事件分发：delta 流式拼接、control 情绪标签、committed 落定 */
 function handleEvent(event: SocketEvent) {
   if (event.type === "protocol.error") {
     setStatus(`协议错误：${String(event.payload.reason_code ?? "")}`, true);
