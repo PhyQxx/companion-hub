@@ -69,20 +69,20 @@
 - [x] Timeline 管理前端与真实数据验收：Vue 页面支持时间范围、actor/source/event_type、隐私、conversation、关键词查询，Timeline 详情与 Source 下钻；typecheck/build 已通过，浏览器实测真实数据（178 条事件、证据下钻展示原始消息）渲染正常。L1 真实模型已覆盖“刚才”“昨天晚上”和无证据负例。真实回归期间发现并修复了 importance 无相关性保底、中文单字假相关、L2 索引壳被 L1 问句遮挡，以及弱 Memory Top-K 错抬 `recall.mode` 四类问题。连续真实使用校准待补。
 - [ ] 浏览器最终联调确认：后端合同已自动化覆盖“发布 Persona v2 → `/api/v1/meta/runtime` 为 v2 → REST Chat 新助手消息 `decision_meta.persona_version` 也为 v2”；chat/admin typecheck 与 build 全绿。浏览器实测已完成：管理后台登录/总览（Persona 小艾 v7 与模型配置 v15 一致展示）、记忆后台主体筛选与四类操作、Timeline 查询与 Source 证据下钻、聊天登录页 runtime 元信息（Persona 名称）展示。剩余消息级 `persona_version`/Recall 标签需用户本人聊天密码登录确认（`setup_required=false`，同一链路已由自动化合同覆盖）。
 - [x] 自我记忆回归：确定性自动化已覆盖“第一会话建立助手身高 → 第二会话 exact fact 召回 → 相同复述不重复沉淀”以及同主体 fact_key 冲突/跨主体隔离；`server/scripts/p5_real_model_regression.py` 已实际使用 SenseNova 跑完 20 组 L1 用例，数字、日期、名字、偏好、shared、冲突、Timeline、删除、completed-turn 提取，以及“无既有档案时自然建立身高/体重/三围并跨会话保持一致”均已逐项通过。L2 真实调用已通过：本地专用路由 + 敏感记忆命中 + reasoning 开销适配后可见正文稳定，`l2-isolation`（L1 不泄漏 / L2 召回）逐项验证。
-- [ ] 以 Vue chat 前端为载体连续 14 天真实文字使用（记录问题清单：检索质量、沉淀误判、隐私路由、前端体验）。
-- [ ] 记忆正/负例/冲突/删除/敏感隔离回归集在真实数据上的评估（docs/03 §1.8 的最小版）。
-- [ ] 只修问题不扩功能；结束时输出 P5 闸门报告。
+- [ ] 以 Vue chat 前端为载体连续 14 天真实文字使用（记录问题清单：检索质量、沉淀误判、隐私路由、前端体验；日志与检查单见 docs/32 §5）。
+- [x] 记忆正/负例/冲突/删除/敏感隔离回归集在真实数据上的评估（docs/03 §1.8 的最小版）：`server/tests/memory_eval/` 确定性评估集已落地——正例 20/20（阈值 ≥16）、负例 0/20 错引（阈值 ≤1，无关/过期/已替换三类，正例语料作干扰）、冲突裁决 8/8、删除不可再现 4/4（自然语言 + fact_key + 台账）、敏感隔离 4/4；真实模型链路由 `make p5-real` 持续覆盖。配套增强：`_infer_fact_keys` 新增 city/job/pet/sport 通用槽位推断。
+- [ ] 只修问题不扩功能；结束时输出 P5 闸门报告（草稿已建：docs/32，含 Release Criteria 对照、缺陷清单与 14 天使用期日志格式，期满定稿）。
 
 ## 下一步执行顺序
 
-按依赖推进，不并行扩展 P6 功能：
+按依赖推进，不并行扩展 P6 功能。可开发项已全部完成（2026-08-20），剩余为使用与确认：
 
-1. **补齐 docs/30 Batch E/F**：已完成——L1 真实模型 20/20 通过；reasoning 开销适配（`reasoning_overhead_tokens` + 120s 超时）后 L2 本地路由稳定产生可见正文，`l2-isolation` 真实用例通过；Node/pnpm 环境恢复后记忆后台 typecheck/build 全绿；
-2. **收口 docs/31 第一版体验**：后端最小链路、Timeline Vue 管理页和 L1 真实历史正/负例已完成，typecheck/build 已通过，继续补浏览器联调与连续真实数据校准，不扩知识图谱、复杂设备聚合或自主研究式检索；
-3. **完成浏览器 P5 最终联调**：确认 Persona 名称/版本、消息 `persona_version`、Memory/Recall 决策元数据与后台当前状态一致；
-4. **补齐前端质量闸门**：admin/chat typecheck 与 build 已全绿并纳入 `make p5-frontend`；后端 migration、pytest、ruff、mypy 持续保持全绿；
-5. **进入连续 14 天真实文字使用**：只记录和修复稳定性问题，不新增语音、Live2D、传感器或设备控制；
-6. **输出 P5 Gate Report**：若文字、记忆、历史回溯、隐私和删除闭环达标，再进入 P6 语音与 Live2D 产品化。
+1. ~~补齐 docs/30 Batch E/F~~：已完成——L1 真实模型 20/20；reasoning 适配后 L2 可见正文稳定，`l2-isolation` 通过；记忆后台 typecheck/build 全绿；
+2. ~~收口 docs/31 第一版体验~~：已完成——后端最小链路 + Timeline 管理页 + L1 真实正/负例 + 浏览器实测（178 条事件、Source 下钻）；
+3. ~~完成浏览器 P5 最终联调~~：管理后台/记忆/Timeline/聊天登录页已实测；消息级 `persona_version` 留待用户本人登录确认（docs/32 §5.3）；
+4. ~~补齐前端质量闸门~~：admin/chat typecheck 与 build 全绿；后端 migration、pytest、ruff、mypy 全绿（pytest 167 通过）；
+5. **进入连续 14 天真实文字使用**（进行中）：只记录和修复稳定性问题，不新增语音、Live2D、传感器或设备控制；日志按 docs/32 §5.2 格式追加；
+6. **输出 P5 Gate Report**：草稿已建（docs/32），期满按 §6 条件定稿，达标后进入 P6 语音与 Live2D 产品化。
 
 P6 之前只允许做与 P5 闸门直接相关的底层接口兼容或缺陷修复。真实设备 `RuntimeCapabilityProvider` 接入、ESP32、3D/VRM、静态图动态化继续后置。
 

@@ -346,6 +346,10 @@ def _infer_fact_keys(query: str) -> tuple[str, ...]:
         ("profile.birthday", ("生日", "出生日期")),
         ("profile.nickname", ("昵称", "小名")),
         ("profile.name", ("名字", "姓名", "叫什么")),
+        ("profile.city", ("住在", "哪座城市", "哪个城市", "在哪生活")),
+        ("profile.job", ("职业", "做什么工作", "工作是什么", "干什么的")),
+        ("profile.pet", ("养的猫", "猫叫什么", "养的狗", "狗叫什么", "宠物")),
+        ("routine.sport", ("运动", "锻炼", "健身")),
         ("preference.food", ("饮食偏好", "喜欢吃", "爱吃", "不吃")),
         ("preference.drink", ("饮料偏好", "喜欢喝", "爱喝")),
     )
