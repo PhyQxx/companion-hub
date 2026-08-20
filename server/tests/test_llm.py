@@ -1,3 +1,4 @@
+# ruff: noqa: RUF003
 from __future__ import annotations
 
 import logging
@@ -503,6 +504,81 @@ async def test_litellm_adapter_passes_explicit_thinking_mode(
     await provider.complete(request("L1"))
 
     assert captured["extra_body"] == {"thinking": {"type": "disabled"}}
+
+
+async def test_reasoning_overhead_expands_wire_token_budget(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, Any] = {}
+
+    async def fake_completion(**kwargs: Any) -> Any:
+        captured.update(kwargs)
+        return SimpleNamespace(
+            id="reasoning-request-id",
+            choices=[
+                SimpleNamespace(
+                    message=SimpleNamespace(content="OK"), finish_reason="stop"
+                )
+            ],
+            usage=SimpleNamespace(prompt_tokens=1, completion_tokens=1),
+        )
+
+    monkeypatch.setattr("app.llm.provider.litellm.acompletion", fake_completion)
+    provider = LiteLLMProvider(
+        "private",
+        endpoint(local=True, max_privacy="L2").model_copy(
+            update={"reasoning_overhead_tokens": 2_048}
+        ),
+        EnvSecretProvider({}),
+    )
+
+    await provider.complete(request("L2").model_copy(update={"max_tokens": 512}))
+
+    # 线上预算 = 可见正文预算 + 端点思考开销；默认 0 时严格保持请求预算
+    assert captured["max_tokens"] == 512 + 2_048
+
+
+async def test_stream_ignores_reasoning_content_deltas(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def chunks() -> Any:
+        yield SimpleNamespace(
+            id="stream-id",
+            choices=[
+                SimpleNamespace(
+                    delta=SimpleNamespace(
+                        content=None, reasoning_content="先思考一段推理"
+                    ),
+                    finish_reason=None,
+                )
+            ],
+            usage=None,
+        )
+        yield SimpleNamespace(
+            id="stream-id",
+            choices=[
+                SimpleNamespace(
+                    delta=SimpleNamespace(content="可见正文", reasoning_content=None),
+                    finish_reason="stop",
+                )
+            ],
+            usage=SimpleNamespace(prompt_tokens=3, completion_tokens=2),
+        )
+
+    async def fake_completion(**kwargs: Any) -> Any:
+        return chunks()
+
+    monkeypatch.setattr("app.llm.provider.litellm.acompletion", fake_completion)
+    provider = LiteLLMProvider(
+        "private", endpoint(local=True, max_privacy="L2"), EnvSecretProvider({})
+    )
+    deltas: list[str] = []
+
+    result = await provider.stream(request("L2"), _append_to(deltas))
+
+    # LM Studio 将 reasoning_content 与 content 分离；思考增量绝不能进入可见流
+    assert deltas == ["可见正文"]
+    assert result.text == "可见正文"
 
 
 def _append_to(target: list[str]) -> Callable[[str], Awaitable[None]]:

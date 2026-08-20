@@ -382,7 +382,7 @@ onMounted(load);
         <el-table-column label="状态" width="120"><template #default="{ row }"><el-tag :type="row.status === 'active' ? 'success' : row.status === 'conflict' ? 'warning' : 'info'">{{ statusLabels[row.status] ?? row.status }}</el-tag><small>{{ row.privacy_level }}</small></template></el-table-column>
         <el-table-column label="重要性" width="90"><template #default="{ row }">{{ row.importance.toFixed(2) }}</template></el-table-column>
         <el-table-column prop="access_count" label="访问" width="75" />
-        <el-table-column label="操作" min-width="320" fixed="right"><template #default="{ row }"><div class="actions"><el-button size="small" @click="showDetail(row.id)">溯源</el-button><el-button v-if="row.status === 'active' || row.status === 'conflict'" size="small" @click="openEdit(row)">编辑</el-button><el-button v-if="row.status === 'active'" size="small" @click="archive(row.id)">归档</el-button><template v-if="row.status === 'conflict'"><el-button type="primary" size="small" @click="resolve(row.id, 'adopt')">采纳</el-button><el-button size="small" @click="resolve(row.id, 'keep')">保留旧值</el-button></template><el-button type="danger" plain size="small" @click="remove(row.id)">删除</el-button></div></template></el-table-column>
+        <el-table-column label="操作" min-width="320" fixed="right"><template #default="{ row }"><div class="actions"><el-button size="small" @click="showDetail(row.id)">溯源</el-button><el-button v-if="row.status === 'active' || row.status === 'conflict'" size="small" @click="openEdit(row as MemoryItem)">编辑</el-button><el-button v-if="row.status === 'active'" size="small" @click="archive(row.id)">归档</el-button><template v-if="row.status === 'conflict'"><el-button type="primary" size="small" @click="resolve(row.id, 'adopt')">采纳</el-button><el-button size="small" @click="resolve(row.id, 'keep')">保留旧值</el-button></template><el-button type="danger" plain size="small" @click="remove(row.id)">删除</el-button></div></template></el-table-column>
       </el-table>
     </div>
 
@@ -397,7 +397,7 @@ onMounted(load);
       <el-table :data="ledger" empty-text="暂无删除记录" style="width:100%">
         <el-table-column label="台账" width="90"><template #default="{ row }"><strong>#{{ row.id }}</strong></template></el-table-column>
         <el-table-column label="实体" min-width="150"><template #default="{ row }">{{ row.entity_kind }} #{{ row.entity_id.slice(0, 8) }}</template></el-table-column>
-        <el-table-column label="被删版本" min-width="180"><template #default="{ row }">{{ row.deleted_ids.map((id) => `#${id}`).join(' ') }}</template></el-table-column>
+        <el-table-column label="被删版本" min-width="180"><template #default="{ row }">{{ row.deleted_ids.map((id: number) => `#${id}`).join(' ') }}</template></el-table-column>
         <el-table-column prop="requested_by" label="操作人" min-width="130" />
         <el-table-column label="原因" min-width="180"><template #default="{ row }">{{ row.reason ?? '—' }}</template></el-table-column>
         <el-table-column label="时间" min-width="180"><template #default="{ row }">{{ fmt(row.created_at) }}</template></el-table-column>

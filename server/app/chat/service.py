@@ -298,7 +298,9 @@ class ChatService:
         )
         persona_snapshot = await self._persona_store.refresh() if self._persona_store else None
         persona = persona_snapshot.persona if persona_snapshot else PersonaConfig()
-        profile_overrides = await self._assistant_profile_overrides(user_id, turn_id=turn_id)
+        profile_overrides = await self._assistant_profile_overrides(
+            user_id, turn_id=turn_id, privacy_level=privacy_level
+        )
         runtime_capabilities: tuple[RuntimeActionCapability, ...] = ()
         if self._capability_provider is not None:
             try:
@@ -739,7 +741,7 @@ class ChatService:
             logger.warning("timeline indexing failed for turn %s", pending.turn_id, exc_info=True)
 
     async def _assistant_profile_overrides(
-        self, user_id: UUID, *, turn_id: UUID
+        self, user_id: UUID, *, turn_id: UUID, privacy_level: PrivacyLevel
     ) -> dict[str, str]:
         """读取记忆库中用户明确告知的助手档案事实，按 fact_key 覆盖 Persona 基线。"""
         if self._memory_store is None:
@@ -758,10 +760,17 @@ class ChatService:
                 "assistant profile lookup failed for turn %s", turn_id, exc_info=True
             )
             return {}
+        # 隐私闸门：档案覆盖会随系统提示进入每次模型调用，
+        # L2 助手事实只能进入强制本地的 L2 上下文，绝不随 L0/L1 云端出站
+        allowed_levels = (
+            {"L0", "L1", "L2"}
+            if privacy_level is PrivacyLevel.L2
+            else {"L0", "L1"}
+        )
         return {
             slot.fact_key: slot.content
             for slot in slots
-            if slot.fact_key is not None
+            if slot.fact_key is not None and slot.privacy_level in allowed_levels
         }
 
     def _spawn_background(self, coroutine: Coroutine[None, None, None]) -> None:

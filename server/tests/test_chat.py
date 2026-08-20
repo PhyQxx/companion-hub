@@ -525,3 +525,51 @@ async def test_chat_merges_profile_overrides_and_consolidates_in_background(
     await service.drain_background_work()
     stored = await memory_store.list_memories(user_id=user.id)
     assert any("火锅" in entry.content for entry in stored)
+
+
+async def test_l2_assistant_profile_override_never_enters_public_prompt(
+    database: Database, store: DatabaseConfigStore
+) -> None:
+    """L2 助手档案只进本地 L2 上下文，绝不随 L0/L1 系统提示出站。"""
+
+    from app.memory import (
+        MemoryCandidate,
+        MemoryOriginKind,
+        MemoryStore,
+        MemorySubjectKind,
+        MemoryType,
+    )
+
+    memory_store = MemoryStore(database)
+    requests: list[CompletionRequest] = []
+    service = ChatService(
+        database,
+        store,
+        router_builder=lambda config: FakeRouter(config.models["cloud"].model, requests),
+        memory_store=memory_store,
+    )
+    user = await create_user(database)
+    public = await service.create_conversation(user_id=user.id, title="公开会话")
+    private = await service.create_conversation(user_id=user.id, title="私密会话")
+    await memory_store.add(
+        MemoryCandidate(
+            type=MemoryType.SEMANTIC,
+            content="助手秘密代号为月见",
+            privacy_level=PrivacyLevel.L2,
+            subject_kind=MemorySubjectKind.ASSISTANT,
+            subject_key="assistant:primary",
+            fact_key="profile.secret_code",
+            origin_kind=MemoryOriginKind.USER_STATEMENT,
+        ),
+        user_id=user.id,
+    )
+
+    await service.send_message(
+        public.id, user_id=user.id, text="你好呀", privacy_level=PrivacyLevel.L1
+    )
+    await service.send_message(
+        private.id, user_id=user.id, text="你好呀", privacy_level=PrivacyLevel.L2
+    )
+
+    assert "月见" not in requests[0].messages[0].content
+    assert "月见" in requests[1].messages[0].content

@@ -51,11 +51,16 @@ models:
     provider: openai_compatible
     model: qwen3.6-35b-a3b-uncensored
     supports_json_mode: false
+    # Qwen3.6 思考输出与正文共享预算，实测推理约 1400+ token；
+    # 叠加开销后请求侧 512 的正文预算才能拿到可见 message.content。
+    reasoning_overhead_tokens: 2048
     # LM Studio 原生管理 API 在 /api/v1/*；聊天仍走 OpenAI-compatible /v1。
     base_url: http://127.0.0.1:1234/v1
     runs_local: true
     max_privacy_level: L2
-    timeout_ms: 30000
+    # 思考型本地模型完整生成（推理 1400+ token + 正文）实测超过 30s，
+    # 需要放宽到契约上限，否则 L2 回合在出正文前就被掐断。
+    timeout_ms: 120000
     max_retries: 0
     max_context_tokens: 32768
     input_cost_per_million: 0

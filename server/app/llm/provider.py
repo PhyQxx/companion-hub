@@ -1,3 +1,4 @@
+# ruff: noqa: RUF003
 from __future__ import annotations
 
 import json
@@ -119,7 +120,8 @@ class LiteLLMProvider:
             "model": f"openai/{self.endpoint.model}",
             "api_base": str(self.endpoint.base_url).rstrip("/"),
             "messages": [message.model_dump(mode="json") for message in request.messages],
-            "max_tokens": request.max_tokens,
+            # 思考型端点的推理 token 不占可见正文预算，线上额度按端点配置叠加
+            "max_tokens": request.max_tokens + self.endpoint.reasoning_overhead_tokens,
             "temperature": request.temperature,
             "timeout": self.endpoint.timeout_ms / 1_000,
             "num_retries": 0,

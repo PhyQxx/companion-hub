@@ -1,3 +1,4 @@
+# ruff: noqa: RUF003
 from __future__ import annotations
 
 from enum import StrEnum
@@ -64,6 +65,10 @@ class ModelEndpoint(StrictModel):
     model: Annotated[str, Field(min_length=1, max_length=200)]
     supports_json_mode: bool = False
     thinking_mode: Literal["provider_default", "enabled", "disabled"] = "provider_default"
+    # 思考型模型的隐藏推理开销：线上 max_tokens 在请求预算之上叠加该值。
+    # Qwen3 类模型在 OpenAI-compatible 路径下 reasoning 与正文共享输出预算，
+    # 不叠加时 512 token 会被推理耗尽，message.content 恒为空。
+    reasoning_overhead_tokens: Annotated[int, Field(ge=0, le=131_072)] = 0
     base_url: AnyHttpUrl
     secret_ref: Annotated[
         str, Field(pattern=r"^env:[A-Z][A-Z0-9_]{2,127}$")
