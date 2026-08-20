@@ -1,0 +1,127 @@
+# ruff: noqa: RUF002
+"""从配置中心快照构建语音提供方（docs/33 §3.3）。
+
+语音配置与模型路由一样进后台配置中心（保存即生效）；
+每条话语开始前重新解析一次，管理端改配置不需要重启服务。
+"""
+
+from __future__ import annotations
+
+import logging
+from typing import Protocol
+
+from app.config import ConfigStore, DatabaseConfigStore, HubConfig
+from app.llm.provider import EnvSecretProvider, SecretNotFound
+
+from .contracts import SpeechRecognizer, SpeechSynthesizer
+from .failover import TtsProviderChain
+from .mimo import MiMoAsrRecognizer, MiMoTtsSynthesizer
+from .tts import EdgeTtsSynthesizer
+
+logger = logging.getLogger(__name__)
+
+EDGE_TTS_DEFAULT_VOICE = "zh-CN-XiaoxiaoNeural"
+MIMO_TTS_DEFAULT_VOICE = "冰糖"
+
+
+class VoiceProviderSource(Protocol):
+    """语音回合的提供方来源：每条话语解析一次，跟随配置中心热更新。"""
+
+    async def resolve(
+        self,
+    ) -> tuple[SpeechRecognizer | None, TtsProviderChain | None]: ...
+
+
+class StaticVoiceSource:
+    """固定提供方：测试与文件配置场景。"""
+
+    def __init__(
+        self,
+        recognizer: SpeechRecognizer | None,
+        tts_chain: TtsProviderChain | None,
+    ) -> None:
+        self._recognizer = recognizer
+        self._tts_chain = tts_chain
+
+    async def resolve(
+        self,
+    ) -> tuple[SpeechRecognizer | None, TtsProviderChain | None]:
+        return self._recognizer, self._tts_chain
+
+
+class ConfigVoiceSource:
+    """配置中心来源：DatabaseConfigStore 每次刷新，文件配置读当前快照。"""
+
+    def __init__(self, config_store: ConfigStore | DatabaseConfigStore) -> None:
+        self._config_store = config_store
+
+    async def resolve(
+        self,
+    ) -> tuple[SpeechRecognizer | None, TtsProviderChain | None]:
+        if isinstance(self._config_store, DatabaseConfigStore):
+            snapshot = await self._config_store.refresh()
+        else:
+            snapshot = self._config_store.current
+        return build_voice_providers(snapshot.config)
+
+
+def _resolve_secret(
+    secret_value: str | None, secret_ref: str | None
+) -> str | None:
+    if secret_value is not None:
+        return secret_value
+    if secret_ref is not None:
+        try:
+            return EnvSecretProvider().resolve(secret_ref)
+        except SecretNotFound:
+            logger.warning("voice secret reference unavailable: %s", secret_ref)
+            return None
+    return None
+
+
+def build_voice_providers(
+    config: HubConfig,
+) -> tuple[SpeechRecognizer | None, TtsProviderChain | None]:
+    """按 voice 配置节构建识别器与合成链；密钥缺失的条目跳过并告警。"""
+    recognizer: SpeechRecognizer | None = None
+    asr = config.voice.asr
+    if asr is not None:
+        api_key = _resolve_secret(asr.secret_value, asr.secret_ref)
+        if api_key is None:
+            logger.warning("voice asr skipped: secret not resolved")
+        else:
+            recognizer = MiMoAsrRecognizer(
+                api_key,
+                base_url=str(asr.base_url),
+                model=asr.model,
+                language=asr.language,
+            )
+
+    providers: list[SpeechSynthesizer] = []
+    for provider_config in config.voice.tts:
+        if not provider_config.enabled:
+            continue
+        if provider_config.provider == "mimo":
+            api_key = _resolve_secret(
+                provider_config.secret_value, provider_config.secret_ref
+            )
+            if api_key is None or provider_config.base_url is None:
+                logger.warning(
+                    "voice tts provider skipped: mimo secret/base_url not resolved"
+                )
+                continue
+            providers.append(
+                MiMoTtsSynthesizer(
+                    api_key,
+                    base_url=str(provider_config.base_url),
+                    model=provider_config.model,
+                    voice=provider_config.voice or MIMO_TTS_DEFAULT_VOICE,
+                )
+            )
+        else:
+            providers.append(
+                EdgeTtsSynthesizer(provider_config.voice or EDGE_TTS_DEFAULT_VOICE)
+            )
+
+    tts_chain = TtsProviderChain(providers) if providers else None
+    return recognizer, tts_chain

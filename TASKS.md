@@ -81,11 +81,12 @@
 - [x] MiMo 语音接入：ASR（`mimo-v2.5-asr`，PCM 包 WAV 头 base64 上传）+ TTS（`mimo-v2.5-tts`，SSE 流式 PCM16 24kHz 直出）；L2 音频/文本禁止出站（云端 ASR 拒收、云端 TTS 拒合成，降级文字）。
 - [x] TTS 提供方链：MiMo 为主、edge-tts 兜底；逐句选择、首块前失败无感切换、60s 失败冷却、L2 只选本地提供方；`voice.sentence` 按实际提供方声明 mime/sample_rate。
 - [x] 句级流式切分 + 首句即合成；打断仲裁（barge-in → cancel 回合 + 中止 TTS）；延迟打点（ASR/首 token/首音频，M2.7 埋点）。
-- [x] 测试 15 项：VAD/切分/WAV 包装/提供方链/MiMo 契约单测 + 语音 WS 端到端（完整回路、打断、L2 拒收、PTT）；闸门 ruff / mypy 115 文件 / pytest 182 通过。
+- [x] 语音配置中心化（M2.8 提前完成）：`HubConfig.voice` 节进配置中心，后台「模型与路由 → 语音」页可视化管理（ASR 开关/模型/语种/密钥、TTS 链增删排序/提供方切换/音色/密钥），保存校验与后端 HubConfig 规则对齐，浏览器实测通过；`ConfigVoiceSource` 每条话语解析一次提供方，改配置即时生效，不再依赖 .env.local。
+- [x] 测试 20 项：VAD/切分/WAV 包装/提供方链/MiMo 契约/voice 配置节校验与工厂 + 语音 WS 端到端（完整回路、打断、L2 拒收、PTT）；闸门 ruff / mypy 117 文件 / pytest 187 通过。
 
 ## 当前批次：P6 待办
 
-- [ ] Batch B：chat 前端麦克风采集与播放 UI（PCM16 采集 + sentence 事件驱动的分句播放 + 打断按钮）；MIMO_API_KEY 实配真连验证。
+- [ ] Batch B：chat 前端麦克风采集与播放 UI（PCM16 采集 + sentence 事件驱动的分句播放 + 打断按钮）；后台语音页填入真实 MiMo Key 后真连验证。
 - [ ] Batch B：faster-whisper 本地流式 ASR（L2 语音路径）+ silero-vad 替换能量 VAD + 唤醒词（openWakeWord）。
 - [ ] Batch C：viseme 口型通道（50ms 幅度包络）+ 延迟打点报表面板 + 语音配置中心化（M2.8）。
 - [ ] Batch D：OLV Live2D 渲染端接入与 Tauri 桌宠评估。

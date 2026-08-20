@@ -36,13 +36,7 @@ from app.model_capabilities import CapabilityModelService
 from app.observability import apply_observability, configure_logging
 from app.persona import PersonaStore
 from app.timeline import HistoryRecallService, TimelineStore
-from app.voice import (
-    EdgeTtsSynthesizer,
-    MiMoAsrRecognizer,
-    MiMoTtsSynthesizer,
-    SpeechSynthesizer,
-    TtsProviderChain,
-)
+from app.voice import ConfigVoiceSource
 
 
 def create_app(
@@ -370,35 +364,16 @@ def create_app(
             )
             app.state.chat_websocket_manager = websocket_manager
             app.include_router(websocket_router)
-            # P6 语音通道：MiMo 云端为主、edge-tts 兜底的提供方链；
-            # 未配置 MIMO_API_KEY 时 ASR 不可用（客户端收 voice.asr_unavailable）
-            mimo_api_key = os.getenv("MIMO_API_KEY")
-            tts_providers: list[SpeechSynthesizer] = []
-            if mimo_api_key:
-                tts_providers.append(
-                    MiMoTtsSynthesizer(
-                        mimo_api_key,
-                        voice=os.getenv("ARIA_MIMO_TTS_VOICE", "冰糖"),
-                    )
+            # P6 语音通道：提供方来自配置中心 voice 节（后台可视化管理、
+            # 保存即生效）；未配置 ASR 时客户端收 voice.asr_unavailable
+            if runtime_config is not None:
+                voice_router, voice_manager = create_voice_websocket_router(
+                    runtime_chat_service,
+                    auth_service,
+                    voice_source=ConfigVoiceSource(runtime_config),
                 )
-            tts_providers.append(
-                EdgeTtsSynthesizer(os.getenv("ARIA_EDGE_TTS_VOICE", "zh-CN-XiaoxiaoNeural"))
-            )
-            voice_router, voice_manager = create_voice_websocket_router(
-                runtime_chat_service,
-                auth_service,
-                recognizer=(
-                    MiMoAsrRecognizer(
-                        mimo_api_key,
-                        language=os.getenv("ARIA_ASR_LANGUAGE", "auto"),
-                    )
-                    if mimo_api_key
-                    else None
-                ),
-                tts_chain=TtsProviderChain(tts_providers),
-            )
-            app.state.voice_websocket_manager = voice_manager
-            app.include_router(voice_router)
+                app.state.voice_websocket_manager = voice_manager
+                app.include_router(voice_router)
 
     return app
 

@@ -1,9 +1,10 @@
+# ruff: noqa: RUF002
 from __future__ import annotations
 
 import re
 from typing import Annotated, Literal
 
-from pydantic import Field, model_validator
+from pydantic import AnyHttpUrl, Field, model_validator
 
 from app.llm.contracts import LLMRoute, ModelEndpoint, ModelKind, RoutePolicy
 from app.schemas.common import StrictModel, TokenName
@@ -23,12 +24,66 @@ class CapabilityModelRoutes(StrictModel):
     video_generation: TokenName | None = None
 
 
+class VoiceAsrConfig(StrictModel):
+    """语音识别提供方（docs/33）：目前仅 MiMo 云端整段转写。"""
+
+    provider: Literal["mimo"] = "mimo"
+    model: Annotated[str, Field(min_length=1, max_length=200)] = "mimo-v2.5-asr"
+    base_url: AnyHttpUrl = AnyHttpUrl("https://api.xiaomimimo.com/v1")
+    secret_ref: Annotated[
+        str, Field(pattern=r"^env:[A-Z][A-Z0-9_]{2,127}$")
+    ] | None = None
+    secret_value: Annotated[str, Field(max_length=1024)] | None = None
+    language: Literal["auto", "zh", "en"] = "auto"
+    runs_local: bool = False
+
+    @model_validator(mode="after")
+    def secret_is_configured(self) -> VoiceAsrConfig:
+        if self.secret_value is None and self.secret_ref is None:
+            raise ValueError("voice asr requires secret_value or secret_ref")
+        return self
+
+
+class VoiceTtsProviderConfig(StrictModel):
+    """语音合成提供方：mimo（PCM 直出）为主、edge_tts 免费兜底。"""
+
+    provider: Literal["mimo", "edge_tts"]
+    model: Annotated[str, Field(min_length=1, max_length=200)] = "mimo-v2.5-tts"
+    base_url: AnyHttpUrl | None = None
+    secret_ref: Annotated[
+        str, Field(pattern=r"^env:[A-Z][A-Z0-9_]{2,127}$")
+    ] | None = None
+    secret_value: Annotated[str, Field(max_length=1024)] | None = None
+    voice: Annotated[str, Field(min_length=1, max_length=100)] = "冰糖"
+    enabled: bool = True
+    runs_local: bool = False
+
+    @model_validator(mode="after")
+    def provider_specific_requirements(self) -> VoiceTtsProviderConfig:
+        if self.provider == "mimo":
+            if self.base_url is None:
+                raise ValueError("mimo tts requires base_url")
+            if self.secret_value is None and self.secret_ref is None:
+                raise ValueError("mimo tts requires secret_value or secret_ref")
+        return self
+
+
+class VoiceConfig(StrictModel):
+    """语音管线配置：ASR 单选 + 有序 TTS 故障转移链（docs/33）。"""
+
+    asr: VoiceAsrConfig | None = None
+    tts: Annotated[list[VoiceTtsProviderConfig], Field(max_length=4)] = Field(
+        default_factory=list
+    )
+
+
 class HubConfig(StrictModel):
     schema_version: Literal[1] = 1
     models: Annotated[dict[str, ModelEndpoint], Field(min_length=1, max_length=64)]
     routes: dict[LLMRoute, RoutePolicy]
     capability_models: CapabilityModelRoutes = Field(default_factory=CapabilityModelRoutes)
     observability: ObservabilityConfig = Field(default_factory=ObservabilityConfig)
+    voice: VoiceConfig = Field(default_factory=VoiceConfig)
 
     @model_validator(mode="after")
     def validate_routes(self) -> HubConfig:

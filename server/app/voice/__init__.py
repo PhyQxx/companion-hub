@@ -8,6 +8,12 @@ from app.voice.contracts import (
     VadEvent,
     VoiceActivityDetector,
 )
+from app.voice.factory import (
+    ConfigVoiceSource,
+    StaticVoiceSource,
+    VoiceProviderSource,
+    build_voice_providers,
+)
 from app.voice.failover import TtsProviderChain, TtsSelection
 from app.voice.mimo import (
     ASR_MODEL,
@@ -25,6 +31,7 @@ __all__ = [
     "ASR_MODEL",
     "DEFAULT_TTS_VOICE",
     "TTS_MODEL",
+    "ConfigVoiceSource",
     "EdgeTtsSynthesizer",
     "EnergyVad",
     "LocalOnlySynthesizerError",
@@ -33,9 +40,12 @@ __all__ = [
     "SentenceBuffer",
     "SpeechRecognizer",
     "SpeechSynthesizer",
+    "StaticVoiceSource",
     "TtsProviderChain",
     "TtsSelection",
     "VadEvent",
     "VoiceActivityDetector",
+    "VoiceProviderSource",
+    "build_voice_providers",
     "wrap_wav",
 ]

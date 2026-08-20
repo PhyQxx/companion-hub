@@ -25,7 +25,13 @@ from app.chat import ChatService, PendingTurn, TurnCancelled
 from app.llm import LLMRouteExhausted
 from app.privacy import EgressBlocked
 from app.schemas import PrivacyLevel
-from app.voice import EnergyVad, SentenceBuffer, SpeechRecognizer, TtsProviderChain
+from app.voice import (
+    EnergyVad,
+    SentenceBuffer,
+    SpeechRecognizer,
+    TtsProviderChain,
+    VoiceProviderSource,
+)
 from app.voice.contracts import LocalOnlySynthesizerError
 
 from .chat_ws import AuthenticateFrame
@@ -60,12 +66,10 @@ class VoiceWebSocketManager:
         self,
         service: ChatService,
         *,
-        recognizer: SpeechRecognizer | None,
-        tts_chain: TtsProviderChain | None,
+        voice_source: VoiceProviderSource,
     ) -> None:
         self._service = service
-        self._recognizer = recognizer
-        self._tts_chain = tts_chain
+        self._voice_source = voice_source
 
     async def run(self, session: VoiceSession) -> None:
         """连接主循环：JSON 控制 + 二进制音频。"""
@@ -157,7 +161,8 @@ class VoiceWebSocketManager:
         session.utterance.clear()
         if len(pcm) < MIN_UTTERANCE_BYTES:
             return
-        recognizer = self._recognizer
+        # 每条话语解析一次提供方：管理端改语音配置即时生效，无需重启
+        recognizer, tts_chain = await self._voice_source.resolve()
         if recognizer is None:
             await self._send(session, "voice.asr_unavailable", {"reason": "not_configured"})
             return
@@ -168,12 +173,18 @@ class VoiceWebSocketManager:
         if session.conversation_id is None or session.turn_task is not None:
             return
         session.turn_task = asyncio.create_task(
-            self._run_utterance(session, pcm), name="voice-utterance"
+            self._run_utterance(session, pcm, recognizer, tts_chain),
+            name="voice-utterance",
         )
 
-    async def _run_utterance(self, session: VoiceSession, pcm: bytes) -> None:
-        recognizer = self._recognizer
-        if recognizer is None or session.conversation_id is None:
+    async def _run_utterance(
+        self,
+        session: VoiceSession,
+        pcm: bytes,
+        recognizer: SpeechRecognizer,
+        tts_chain: TtsProviderChain | None,
+    ) -> None:
+        if session.conversation_id is None:
             return
         started = time.perf_counter()
         transcript_at = first_token_at = first_audio_at = 0.0
@@ -210,7 +221,7 @@ class VoiceWebSocketManager:
 
             async def speak(sentence: str) -> None:
                 nonlocal sentence_index, first_audio_at
-                if self._tts_chain is None:
+                if tts_chain is None:
                     # 未配置任何 TTS：纯文字语音回合，只提示一次
                     if not session.tts_unavailable_notified:
                         session.tts_unavailable_notified = True
@@ -218,7 +229,7 @@ class VoiceWebSocketManager:
                             session, "voice.tts_unavailable", {"reason": "not_configured"}
                         )
                     return
-                selection = await self._tts_chain.select(
+                selection = await tts_chain.select(
                     sentence, privacy_level=session.privacy_level
                 )
                 await self._send(
@@ -241,7 +252,7 @@ class VoiceWebSocketManager:
                         await session.websocket.send_bytes(chunk)
                 except Exception:
                     # 中途断流：该句音频残缺，冷却该提供方并跳句，回合继续
-                    self._tts_chain.report_failure(selection.provider)
+                    tts_chain.report_failure(selection.provider)
                     logger.warning(
                         "tts stream broken mid-sentence provider=%s",
                         type(selection.provider).__name__,
@@ -389,13 +400,10 @@ def create_voice_websocket_router(
     service: ChatService,
     auth_service: AuthService,
     *,
-    recognizer: SpeechRecognizer | None,
-    tts_chain: TtsProviderChain | None,
+    voice_source: VoiceProviderSource,
 ) -> tuple[APIRouter, VoiceWebSocketManager]:
     router = APIRouter(tags=["voice-websocket"])
-    manager = VoiceWebSocketManager(
-        service, recognizer=recognizer, tts_chain=tts_chain
-    )
+    manager = VoiceWebSocketManager(service, voice_source=voice_source)
 
     @router.websocket("/ws/voice")
     async def voice_socket(websocket: WebSocket) -> None:

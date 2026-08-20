@@ -21,7 +21,7 @@ from app.config import DatabaseConfigStore
 from app.db import Base, create_database
 from app.llm import CompletionRequest, CompletionResult, ModelUsage
 from app.schemas import PrivacyLevel
-from app.voice import TtsProviderChain
+from app.voice import StaticVoiceSource, TtsProviderChain
 
 
 def config_yaml() -> str:
@@ -172,8 +172,10 @@ def _build(
     router, _ = create_voice_websocket_router(
         service,
         auth,
-        recognizer=FakeRecognizer("帮我看看今天适合穿什么"),
-        tts_chain=TtsProviderChain([FakeSynthesizer(delay_s=tts_delay_s)]),
+        voice_source=StaticVoiceSource(
+            FakeRecognizer("帮我看看今天适合穿什么"),
+            TtsProviderChain([FakeSynthesizer(delay_s=tts_delay_s)]),
+        ),
     )
     app.include_router(router)
     return app, token, conversation_id

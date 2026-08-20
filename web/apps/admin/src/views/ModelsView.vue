@@ -133,7 +133,29 @@ interface HubConfig {
     image_generation?: string | null;
     video_generation?: string | null;
   };
+  voice?: HubVoiceConfig | null;
   observability: { log_level: string; trace_sample_rate: number; retain_days: number };
+}
+interface HubVoiceAsr {
+  provider: "mimo";
+  model: string;
+  base_url: string;
+  language: "auto" | "zh" | "en";
+  secret_ref?: string | null;
+  secret_value?: string | null;
+}
+interface HubVoiceTts {
+  provider: "mimo" | "edge_tts";
+  model: string;
+  base_url?: string | null;
+  voice: string;
+  enabled: boolean;
+  secret_ref?: string | null;
+  secret_value?: string | null;
+}
+interface HubVoiceConfig {
+  asr: HubVoiceAsr | null;
+  tts: HubVoiceTts[];
 }
 interface DraftModel {
   key: string;
@@ -162,6 +184,33 @@ interface DraftRoute {
   timeout_ms: number | null;
 }
 
+interface DraftVoiceAsr {
+  enabled: boolean;
+  provider: "mimo";
+  model: string;
+  base_url: string;
+  language: "auto" | "zh" | "en";
+  secret_mode: "value" | "ref" | "none";
+  secret_value: string;
+  secret_ref: string;
+}
+
+interface DraftVoiceTts {
+  provider: "mimo" | "edge_tts";
+  model: string;
+  base_url: string;
+  voice: string;
+  enabled: boolean;
+  secret_mode: "value" | "ref" | "none";
+  secret_value: string;
+  secret_ref: string;
+}
+
+interface DraftVoice {
+  asr: DraftVoiceAsr;
+  tts: DraftVoiceTts[];
+}
+
 interface DraftState {
   schema_version: number;
   models: DraftModel[];
@@ -171,6 +220,7 @@ interface DraftState {
     image_generation: string;
     video_generation: string;
   };
+  voice: DraftVoice;
   observability: { log_level: string; trace_sample_rate: number; retain_days: number };
 }
 
@@ -213,11 +263,36 @@ const defaultCapabilityModels = () => ({ vision: "", image_generation: "", video
 
 const defaultObservability = () => ({ log_level: "INFO", trace_sample_rate: 1.0, retain_days: 14 });
 
+const defaultVoiceAsr = (): DraftVoiceAsr => ({
+  enabled: false,
+  provider: "mimo",
+  model: "mimo-v2.5-asr",
+  base_url: "https://api.xiaomimimo.com/v1",
+  language: "auto",
+  secret_mode: "value",
+  secret_value: "",
+  secret_ref: "env:MIMO_API_KEY",
+});
+
+const defaultVoiceTts = (provider: "mimo" | "edge_tts" = "mimo"): DraftVoiceTts => ({
+  provider,
+  model: provider === "mimo" ? "mimo-v2.5-tts" : "edge-tts",
+  base_url: provider === "mimo" ? "https://api.xiaomimimo.com/v1" : "",
+  voice: provider === "mimo" ? "冰糖" : "zh-CN-XiaoxiaoNeural",
+  enabled: true,
+  secret_mode: "value",
+  secret_value: "",
+  secret_ref: "env:MIMO_API_KEY",
+});
+
+const defaultVoice = (): DraftVoice => ({ asr: defaultVoiceAsr(), tts: [] });
+
 const draft = ref<DraftState>({
   schema_version: 1,
   models: [],
   routes: { dialogue: defaultRoute(), utility: defaultRoute(), private: defaultRoute() },
   capability_models: defaultCapabilityModels(),
+  voice: defaultVoice(),
   observability: defaultObservability(),
 });
 
@@ -228,6 +303,7 @@ function hubConfigToDraft(config: HubConfig | undefined | null): DraftState {
       models: [],
       routes: { dialogue: defaultRoute(), utility: defaultRoute(), private: defaultRoute() },
       capability_models: defaultCapabilityModels(),
+      voice: defaultVoice(),
       observability: defaultObservability(),
     };
   }
@@ -264,6 +340,30 @@ function hubConfigToDraft(config: HubConfig | undefined | null): DraftState {
       timeout_ms: r.timeout_ms ?? null,
     };
   }
+  const asr = config.voice?.asr;
+  const asrSecretMode = asr?.secret_value ? "value" : asr?.secret_ref ? "ref" : "none";
+  const draftAsr: DraftVoiceAsr = asr
+    ? {
+        enabled: true,
+        provider: "mimo",
+        model: asr.model ?? "mimo-v2.5-asr",
+        base_url: asr.base_url ?? "https://api.xiaomimimo.com/v1",
+        language: asr.language ?? "auto",
+        secret_mode: asrSecretMode,
+        secret_value: asr.secret_value ?? "",
+        secret_ref: asr.secret_ref ?? "env:MIMO_API_KEY",
+      }
+    : defaultVoiceAsr();
+  const draftTts: DraftVoiceTts[] = (config.voice?.tts ?? []).map((p) => ({
+    provider: p.provider,
+    model: p.model ?? (p.provider === "mimo" ? "mimo-v2.5-tts" : "edge-tts"),
+    base_url: p.base_url ?? "",
+    voice: p.voice ?? (p.provider === "mimo" ? "冰糖" : "zh-CN-XiaoxiaoNeural"),
+    enabled: p.enabled ?? true,
+    secret_mode: p.secret_value ? "value" : p.secret_ref ? "ref" : "none",
+    secret_value: p.secret_value ?? "",
+    secret_ref: p.secret_ref ?? "env:MIMO_API_KEY",
+  }));
   return {
     schema_version: config.schema_version ?? 1,
     models,
@@ -273,6 +373,7 @@ function hubConfigToDraft(config: HubConfig | undefined | null): DraftState {
       image_generation: config.capability_models?.image_generation ?? "",
       video_generation: config.capability_models?.video_generation ?? "",
     },
+    voice: { asr: draftAsr, tts: draftTts },
     observability: config.observability ?? defaultObservability(),
   };
 }
@@ -312,6 +413,23 @@ function draftToHubConfig(d: DraftState): HubConfig {
   for (const [name, r] of Object.entries(d.routes)) {
     routes[name] = { primary: r.primary, fallbacks: r.fallbacks, timeout_ms: r.timeout_ms };
   }
+  const voiceAsr: HubVoiceAsr | null = d.voice.asr.enabled
+    ? {
+        provider: "mimo",
+        model: d.voice.asr.model,
+        base_url: d.voice.asr.base_url,
+        language: d.voice.asr.language,
+        ...(assembleSecret(d.voice.asr)),
+      }
+    : null;
+  const voiceTts: HubVoiceTts[] = d.voice.tts.map((p) => ({
+    provider: p.provider,
+    model: p.model,
+    base_url: p.provider === "mimo" ? p.base_url : null,
+    voice: p.voice,
+    enabled: p.enabled,
+    ...(p.provider === "mimo" ? assembleSecret(p) : { secret_ref: null, secret_value: null }),
+  }));
   return {
     schema_version: d.schema_version,
     models,
@@ -321,8 +439,25 @@ function draftToHubConfig(d: DraftState): HubConfig {
       image_generation: d.capability_models.image_generation || null,
       video_generation: d.capability_models.video_generation || null,
     },
+    voice: { asr: voiceAsr, tts: voiceTts },
     observability: d.observability,
   };
+}
+
+interface SecretCarrier {
+  secret_mode: "value" | "ref" | "none";
+  secret_value: string;
+  secret_ref: string;
+}
+
+function assembleSecret(carrier: SecretCarrier): { secret_ref: string | null; secret_value: string | null } {
+  if (carrier.secret_mode === "value" && carrier.secret_value) {
+    return { secret_value: carrier.secret_value, secret_ref: null };
+  }
+  if (carrier.secret_mode === "ref" && carrier.secret_ref) {
+    return { secret_ref: carrier.secret_ref, secret_value: null };
+  }
+  return { secret_ref: null, secret_value: null };
 }
 
 const enabledTextModelNames = computed(() => draft.value.models.filter((m) => m.enabled && m.kind === "text").map((m) => m.key));
@@ -465,8 +600,68 @@ function validateCandidate(config: HubConfig): string | null {
     if (endpoint.enabled === false) return `${label}能力引用了已停用的模型：${name}`;
     if ((endpoint.kind ?? "text") !== kind) return `${label}能力需要选择「${modelKindLabels[kind]}」类型的模型：${name}`;
   }
+  const voice = config.voice ?? { asr: null, tts: [] };
+  if (voice.asr) {
+    if (!voice.asr.model?.trim()) return "语音识别未填写模型名";
+    if (!/^https?:\/\//.test((voice.asr.base_url ?? "").trim())) {
+      return "语音识别的 Base URL 需以 http:// 或 https:// 开头";
+    }
+    if (!voice.asr.secret_value && !voice.asr.secret_ref) {
+      return "语音识别需要配置 API Key（直接填写或使用环境变量引用）";
+    }
+    if (voice.asr.secret_ref && !SECRET_REF_PATTERN.test(voice.asr.secret_ref)) {
+      return "语音识别的环境变量引用格式应为 env:大写环境变量名，如 env:MIMO_API_KEY";
+    }
+  }
+  if (voice.tts.length > 4) return "语音合成链最多 4 个提供方";
+  for (const [index, p] of voice.tts.entries()) {
+    if (!p.voice?.trim()) return `语音合成第 ${index + 1} 项未填写音色`;
+    if (p.provider === "mimo") {
+      if (!/^https?:\/\//.test((p.base_url ?? "").trim())) {
+        return `语音合成第 ${index + 1} 项（MiMo）的 Base URL 需以 http:// 或 https:// 开头`;
+      }
+      if (!p.secret_value && !p.secret_ref) {
+        return `语音合成第 ${index + 1} 项（MiMo）需要配置 API Key`;
+      }
+    }
+  }
   return null;
 }
+
+function addVoiceTts(provider: "mimo" | "edge_tts") {
+  if (draft.value.voice.tts.length >= 4) {
+    ElMessage.warning("语音合成链最多 4 个提供方");
+    return;
+  }
+  draft.value.voice.tts.push(defaultVoiceTts(provider));
+}
+
+function moveVoiceTts(index: number, offset: number) {
+  const list = draft.value.voice.tts;
+  const target = index + offset;
+  if (target < 0 || target >= list.length) return;
+  [list[index], list[target]] = [list[target], list[index]];
+}
+
+function removeVoiceTts(index: number) {
+  draft.value.voice.tts.splice(index, 1);
+}
+
+function onTtsProviderChange(p: DraftVoiceTts) {
+  const fresh = defaultVoiceTts(p.provider);
+  p.model = fresh.model;
+  p.base_url = fresh.base_url;
+  p.voice = fresh.voice;
+  p.secret_mode = fresh.secret_mode;
+}
+
+const mimoVoiceOptions = ["冰糖", "茉莉", "苏打", "白桦", "Mia", "Chloe", "Milo", "Dean"];
+const edgeVoiceOptions = [
+  "zh-CN-XiaoxiaoNeural",
+  "zh-CN-YunxiNeural",
+  "zh-CN-YunyangNeural",
+  "zh-CN-XiaoyiNeural",
+];
 
 async function saveConfig() {
   busy.value = true;
@@ -566,6 +761,96 @@ onMounted(load);
             <label class="field"><span>日志等级</span><el-select v-model="draft.observability.log_level"><el-option v-for="level in ['DEBUG','INFO','WARNING','ERROR']" :key="level" :label="level" :value="level" /></el-select></label>
             <label class="field"><span>Trace 采样率</span><el-input-number v-model="draft.observability.trace_sample_rate" :min="0" :max="1" :step="0.1" controls-position="right" /></label>
             <label class="field"><span>保留天数</span><el-input-number v-model="draft.observability.retain_days" :min="1" :max="365" controls-position="right" /></label>
+          </div>
+        </div>
+      </el-tab-pane>
+
+      <el-tab-pane label="语音" name="voice">
+        <div class="global-card">
+          <div class="global-head">
+            <div>
+              <h2>语音识别（ASR）</h2>
+              <p>语音转文字的提供方。保存即生效，无需重启服务；关闭后语音通道将提示「识别未配置」。</p>
+            </div>
+            <el-switch v-model="draft.voice.asr.enabled" active-text="启用" />
+          </div>
+          <template v-if="draft.voice.asr.enabled">
+            <div class="form-grid three global-fields">
+              <label class="field"><span>提供方</span><el-input model-value="小米 MiMo" disabled /></label>
+              <label class="field"><span>模型</span><el-input v-model="draft.voice.asr.model" placeholder="mimo-v2.5-asr" /></label>
+              <label class="field"><span>识别语种</span><el-select v-model="draft.voice.asr.language"><el-option label="自动检测" value="auto" /><el-option label="中文" value="zh" /><el-option label="英文" value="en" /></el-select></label>
+            </div>
+            <div class="form-grid three global-fields">
+              <label class="field"><span>Base URL</span><el-input v-model="draft.voice.asr.base_url" placeholder="https://api.xiaomimimo.com/v1" /></label>
+              <label class="field"><span>密钥方式</span><el-select v-model="draft.voice.asr.secret_mode"><el-option label="直接填写" value="value" /><el-option label="环境变量引用" value="ref" /><el-option label="暂不配置" value="none" /></el-select></label>
+              <label class="field">
+                <span>API Key</span>
+                <el-input
+                  v-if="draft.voice.asr.secret_mode === 'value'"
+                  v-model="draft.voice.asr.secret_value"
+                  type="password"
+                  show-password
+                  placeholder="MiMo API Key"
+                />
+                <el-input v-else-if="draft.voice.asr.secret_mode === 'ref'" v-model="draft.voice.asr.secret_ref" placeholder="env:MIMO_API_KEY" />
+                <el-input v-else model-value="—" disabled />
+              </label>
+            </div>
+          </template>
+          <div v-else class="capability-hint">语音识别未启用：/ws/voice 通道收到语音会返回 voice.asr_unavailable。</div>
+        </div>
+
+        <div class="global-card compact-global">
+          <div class="global-head">
+            <div>
+              <h2>语音合成（TTS）故障转移链</h2>
+              <p>按顺序尝试：排在前面的为主通道，首段音频失败或空流时自动切换到下一家并冷却 60 秒。每句的输出格式由实际提供方声明，客户端逐句自适应。</p>
+            </div>
+            <div>
+              <el-button size="small" @click="addVoiceTts('mimo')">+ MiMo</el-button>
+              <el-button size="small" @click="addVoiceTts('edge_tts')">+ edge-tts</el-button>
+            </div>
+          </div>
+          <div v-if="!draft.voice.tts.length" class="capability-hint">
+            未配置语音合成：语音回合会退化为纯文字（voice.tts_unavailable）。建议至少保留一家兜底（edge-tts 免费且无需密钥）。
+          </div>
+          <div v-for="(p, index) in draft.voice.tts" :key="index" class="route-card voice-tts-card">
+            <div class="route-name">
+              <strong>#{{ index + 1 }} {{ p.provider === 'mimo' ? 'MiMo' : 'edge-tts' }}</strong>
+              <el-tag v-if="index === 0" size="small" effect="plain">主通道</el-tag>
+              <el-tag v-if="!p.enabled" size="small" type="info" effect="plain">已停用</el-tag>
+            </div>
+            <div class="form-grid three global-fields">
+              <label class="field"><span>提供方</span><el-select v-model="p.provider" @change="onTtsProviderChange(p)"><el-option label="小米 MiMo（PCM 直出）" value="mimo" /><el-option label="edge-tts（免费兜底）" value="edge_tts" /></el-select></label>
+              <label class="field"><span>音色</span>
+                <el-select v-if="p.provider === 'mimo'" v-model="p.voice" filterable allow-create default-first-option placeholder="选择或输入音色"><el-option v-for="v in mimoVoiceOptions" :key="v" :label="v" :value="v" /></el-select>
+                <el-select v-else v-model="p.voice" filterable allow-create default-first-option placeholder="选择或输入音色"><el-option v-for="v in edgeVoiceOptions" :key="v" :label="v" :value="v" /></el-select>
+              </label>
+              <label class="field"><span>启用</span><el-switch v-model="p.enabled" /></label>
+            </div>
+            <div v-if="p.provider === 'mimo'" class="form-grid three global-fields">
+              <label class="field"><span>模型</span><el-input v-model="p.model" placeholder="mimo-v2.5-tts" /></label>
+              <label class="field"><span>Base URL</span><el-input v-model="p.base_url" placeholder="https://api.xiaomimimo.com/v1" /></label>
+              <label class="field"><span>密钥方式</span><el-select v-model="p.secret_mode"><el-option label="直接填写" value="value" /><el-option label="环境变量引用" value="ref" /></el-select></label>
+            </div>
+            <div v-if="p.provider === 'mimo' && p.secret_mode === 'value'" class="form-grid three global-fields">
+              <label class="field"><span>API Key</span><el-input v-model="p.secret_value" type="password" show-password placeholder="MiMo API Key" /></label>
+              <span class="field" />
+              <span class="field" />
+            </div>
+            <div v-else-if="p.provider === 'mimo' && p.secret_mode === 'ref'" class="form-grid three global-fields">
+              <label class="field"><span>环境变量引用</span><el-input v-model="p.secret_ref" placeholder="env:MIMO_API_KEY" /></label>
+              <span class="field" />
+              <span class="field" />
+            </div>
+            <div class="voice-tts-actions">
+              <el-button size="small" :disabled="index === 0" @click="moveVoiceTts(index, -1)">上移</el-button>
+              <el-button size="small" :disabled="index === draft.voice.tts.length - 1" @click="moveVoiceTts(index, 1)">下移</el-button>
+              <el-button size="small" type="danger" plain @click="removeVoiceTts(index)">删除</el-button>
+            </div>
+          </div>
+          <div class="capability-hint">
+            隐私约束：MiMo 与 edge-tts 均为云端服务，不会接收 L2（私密）内容——L2 语音需要本地提供方（后续批次接入）。
           </div>
         </div>
       </el-tab-pane>
@@ -801,6 +1086,9 @@ onMounted(load);
 .option-row :deep(.el-checkbox) { margin-right:0; }
 .route-list { display:grid; gap:12px; }
 .route-card { display:grid; grid-template-columns:90px minmax(180px,1fr) minmax(260px,1.35fr) 120px; gap:14px; align-items:start; padding:18px; border:1px solid var(--border); border-radius:10px; background:#fbfcff; }
+.voice-tts-card { display:block; }
+.voice-tts-card .route-name { display:flex; gap:10px; align-items:center; margin-bottom:12px; }
+.voice-tts-actions { display:flex; gap:8px; justify-content:flex-end; margin-top:12px; }
 .route-name { display:grid; gap:4px; padding-top:4px; }
 .route-name strong { font-size:12px; }
 .route-name span { color:var(--sub); font-size:9px; }

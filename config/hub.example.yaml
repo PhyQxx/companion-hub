@@ -133,6 +133,21 @@ capability_models:
   image_generation: zhipu_image_free
   video_generation: zhipu_video_free
 
+# P6 语音管线（后台「模型与路由 → 语音」可视化管理，保存即生效）。
+# asr 为空表示语音识别未启用；tts 按顺序做故障转移（MiMo 为主、edge-tts 兜底）。
+# MiMo 密钥建议直接在管理后台填 secret_value，无需写进本文件。
+voice:
+  asr: null
+  # asr:
+  #   provider: mimo
+  #   model: mimo-v2.5-asr
+  #   base_url: https://api.xiaomimimo.com/v1
+  #   secret_value: <在管理后台填写 MiMo API Key>
+  #   language: auto
+  tts:
+    - provider: edge_tts
+      voice: zh-CN-XiaoxiaoNeural
+
 observability:
   log_level: INFO
   trace_sample_rate: 1.0
