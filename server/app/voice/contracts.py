@@ -37,6 +37,14 @@ class SpeechRecognizer(Protocol):
     ) -> str: ...
 
 
+class SpeechRecognitionUnavailable(RuntimeError):
+    """识别器依赖、模型或本地运行条件不可用。"""
+
+    def __init__(self, reason: str) -> None:
+        self.reason = reason
+        super().__init__(reason)
+
+
 class SpeechSynthesizer(Protocol):
     """句级流式合成：产出 PCM16 音频分片（mime / sample_rate 由实现方声明）。"""
 

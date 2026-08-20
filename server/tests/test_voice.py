@@ -8,6 +8,7 @@ import json
 import wave
 from collections.abc import AsyncIterator
 from io import BytesIO
+from types import SimpleNamespace
 from typing import Any
 
 import httpx
@@ -16,10 +17,12 @@ import pytest
 from app.schemas import PrivacyLevel
 from app.voice import (
     EnergyVad,
+    FasterWhisperRecognizer,
     MiMoAsrRecognizer,
     MiMoTtsSynthesizer,
     SentenceBuffer,
     TtsProviderChain,
+    pcm16_rms,
     wrap_wav,
 )
 from app.voice.contracts import LocalOnlySynthesizerError
@@ -32,6 +35,60 @@ def loud_frames(count: int) -> bytes:
 
 def silent_frames(count: int) -> bytes:
     return b"\x00\x00" * (480 * count)
+
+
+def test_pcm16_rms_matches_known_constant_amplitude() -> None:
+    assert pcm16_rms(b"") == 0
+    assert pcm16_rms(silent_frames(1)) == 0
+    assert pcm16_rms(loud_frames(1)) == 8000
+    assert pcm16_rms(b"\x40\x1f\xff") == 8000
+
+
+async def test_faster_whisper_adapter_lazy_loads_and_joins_segments(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, Any] = {}
+
+    class FakeWhisperModel:
+        def __init__(self, model: str, *, device: str, compute_type: str) -> None:
+            captured.update(model=model, device=device, compute_type=compute_type)
+
+        def transcribe(
+            self,
+            audio: BytesIO,
+            *,
+            language: str | None,
+            beam_size: int,
+            vad_filter: bool,
+        ) -> tuple[list[SimpleNamespace], object]:
+            captured.update(
+                wav_header=audio.read(4),
+                language=language,
+                beam_size=beam_size,
+                vad_filter=vad_filter,
+            )
+            return [SimpleNamespace(text="你好"), SimpleNamespace(text="，世界")], object()
+
+    monkeypatch.setattr(
+        "app.voice.faster_whisper.importlib.import_module",
+        lambda name: SimpleNamespace(WhisperModel=FakeWhisperModel),
+    )
+    recognizer = FasterWhisperRecognizer(
+        model="small", device="cpu", compute_type="int8", language="zh"
+    )
+
+    text = await recognizer.transcribe(loud_frames(5), sample_rate=16_000, language=None)
+
+    assert text == "你好，世界"
+    assert captured == {
+        "model": "small",
+        "device": "cpu",
+        "compute_type": "int8",
+        "wav_header": b"RIFF",
+        "language": "zh",
+        "beam_size": 1,
+        "vad_filter": False,
+    }
 
 
 def test_energy_vad_segments_utterance_boundaries() -> None:

@@ -78,6 +78,7 @@ class ModelEndpoint(StrictModel):
     max_privacy_level: PrivacyLevel
     timeout_ms: Annotated[int, Field(ge=100, le=120_000)] = 12_000
     max_retries: Annotated[int, Field(ge=0, le=3)] = 1
+    max_tokens: Annotated[int, Field(gt=0, le=131_072)] | None = None
     max_context_tokens: Annotated[int, Field(gt=0)] = 131_072
     input_cost_per_million: Annotated[float, Field(ge=0)] = 0
     output_cost_per_million: Annotated[float, Field(ge=0)] = 0

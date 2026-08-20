@@ -117,7 +117,8 @@ models:
 routes:
   dialogue:
     primary: sensenova_dialogue
-    fallbacks: [zhipu_text_free, sensenova_reasoning_fallback]
+    # 云端限流/超时时优先回落到已加载的本地模型，避免免费云模型一起拥塞时整轮失败。
+    fallbacks: [local_private, zhipu_text_free, sensenova_reasoning_fallback]
     timeout_ms: 12000
   utility:
     primary: sensenova_utility
@@ -144,6 +145,16 @@ voice:
   #   base_url: https://api.xiaomimimo.com/v1
   #   secret_value: <在管理后台填写 MiMo API Key>
   #   language: auto
+  # L2 本地语音可改用 faster-whisper；无需 URL/Key，首次识别时延迟加载模型。
+  # 当前作为可选本地运行依赖，不随 Hub 基础依赖自动安装。
+  # asr:
+  #   provider: faster_whisper
+  #   model: small
+  #   base_url: null
+  #   language: zh
+  #   device: cpu
+  #   compute_type: int8
+  #   runs_local: true
   tts:
     - provider: edge_tts
       voice: zh-CN-XiaoxiaoNeural

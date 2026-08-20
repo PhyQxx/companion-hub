@@ -10,6 +10,36 @@ export interface SetupStatus {
   setup_required: boolean;
 }
 
+export interface VoiceControlEvent {
+  type: string;
+  conversation_id?: string;
+  generation_id?: string;
+  turn_id?: string;
+  message_id?: string;
+  privacy_level?: PrivacyLevel;
+  text?: string;
+  content?: string;
+  is_final?: boolean;
+  index?: number;
+  mime?: string;
+  sample_rate?: number;
+  provider?: string;
+  reason?: string;
+  reason_code?: string;
+  turn_cancelled?: boolean;
+  asr_configured?: boolean;
+  asr_runs_local?: boolean | null;
+  asr_provider?: string | null;
+  tts_configured?: boolean;
+  tts_provider_count?: number;
+  supported?: {
+    format?: string;
+    sample_rate?: number;
+    channels?: number;
+  };
+  [key: string]: unknown;
+}
+
 export interface RuntimeMeta {
   persona?: {
     version: number;
@@ -101,6 +131,98 @@ export class ApiError extends Error {
     message: string,
   ) {
     super(message);
+  }
+}
+
+export interface VoiceSocketHandlers {
+  onEvent: (event: VoiceControlEvent) => void;
+  onAudio: (chunk: ArrayBuffer) => void;
+  onClose: (code: number) => void;
+}
+
+/**
+ * 语音 WebSocket 客户端：鉴权后发送 voice.hello，并以 voice.ready
+ * 作为会话建立成功信号。二进制帧为当前 voice.sentence 的音频分片。
+ */
+export class VoiceSocket {
+  private socket: WebSocket | null = null;
+
+  constructor(
+    private url: string,
+    private token: string,
+    private handlers: VoiceSocketHandlers,
+  ) {}
+
+  connect(conversationId: string, privacyLevel: PrivacyLevel): Promise<void> {
+    return new Promise((resolve, reject) => {
+      const socket = new WebSocket(this.url);
+      socket.binaryType = "arraybuffer";
+      this.socket = socket;
+      let ready = false;
+      socket.onopen = () => {
+        socket.send(JSON.stringify({ type: "authenticate", access_token: this.token }));
+        socket.send(JSON.stringify({
+          type: "voice.hello",
+          conversation_id: conversationId,
+          privacy_level: privacyLevel,
+          format: "pcm_s16le",
+          sample_rate: 16_000,
+          channels: 1,
+        }));
+      };
+      socket.onmessage = (frame) => {
+        if (typeof frame.data === "string") {
+          const event = JSON.parse(frame.data) as VoiceControlEvent;
+          if (event.type === "voice.ready" && !ready) {
+            ready = true;
+            resolve();
+          }
+          this.handlers.onEvent(event);
+          return;
+        }
+        if (frame.data instanceof ArrayBuffer) {
+          this.handlers.onAudio(frame.data);
+          return;
+        }
+        if (frame.data instanceof Blob) {
+          void frame.data.arrayBuffer().then((data) => this.handlers.onAudio(data));
+        }
+      };
+      socket.onerror = () => {
+        if (!ready) reject(new Error("voice_websocket_error"));
+      };
+      socket.onclose = (event) => {
+        if (!ready) reject(new Error(`voice_closed_${event.code}`));
+        this.handlers.onClose(event.code);
+      };
+    });
+  }
+
+  private sendJson(frame: Record<string, unknown>) {
+    if (this.socket?.readyState !== WebSocket.OPEN) return;
+    this.socket.send(JSON.stringify(frame));
+  }
+
+  beginUtterance() {
+    this.sendJson({ type: "utterance.begin" });
+  }
+
+  endUtterance() {
+    this.sendJson({ type: "utterance.end" });
+  }
+
+  interrupt() {
+    this.sendJson({ type: "interrupt" });
+  }
+
+  sendPcm(chunk: ArrayBuffer) {
+    if (this.socket?.readyState !== WebSocket.OPEN) return;
+    this.socket.send(chunk);
+  }
+
+  close() {
+    this.socket?.close(1000);
+    this.socket = null;
   }
 }
 

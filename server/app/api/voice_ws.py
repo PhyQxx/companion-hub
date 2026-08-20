@@ -13,6 +13,7 @@ import asyncio
 import json
 import logging
 import time
+from contextlib import suppress
 from dataclasses import dataclass, field
 from typing import Any
 from uuid import UUID
@@ -28,6 +29,7 @@ from app.schemas import PrivacyLevel
 from app.voice import (
     EnergyVad,
     SentenceBuffer,
+    SpeechRecognitionUnavailable,
     SpeechRecognizer,
     TtsProviderChain,
     VoiceProviderSource,
@@ -57,6 +59,7 @@ class VoiceSession:
     collecting: bool = False
     utterance: bytearray = field(default_factory=bytearray)
     generation_id: UUID | None = None
+    turn_committed: bool = False
     turn_task: asyncio.Task[None] | None = None
     tts_unavailable_notified: bool = False
 
@@ -129,10 +132,18 @@ class VoiceWebSocketManager:
             return
         session.conversation_id = UUID(conversation_raw)
         session.privacy_level = PrivacyLevel(frame.get("privacy_level", "L1"))
+        recognizer, tts_chain = await self._voice_source.resolve()
         await self._send(
             session,
             "voice.ready",
-            {"conversation_id": str(session.conversation_id)},
+            {
+                "conversation_id": str(session.conversation_id),
+                "asr_configured": recognizer is not None,
+                "asr_runs_local": recognizer.runs_local if recognizer is not None else None,
+                "asr_provider": type(recognizer).__name__ if recognizer is not None else None,
+                "tts_configured": tts_chain is not None,
+                "tts_provider_count": len(tts_chain.providers) if tts_chain is not None else 0,
+            },
         )
 
     async def _on_audio(self, session: VoiceSession, pcm: bytes) -> None:
@@ -189,10 +200,33 @@ class VoiceWebSocketManager:
         started = time.perf_counter()
         transcript_at = first_token_at = first_audio_at = 0.0
         pending: PendingTurn | None = None
+        session.turn_committed = False
         try:
-            transcript = await recognizer.transcribe(
-                pcm, sample_rate=SUPPORTED_SAMPLE_RATE, language=None
-            )
+            try:
+                transcript = await recognizer.transcribe(
+                    pcm, sample_rate=SUPPORTED_SAMPLE_RATE, language=None
+                )
+            except SpeechRecognitionUnavailable as error:
+                logger.warning(
+                    "voice asr unavailable provider=%s reason=%s",
+                    type(recognizer).__name__,
+                    error.reason,
+                )
+                await self._send(
+                    session, "voice.asr_unavailable", {"reason": error.reason}
+                )
+                return
+            except Exception as error:
+                logger.error(
+                    "voice asr provider failed provider=%s error_type=%s",
+                    type(recognizer).__name__,
+                    type(error).__name__,
+                    exc_info=True,
+                )
+                await self._send(
+                    session, "voice.asr_unavailable", {"reason": "provider_error"}
+                )
+                return
             transcript_at = time.perf_counter()
             if not transcript.strip():
                 return
@@ -273,6 +307,7 @@ class VoiceWebSocketManager:
                     await speak(sentence)
 
             turn = await self._service.run_stream(pending, on_delta)
+            session.turn_committed = True
             remainder = buffer.flush()
             if remainder:
                 await speak(remainder)
@@ -294,7 +329,7 @@ class VoiceWebSocketManager:
                 first_audio_at,
             )
         except (TurnCancelled, asyncio.CancelledError):
-            if pending is not None:
+            if pending is not None and not session.turn_committed:
                 await self._send(
                     session,
                     "turn.cancelled",
@@ -323,23 +358,39 @@ class VoiceWebSocketManager:
                 )
         finally:
             session.generation_id = None
+            session.turn_committed = False
             session.turn_task = None
 
     async def _interrupt(self, session: VoiceSession, *, reason: str) -> None:
         generation_id = session.generation_id
         task = session.turn_task
-        if generation_id is None or task is None:
+        if task is None:
+            return
+        if generation_id is None:
+            await self._send(
+                session,
+                "voice.interrupted",
+                {"generation_id": None, "reason": reason},
+            )
+            task.cancel()
+            with suppress(asyncio.CancelledError):
+                await task
             return
         changed = await self._service.cancel_turn(
             generation_id, user_id=session.principal.user_id
         )
-        if changed:
-            task.cancel()
-            await self._send(
-                session,
-                "voice.interrupted",
-                {"generation_id": str(generation_id), "reason": reason},
-            )
+        await self._send(
+            session,
+            "voice.interrupted",
+            {
+                "generation_id": str(generation_id),
+                "reason": reason,
+                "turn_cancelled": changed,
+            },
+        )
+        task.cancel()
+        with suppress(asyncio.CancelledError):
+            await task
 
     async def disconnect(self, session: VoiceSession) -> None:
         task = session.turn_task
@@ -413,8 +464,11 @@ def create_voice_websocket_router(
                 raw_auth = await websocket.receive_json()
             auth = AuthenticateFrame.model_validate(raw_auth)
             principal = await auth_service.authenticate(auth.access_token)
-        except (TimeoutError, ValidationError, InvalidSession, WebSocketDisconnect):
-            await websocket.close(code=4401, reason="authentication required")
+        except WebSocketDisconnect:
+            return
+        except (TimeoutError, ValidationError, InvalidSession):
+            with suppress(WebSocketDisconnect):
+                await websocket.close(code=4401, reason="authentication required")
             return
         session = VoiceSession(websocket=websocket, principal=principal)
         try:

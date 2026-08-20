@@ -8,9 +8,11 @@ from pathlib import Path
 import pytest
 
 from app.config.models import HubConfig, VoiceAsrConfig, VoiceTtsProviderConfig
-from app.config.store import load_config_file
+from app.config.store import ConfigStore, load_config_file
 from app.voice import (
+    ConfigVoiceSource,
     EdgeTtsSynthesizer,
+    FasterWhisperRecognizer,
     MiMoAsrRecognizer,
     MiMoTtsSynthesizer,
     build_voice_providers,
@@ -56,11 +58,64 @@ def test_voice_section_defaults_to_disabled() -> None:
     assert chain is None
 
 
+async def test_config_voice_source_reuses_local_asr_until_voice_config_changes(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "hub.yaml"
+    path.write_text(
+        BASE_CONFIG
+        + """
+voice:
+  asr:
+    provider: faster_whisper
+    model: small
+    base_url: null
+    runs_local: true
+    device: cpu
+    compute_type: int8
+""",
+        encoding="utf-8",
+    )
+    store = ConfigStore(path)
+    await store.load()
+    source = ConfigVoiceSource(store)
+
+    first, _ = await source.resolve()
+    second, _ = await source.resolve()
+
+    assert isinstance(first, FasterWhisperRecognizer)
+    assert second is first
+
+    updated = path.read_text(encoding="utf-8").replace("model: small", "model: medium")
+    path.write_text(updated, encoding="utf-8")
+    await store.reload(force=True)
+    third, _ = await source.resolve()
+
+    assert isinstance(third, FasterWhisperRecognizer)
+    assert third is not first
+
+
 def test_voice_asr_requires_secret() -> None:
     with pytest.raises(ValueError, match="secret"):
         VoiceAsrConfig()
     assert VoiceAsrConfig(secret_value="k").secret_value == "k"
     assert VoiceAsrConfig(secret_ref="env:MIMO_API_KEY").secret_ref == "env:MIMO_API_KEY"
+
+
+def test_faster_whisper_asr_is_local_and_requires_no_secret() -> None:
+    local = VoiceAsrConfig(
+        provider="faster_whisper",
+        model="small",
+        base_url=None,
+        runs_local=True,
+        device="cpu",
+        compute_type="int8",
+    )
+    assert local.secret_ref is None
+    assert local.secret_value is None
+    assert local.runs_local is True
+    with pytest.raises(ValueError, match="must run locally"):
+        VoiceAsrConfig(provider="faster_whisper", model="small", base_url=None)
 
 
 def test_voice_tts_provider_rules() -> None:
@@ -108,6 +163,27 @@ voice:
     assert len(providers) == 2
     assert isinstance(providers[0], MiMoTtsSynthesizer)
     assert isinstance(providers[1], EdgeTtsSynthesizer)
+
+
+def test_build_faster_whisper_from_config_without_loading_model() -> None:
+    config = _config_with(
+        """
+voice:
+  asr:
+    provider: faster_whisper
+    model: small
+    base_url: null
+    runs_local: true
+    device: cpu
+    compute_type: int8
+"""
+    )
+
+    recognizer, chain = build_voice_providers(config)
+
+    assert isinstance(recognizer, FasterWhisperRecognizer)
+    assert recognizer.runs_local is True
+    assert chain is None
 
 
 def test_build_voice_providers_skips_entries_with_unresolvable_secret(

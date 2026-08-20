@@ -296,8 +296,14 @@ def create_chat_websocket_router(
                 raw_auth = await websocket.receive_json()
             auth = AuthenticateFrame.model_validate(raw_auth)
             principal = await auth_service.authenticate(auth.access_token)
-        except (TimeoutError, ValidationError, InvalidSession, WebSocketDisconnect):
-            await websocket.close(code=4401, reason="authentication required")
+        except WebSocketDisconnect:
+            # 浏览器在鉴权帧发送前主动关闭连接是正常的生命周期事件。
+            # 此时连接已经不可写，不能再发送 4401 close，否则 Starlette
+            # 会再次抛 WebSocketDisconnect/ClientDisconnected 并污染服务日志。
+            return
+        except (TimeoutError, ValidationError, InvalidSession):
+            with suppress(WebSocketDisconnect):
+                await websocket.close(code=4401, reason="authentication required")
             return
         connection = ChatConnection(websocket=websocket, principal=principal)
         manager.connect(connection)

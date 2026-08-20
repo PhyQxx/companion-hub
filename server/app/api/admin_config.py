@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import asyncio
 import hmac
+import importlib.metadata
+import importlib.util
 import json
 import re
 from datetime import datetime
@@ -17,6 +19,7 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import Field
 
 from app.config import DatabaseConfigStore, DatabaseConfigVersion, HubConfig
+from app.config.models import VoiceAsrConfig
 from app.config.store import ConfigSnapshot, hash_config
 from app.llm import EnvSecretProvider, LiteLLMProvider, ModelEndpoint, ModelKind
 from app.observability import apply_observability
@@ -88,6 +91,21 @@ class ModelConnectionTestResult(StrictModel):
     model_available: bool | None = None
     model_loaded: bool | None = None
     models: list[ModelProbeItem] = Field(default_factory=list)
+
+
+class VoiceAsrEnvironmentCheckRequest(StrictModel):
+    asr: VoiceAsrConfig
+
+
+class VoiceAsrEnvironmentCheckResult(StrictModel):
+    ok: bool
+    provider: str
+    model: str
+    runs_local: bool
+    dependency_available: bool | None = None
+    package_version: str | None = None
+    model_load_checked: bool = False
+    message: str
 
 
 _SECRET_PATTERNS: tuple[re.Pattern[str], ...] = (
@@ -392,6 +410,43 @@ def create_admin_config_router(
             model=endpoint.model,
             latency_ms=(perf_counter() - started) * 1_000,
             message="连接成功，模型探针响应正常",
+        )
+
+    @router.post("/voice/asr/check", response_model=VoiceAsrEnvironmentCheckResult)
+    async def check_voice_asr_environment(
+        body: VoiceAsrEnvironmentCheckRequest,
+    ) -> VoiceAsrEnvironmentCheckResult:
+        """检查 ASR 本地运行前置条件。不下载/加载模型。不发送音频。"""
+        asr = body.asr
+        if asr.provider != "faster_whisper":
+            return VoiceAsrEnvironmentCheckResult(
+                ok=True,
+                provider=asr.provider,
+                model=asr.model,
+                runs_local=asr.runs_local,
+                message="MiMo 为云端 ASR，本地依赖自检不适用；请使用语音真连验证。",
+            )
+
+        available = importlib.util.find_spec("faster_whisper") is not None
+        package_version: str | None = None
+        if available:
+            try:
+                package_version = importlib.metadata.version("faster-whisper")
+            except importlib.metadata.PackageNotFoundError:
+                package_version = None
+        return VoiceAsrEnvironmentCheckResult(
+            ok=available,
+            provider=asr.provider,
+            model=asr.model,
+            runs_local=asr.runs_local,
+            dependency_available=available,
+            package_version=package_version,
+            model_load_checked=False,
+            message=(
+                "faster-whisper 已安装，可以继续做模型加载/真实转写验收"
+                if available
+                else "当前 Hub Python 环境未安装 faster-whisper"
+            ),
         )
 
     @router.post(

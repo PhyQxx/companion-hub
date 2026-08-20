@@ -20,6 +20,7 @@ interface HubModel {
   thinking_mode?: "provider_default" | "enabled" | "disabled";
   timeout_ms?: number;
   max_retries?: number;
+  max_tokens?: number | null;
   max_context_tokens?: number;
   input_cost_per_million?: number;
   output_cost_per_million?: number;
@@ -88,6 +89,7 @@ function draftModelToEndpoint(m: DraftModel): HubModel {
     thinking_mode: m.thinking_mode,
     timeout_ms: m.timeout_ms,
     max_retries: m.max_retries,
+    max_tokens: m.max_tokens ?? null,
     max_context_tokens: m.max_context_tokens,
     input_cost_per_million: m.input_cost_per_million,
     output_cost_per_million: m.output_cost_per_million,
@@ -124,6 +126,16 @@ interface ModelConnectionTestResult {
   model_loaded?: boolean | null;
   models: ModelProbeItem[];
 }
+interface VoiceAsrEnvironmentCheckResult {
+  ok: boolean;
+  provider: string;
+  model: string;
+  runs_local: boolean;
+  dependency_available?: boolean | null;
+  package_version?: string | null;
+  model_load_checked: boolean;
+  message: string;
+}
 interface HubConfig {
   schema_version: number;
   models: Record<string, HubModel>;
@@ -137,12 +149,15 @@ interface HubConfig {
   observability: { log_level: string; trace_sample_rate: number; retain_days: number };
 }
 interface HubVoiceAsr {
-  provider: "mimo";
+  provider: "mimo" | "faster_whisper";
   model: string;
-  base_url: string;
+  base_url?: string | null;
   language: "auto" | "zh" | "en";
   secret_ref?: string | null;
   secret_value?: string | null;
+  device?: "auto" | "cpu" | "cuda";
+  compute_type?: string;
+  runs_local?: boolean;
 }
 interface HubVoiceTts {
   provider: "mimo" | "edge_tts";
@@ -173,6 +188,7 @@ interface DraftModel {
   thinking_mode: "provider_default" | "enabled" | "disabled";
   timeout_ms: number;
   max_retries: number;
+  max_tokens: number;
   max_context_tokens: number;
   input_cost_per_million: number;
   output_cost_per_million: number;
@@ -186,10 +202,12 @@ interface DraftRoute {
 
 interface DraftVoiceAsr {
   enabled: boolean;
-  provider: "mimo";
+  provider: "mimo" | "faster_whisper";
   model: string;
   base_url: string;
   language: "auto" | "zh" | "en";
+  device: "auto" | "cpu" | "cuda";
+  compute_type: string;
   secret_mode: "value" | "ref" | "none";
   secret_value: string;
   secret_ref: string;
@@ -234,6 +252,8 @@ const activeSection = ref<"basic" | "connection" | "runtime">("basic");
 const busy = ref(false);
 const testingConnection = ref(false);
 const connectionTest = ref<ModelConnectionTestResult | null>(null);
+const testingVoiceAsr = ref(false);
+const voiceAsrCheck = ref<VoiceAsrEnvironmentCheckResult | null>(null);
 const activeModelTab = ref(0);
 const activeMainTab = ref("routes");
 
@@ -253,6 +273,7 @@ const defaultModel = (): DraftModel => ({
   thinking_mode: "provider_default",
   timeout_ms: 12000,
   max_retries: 1,
+  max_tokens: 2048,
   max_context_tokens: 131072,
   input_cost_per_million: 0,
   output_cost_per_million: 0,
@@ -269,6 +290,8 @@ const defaultVoiceAsr = (): DraftVoiceAsr => ({
   model: "mimo-v2.5-asr",
   base_url: "https://api.xiaomimimo.com/v1",
   language: "auto",
+  device: "auto",
+  compute_type: "default",
   secret_mode: "value",
   secret_value: "",
   secret_ref: "env:MIMO_API_KEY",
@@ -286,6 +309,66 @@ const defaultVoiceTts = (provider: "mimo" | "edge_tts" = "mimo"): DraftVoiceTts 
 });
 
 const defaultVoice = (): DraftVoice => ({ asr: defaultVoiceAsr(), tts: [] });
+
+function onAsrProviderChange(provider: "mimo" | "faster_whisper") {
+  voiceAsrCheck.value = null;
+  const asr = draft.value.voice.asr;
+  asr.provider = provider;
+  if (provider === "faster_whisper") {
+    if (asr.model.startsWith("mimo-")) asr.model = "small";
+    asr.base_url = "";
+    asr.device = "auto";
+    asr.compute_type = "default";
+    asr.secret_mode = "none";
+    asr.secret_value = "";
+    return;
+  }
+  if (!asr.model || ["tiny", "base", "small", "medium", "large-v3"].includes(asr.model)) {
+    asr.model = "mimo-v2.5-asr";
+  }
+  asr.base_url = "https://api.xiaomimimo.com/v1";
+  asr.secret_mode = asr.secret_value ? "value" : asr.secret_ref ? "ref" : "value";
+}
+
+async function checkLocalAsrEnvironment() {
+  const asr = draft.value.voice.asr;
+  if (asr.provider !== "faster_whisper") return;
+  if (!asr.model.trim()) {
+    ElMessage.warning("请先填写 faster-whisper 模型名");
+    return;
+  }
+  testingVoiceAsr.value = true;
+  voiceAsrCheck.value = null;
+  try {
+    const result = await api.request<VoiceAsrEnvironmentCheckResult>(
+      "/api/v1/admin/config/voice/asr/check",
+      {
+        method: "POST",
+        body: JSON.stringify({
+          asr: {
+            provider: "faster_whisper",
+            model: asr.model,
+            base_url: null,
+            language: asr.language,
+            device: asr.device,
+            compute_type: asr.compute_type,
+            runs_local: true,
+            secret_ref: null,
+            secret_value: null,
+          },
+        }),
+      },
+    );
+    voiceAsrCheck.value = result;
+    if (result.ok) ElMessage.success(result.message);
+    else ElMessage.warning(result.message);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "本地 ASR 自检失败";
+    ElMessage.error(message);
+  } finally {
+    testingVoiceAsr.value = false;
+  }
+}
 
 const draft = ref<DraftState>({
   schema_version: 1,
@@ -327,6 +410,7 @@ function hubConfigToDraft(config: HubConfig | undefined | null): DraftState {
       thinking_mode: m.thinking_mode ?? "provider_default",
       timeout_ms: m.timeout_ms ?? 12000,
       max_retries: m.max_retries ?? 1,
+      max_tokens: m.max_tokens ?? 2048,
       max_context_tokens: m.max_context_tokens ?? 131072,
       input_cost_per_million: m.input_cost_per_million ?? 0,
       output_cost_per_million: m.output_cost_per_million ?? 0,
@@ -345,10 +429,12 @@ function hubConfigToDraft(config: HubConfig | undefined | null): DraftState {
   const draftAsr: DraftVoiceAsr = asr
     ? {
         enabled: true,
-        provider: "mimo",
-        model: asr.model ?? "mimo-v2.5-asr",
-        base_url: asr.base_url ?? "https://api.xiaomimimo.com/v1",
+        provider: asr.provider ?? "mimo",
+        model: asr.model ?? (asr.provider === "faster_whisper" ? "small" : "mimo-v2.5-asr"),
+        base_url: asr.base_url ?? "",
         language: asr.language ?? "auto",
+        device: asr.device ?? "auto",
+        compute_type: asr.compute_type ?? "default",
         secret_mode: asrSecretMode,
         secret_value: asr.secret_value ?? "",
         secret_ref: asr.secret_ref ?? "env:MIMO_API_KEY",
@@ -393,6 +479,7 @@ function draftToHubConfig(d: DraftState): HubConfig {
       thinking_mode: m.thinking_mode,
       timeout_ms: m.timeout_ms,
       max_retries: m.max_retries,
+      max_tokens: m.max_tokens ?? null,
       max_context_tokens: m.max_context_tokens,
       input_cost_per_million: m.input_cost_per_million,
       output_cost_per_million: m.output_cost_per_million,
@@ -414,13 +501,28 @@ function draftToHubConfig(d: DraftState): HubConfig {
     routes[name] = { primary: r.primary, fallbacks: r.fallbacks, timeout_ms: r.timeout_ms };
   }
   const voiceAsr: HubVoiceAsr | null = d.voice.asr.enabled
-    ? {
-        provider: "mimo",
-        model: d.voice.asr.model,
-        base_url: d.voice.asr.base_url,
-        language: d.voice.asr.language,
-        ...(assembleSecret(d.voice.asr)),
-      }
+    ? d.voice.asr.provider === "faster_whisper"
+      ? {
+          provider: "faster_whisper",
+          model: d.voice.asr.model,
+          base_url: null,
+          language: d.voice.asr.language,
+          device: d.voice.asr.device,
+          compute_type: d.voice.asr.compute_type,
+          runs_local: true,
+          secret_ref: null,
+          secret_value: null,
+        }
+      : {
+          provider: "mimo",
+          model: d.voice.asr.model,
+          base_url: d.voice.asr.base_url,
+          language: d.voice.asr.language,
+          device: "auto",
+          compute_type: "default",
+          runs_local: false,
+          ...(assembleSecret(d.voice.asr)),
+        }
     : null;
   const voiceTts: HubVoiceTts[] = d.voice.tts.map((p) => ({
     provider: p.provider,
@@ -565,6 +667,9 @@ function validateCandidate(config: HubConfig): string | null {
     if (typeof m.max_retries === "number" && m.max_retries > 3) {
       return `模型「${key}」的重试次数不能超过 3`;
     }
+    if (typeof m.max_tokens === "number" && (m.max_tokens < 1 || m.max_tokens > 131072)) {
+      return `模型「${key}」的 max_tokens 需在 1–131072 之间`;
+    }
     if (typeof m.max_context_tokens === "number" && m.max_context_tokens < 1) {
       return `模型「${key}」的上下文 tokens 需大于 0`;
     }
@@ -603,14 +708,18 @@ function validateCandidate(config: HubConfig): string | null {
   const voice = config.voice ?? { asr: null, tts: [] };
   if (voice.asr) {
     if (!voice.asr.model?.trim()) return "语音识别未填写模型名";
-    if (!/^https?:\/\//.test((voice.asr.base_url ?? "").trim())) {
-      return "语音识别的 Base URL 需以 http:// 或 https:// 开头";
-    }
-    if (!voice.asr.secret_value && !voice.asr.secret_ref) {
-      return "语音识别需要配置 API Key（直接填写或使用环境变量引用）";
-    }
-    if (voice.asr.secret_ref && !SECRET_REF_PATTERN.test(voice.asr.secret_ref)) {
-      return "语音识别的环境变量引用格式应为 env:大写环境变量名，如 env:MIMO_API_KEY";
+    if (voice.asr.provider === "mimo") {
+      if (!/^https?:\/\//.test((voice.asr.base_url ?? "").trim())) {
+        return "MiMo 语音识别的 Base URL 需以 http:// 或 https:// 开头";
+      }
+      if (!voice.asr.secret_value && !voice.asr.secret_ref) {
+        return "MiMo 语音识别需要配置 API Key（直接填写或使用环境变量引用）";
+      }
+      if (voice.asr.secret_ref && !SECRET_REF_PATTERN.test(voice.asr.secret_ref)) {
+        return "语音识别的环境变量引用格式应为 env:大写环境变量名，如 env:MIMO_API_KEY";
+      }
+    } else if (!voice.asr.compute_type?.trim()) {
+      return "faster-whisper 需要填写 compute type";
     }
   }
   if (voice.tts.length > 4) return "语音合成链最多 4 个提供方";
@@ -776,11 +885,17 @@ onMounted(load);
           </div>
           <template v-if="draft.voice.asr.enabled">
             <div class="form-grid three global-fields">
-              <label class="field"><span>提供方</span><el-input model-value="小米 MiMo" disabled /></label>
-              <label class="field"><span>模型</span><el-input v-model="draft.voice.asr.model" placeholder="mimo-v2.5-asr" /></label>
+              <label class="field">
+                <span>提供方</span>
+                <el-select v-model="draft.voice.asr.provider" @change="onAsrProviderChange">
+                  <el-option label="小米 MiMo · 云端" value="mimo" />
+                  <el-option label="faster-whisper · 本地" value="faster_whisper" />
+                </el-select>
+              </label>
+              <label class="field"><span>模型</span><el-input v-model="draft.voice.asr.model" :placeholder="draft.voice.asr.provider === 'mimo' ? 'mimo-v2.5-asr' : 'small / large-v3'" /></label>
               <label class="field"><span>识别语种</span><el-select v-model="draft.voice.asr.language"><el-option label="自动检测" value="auto" /><el-option label="中文" value="zh" /><el-option label="英文" value="en" /></el-select></label>
             </div>
-            <div class="form-grid three global-fields">
+            <div v-if="draft.voice.asr.provider === 'mimo'" class="form-grid three global-fields">
               <label class="field"><span>Base URL</span><el-input v-model="draft.voice.asr.base_url" placeholder="https://api.xiaomimimo.com/v1" /></label>
               <label class="field"><span>密钥方式</span><el-select v-model="draft.voice.asr.secret_mode"><el-option label="直接填写" value="value" /><el-option label="环境变量引用" value="ref" /><el-option label="暂不配置" value="none" /></el-select></label>
               <label class="field">
@@ -795,6 +910,38 @@ onMounted(load);
                 <el-input v-else-if="draft.voice.asr.secret_mode === 'ref'" v-model="draft.voice.asr.secret_ref" placeholder="env:MIMO_API_KEY" />
                 <el-input v-else model-value="—" disabled />
               </label>
+            </div>
+            <div v-else class="form-grid three global-fields">
+              <label class="field">
+                <span>设备</span>
+                <el-select v-model="draft.voice.asr.device">
+                  <el-option label="自动" value="auto" />
+                  <el-option label="CPU" value="cpu" />
+                  <el-option label="CUDA" value="cuda" />
+                </el-select>
+              </label>
+              <label class="field"><span>Compute type</span><el-input v-model="draft.voice.asr.compute_type" placeholder="default / int8 / float16" /></label>
+              <div class="capability-hint">
+                <span>模型在第一次识别时延迟加载；L2 音频只会走该本地识别器。</span>
+                <el-button size="small" :loading="testingVoiceAsr" @click="checkLocalAsrEnvironment">检查本地环境</el-button>
+              </div>
+            </div>
+            <div
+              v-if="draft.voice.asr.provider === 'faster_whisper' && voiceAsrCheck"
+              class="connection-result"
+              :class="{ success: voiceAsrCheck.ok, warning: !voiceAsrCheck.ok }"
+            >
+              <div class="connection-result-head">
+                <strong>{{ voiceAsrCheck.message }}</strong>
+                <el-tag size="small" :type="voiceAsrCheck.ok ? 'success' : 'warning'">
+                  {{ voiceAsrCheck.ok ? '依赖可用' : '待安装' }}
+                </el-tag>
+              </div>
+              <div class="connection-result-meta">
+                <span>模型：{{ voiceAsrCheck.model }}</span>
+                <span v-if="voiceAsrCheck.package_version">faster-whisper {{ voiceAsrCheck.package_version }}</span>
+                <span>模型加载：未执行（自检不会下载/加载模型）</span>
+              </div>
             </div>
           </template>
           <div v-else class="capability-hint">语音识别未启用：/ws/voice 通道收到语音会返回 voice.asr_unavailable。</div>
@@ -985,6 +1132,7 @@ onMounted(load);
                   <div class="form-grid three">
                     <label class="field"><span>超时（ms）</span><el-input-number v-model="draft.models[activeModelTab].timeout_ms" :min="100" :max="120000" controls-position="right" /></label>
                     <label class="field"><span>重试次数</span><el-input-number v-model="draft.models[activeModelTab].max_retries" :min="0" :max="3" controls-position="right" /></label>
+                    <label class="field"><span>max_tokens</span><el-input-number v-model="draft.models[activeModelTab].max_tokens" :min="1" :max="131072" controls-position="right" /></label>
                     <label class="field"><span>上下文 tokens</span><el-input-number v-model="draft.models[activeModelTab].max_context_tokens" :min="1" controls-position="right" /></label>
                     <label class="field"><span>输入成本 / M tokens</span><el-input-number v-model="draft.models[activeModelTab].input_cost_per_million" :min="0" :step="0.01" controls-position="right" /></label>
                     <label class="field"><span>输出成本 / M tokens</span><el-input-number v-model="draft.models[activeModelTab].output_cost_per_million" :min="0" :step="0.01" controls-position="right" /></label>

@@ -367,7 +367,6 @@ class ChatService:
             ],
             privacy_level=privacy_level,
             route=LLMRoute.DIALOGUE,
-            max_tokens=512,
             temperature=0.7,
         )
         return PendingTurn(

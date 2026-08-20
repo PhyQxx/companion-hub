@@ -168,6 +168,74 @@ async def test_fallback_and_retry_are_bounded() -> None:
     assert len(fallback.requests) == 1
 
 
+async def test_rate_limit_skips_same_endpoint_retry_and_falls_back_immediately() -> None:
+    class RateLimitedProvider(FakeProvider):
+        async def complete(self, request: CompletionRequest) -> CompletionResult:
+            self.requests.append(request)
+            error = RuntimeError("rate limited")
+            error.status_code = 429  # type: ignore[attr-defined]
+            raise error
+
+    limited = RateLimitedProvider("limited")
+    fallback = FakeProvider("fallback")
+    instance = LLMRouter(
+        endpoints={
+            "limited": endpoint(local=False, retries=2),
+            "fallback": endpoint(local=False),
+            "private": endpoint(local=True, max_privacy="L2"),
+        },
+        routes={
+            LLMRoute.DIALOGUE: RoutePolicy(primary="limited", fallbacks=["fallback"]),
+            LLMRoute.UTILITY: RoutePolicy(primary="fallback"),
+            LLMRoute.PRIVATE: RoutePolicy(primary="private"),
+        },
+        providers={
+            "limited": limited,
+            "fallback": fallback,
+            "private": FakeProvider("private"),
+        },
+    )
+
+    result = await instance.complete(request("L1"))
+
+    assert result.endpoint == "fallback"
+    assert len(limited.requests) == 1
+    assert len(fallback.requests) == 1
+
+
+async def test_timeout_skips_same_endpoint_retry_and_falls_back_immediately() -> None:
+    class TimeoutProvider(FakeProvider):
+        async def complete(self, request: CompletionRequest) -> CompletionResult:
+            self.requests.append(request)
+            raise TimeoutError("synthetic timeout")
+
+    timed_out = TimeoutProvider("timed-out")
+    fallback = FakeProvider("fallback")
+    instance = LLMRouter(
+        endpoints={
+            "timed-out": endpoint(local=False, retries=2),
+            "fallback": endpoint(local=False),
+            "private": endpoint(local=True, max_privacy="L2"),
+        },
+        routes={
+            LLMRoute.DIALOGUE: RoutePolicy(primary="timed-out", fallbacks=["fallback"]),
+            LLMRoute.UTILITY: RoutePolicy(primary="fallback"),
+            LLMRoute.PRIVATE: RoutePolicy(primary="private"),
+        },
+        providers={
+            "timed-out": timed_out,
+            "fallback": fallback,
+            "private": FakeProvider("private"),
+        },
+    )
+
+    result = await instance.complete(request("L1"))
+
+    assert result.endpoint == "fallback"
+    assert len(timed_out.requests) == 1
+    assert len(fallback.requests) == 1
+
+
 async def test_exhausted_route_keeps_safe_failure_diagnostics_only() -> None:
     first = FakeProvider("first", fail=True)
     fallback = FakeProvider("fallback", fail=True)
@@ -257,6 +325,48 @@ async def test_stream_falls_back_only_before_first_visible_delta() -> None:
     result = await instance.stream(request("L1"), _append_to(deltas))
 
     assert result.endpoint == "fallback"
+    assert deltas == ["fallback-delta"]
+
+
+async def test_stream_rate_limit_skips_same_endpoint_retry_before_first_delta() -> None:
+    class RateLimitedStreamProvider(FakeProvider):
+        async def stream(
+            self,
+            request: CompletionRequest,
+            on_delta: Callable[[str], Awaitable[None]],
+        ) -> CompletionResult:
+            del on_delta
+            self.requests.append(request)
+            error = RuntimeError("rate limited")
+            error.status_code = 429  # type: ignore[attr-defined]
+            raise error
+
+    limited = RateLimitedStreamProvider("limited")
+    fallback = FakeProvider("fallback")
+    instance = LLMRouter(
+        endpoints={
+            "limited": endpoint(local=False, retries=2),
+            "fallback": endpoint(local=False),
+            "private": endpoint(local=True, max_privacy="L2"),
+        },
+        routes={
+            LLMRoute.DIALOGUE: RoutePolicy(primary="limited", fallbacks=["fallback"]),
+            LLMRoute.UTILITY: RoutePolicy(primary="fallback"),
+            LLMRoute.PRIVATE: RoutePolicy(primary="private"),
+        },
+        providers={
+            "limited": limited,
+            "fallback": fallback,
+            "private": FakeProvider("private"),
+        },
+    )
+    deltas: list[str] = []
+
+    result = await instance.stream(request("L1"), _append_to(deltas))
+
+    assert result.endpoint == "fallback"
+    assert len(limited.requests) == 1
+    assert len(fallback.requests) == 1
     assert deltas == ["fallback-delta"]
 
 

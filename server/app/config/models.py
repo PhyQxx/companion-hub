@@ -25,22 +25,31 @@ class CapabilityModelRoutes(StrictModel):
 
 
 class VoiceAsrConfig(StrictModel):
-    """语音识别提供方（docs/33）：目前仅 MiMo 云端整段转写。"""
+    """语音识别提供方（docs/33）：MiMo 云端或 faster-whisper 本地转写。"""
 
-    provider: Literal["mimo"] = "mimo"
+    provider: Literal["mimo", "faster_whisper"] = "mimo"
     model: Annotated[str, Field(min_length=1, max_length=200)] = "mimo-v2.5-asr"
-    base_url: AnyHttpUrl = AnyHttpUrl("https://api.xiaomimimo.com/v1")
+    base_url: AnyHttpUrl | None = AnyHttpUrl("https://api.xiaomimimo.com/v1")
     secret_ref: Annotated[
         str, Field(pattern=r"^env:[A-Z][A-Z0-9_]{2,127}$")
     ] | None = None
     secret_value: Annotated[str, Field(max_length=1024)] | None = None
     language: Literal["auto", "zh", "en"] = "auto"
+    device: Literal["auto", "cpu", "cuda"] = "auto"
+    compute_type: Annotated[str, Field(min_length=1, max_length=64)] = "default"
     runs_local: bool = False
 
     @model_validator(mode="after")
-    def secret_is_configured(self) -> VoiceAsrConfig:
-        if self.secret_value is None and self.secret_ref is None:
-            raise ValueError("voice asr requires secret_value or secret_ref")
+    def provider_requirements(self) -> VoiceAsrConfig:
+        if self.provider == "mimo":
+            if self.base_url is None:
+                raise ValueError("mimo voice asr requires base_url")
+            if self.secret_value is None and self.secret_ref is None:
+                raise ValueError("mimo voice asr requires secret_value or secret_ref")
+            if self.runs_local:
+                raise ValueError("mimo voice asr cannot be marked local")
+        elif not self.runs_local:
+            raise ValueError("faster_whisper voice asr must run locally")
         return self
 
 
@@ -84,6 +93,14 @@ class HubConfig(StrictModel):
     capability_models: CapabilityModelRoutes = Field(default_factory=CapabilityModelRoutes)
     observability: ObservabilityConfig = Field(default_factory=ObservabilityConfig)
     voice: VoiceConfig = Field(default_factory=VoiceConfig)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _drop_deprecated_fields(cls, data: dict) -> dict:
+        # 兼容已入库的旧配置：废弃的 llm 全局字段不再使用，
+        # 由模型级 max_tokens 完全接管。
+        data.pop("llm", None)
+        return data
 
     @model_validator(mode="after")
     def validate_routes(self) -> HubConfig:

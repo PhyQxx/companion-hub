@@ -241,7 +241,6 @@ class LlmMemoryExtractor:
             ],
             privacy_level=privacy_level,
             route=LLMRoute.UTILITY,
-            max_tokens=512,
             temperature=0.1,
             json_mode=True,
         )

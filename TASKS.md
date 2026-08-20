@@ -51,7 +51,7 @@
 - [x] Dockerfile pnpm build 阶段；`packages/shared` 抽取 API 客户端与类型。
 - [x] 注释与文案规范确立：界面文案与代码注释统一中文，memory 包与前端核心文件已补齐。
 
-## 当前批次：P5（进行中）
+## 并行使用期：P5（14 天真实文字使用进行中）
 
 - [x] P5 前置联调收口：管理后台统一 Vue 3 + Element Plus 浅色主题；模型配置、路由与日志设置重新分层；聊天页补当前 Persona 元信息展示。
 - [x] 模型配置交互改为“保存即生效”：后台不再暴露草稿/发布/版本历史；`PUT /api/v1/admin/config/current` 完成校验、持久化与切换。
@@ -86,31 +86,32 @@
 
 ## 当前批次：P6 待办
 
-- [ ] Batch B：chat 前端麦克风采集与播放 UI（PCM16 采集 + sentence 事件驱动的分句播放 + 打断按钮）；后台语音页填入真实 MiMo Key 后真连验证。
-- [ ] Batch B：faster-whisper 本地流式 ASR（L2 语音路径）+ silero-vad 替换能量 VAD + 唤醒词（openWakeWord）。
-- [ ] Batch C：viseme 口型通道（50ms 幅度包络）+ 延迟打点报表面板 + 语音配置中心化（M2.8）。
-- [ ] Batch D：OLV Live2D 渲染端接入与 Tauri 桌宠评估。
-- [ ] M2 验收：说完 → 首字 ≤1.8s（P90）、打断 ≤300ms、口型肉眼同步、连续 20 轮无积压。
+- [~] Batch B：chat 前端麦克风采集与播放 UI 核心代码已落地：`VoiceSocket`、PCM16/16k/mono 浏览器采集、PTT、分句 PCM/MP3 播放、`voice.ready` provider 摘要、ASR 忙态保护与整链打断。L2 + 云 ASR 会在申请麦克风权限前直接阻断；后台热启用 ASR 后下一次点击会自动重连刷新能力。打断已覆盖 ASR→LLM→TTS，且文本已提交后的尾句 TTS 也可单独停止、不误标文字回合 cancelled。当前 config v23 已启用 MiMo ASR + MiMo→edge TTS，真实 TTS/ASR 探针通过；dialogue 云主模型 429/timeout 现在直接切 fallback，本地 LM Studio Qwen 已进入第一兜底，避免语音回合在同一云端 endpoint 上重复等待。当前 Coding MCP 无 Node/tsc，前端 typecheck/build 与真浏览器麦克风验收待补。
+- [~] Batch B：faster-whisper 本地 ASR 的配置契约、延迟加载运行时、L2 路由、后台 provider 选择和错误语义已落地；新增“检查本地环境”只读自检，不加载/下载模型。当前产品决策先以 MiMo 云 ASR 为主，faster-whisper 保留为后续可选的 L2/离线能力，不再阻塞 P6 当前主线。下一步优先完成云端语音真机验收，再升级 silero-vad/openWakeWord。
+- [ ] Batch C：viseme 口型通道（50ms 幅度包络）+ 延迟打点报表面板；语音配置中心化已在 Batch A 提前完成，不重复排期。
+- [ ] M2 语音验收：说完 → 首字 ≤1.8s（P90）、打断 ≤300ms、口型肉眼同步、连续 20 轮无积压。
+- [ ] Batch D（M2 达标后）：OLV Live2D 最小渲染壳接入与 Tauri 桌宠评估；完整形象中心/多形象/主题仍属于 M3B。
 
 ## 下一步执行顺序
 
-按依赖推进，不并行扩展 P6 功能。可开发项已全部完成（2026-08-20），剩余为使用与确认：
+按依赖推进，P5 使用期与 P6 开发并行，但发现 P0/P1 文字/隐私问题时必须优先暂停 P6 新功能并修复：
 
-1. ~~补齐 docs/30 Batch E/F~~：已完成——L1 真实模型 20/20；reasoning 适配后 L2 可见正文稳定，`l2-isolation` 通过；记忆后台 typecheck/build 全绿；
-2. ~~收口 docs/31 第一版体验~~：已完成——后端最小链路 + Timeline 管理页 + L1 真实正/负例 + 浏览器实测（178 条事件、Source 下钻）；
-3. ~~完成浏览器 P5 最终联调~~：管理后台/记忆/Timeline/聊天登录页已实测；消息级 `persona_version` 留待用户本人登录确认（docs/32 §5.3）；
-4. ~~补齐前端质量闸门~~：admin/chat typecheck 与 build 全绿；后端 migration、pytest、ruff、mypy 全绿（pytest 167 通过）；
-5. **进入连续 14 天真实文字使用**（进行中）：只记录和修复稳定性问题，不新增语音、Live2D、传感器或设备控制；日志按 docs/32 §5.2 格式追加；
-6. **输出 P5 Gate Report**：草稿已建（docs/32），期满按 §6 条件定稿，达标后进入 P6 语音与 Live2D 产品化。
+1. **P6 Batch B：浏览器语音端真机验收**（进行中）：在可执行 Node 环境补 typecheck/build 与真浏览器麦克风授权/采集/分句播放/打断验收，并在管理后台启用实际 ASR/TTS provider 完成首轮真连；
+2. **P6 Batch B：VAD / 唤醒完善**：保持 MiMo 云 ASR 主链，使用 silero-vad 替换当前纯 Python RMS VAD，并补 openWakeWord；faster-whisper 本地 ASR 暂列后续可选，不阻塞当前阶段；
+3. **P6 Batch C**：viseme 50ms 幅度包络 + 延迟打点报表；
+4. **M2 语音验收**：说完→首字 P90 ≤1.8s、打断 ≤300ms、口型同步、连续 20 轮无积压；
+5. **P6 Batch D（M2 达标后）**：OLV Live2D 最小渲染壳接入与 Tauri 桌宠评估；完整形象中心/多形象/主题仍留在 M3B；
+6. **可选本地语音链**：需要 L2/离线语音时再安装并验收 faster-whisper，不影响当前云端语音产品化；
+7. **并行完成 P5 14 天真实文字使用**：按 docs/32 §5.2 追加日志；期满复跑 P5 闸门并定稿 docs/32。若出现未处置 P0/P1，P6 暂停扩展直至整改完成。
 
-P6 之前只允许做与 P5 闸门直接相关的底层接口兼容或缺陷修复。真实设备 `RuntimeCapabilityProvider` 接入、ESP32、3D/VRM、静态图动态化继续后置。
+当前完整质量基线：pytest **200 通过 / 2 跳过**（202 collected）、`ruff check server` 全绿、`mypy server/app server/tests` **118 source files** 全绿；`git diff --check`、Uvicorn `health=200`、faster-whisper 配置 200/422 正反校验、config v23 MiMo TTS→ASR 真实探针及 LM Studio Qwen 本地生成探针均通过。LLM 专项 22/22，覆盖 complete/stream 的 429 快速 fallback 与 timeout 快速 fallback。
 
 ## 已完成
 
 - [x] M0 可扩展输入输出协议与 Adapter Registry。
 - [x] 可靠 event/outbox/inbox、重试和故障恢复基础。
 - [x] L0～L3 隐私分类、L3 非持久化和模型出站闸门。
-- [x] 商汤、GLM 预留和本地模型的数据库配置中心。
+- [x] 商汤文本、智谱文本/视觉/生图/视频与本地 LM Studio 模型的数据库配置中心。
 - [x] 本地聊天身份、登录限流、会话撤销和资源归属。
 - [x] PostgreSQL 会话与消息持久化。
 - [x] WebSocket 真实流式回复、取消和消息补拉。
@@ -122,6 +123,8 @@ P6 之前只允许做与 P5 闸门直接相关的底层接口兼容或缺陷修�
 - [x] P3 第四批：pgvector 向量列双写 + ANN 召回 + 真实容器验证（详见 docs/25）。
 - [x] P4：前端决策 ADR-018 + Vue chat/admin 正式前端（详见 docs/26～28）。
 - [x] P5 前置联调：管理后台 Element Plus 统一、模型配置保存即生效、Persona 跨 worker 刷新与聊天运行时元信息（详见 docs/29）。
+- [x] P5 收口：多主体记忆 Batch E/F（含 L2 reasoning 适配与隐私漏洞修复）、Timeline 前端、浏览器联调、记忆评估集与闸门报告草稿（详见 docs/30～32）。
+- [x] P6 Batch A：`/ws/voice` 语音闭环垂直切片——VAD 断句、MiMo ASR/TTS + edge-tts 故障转移链、句级流式合成、barge-in 打断、语音配置中心化（详见 docs/33）。
 - [x] 模型配置后台与文字聊天调试台。
 - [x] 调试台固定视口、回车发送和消息自动贴底。
 - [x] Open-LLM-VTuber v1.2.1 macOS 源码安装及真实 HTTP/WebSocket、Live2D、ASR、TTS、Aria PostgreSQL 端到端验证。

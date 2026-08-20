@@ -7,6 +7,8 @@
 
 from __future__ import annotations
 
+import asyncio
+import hashlib
 import logging
 from typing import Protocol
 
@@ -15,6 +17,7 @@ from app.llm.provider import EnvSecretProvider, SecretNotFound
 
 from .contracts import SpeechRecognizer, SpeechSynthesizer
 from .failover import TtsProviderChain
+from .faster_whisper import FasterWhisperRecognizer
 from .mimo import MiMoAsrRecognizer, MiMoTtsSynthesizer
 from .tts import EdgeTtsSynthesizer
 
@@ -50,10 +53,13 @@ class StaticVoiceSource:
 
 
 class ConfigVoiceSource:
-    """配置中心来源：DatabaseConfigStore 每次刷新，文件配置读当前快照。"""
+    """配置中心来源：每条话语刷新配置；voice 未变化时复用提供方实例。"""
 
     def __init__(self, config_store: ConfigStore | DatabaseConfigStore) -> None:
         self._config_store = config_store
+        self._cache_key: str | None = None
+        self._cache: tuple[SpeechRecognizer | None, TtsProviderChain | None] = (None, None)
+        self._cache_lock = asyncio.Lock()
 
     async def resolve(
         self,
@@ -62,7 +68,16 @@ class ConfigVoiceSource:
             snapshot = await self._config_store.refresh()
         else:
             snapshot = self._config_store.current
-        return build_voice_providers(snapshot.config)
+        voice_payload = snapshot.config.voice.model_dump_json()
+        cache_key = hashlib.sha256(voice_payload.encode()).hexdigest()
+        if cache_key == self._cache_key:
+            return self._cache
+        async with self._cache_lock:
+            if cache_key == self._cache_key:
+                return self._cache
+            self._cache = build_voice_providers(snapshot.config)
+            self._cache_key = cache_key
+            return self._cache
 
 
 def _resolve_secret(
@@ -86,16 +101,24 @@ def build_voice_providers(
     recognizer: SpeechRecognizer | None = None
     asr = config.voice.asr
     if asr is not None:
-        api_key = _resolve_secret(asr.secret_value, asr.secret_ref)
-        if api_key is None:
-            logger.warning("voice asr skipped: secret not resolved")
-        else:
-            recognizer = MiMoAsrRecognizer(
-                api_key,
-                base_url=str(asr.base_url),
+        if asr.provider == "faster_whisper":
+            recognizer = FasterWhisperRecognizer(
                 model=asr.model,
+                device=asr.device,
+                compute_type=asr.compute_type,
                 language=asr.language,
             )
+        else:
+            api_key = _resolve_secret(asr.secret_value, asr.secret_ref)
+            if api_key is None or asr.base_url is None:
+                logger.warning("voice asr skipped: secret/base_url not resolved")
+            else:
+                recognizer = MiMoAsrRecognizer(
+                    api_key,
+                    base_url=str(asr.base_url),
+                    model=asr.model,
+                    language=asr.language,
+                )
 
     providers: list[SpeechSynthesizer] = []
     for provider_config in config.voice.tts:

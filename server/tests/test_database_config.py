@@ -244,6 +244,47 @@ async def test_admin_model_connection_uses_lm_studio_native_model_list(
     assert captured["url"] == "http://127.0.0.1:1234/api/v1/models"
 
 
+async def test_admin_voice_asr_environment_check_reports_optional_dependency(
+    database: Database,
+    bootstrap: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = DatabaseConfigStore(database, bootstrap)
+    app = create_app(
+        database,
+        config_store=store,
+        watch_config=False,
+        admin_token="test-admin-token",
+    )
+    headers = {"Authorization": "Bearer test-admin-token"}
+    payload = {
+        "asr": {
+            "provider": "faster_whisper",
+            "model": "small",
+            "base_url": None,
+            "language": "zh",
+            "device": "cpu",
+            "compute_type": "int8",
+            "runs_local": True,
+        }
+    }
+
+    monkeypatch.setattr("app.api.admin_config.importlib.util.find_spec", lambda name: None)
+    async with app.router.lifespan_context(app), AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        missing = await client.post(
+            "/api/v1/admin/config/voice/asr/check",
+            headers=headers,
+            json=payload,
+        )
+
+    assert missing.status_code == 200, missing.text
+    assert missing.json()["ok"] is False
+    assert missing.json()["dependency_available"] is False
+    assert missing.json()["model_load_checked"] is False
+
+
 async def test_failed_publish_keeps_database_pointer_and_draft_state(
     database: Database,
     bootstrap: Path,

@@ -21,7 +21,7 @@ from app.config import DatabaseConfigStore
 from app.db import Base, create_database
 from app.llm import CompletionRequest, CompletionResult, ModelUsage
 from app.schemas import PrivacyLevel
-from app.voice import StaticVoiceSource, TtsProviderChain
+from app.voice import SpeechRecognitionUnavailable, StaticVoiceSource, TtsProviderChain
 
 
 def config_yaml() -> str:
@@ -84,6 +84,17 @@ class StreamingBackend:
         )
 
 
+class RemainderOnlyBackend(StreamingBackend):
+    async def stream(
+        self,
+        request: CompletionRequest,
+        on_delta: Callable[[str], Awaitable[None]],
+    ) -> CompletionResult:
+        text = "最后一句没有标点"
+        await on_delta(text)
+        return self._result(request, text)
+
+
 class FakeRecognizer:
     """云端识别器替身：恒定转写，可选延迟。"""
 
@@ -98,6 +109,25 @@ class FakeRecognizer:
         if self._delay_s:
             await asyncio.sleep(self._delay_s)
         return self._transcript
+
+
+class UnavailableLocalRecognizer:
+    runs_local = True
+
+    async def transcribe(
+        self, pcm: bytes, *, sample_rate: int, language: str | None
+    ) -> str:
+        raise SpeechRecognitionUnavailable("faster_whisper_not_installed")
+
+
+class SlowLocalRecognizer:
+    runs_local = True
+
+    async def transcribe(
+        self, pcm: bytes, *, sample_rate: int, language: str | None
+    ) -> str:
+        await asyncio.sleep(10)
+        return "不应该完成"
 
 
 class FakeSynthesizer:
@@ -142,18 +172,19 @@ def _receive_until(
 
 
 def _build(
-    tmp_path: Path, *, delta_delay_s: float = 0.0, tts_delay_s: float = 0.0
+    tmp_path: Path,
+    *,
+    delta_delay_s: float = 0.0,
+    tts_delay_s: float = 0.0,
+    backend: StreamingBackend | None = None,
 ) -> tuple[FastAPI, str, str]:
     database = create_database(f"sqlite+aiosqlite:///{tmp_path / 'voice.db'}")
     config_path = tmp_path / "hub.yaml"
     config_path.write_text(config_yaml(), encoding="utf-8")
     store = DatabaseConfigStore(database, config_path)
     auth = AuthService(database)
-    service = ChatService(
-        database, store, router_builder=lambda config: StreamingBackend(
-            delta_delay_s=delta_delay_s
-        )
-    )
+    runtime_backend = backend or StreamingBackend(delta_delay_s=delta_delay_s)
+    service = ChatService(database, store, router_builder=lambda config: runtime_backend)
 
     async def setup() -> tuple[str, str]:
         async with database.engine.begin() as connection:
@@ -176,6 +207,39 @@ def _build(
             FakeRecognizer("帮我看看今天适合穿什么"),
             TtsProviderChain([FakeSynthesizer(delay_s=tts_delay_s)]),
         ),
+    )
+    app.include_router(router)
+    return app, token, conversation_id
+
+
+def _build_with_recognizer(
+    tmp_path: Path, recognizer: Any
+) -> tuple[FastAPI, str, str]:
+    database = create_database(f"sqlite+aiosqlite:///{tmp_path / 'voice-unavailable.db'}")
+    config_path = tmp_path / "hub-unavailable.yaml"
+    config_path.write_text(config_yaml(), encoding="utf-8")
+    store = DatabaseConfigStore(database, config_path)
+    auth = AuthService(database)
+    service = ChatService(database, store, router_builder=lambda config: StreamingBackend())
+
+    async def setup() -> tuple[str, str]:
+        async with database.engine.begin() as connection:
+            await connection.run_sync(Base.metadata.create_all)
+        await store.load()
+        session = await auth.setup(
+            display_name="Owner", password="correct horse battery staple"
+        )
+        conversation = await service.create_conversation(
+            user_id=session.principal.user_id, title="语音"
+        )
+        return session.access_token, str(conversation.id)
+
+    token, conversation_id = asyncio.run(setup())
+    app = FastAPI()
+    router, _ = create_voice_websocket_router(
+        service,
+        auth,
+        voice_source=StaticVoiceSource(recognizer, None),
     )
     app.include_router(router)
     return app, token, conversation_id
@@ -207,6 +271,9 @@ def test_voice_websocket_full_loop_with_sentences_and_audio(tmp_path: Path) -> N
             )
             events, audio = _receive_until(websocket, "voice.ready")
             assert events[-1]["type"] == "voice.ready"
+            assert events[-1]["asr_configured"] is True
+            assert events[-1]["asr_runs_local"] is False
+            assert events[-1]["tts_configured"] is True
 
             # VAD 断句：响帧触发开始，静音 hangover 触发结束
             websocket.send_bytes(loud_frames(12))
@@ -289,6 +356,28 @@ def test_voice_websocket_rejects_l2_audio_for_cloud_asr(tmp_path: Path) -> None:
     assert all(event["type"] != "turn.accepted" for event in events)
 
 
+def test_voice_ready_reports_unconfigured_asr_before_recording(tmp_path: Path) -> None:
+    app, token, conversation_id = _build_with_recognizer(tmp_path, None)
+
+    with TestClient(app) as client, client.websocket_connect("/ws/voice") as websocket:
+        websocket.send_json({"type": "authenticate", "access_token": token})
+        websocket.send_json(
+            {
+                "type": "voice.hello",
+                "conversation_id": conversation_id,
+                "privacy_level": "L1",
+                "format": "pcm_s16le",
+                "sample_rate": 16000,
+                "channels": 1,
+            }
+        )
+        events, _ = _receive_until(websocket, "voice.ready")
+
+    assert events[-1]["asr_configured"] is False
+    assert events[-1]["asr_runs_local"] is None
+    assert events[-1]["tts_configured"] is False
+
+
 def test_voice_websocket_ptt_mode_finalizes_on_explicit_end(tmp_path: Path) -> None:
     app, token, conversation_id = _build(tmp_path)
 
@@ -315,3 +404,90 @@ def test_voice_websocket_ptt_mode_finalizes_on_explicit_end(tmp_path: Path) -> N
 
     assert [event["type"] for event in events][-1] == "reply.committed"
     assert len(audio) == 4
+
+
+def test_voice_websocket_reports_local_asr_dependency_unavailable(tmp_path: Path) -> None:
+    app, token, conversation_id = _build_with_recognizer(
+        tmp_path, UnavailableLocalRecognizer()
+    )
+
+    with TestClient(app) as client, client.websocket_connect("/ws/voice") as websocket:
+        websocket.send_json({"type": "authenticate", "access_token": token})
+        websocket.send_json(
+            {
+                "type": "voice.hello",
+                "conversation_id": conversation_id,
+                "privacy_level": "L2",
+                "format": "pcm_s16le",
+                "sample_rate": 16000,
+                "channels": 1,
+            }
+        )
+        _receive_until(websocket, "voice.ready")
+        websocket.send_json({"type": "utterance.begin"})
+        websocket.send_bytes(loud_frames(10))
+        websocket.send_json({"type": "utterance.end"})
+        events, _ = _receive_until(websocket, "voice.asr_unavailable")
+
+    assert events[-1]["reason"] == "faster_whisper_not_installed"
+    assert all(event["type"] != "turn.accepted" for event in events)
+
+
+def test_voice_websocket_interrupts_during_asr_before_generation(tmp_path: Path) -> None:
+    app, token, conversation_id = _build_with_recognizer(tmp_path, SlowLocalRecognizer())
+
+    with TestClient(app) as client, client.websocket_connect("/ws/voice") as websocket:
+        websocket.send_json({"type": "authenticate", "access_token": token})
+        websocket.send_json(
+            {
+                "type": "voice.hello",
+                "conversation_id": conversation_id,
+                "privacy_level": "L2",
+                "format": "pcm_s16le",
+                "sample_rate": 16000,
+                "channels": 1,
+            }
+        )
+        _receive_until(websocket, "voice.ready")
+        websocket.send_json({"type": "utterance.begin"})
+        websocket.send_bytes(loud_frames(10))
+        websocket.send_json({"type": "utterance.end"})
+        websocket.send_json({"type": "interrupt"})
+        events, _ = _receive_until(websocket, "voice.interrupted")
+
+    assert events[-1]["generation_id"] is None
+    assert events[-1]["reason"] == "client_interrupt"
+    assert all(event["type"] != "turn.accepted" for event in events)
+
+
+def test_voice_interrupt_stops_post_commit_remainder_tts_without_cancelling_turn(
+    tmp_path: Path,
+) -> None:
+    app, token, conversation_id = _build(
+        tmp_path,
+        backend=RemainderOnlyBackend(),
+        tts_delay_s=0.2,
+    )
+
+    with TestClient(app) as client, client.websocket_connect("/ws/voice") as websocket:
+        websocket.send_json({"type": "authenticate", "access_token": token})
+        websocket.send_json(
+            {
+                "type": "voice.hello",
+                "conversation_id": conversation_id,
+                "privacy_level": "L1",
+                "format": "pcm_s16le",
+                "sample_rate": 16000,
+                "channels": 1,
+            }
+        )
+        _receive_until(websocket, "voice.ready")
+        websocket.send_json({"type": "utterance.begin"})
+        websocket.send_bytes(loud_frames(10))
+        websocket.send_json({"type": "utterance.end"})
+        _receive_until(websocket, "voice.sentence")
+        websocket.send_json({"type": "interrupt"})
+        events, _ = _receive_until(websocket, "voice.interrupted")
+
+    assert events[-1]["turn_cancelled"] is False
+    assert events[-1]["reason"] == "client_interrupt"

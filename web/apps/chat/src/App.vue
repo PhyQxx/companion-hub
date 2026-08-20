@@ -4,13 +4,20 @@ import {
   ApiError,
   ChatApi,
   ChatSocket,
+  VoiceSocket,
   type AgentReplyControl,
   type AuthSession,
   type ChatMessage,
   type Conversation,
   type PrivacyLevel,
   type SocketEvent,
+  type VoiceControlEvent,
 } from "@aria/shared";
+import {
+  PcmMicrophoneCapture,
+  VoicePlaybackQueue,
+  type VoiceSentenceMeta,
+} from "./voice";
 
 // 聊天前端主组件：登录 → 会话侧栏 → 流式消息区 → 发送区。
 // 令牌持久化在 localStorage；WS 断线自动重连（最多 3 次）。
@@ -40,21 +47,246 @@ const streaming = ref<{
 } | null>(null);
 const socketReady = ref(false);
 const messagesRoot = ref<HTMLElement | null>(null);
+const voiceReady = ref(false);
+const voiceAsrConfigured = ref<boolean | null>(null);
+const voiceAsrBlockMessage = ref("");
+const voiceRecording = ref(false);
+const voiceBusy = ref(false);
+const voiceStatus = ref("语音未连接");
+const voiceTranscript = ref("");
+
+const asrUnavailableLabels: Record<string, string> = {
+  not_configured: "后台尚未启用语音识别",
+  local_asr_required: "当前是 L2，仅允许本地语音识别",
+  faster_whisper_not_installed: "本机尚未安装 faster-whisper",
+  model_load_failed: "本地语音模型加载失败",
+  transcription_failed: "本地语音转写失败",
+  provider_error: "语音识别服务调用失败",
+};
 
 let socket: ChatSocket | null = null;
 let reconnectTimer: number | null = null;
 let reconnectAttempts = 0;
+let voiceSocket: VoiceSocket | null = null;
+let voiceSocketKey = "";
+let voiceSentence: { meta: VoiceSentenceMeta; chunks: ArrayBuffer[] } | null = null;
+const microphone = new PcmMicrophoneCapture();
+const playback = new VoicePlaybackQueue();
 
 const activeMessages = computed(() =>
   activeId.value ? (messagesByConversation.get(activeId.value) ?? []) : [],
 );
 const canSend = computed(
-  () => socketReady.value && !!activeId.value && draft.value.trim().length > 0 && !streaming.value,
+  () =>
+    socketReady.value &&
+    !!activeId.value &&
+    draft.value.trim().length > 0 &&
+    !streaming.value &&
+    !voiceBusy.value &&
+    !voiceRecording.value,
 );
 
 function setStatus(text: string, error = false) {
   statusText.value = text;
   statusError.value = error;
+}
+
+async function closeVoice() {
+  voiceRecording.value = false;
+  voiceBusy.value = false;
+  voiceReady.value = false;
+  voiceAsrConfigured.value = null;
+  voiceAsrBlockMessage.value = "";
+  voiceSocketKey = "";
+  voiceSentence = null;
+  voiceSocket?.close();
+  voiceSocket = null;
+  playback.interrupt();
+  await microphone.stop();
+  voiceStatus.value = "语音未连接";
+  voiceTranscript.value = "";
+}
+
+async function ensureVoiceSocket(): Promise<VoiceSocket> {
+  if (!activeId.value) throw new Error("请先选择会话");
+  const key = `${activeId.value}:${privacy.value}`;
+  if (
+    voiceSocket &&
+    voiceReady.value &&
+    voiceSocketKey === key &&
+    voiceAsrConfigured.value !== false
+  ) {
+    return voiceSocket;
+  }
+  await closeVoice();
+  voiceStatus.value = "正在连接语音…";
+  const next = new VoiceSocket(
+    (location.protocol === "https:" ? "wss://" : "ws://") + location.host + "/ws/voice",
+    token.value,
+    {
+      onEvent: handleVoiceEvent,
+      onAudio: handleVoiceAudio,
+      onClose: () => {
+        if (voiceSocket === next) {
+          voiceReady.value = false;
+          voiceBusy.value = false;
+          voiceStatus.value = "语音连接已断开";
+        }
+      },
+    },
+  );
+  voiceSocket = next;
+  voiceSocketKey = key;
+  try {
+    await next.connect(activeId.value, privacy.value);
+  } catch (error) {
+    if (voiceSocket === next) {
+      voiceSocket = null;
+      voiceSocketKey = "";
+      voiceReady.value = false;
+    }
+    throw error;
+  }
+  return next;
+}
+
+function handleVoiceAudio(chunk: ArrayBuffer) {
+  if (!voiceSentence) return;
+  voiceSentence.chunks.push(chunk);
+}
+
+function handleVoiceEvent(event: VoiceControlEvent) {
+  switch (event.type) {
+    case "voice.ready":
+      voiceReady.value = true;
+      if (event.asr_configured === false) {
+        voiceAsrConfigured.value = false;
+        voiceAsrBlockMessage.value = "后台尚未启用语音识别";
+      } else if (privacy.value === "L2" && event.asr_runs_local === false) {
+        voiceAsrConfigured.value = false;
+        voiceAsrBlockMessage.value = "当前是 L2，需要在后台启用 faster-whisper 本地 ASR";
+      } else {
+        voiceAsrConfigured.value = true;
+        voiceAsrBlockMessage.value = "";
+      }
+      voiceStatus.value = voiceAsrConfigured.value
+        ? `语音已就绪 · ${event.asr_runs_local ? "本地识别" : "云端识别"}`
+        : voiceAsrBlockMessage.value;
+      break;
+    case "voice.transcript":
+      voiceTranscript.value = event.text ?? "";
+      voiceStatus.value = "已识别，正在生成回复…";
+      break;
+    case "turn.accepted":
+      voiceBusy.value = true;
+      voiceStatus.value = "正在生成语音回复…";
+      if (activeId.value) void refreshMessages(activeId.value);
+      break;
+    case "voice.sentence":
+      voiceSentence = {
+        meta: {
+          generationId: event.generation_id ?? null,
+          index: event.index ?? 0,
+          mime: event.mime ?? "audio/pcm;rate=24000",
+          sampleRate: event.sample_rate ?? 24_000,
+          provider: event.provider ?? null,
+        },
+        chunks: [],
+      };
+      voiceStatus.value = "正在接收语音…";
+      break;
+    case "voice.sentence.end":
+      if (voiceSentence && (event.index ?? voiceSentence.meta.index) === voiceSentence.meta.index) {
+        playback.enqueue(voiceSentence.meta, voiceSentence.chunks);
+        voiceSentence = null;
+        voiceStatus.value = "正在播放回复…";
+      }
+      break;
+    case "voice.interrupted":
+      voiceBusy.value = false;
+      playback.interrupt();
+      voiceSentence = null;
+      voiceStatus.value = "已打断";
+      break;
+    case "turn.cancelled":
+      voiceBusy.value = false;
+      playback.interrupt();
+      voiceSentence = null;
+      voiceStatus.value = "语音回合已取消";
+      break;
+    case "turn.failed":
+      voiceBusy.value = false;
+      playback.interrupt();
+      voiceSentence = null;
+      voiceStatus.value = `语音生成失败：${event.reason_code ?? "unknown"}`;
+      break;
+    case "voice.asr_unavailable":
+      voiceBusy.value = false;
+      voiceStatus.value = `语音识别不可用：${asrUnavailableLabels[event.reason ?? "not_configured"] ?? event.reason ?? "unknown"}`;
+      break;
+    case "voice.tts_unavailable":
+      voiceStatus.value = `语音合成不可用，将仅显示文字：${event.reason ?? "not_configured"}`;
+      break;
+    case "reply.committed":
+      voiceBusy.value = false;
+      voiceStatus.value = "语音回复已完成";
+      if (activeId.value) void refreshMessages(activeId.value);
+      void loadRuntimeMeta();
+      break;
+  }
+}
+
+async function refreshMessages(conversationId: string) {
+  try {
+    const messages = await api.listMessages(token.value, conversationId);
+    messagesByConversation.set(conversationId, messages);
+    const conversation = conversations.value.find((item) => item.id === conversationId);
+    if (conversation && messages.length) conversation.last_seq = messages[messages.length - 1]!.seq;
+    if (conversationId === activeId.value) await scrollToEnd();
+  } catch (error) {
+    setStatus(error instanceof Error ? error.message : "刷新语音消息失败", true);
+  }
+}
+
+async function toggleVoiceRecording() {
+  if (voiceRecording.value) {
+    voiceRecording.value = false;
+    voiceBusy.value = true;
+    voiceSocket?.endUtterance();
+    await microphone.stop();
+    voiceStatus.value = "正在识别…";
+    return;
+  }
+  if (!activeId.value || streaming.value || voiceBusy.value) return;
+  try {
+    const current = await ensureVoiceSocket();
+    if (voiceAsrConfigured.value === false) {
+      voiceStatus.value = voiceAsrBlockMessage.value || "语音识别当前不可用";
+      return;
+    }
+    await microphone.start((chunk) => {
+      if (voiceRecording.value) voiceSocket?.sendPcm(chunk);
+    });
+    current.beginUtterance();
+    voiceTranscript.value = "";
+    voiceRecording.value = true;
+    voiceStatus.value = "正在听你说话…";
+  } catch (error) {
+    voiceRecording.value = false;
+    await microphone.stop();
+    voiceStatus.value = error instanceof Error ? `麦克风不可用：${error.message}` : "麦克风不可用";
+  }
+}
+
+function interruptVoice() {
+  playback.interrupt();
+  voiceSentence = null;
+  voiceSocket?.interrupt();
+  voiceStatus.value = "已请求打断";
+}
+
+function onPrivacyChanged() {
+  if (voiceReady.value || voiceRecording.value) void closeVoice();
 }
 
 function personaVersionOf(message: ChatMessage): number | null {
@@ -137,6 +369,7 @@ async function submitAuth() {
 async function logout() {
   const current = token.value;
   closeSocket();
+  await closeVoice();
   token.value = "";
   displayName.value = "";
   localStorage.removeItem(TOKEN_KEY);
@@ -185,6 +418,7 @@ async function loadConversations() {
 }
 
 async function openConversation(id: string) {
+  if (activeId.value !== id) await closeVoice();
   activeId.value = id;
   if (!messagesByConversation.has(id)) {
     try {
@@ -220,6 +454,7 @@ async function removeConversation(id: string) {
   const label = conversation?.title ?? "该会话";
   if (!confirm(`删除「${label}」？消息与由它沉淀的记忆会被一并删除，不可恢复。`)) return;
   try {
+    if (activeId.value === id) await closeVoice();
     await api.deleteConversation(token.value, id);
     conversations.value = conversations.value.filter((item) => item.id !== id);
     messagesByConversation.delete(id);
@@ -355,7 +590,11 @@ onMounted(async () => {
   await enterChat();
 });
 
-onBeforeUnmount(closeSocket);
+onBeforeUnmount(() => {
+  closeSocket();
+  void closeVoice();
+  void playback.close();
+});
 </script>
 
 <template>
@@ -431,12 +670,26 @@ onBeforeUnmount(closeSocket);
 
       <footer class="composer">
         <div class="composer-meta">
-          <select v-model="privacy" :disabled="!!streaming">
+          <select v-model="privacy" :disabled="!!streaming || voiceRecording || voiceBusy" @change="onPrivacyChanged">
             <option value="L0">L0 · 可上云</option>
             <option value="L1">L1 · 常规</option>
             <option value="L2">L2 · 仅本地</option>
           </select>
           <span class="status" :class="{ error: statusError }">{{ statusText }}</span>
+        </div>
+        <div class="voice-row">
+          <button
+            class="voice-button"
+            :class="{ recording: voiceRecording }"
+            type="button"
+            :disabled="!activeId || !!streaming || (voiceBusy && !voiceRecording)"
+            @click="toggleVoiceRecording"
+          >
+            {{ voiceRecording ? "结束并发送" : "🎙 开始说话" }}
+          </button>
+          <button v-if="voiceBusy && !voiceRecording" type="button" @click="interruptVoice">打断/停止播报</button>
+          <span class="voice-status">{{ voiceStatus }}</span>
+          <span v-if="voiceTranscript" class="voice-transcript">识别：{{ voiceTranscript }}</span>
         </div>
         <div class="composer-row">
           <textarea
@@ -490,6 +743,10 @@ main { display: grid; grid-template-rows: minmax(0, 1fr) auto; min-height: 0; }
 
 .composer { border-top: 1px solid var(--line); padding: 12px 16px; display: grid; gap: 8px; }
 .composer-meta { display: flex; align-items: center; gap: 12px; }
+.voice-row { display: flex; align-items: center; gap: 8px; min-width: 0; flex-wrap: wrap; }
+.voice-button.recording { border-color: var(--danger); color: var(--danger); }
+.voice-status { color: var(--muted); font-size: 12px; }
+.voice-transcript { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); font-size: 12px; }
 .composer-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 10px; align-items: end; }
 .composer textarea { resize: none; }
 

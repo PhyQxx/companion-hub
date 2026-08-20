@@ -3,6 +3,7 @@
 
 from app.voice.contracts import (
     LocalOnlySynthesizerError,
+    SpeechRecognitionUnavailable,
     SpeechRecognizer,
     SpeechSynthesizer,
     VadEvent,
@@ -15,6 +16,7 @@ from app.voice.factory import (
     build_voice_providers,
 )
 from app.voice.failover import TtsProviderChain, TtsSelection
+from app.voice.faster_whisper import FasterWhisperRecognizer
 from app.voice.mimo import (
     ASR_MODEL,
     DEFAULT_TTS_VOICE,
@@ -25,7 +27,7 @@ from app.voice.mimo import (
 )
 from app.voice.pipeline import SentenceBuffer
 from app.voice.tts import EdgeTtsSynthesizer
-from app.voice.vad import EnergyVad
+from app.voice.vad import EnergyVad, pcm16_rms
 
 __all__ = [
     "ASR_MODEL",
@@ -34,10 +36,12 @@ __all__ = [
     "ConfigVoiceSource",
     "EdgeTtsSynthesizer",
     "EnergyVad",
+    "FasterWhisperRecognizer",
     "LocalOnlySynthesizerError",
     "MiMoAsrRecognizer",
     "MiMoTtsSynthesizer",
     "SentenceBuffer",
+    "SpeechRecognitionUnavailable",
     "SpeechRecognizer",
     "SpeechSynthesizer",
     "StaticVoiceSource",
@@ -47,5 +51,6 @@ __all__ = [
     "VoiceActivityDetector",
     "VoiceProviderSource",
     "build_voice_providers",
+    "pcm16_rms",
     "wrap_wav",
 ]

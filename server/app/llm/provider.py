@@ -117,7 +117,7 @@ class LiteLLMProvider:
 
     def _arguments(self, request: CompletionRequest) -> dict[str, Any]:
         arguments: dict[str, Any] = {
-            "model": f"openai/{self.endpoint.model}",
+            "model": f"custom_openai/{self.endpoint.model}",
             "api_base": str(self.endpoint.base_url).rstrip("/"),
             "messages": [message.model_dump(mode="json") for message in request.messages],
             # 思考型端点的推理 token 不占可见正文预算，线上额度按端点配置叠加
@@ -180,7 +180,7 @@ class LiteLLMProvider:
     def _log_arguments(self, arguments: dict[str, Any]) -> None:
         safe = {k: v for k, v in arguments.items() if k != "api_key"}
         logger.info(
-            "llm request endpoint=%s model=%s arguments=%s",
+            "【发起请求】llm request endpoint=%s model=%s arguments=%s",
             self.endpoint_name,
             self.endpoint.model,
             json.dumps(
@@ -192,8 +192,15 @@ class LiteLLMProvider:
         )
 
     def _log_result(self, result: CompletionResult) -> None:
+        if result.finish_reason == "stop":
+            note = "【正常完成】"
+        elif result.finish_reason == "length":
+            note = "【输出被截断，建议调高 max_tokens】"
+        else:
+            note = f"【结束原因: {result.finish_reason}】"
         logger.info(
-            "llm response endpoint=%s model=%s result=%s",
+            "%s llm response endpoint=%s model=%s result=%s",
+            note,
             self.endpoint_name,
             self.endpoint.model,
             json.dumps(
@@ -216,7 +223,7 @@ class LiteLLMProvider:
                 messages=[{"role": "user", "content": probe_prompt}],
                 privacy_level="L0",
                 route="utility",
-                max_tokens=128,
+                max_tokens=min(self.endpoint.max_tokens or 128, 1024),
                 temperature=0,
                 json_mode=True,
             )

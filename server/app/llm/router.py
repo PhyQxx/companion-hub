@@ -97,16 +97,19 @@ class LLMRouter:
                 rejected_for_privacy += 1
                 continue
             provider = self._providers[endpoint_name]
+            endpoint_request = self._apply_endpoint_max_tokens(
+                routed_request, endpoint
+            )
             for attempt in range(1, endpoint.max_retries + 2):
                 timeout_ms = policy.timeout_ms or endpoint.timeout_ms
                 try:
                     async with self._span(
-                        routed_request,
+                        endpoint_request,
                         endpoint_name,
                         attempt,
                     ):
                         return await asyncio.wait_for(
-                            provider.complete(routed_request),
+                            provider.complete(endpoint_request),
                             timeout=timeout_ms / 1_000,
                         )
                 except TimeoutError as error:
@@ -118,6 +121,11 @@ class LLMRouter:
                             error_type="TimeoutError",
                         )
                     )
+                    will_retry = _should_retry_endpoint(
+                        error,
+                        attempt=attempt,
+                        max_attempts=endpoint.max_retries + 1,
+                    )
                     self._log_endpoint_failure(
                         request=routed_request,
                         endpoint_name=endpoint_name,
@@ -126,7 +134,10 @@ class LLMRouter:
                         max_attempts=endpoint.max_retries + 1,
                         timeout_ms=timeout_ms,
                         error=error,
+                        will_retry=will_retry,
                     )
+                    if not will_retry:
+                        break
                 except Exception as error:
                     failures += 1
                     failure_details.append(
@@ -136,6 +147,11 @@ class LLMRouter:
                             error_type=type(error).__name__,
                         )
                     )
+                    will_retry = _should_retry_endpoint(
+                        error,
+                        attempt=attempt,
+                        max_attempts=endpoint.max_retries + 1,
+                    )
                     self._log_endpoint_failure(
                         request=routed_request,
                         endpoint_name=endpoint_name,
@@ -144,7 +160,10 @@ class LLMRouter:
                         max_attempts=endpoint.max_retries + 1,
                         timeout_ms=timeout_ms,
                         error=error,
+                        will_retry=will_retry,
                     )
+                    if not will_retry:
+                        break
         if rejected_for_privacy and not failures:
             logger.error(
                 "llm route rejected by privacy guard trace_id=%s route=%s privacy=%s",
@@ -194,6 +213,9 @@ class LLMRouter:
                 rejected_for_privacy += 1
                 continue
             provider = self._providers[endpoint_name]
+            endpoint_request = self._apply_endpoint_max_tokens(
+                routed_request, endpoint
+            )
             for attempt in range(1, endpoint.max_retries + 2):
                 emitted = False
 
@@ -204,9 +226,9 @@ class LLMRouter:
 
                 timeout_ms = policy.timeout_ms or endpoint.timeout_ms
                 try:
-                    async with self._span(routed_request, endpoint_name, attempt):
+                    async with self._span(endpoint_request, endpoint_name, attempt):
                         async with asyncio.timeout(timeout_ms / 1_000):
-                            return await provider.stream(routed_request, guarded_delta)
+                            return await provider.stream(endpoint_request, guarded_delta)
                 except Exception as error:
                     failures += 1
                     failure_details.append(
@@ -216,6 +238,11 @@ class LLMRouter:
                             error_type=type(error).__name__,
                         )
                     )
+                    will_retry = _should_retry_endpoint(
+                        error,
+                        attempt=attempt,
+                        max_attempts=endpoint.max_retries + 1,
+                    )
                     self._log_endpoint_failure(
                         request=routed_request,
                         endpoint_name=endpoint_name,
@@ -224,6 +251,7 @@ class LLMRouter:
                         max_attempts=endpoint.max_retries + 1,
                         timeout_ms=timeout_ms,
                         error=error,
+                        will_retry=will_retry,
                     )
                     if emitted:
                         self._log_route_exhausted(
@@ -235,6 +263,8 @@ class LLMRouter:
                             "stream_interrupted",
                             failures=tuple(failure_details),
                         ) from None
+                    if not will_retry:
+                        break
         if rejected_for_privacy and not failures:
             logger.error(
                 "llm route rejected by privacy guard trace_id=%s route=%s privacy=%s",
@@ -263,14 +293,23 @@ class LLMRouter:
         max_attempts: int,
         timeout_ms: int,
         error: BaseException,
+        will_retry: bool,
     ) -> None:
         status_code = getattr(error, "status_code", None)
         detail = _safe_error_detail(error)
         if isinstance(error, TimeoutError) and not detail:
             detail = f"request timed out after {timeout_ms}ms"
+        if isinstance(error, TimeoutError):
+            cn_note = "【请求超时，降级下一端点】"
+        elif status_code == 429 or type(error).__name__ == "RateLimitError":
+            cn_note = "【触发速率限制，降级下一端点】"
+        else:
+            cn_note = "【请求失败，降级下一端点】"
         logger.warning(
-            "llm endpoint failed trace_id=%s route=%s privacy=%s endpoint=%s "
-            "provider=%s model=%s attempt=%s/%s error_type=%s status_code=%s detail=%s",
+            "%s llm endpoint failed trace_id=%s route=%s privacy=%s endpoint=%s "
+            "provider=%s model=%s attempt=%s/%s error_type=%s status_code=%s "
+            "next_action=%s detail=%s",
+            cn_note,
             request.trace_id,
             request.route,
             request.privacy_level,
@@ -281,6 +320,7 @@ class LLMRouter:
             max_attempts,
             type(error).__name__,
             status_code if status_code is not None else "-",
+            "retry_same_endpoint" if will_retry else "fallback_next_endpoint",
             detail or "-",
         )
 
@@ -295,6 +335,7 @@ class LLMRouter:
             f"{item.endpoint}#{item.attempt}:{item.error_type}" for item in failures
         )
         logger.error(
+            "【该路由所有端点均失败，请检查模型配置或网络状况】"
             "llm route exhausted trace_id=%s route=%s privacy=%s reason=%s failures=[%s]",
             request.trace_id,
             request.route,
@@ -314,6 +355,17 @@ class LLMRouter:
                 endpoint = self._endpoints[endpoint_name]
                 if route == LLMRoute.PRIVATE and not endpoint.runs_local:
                     raise ValueError("private route cannot reference a cloud endpoint")
+
+    @staticmethod
+    def _apply_endpoint_max_tokens(
+        request: CompletionRequest,
+        endpoint: ModelEndpoint,
+    ) -> CompletionRequest:
+        if endpoint.max_tokens is None:
+            return request
+        return CompletionRequest.model_validate(
+            {**request.model_dump(mode="python"), "max_tokens": endpoint.max_tokens}
+        )
 
     @asynccontextmanager
     async def _span(
@@ -346,3 +398,24 @@ def _safe_error_detail(error: BaseException) -> str:
     if len(detail) > _MAX_ERROR_DETAIL_CHARS:
         detail = detail[:_MAX_ERROR_DETAIL_CHARS] + "…"
     return detail
+
+
+def _should_retry_endpoint(
+    error: BaseException,
+    *,
+    attempt: int,
+    max_attempts: int,
+) -> bool:
+    """Retry only failures where another attempt at the same endpoint can help.
+
+    Rate limits and route-level timeouts should fail over immediately. Retrying a
+    known 429 only burns more quota, while repeating a full timeout makes voice
+    interactions stall for tens of seconds before fallback is even attempted.
+    Other provider failures retain the configured bounded retry behavior.
+    """
+    if attempt >= max_attempts:
+        return False
+    if isinstance(error, TimeoutError):
+        return False
+    status_code = getattr(error, "status_code", None)
+    return status_code != 429 and type(error).__name__ != "RateLimitError"

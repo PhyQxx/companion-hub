@@ -2,11 +2,11 @@
 
 > 一个部署在自有设备上的 AI 伴侣中枢。它把聊天、长期记忆、历史回溯、模型路由、隐私边界和未来设备能力放在同一个可扩展运行时中。
 
-当前阶段：**P5 · 文字稳定性闸门**。核心文字链路已经具备，多主体长期记忆已打通数据模型、检索、完整回合沉淀、冲突保护和跨会话助手自我事实闭环；Timeline / History Recall 的第一版后端最小链路也已落地。20 组 L1 真实模型用例已经逐项通过，其中包括“新伴侣首次建立身高/体重/三围 → 三槽位持久化 → 新会话一致召回”的角色自我档案用例。当前主要剩余 L2 本地模型验收、管理前端/浏览器验收和连续 14 天真实使用。语音、Live2D 和真实设备控制属于后续阶段。
+当前阶段：**P6 · 语音与 Live2D 产品化**（P5 的 14 天真实文字使用并行进行，日志见 docs/32）。P5 可开发项已全部收口：多主体长期记忆、Timeline 历史回溯、L2 本地链路（Qwen3.6 reasoning 适配，真实 `l2-isolation` 用例通过，期间发现并修复一处 L2 档案覆盖泄漏的隐私漏洞）、确定性记忆评估集（正例 20/20、负例 0 误引）与前后端浏览器验收。P6 Batch A 已落地 `/ws/voice` 语音闭环垂直切片：VAD 断句、MiMo ASR/TTS 与 edge-tts 故障转移链、句级流式合成、barge-in 打断，语音配置全部进管理后台。剩余：chat 前端麦克风 UI、本地 ASR（L2 语音路径）、口型 viseme 与 Live2D/桌宠。
 
-当前后端质量基线：完整 pytest、`ruff check server`、严格 `mypy server/app server/tests`（102 个 source files）和 `git diff --check` 均保持全绿。机器上存在 nvm Node v22/pnpm，但当前 Coding MCP 禁止执行 workspace 外可执行文件，因此本会话无法完成前端 typecheck/build；这属于工具执行边界，不代表前端代码已经通过或失败。
+当前完整后端质量基线（2026-08-20）：pytest **200 通过 / 2 跳过**（202 collected）、`ruff check server`、严格 `mypy server/app server/tests`（118 个 source files）均通过，`git diff --check` 通过。本轮还实际验证了运行中 Uvicorn `/healthz=200`、faster-whisper 配置正反校验（200/422）、config v23 的 MiMo TTS→ASR 真连（均 200）以及 LM Studio Qwen 本地生成探针（200）。前端 typecheck/build 最近一次旧基线为全绿，但本轮有前端业务改动，必须重新验收。
 
-P5 收口阶段统一使用 `make p5-backend`、`make p5-frontend` 和 `make p5-real`。真实模型矩阵还可拆成 `make p5-real-l1` 与 `make p5-real-l2`：前者只跑云端允许的 L0/L1 用例，后者只跑强制 `local_private` 的 L2 隔离用例。脚本默认从 `.env.local` 安全加载模型环境变量、使用 `config/hub.example.yaml` 路由，不打印 secret，也不写入项目业务数据库。示例配置的本地 private 基线已切到 LM Studio：原生管理 API 为 `http://127.0.0.1:1234/api/v1/*`，Hub 当前 OpenAI-compatible 运行时 Base URL 使用 `http://127.0.0.1:1234/v1`。当前实际数据库配置仍需在管理页保存后才会切换。报告路径分别可用 `P5_REPORT`、`P5_L1_REPORT`、`P5_L2_REPORT` 覆盖。
+质量闸门统一使用 `make p5-backend`（ruff/mypy/pytest/diff-check）、`make p5-frontend`（web typecheck/build）和 `make p5-real`。真实模型矩阵可拆 `make p5-real-l1` 与 `make p5-real-l2`：前者只跑云端允许的 L0/L1 用例，后者只跑强制 `local_private` 的 L2 隔离用例。脚本默认从 `.env.local` 安全加载模型环境变量、使用 `config/hub.example.yaml` 路由，不打印 secret，也不写入项目业务数据库。示例配置的本地 private 基线为 LM Studio（OpenAI-compatible `http://127.0.0.1:1234/v1`，思考开销 `reasoning_overhead_tokens: 2048`、超时 120s）。报告路径可用 `P5_REPORT`、`P5_L1_REPORT`、`P5_L2_REPORT` 覆盖。
 
 ## 项目定位
 
@@ -27,31 +27,25 @@ Aria 不是单一聊天 UI，而是一个长期运行的本地 Companion Hub：
 - **Persona**：数据库草稿、发布、回滚，聊天新回合跨 worker 刷新当前版本；
 - **结构化回复**：字幕、TTS 文本、情绪、表达和动作控制块；
 - **Memory v1**：持久化、混合检索、来源、冲突、纠错、pgvector、删除台账；
-- **管理后台**：Vue 3 + Element Plus，覆盖模型、Persona、记忆和基础观测；
+- **多主体记忆**：user / assistant / shared 三主体、`fact_key` 稳定槽位精确召回、助手自述与 shared 约定沉淀、一致性守卫与回声抑制；
+- **时间线与历史回溯**：Timeline 索引、相对时间解析、有界检索、Source 下钻、无证据不编造、L2 索引壳隔离；
+- **记忆评估集**：`server/tests/memory_eval/` 确定性回归（正例 20 / 负例 20 / 冲突 / 删除 / 隔离），阈值对齐 Release Criteria；
+- **语音闭环（P6 Batch A）**：`/ws/voice` 双向音频通道、VAD 断句、PTT、MiMo ASR/TTS + edge-tts 故障转移链、句级流式合成、barge-in 打断、L2 拒绝云端出站；语音配置在管理后台「模型与路由 → 语音」可视化管理并保存即生效；
+- **管理后台**：Vue 3 + Element Plus，覆盖模型、路由、语音、Persona、记忆、时间线和基础观测；
 - **正式 Chat 前端**：Vue 3 + Vite；
 - **现实能力边界**：模型只能把已上报的真实在线/授权能力当作可执行动作。
 
 ## 当前正在开发
 
-### 多主体长期记忆
+### P6 语音化（Batch A 已完成，Batch B 进行中）
 
-长期记忆从默认“关于用户”扩展为：
+设计见 [docs/33-P6语音化第一批设计.md](./docs/33-P6语音化第一批设计.md)。Batch A 已落地完整后端垂直切片：`/ws/voice` 通道（与聊天同鉴权、PCM16/16k）、能量 VAD 断句、MiMo 云端 ASR（PCM 包 WAV 头上传）、`TtsProviderChain` 提供方链（MiMo PCM 直出为主、edge-tts 免费兜底；逐句选择、首块前失败无感切换、60s 冷却）、LLM 流式按句切分首句即合成、播放中人声打断（cancel 回合 + 中止 TTS）、ASR/首token/首音频延迟打点。语音配置（密钥/音色/语种/链顺序）全部在管理后台配置，每条话语开始前从配置中心刷新，改配置即时生效。
 
-```text
-user       关于用户
-assistant  关于助手自身
-shared     关于双方共同经历/约定
-```
+Batch B 浏览器端核心代码已落地：`@aria/shared` 新增 `VoiceSocket`；chat 端采集麦克风并重采样为 PCM16/16k/mono，`voice.ready` 会先返回 ASR/TTS 与本地性摘要。无 ASR，或 L2 只有云 ASR 时，页面在申请麦克风权限前就阻断；后台热改语音配置后下一次点击自动重连刷新。分句 PCM/MP3 进入顺序播放队列，显式打断覆盖 ASR→LLM→TTS，并可停止文字已经提交后的剩余 TTS 而不误取消已完成文字回合。faster-whisper 已进入配置契约、延迟加载运行时和管理后台，新增只读“检查本地环境”接口/按钮；provider 按 voice 配置指纹缓存，避免每句话重新建模。能量 VAD 已移除 Python 3.13 废弃的 `audioop`。当前运行数据库 **config v23** 已启用 MiMo `mimo-v2.5-asr` 与 MiMo `mimo-v2.5-tts` → edge-tts，真实 TTS→ASR 探针均为 200；`dialogue` 路由在云主模型后优先使用 LM Studio `local_private` 兜底，并把 route timeout 收到 12s。LLM Router 对 429 和 timeout 不再重复撞同一 endpoint，而是立即切下一个 fallback，避免语音场景长时间卡住。当前产品决策先使用 MiMo 云 ASR，faster-whisper 保留为后续 L2/离线可选能力，不再阻塞主线。当前剩余优先级为：前端 typecheck/build + 真浏览器麦克风验收 → silero-vad/openWakeWord → Batch C viseme + 延迟报表 → M2 指标验收。
 
-并增加 `fact_key` 稳定事实槽位、冲突检测、助手复述防自我强化和生成一致性检查。
+### P5 使用期（并行）
 
-设计见 [docs/30-多主体持久化记忆设计.md](./docs/30-多主体持久化记忆设计.md)。当前 Batch A～D 后端已落地并通过回归：Admin API 可管理主体，默认检索覆盖 user / assistant / shared，`fact_key` 支持精确槽位召回，已完成回合会沉淀助手自述和受证据约束的 shared 约定，并抑制“记忆注入后复述”造成的自我强化；同主体同槽位走确定性冲突，`MemoryConsistencyGuard` 会在提交前 repair 冲突事实，流式 exact fact 回合也不会先泄露未校验的错误值。Batch E 的 Vue 记忆后台主体筛选/字段/手动创建代码已落地；机器上存在 nvm Node v22/pnpm，但当前 Coding MCP 禁止执行 workspace 外可执行文件，因此前端 typecheck/build 尚待可执行环境验证。
-
-### 时间线与历史回溯
-
-系统不要求把所有历史都提升为长期 Memory。新的上位设计允许 AI “忘记”普通细节，但在用户提供大致时间、主题、人物或设备线索时，受控地检索 Timeline 和原始 Source。
-
-设计见 [docs/31-记忆时间线与历史回溯设计.md](./docs/31-记忆时间线与历史回溯设计.md)。当前 Phase A/B 后端最小闭环已落地：`0011_timeline_event` 会为已有 message/event 做安全回填，完成回合与后续 EventBus 事件持续进入 Timeline；历史意图、用户时区相对时间解析、有界检索、有限 Source Expansion、无证据不编造、L2 索引壳与 `decision_meta.recall` 已接入 ChatService。Timeline Vue 管理页也已接入时间、actor/source/event_type、隐私与 conversation 筛选、事件详情和受控 Source 下钻；当前主要剩 Node 环境下的 typecheck/build、浏览器/真实历史数据验收，以及后续设备聚合/retention 和 Memory Promotion。
+以 Vue chat 前端为载体连续 14 天真实文字使用（2026-08-20 起计），问题按 docs/32 §5.2 格式记录；期间只修问题不扩文字功能。消息级 `persona_version` 浏览器确认留待用户本人登录（同一链路已有自动化合同覆盖）。
 
 ## 架构速览
 
@@ -198,6 +192,10 @@ pnpm --dir web --filter @aria/admin dev
 - `GET /api/v1/meta/config`
 - `/api/v1/chat/conversations*`
 - `WS /ws/chat`
+- `WS /ws/voice`
+- `/api/v1/model-capabilities/vision/analyze`
+- `/api/v1/model-capabilities/images/generate`
+- `/api/v1/model-capabilities/videos/generate`
 - `/api/v1/admin/memories*`
 - `/api/v1/admin/deletion-ledger`
 
@@ -227,16 +225,14 @@ PostgreSQL 默认映射到宿主机 `5433`，可通过 `POSTGRES_PORT` 修改。
 
 ## 当前阶段与下一步
 
-当前执行清单以 [TASKS.md](./TASKS.md) 为准。P5 主要目标是：
+当前执行清单以 [TASKS.md](./TASKS.md) 为准。P6 主要目标是：
 
-1. 收口 LM Studio/Qwen3.6 的 reasoning 输出适配，并把当前数据库 `local_private` 更新到本机 LM Studio `/v1` 配置后补齐 Batch F 的 L2 隐私真实调用；
-2. 补齐 Memory/Timeline 管理前端的构建、浏览器和真实数据验收；
-3. 完成 Chat Persona 浏览器最终联调；
-4. 在 Node/pnpm 可用环境补齐前端 typecheck/build；
-5. 进入连续 14 天真实文字使用；
-6. 只根据真实问题修复，不在稳定性闸门期间无边界扩功能。
+1. **Batch B**：chat 前端麦克风采集/分句播放/打断按钮；后台语音页填入真实 MiMo Key 完成云端真连验证；faster-whisper 本地 ASR 补 L2 语音路径；silero-vad 替换能量 VAD；
+2. **Batch C**：口型 viseme 通道（50ms 幅度包络）、延迟打点报表；
+3. **M2 语音验收**：说完 → 首字 ≤1.8s（P90）、打断 ≤300ms、口型肉眼同步、连续 20 轮无积压；
+4. **Batch D（M2 达标后）**：OLV Live2D 最小渲染壳接入与 Tauri 桌宠评估；完整形象中心、多形象和主题仍留在 M3B。
 
-P5 通过后，再进入语音、Live2D 和真实设备能力产品化。
+并行约束：P5 的 14 天真实文字使用继续记录（docs/32），期间发现的 P0/P1 文字链路问题优先修复；P5 期满达标后输出闸门报告定稿。
 
 ## 文档维护约定
 
