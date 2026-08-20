@@ -1,3 +1,4 @@
+import logging
 from datetime import datetime
 from typing import Annotated, Literal
 from uuid import UUID
@@ -13,6 +14,8 @@ from app.schemas import PrivacyLevel
 from app.schemas.common import StrictModel
 
 from .auth import ChatSessionGuard
+
+logger = logging.getLogger(__name__)
 
 
 class CreateConversationRequest(StrictModel):
@@ -150,13 +153,38 @@ def create_chat_router(service: ChatService, auth_service: AuthService) -> APIRo
             raise HTTPException(status.HTTP_404_NOT_FOUND, detail=str(error)) from error
         except ValueError as error:
             raise HTTPException(status.HTTP_409_CONFLICT, detail=str(error)) from error
-        except (EgressBlocked, LLMRouteExhausted) as error:
-            reason_code = getattr(error, "reason_code", str(error))
+        except LLMRouteExhausted as error:
+            logger.error(
+                "chat model route failed conversation_id=%s user_id=%s reason=%s failures=[%s]",
+                conversation_id,
+                principal.user_id,
+                error.reason_code,
+                ", ".join(
+                    f"{item.endpoint}#{item.attempt}:{item.error_type}"
+                    for item in error.failures
+                ),
+            )
             raise HTTPException(
                 status.HTTP_503_SERVICE_UNAVAILABLE,
-                detail={"reason_code": reason_code},
+                detail={"reason_code": error.reason_code},
+            ) from error
+        except EgressBlocked as error:
+            logger.warning(
+                "chat model egress blocked conversation_id=%s user_id=%s reason=%s",
+                conversation_id,
+                principal.user_id,
+                str(error),
+            )
+            raise HTTPException(
+                status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail={"reason_code": str(error)},
             ) from error
         except Exception as error:
+            logger.exception(
+                "chat model completion failed conversation_id=%s user_id=%s",
+                conversation_id,
+                principal.user_id,
+            )
             raise HTTPException(
                 status.HTTP_503_SERVICE_UNAVAILABLE,
                 detail={"reason_code": "model_completion_unavailable"},

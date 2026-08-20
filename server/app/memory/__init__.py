@@ -14,6 +14,8 @@ from .extraction import (
     LlmMemoryExtractor,
     MemoryExtractor,
     RuleBasedExtractor,
+    TurnMemoryExtractor,
+    extract_assistant_fact_assertions,
     extraction_instruction,
 )
 from .models import (
@@ -23,15 +25,18 @@ from .models import (
     ExtractedCandidates,
     MemoryCandidate,
     MemoryEntry,
+    MemoryOriginKind,
     MemorySourceEntry,
     MemorySourceKind,
     MemorySourceRef,
     MemoryStatus,
+    MemorySubjectKind,
     MemoryType,
     SimilarMemory,
 )
 from .replay import ReplayReport, replay_deletions
 from .retrieval import (
+    DEFAULT_SUBJECT_SCOPES,
     DEFAULT_TYPE_QUOTAS,
     RETRIEVAL_POLICY_VERSION,
     MemoryHit,
@@ -42,6 +47,7 @@ from .retrieval import (
 from .store import MemoryStore
 
 __all__ = [
+    "DEFAULT_SUBJECT_SCOPES",
     "DEFAULT_TYPE_QUOTAS",
     "LLM_EXTRACTOR_VERSION",
     "RETRIEVAL_POLICY_VERSION",
@@ -61,19 +67,23 @@ __all__ = [
     "MemoryExtractor",
     "MemoryHit",
     "MemoryIngester",
+    "MemoryOriginKind",
     "MemoryRetriever",
     "MemorySourceEntry",
     "MemorySourceKind",
     "MemorySourceRef",
     "MemoryStatus",
     "MemoryStore",
+    "MemorySubjectKind",
     "MemoryType",
     "ReplayReport",
     "RetrievalPolicy",
     "RetrievalResult",
     "RuleBasedExtractor",
     "SimilarMemory",
+    "TurnMemoryExtractor",
     "cosine_similarity",
+    "extract_assistant_fact_assertions",
     "extraction_instruction",
     "lexical_cosine",
     "replay_deletions",

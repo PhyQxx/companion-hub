@@ -6,6 +6,10 @@ models:
     model: deepseek-v4-flash
     supports_json_mode: false
     base_url: https://token.sensenova.cn/v1
+    # 密钥支持两种方式（同时存在时优先使用 secret_value）：
+    # 1. secret_value: 直接填写 API Key，适合后台管理
+    # 2. secret_ref: env:XXX   引用环境变量，适合容器化部署
+    # secret_value: sk-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
     secret_ref: env:SENSENOVA_API_KEY
     runs_local: false
     max_privacy_level: L1
@@ -45,9 +49,10 @@ models:
 
   local_private:
     provider: openai_compatible
-    model: qwen2.5:7b
+    model: qwen3.6-35b-a3b-uncensored
     supports_json_mode: false
-    base_url: http://127.0.0.1:11434/v1
+    # LM Studio 原生管理 API 在 /api/v1/*；聊天仍走 OpenAI-compatible /v1。
+    base_url: http://127.0.0.1:1234/v1
     runs_local: true
     max_privacy_level: L2
     timeout_ms: 30000
@@ -56,36 +61,72 @@ models:
     input_cost_per_million: 0
     output_cost_per_million: 0
 
-  glm53_dialogue:
-    # Coding Plan Pro is restricted to supported coding tools. Enable this profile
-    # only with a separate API-authorized key and verified runtime terms.
-    enabled: false
+  zhipu_text_free:
+    kind: text
     provider: openai_compatible
-    model: glm-5.3
+    model: glm-4.7-flash
     supports_json_mode: true
+    thinking_mode: disabled
     base_url: https://open.bigmodel.cn/api/paas/v4
     secret_ref: env:ZAI_API_KEY
     runs_local: false
     max_privacy_level: L1
-    timeout_ms: 20000
+    timeout_ms: 30000
+    max_retries: 1
+    max_context_tokens: 204800
+
+  zhipu_vision_free:
+    kind: vision
+    provider: zhipu_native
+    model: glm-4.6v-flash
+    base_url: https://open.bigmodel.cn/api/paas/v4
+    secret_ref: env:ZAI_API_KEY
+    runs_local: false
+    max_privacy_level: L1
+    timeout_ms: 60000
     max_retries: 1
     max_context_tokens: 131072
-    input_cost_per_million: 0
-    output_cost_per_million: 0
+
+  zhipu_image_free:
+    kind: image_generation
+    provider: zhipu_native
+    model: cogview-3-flash
+    base_url: https://open.bigmodel.cn/api/paas/v4
+    secret_ref: env:ZAI_API_KEY
+    runs_local: false
+    max_privacy_level: L1
+    timeout_ms: 60000
+    max_retries: 0
+
+  zhipu_video_free:
+    kind: video_generation
+    provider: zhipu_native
+    model: cogvideox-flash
+    base_url: https://open.bigmodel.cn/api/paas/v4
+    secret_ref: env:ZAI_API_KEY
+    runs_local: false
+    max_privacy_level: L1
+    timeout_ms: 120000
+    max_retries: 0
 
 routes:
   dialogue:
     primary: sensenova_dialogue
-    fallbacks: [sensenova_reasoning_fallback]
+    fallbacks: [zhipu_text_free, sensenova_reasoning_fallback]
     timeout_ms: 12000
   utility:
     primary: sensenova_utility
-    fallbacks: [sensenova_dialogue]
+    fallbacks: [sensenova_dialogue, zhipu_text_free]
     timeout_ms: 6000
   private:
     primary: local_private
     fallbacks: []
     timeout_ms: 30000
+
+capability_models:
+  vision: zhipu_vision_free
+  image_generation: zhipu_image_free
+  video_generation: zhipu_video_free
 
 observability:
   log_level: INFO

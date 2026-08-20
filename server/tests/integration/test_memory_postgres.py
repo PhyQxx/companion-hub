@@ -1,4 +1,4 @@
-# ruff: noqa: RUF001
+# ruff: noqa: RUF001, RUF003
 from __future__ import annotations
 
 import os
@@ -6,7 +6,7 @@ from datetime import UTC, datetime
 from uuid import uuid4
 
 import pytest
-from sqlalchemy import select, text
+from sqlalchemy import text
 
 from app.db import AppUserRecord, Base, create_database
 from app.memory import (
@@ -25,7 +25,9 @@ pytestmark = pytest.mark.skipif(
     reason="ARIA_TEST_DATABASE_URL is not configured",
 )
 
-NOW = datetime(2026, 8, 18, 12, 0, tzinfo=UTC)
+# 检索侧冻结时钟必须晚于真实墙钟：store.add 用当前时间落 valid_from，
+# 若冻结点已过，valid_from <= now 过滤会排除全部新记忆导致测试随时间腐烂
+NOW = datetime(2099, 1, 1, tzinfo=UTC)
 
 
 async def test_pgvector_dual_write_and_ann_recall() -> None:
@@ -45,10 +47,9 @@ async def test_pgvector_dual_write_and_ann_recall() -> None:
             )
         store = MemoryStore(database)
         assert store.vector_sql_enabled, "pgvector recall path must be active"
+        user_id = uuid4()
         async with database.sessions.begin() as session:
-            session.add(AppUserRecord(id=uuid4(), display_name="pg", status="active"))
-        async with database.sessions() as session:
-            user_id = await session.scalar(select(AppUserRecord.id))
+            session.add(AppUserRecord(id=user_id, display_name="pg", status="active"))
         target = await store.add(
             MemoryCandidate(
                 type=MemoryType.PREFERENCE,

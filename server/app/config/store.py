@@ -130,12 +130,19 @@ class ConfigStore:
 
 
 class ConfigWatcher:
-    def __init__(self, store: ConfigStore, *, poll_seconds: float = 1.0) -> None:
+    def __init__(
+        self,
+        store: ConfigStore,
+        *,
+        poll_seconds: float = 1.0,
+        on_reload: Callable[[ConfigSnapshot], None] | None = None,
+    ) -> None:
         if poll_seconds <= 0:
             raise ValueError("poll_seconds must be positive")
         self._store = store
         self._path = store.path
         self._poll_seconds = poll_seconds
+        self._on_reload = on_reload
         self._stop = asyncio.Event()
         self._task: asyncio.Task[None] | None = None
         self._last_mtime_ns: int | None = None
@@ -169,7 +176,9 @@ class ConfigWatcher:
                 continue
             self._last_mtime_ns = mtime_ns
             try:
-                await self._store.reload()
+                snapshot = await self._store.reload()
             except Exception:
                 # The store records a payload-free audit and retains the prior snapshot.
                 continue
+            if self._on_reload is not None:
+                self._on_reload(snapshot)

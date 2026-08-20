@@ -305,6 +305,69 @@ class MessageRecord(Base):
     )
 
 
+class TimelineEventRecord(Base):
+    __tablename__ = "timeline_event"
+    __table_args__ = (
+        CheckConstraint(
+            "source_type IN ('message','event','device','tool','calendar','system')",
+            name="ck_timeline_source_type",
+        ),
+        CheckConstraint(
+            "actor IN ('user','assistant','device','system','external')",
+            name="ck_timeline_actor",
+        ),
+        CheckConstraint(
+            "privacy_level IN ('L0','L1','L2')",
+            name="ck_timeline_privacy",
+        ),
+        CheckConstraint(
+            "importance >= 0 AND importance <= 1",
+            name="ck_timeline_importance",
+        ),
+        UniqueConstraint(
+            "source_type",
+            "source_id",
+            "event_type",
+            name="uq_timeline_source_event",
+        ),
+        Index("ix_timeline_user_occurred", "user_id", "occurred_at"),
+        Index(
+            "ix_timeline_user_event_occurred",
+            "user_id",
+            "event_type",
+            "occurred_at",
+        ),
+        Index("ix_timeline_user_actor_occurred", "user_id", "actor", "occurred_at"),
+        Index("ix_timeline_source", "source_type", "source_id"),
+        Index("ix_timeline_conversation", "conversation_id", "occurred_at"),
+    )
+
+    id: Mapped[int] = mapped_column(BIGINT_PK, primary_key=True, autoincrement=True)
+    user_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
+    occurred_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    ended_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    source_type: Mapped[str] = mapped_column(String(16), nullable=False)
+    source_id: Mapped[str] = mapped_column(String(200), nullable=False)
+    actor: Mapped[str] = mapped_column(String(16), nullable=False)
+    event_type: Mapped[str] = mapped_column(String(160), nullable=False)
+    conversation_id: Mapped[UUID | None] = mapped_column(Uuid(as_uuid=True))
+    title: Mapped[str | None] = mapped_column(String(240))
+    summary: Mapped[str] = mapped_column(Text, nullable=False)
+    privacy_level: Mapped[str] = mapped_column(String(2), nullable=False)
+    importance: Mapped[float] = mapped_column(nullable=False, default=0.3, server_default="0.3")
+    entities: Mapped[list[dict[str, Any]]] = mapped_column(JSON, nullable=False, default=list)
+    keywords: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
+    metadata_json: Mapped[dict[str, Any]] = mapped_column(
+        "metadata", JSON, nullable=False, default=dict
+    )
+    embedding: Mapped[list[float] | None] = mapped_column(JSON)
+    embedding_model: Mapped[str | None] = mapped_column(String(160))
+    embedding_version: Mapped[str | None] = mapped_column(String(64))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+
 class MemoryRecord(Base):
     __tablename__ = "memory"
     __table_args__ = (
@@ -314,11 +377,36 @@ class MemoryRecord(Base):
         ),
         CheckConstraint("privacy_level IN ('L0','L1','L2')", name="ck_memory_privacy"),
         CheckConstraint(
+            "subject_kind IN ('user','assistant','shared')",
+            name="ck_memory_subject_kind",
+        ),
+        CheckConstraint(
+            "origin_kind IN ('user_statement','assistant_statement','shared_turn',"
+            "'system_event','manual')",
+            name="ck_memory_origin_kind",
+        ),
+        CheckConstraint(
             "status IN ('active','archived','superseded','conflict')",
             name="ck_memory_status",
         ),
         CheckConstraint("importance >= 0 AND importance <= 1", name="ck_memory_importance"),
         Index("ix_memory_user_type_status", "user_id", "type", "status", "importance"),
+        Index(
+            "ix_memory_user_subject_status",
+            "user_id",
+            "subject_kind",
+            "subject_key",
+            "status",
+            "importance",
+        ),
+        Index(
+            "ix_memory_fact_slot",
+            "user_id",
+            "subject_kind",
+            "subject_key",
+            "fact_key",
+            "status",
+        ),
         Index("ix_memory_superseded_by", "superseded_by"),
         Index("ix_memory_created", "created_at"),
     )
@@ -326,6 +414,16 @@ class MemoryRecord(Base):
     id: Mapped[int] = mapped_column(BIGINT_PK, primary_key=True, autoincrement=True)
     user_id: Mapped[UUID] = mapped_column(
         Uuid(as_uuid=True), ForeignKey("app_user.id", ondelete="RESTRICT"), nullable=False
+    )
+    subject_kind: Mapped[str] = mapped_column(
+        String(16), nullable=False, default="user", server_default="user"
+    )
+    subject_key: Mapped[str] = mapped_column(
+        String(160), nullable=False, default="user:self", server_default="user:self"
+    )
+    fact_key: Mapped[str | None] = mapped_column(String(160))
+    origin_kind: Mapped[str] = mapped_column(
+        String(32), nullable=False, default="user_statement", server_default="user_statement"
     )
     type: Mapped[str] = mapped_column(String(16), nullable=False)
     content: Mapped[str] = mapped_column(Text, nullable=False)

@@ -16,6 +16,13 @@ class LLMRoute(StrEnum):
     PRIVATE = "private"
 
 
+class ModelKind(StrEnum):
+    TEXT = "text"
+    VISION = "vision"
+    IMAGE_GENERATION = "image_generation"
+    VIDEO_GENERATION = "video_generation"
+
+
 class LLMMessage(StrictModel):
     role: Literal["system", "user", "assistant"]
     content: Annotated[str, Field(min_length=1, max_length=1_000_000)]
@@ -52,20 +59,23 @@ class CompletionResult(StrictModel):
 
 class ModelEndpoint(StrictModel):
     enabled: bool = True
+    kind: ModelKind = ModelKind.TEXT
     provider: TokenName
     model: Annotated[str, Field(min_length=1, max_length=200)]
     supports_json_mode: bool = False
+    thinking_mode: Literal["provider_default", "enabled", "disabled"] = "provider_default"
     base_url: AnyHttpUrl
     secret_ref: Annotated[
         str, Field(pattern=r"^env:[A-Z][A-Z0-9_]{2,127}$")
     ] | None = None
+    secret_value: Annotated[str, Field(max_length=1024)] | None = None
     runs_local: bool
     max_privacy_level: PrivacyLevel
     timeout_ms: Annotated[int, Field(ge=100, le=120_000)] = 12_000
     max_retries: Annotated[int, Field(ge=0, le=3)] = 1
-    max_context_tokens: Annotated[int, Field(gt=0)]
-    input_cost_per_million: Annotated[float, Field(ge=0)]
-    output_cost_per_million: Annotated[float, Field(ge=0)]
+    max_context_tokens: Annotated[int, Field(gt=0)] = 131_072
+    input_cost_per_million: Annotated[float, Field(ge=0)] = 0
+    output_cost_per_million: Annotated[float, Field(ge=0)] = 0
 
 
 class RoutePolicy(StrictModel):

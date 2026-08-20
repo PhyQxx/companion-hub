@@ -15,7 +15,7 @@ from datetime import UTC, datetime
 from typing import cast
 from uuid import UUID
 
-from sqlalchemy import bindparam, delete, select, text, update
+from sqlalchemy import bindparam, delete, or_, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db import (
@@ -32,10 +32,12 @@ from .models import (
     DeletionReceipt,
     MemoryCandidate,
     MemoryEntry,
+    MemoryOriginKind,
     MemorySourceEntry,
     MemorySourceKind,
     MemorySourceRef,
     MemoryStatus,
+    MemorySubjectKind,
     MemoryType,
     SimilarMemory,
 )
@@ -90,6 +92,10 @@ class MemoryStore:
         async with self._database.sessions.begin() as session:
             record = MemoryRecord(
                 user_id=user_id,
+                subject_kind=MemorySubjectKind(candidate.subject_kind).value,
+                subject_key=candidate.subject_key,
+                fact_key=candidate.fact_key,
+                origin_kind=MemoryOriginKind(candidate.origin_kind).value,
                 type=MemoryType(candidate.type).value,
                 content=candidate.content,
                 summary=candidate.summary,
@@ -146,6 +152,10 @@ class MemoryStore:
         self,
         *,
         user_id: UUID | None = None,
+        subject_kind: MemorySubjectKind | None = None,
+        subject_key: str | None = None,
+        fact_key: str | None = None,
+        origin_kind: MemoryOriginKind | None = None,
         type: MemoryType | None = None,
         status: MemoryStatus | None = None,
         min_importance: float | None = None,
@@ -156,6 +166,16 @@ class MemoryStore:
         )
         if user_id is not None:
             query = query.where(MemoryRecord.user_id == user_id)
+        if subject_kind is not None:
+            query = query.where(
+                MemoryRecord.subject_kind == MemorySubjectKind(subject_kind).value
+            )
+        if subject_key is not None:
+            query = query.where(MemoryRecord.subject_key == subject_key)
+        if fact_key is not None:
+            query = query.where(MemoryRecord.fact_key == fact_key)
+        if origin_kind is not None:
+            query = query.where(MemoryRecord.origin_kind == MemoryOriginKind(origin_kind).value)
         if type is not None:
             query = query.where(MemoryRecord.type == type.value)
         if status is not None:
@@ -171,6 +191,9 @@ class MemoryStore:
         self,
         user_id: UUID,
         *,
+        subject_kind: MemorySubjectKind | None = None,
+        subject_key: str | None = None,
+        subject_scopes: Sequence[tuple[MemorySubjectKind, str]] | None = None,
         types: Sequence[MemoryType] | None = None,
         statuses: Sequence[MemoryStatus] = (MemoryStatus.ACTIVE,),
         privacy_levels: Sequence[PrivacyLevel] | None = None,
@@ -178,6 +201,22 @@ class MemoryStore:
         limit: int = 500,
     ) -> list[RetrievalCandidate]:
         query = select(MemoryRecord)
+        if subject_kind is not None:
+            query = query.where(
+                MemoryRecord.subject_kind == MemorySubjectKind(subject_kind).value
+            )
+        if subject_key is not None:
+            query = query.where(MemoryRecord.subject_key == subject_key)
+        if subject_scopes:
+            query = query.where(
+                or_(
+                    *[
+                        (MemoryRecord.subject_kind == MemorySubjectKind(kind).value)
+                        & (MemoryRecord.subject_key == key)
+                        for kind, key in subject_scopes
+                    ]
+                )
+            )
         if types:
             query = query.where(MemoryRecord.type.in_([item.value for item in types]))
         query = query.where(
@@ -201,6 +240,40 @@ class MemoryStore:
             for record in records
         ]
 
+    async def fact_candidates(
+        self,
+        *,
+        user_id: UUID,
+        fact_key: str,
+        subject_scopes: Sequence[tuple[MemorySubjectKind, str]],
+        privacy_levels: Sequence[PrivacyLevel],
+        valid_at: datetime,
+        limit: int = 20,
+    ) -> list[MemoryEntry]:
+        """按稳定事实槽位直接召回 active 记忆，不依赖 embedding 排名。"""
+
+        query = select(MemoryRecord).where(
+            MemoryRecord.user_id == user_id,
+            MemoryRecord.fact_key == fact_key,
+            MemoryRecord.status == MemoryStatus.ACTIVE.value,
+            MemoryRecord.privacy_level.in_([item.value for item in privacy_levels]),
+            (MemoryRecord.valid_from.is_(None) | (MemoryRecord.valid_from <= valid_at)),
+            (MemoryRecord.valid_to.is_(None) | (MemoryRecord.valid_to > valid_at)),
+            or_(
+                *[
+                    (MemoryRecord.subject_kind == kind.value)
+                    & (MemoryRecord.subject_key == key)
+                    for kind, key in subject_scopes
+                ]
+            ),
+        )
+        query = query.order_by(
+            MemoryRecord.pin.desc(), MemoryRecord.importance.desc(), MemoryRecord.id.desc()
+        ).limit(limit)
+        async with self._database.sessions() as session:
+            records = list(await session.scalars(query))
+        return [self._entry(record) for record in records]
+
     async def vector_recall(
         self,
         query_vector: Sequence[float],
@@ -208,6 +281,7 @@ class MemoryStore:
         user_id: UUID,
         embedding_version: str,
         privacy_levels: Sequence[str],
+        subject_keys: Sequence[str],
         valid_at: datetime,
         limit: int,
     ) -> list[tuple[int, float]]:
@@ -222,13 +296,17 @@ class MemoryStore:
               AND status = 'active'
               AND embedding_version = :version
               AND privacy_level IN :levels
+              AND subject_key IN :subject_keys
               AND (valid_from IS NULL OR valid_from <= :now)
               AND (valid_to IS NULL OR valid_to > :now)
               AND embedding_vec IS NOT NULL
             ORDER BY embedding_vec <=> CAST(:qv AS vector)
             LIMIT :lim
             """
-        ).bindparams(bindparam("levels", expanding=True))
+        ).bindparams(
+            bindparam("levels", expanding=True),
+            bindparam("subject_keys", expanding=True),
+        )
         async with self._database.sessions() as session:
             rows = (
                 await session.execute(
@@ -238,6 +316,7 @@ class MemoryStore:
                         "uid": user_id,
                         "version": embedding_version,
                         "levels": list(privacy_levels),
+                        "subject_keys": list(subject_keys),
                         "now": valid_at,
                         "lim": limit,
                     },
@@ -251,12 +330,16 @@ class MemoryStore:
         *,
         user_id: UUID,
         type: MemoryType,
+        subject_kind: MemorySubjectKind = MemorySubjectKind.USER,
+        subject_key: str = "user:self",
         statuses: Sequence[MemoryStatus] = (MemoryStatus.ACTIVE,),
         limit: int = 5,
     ) -> list[SimilarMemory]:
         vector = (await self._embedding_provider.embed([content]))[0]
         candidates = await self.retrieval_candidates(
             user_id,
+            subject_kind=subject_kind,
+            subject_key=subject_key,
             types=[type],
             statuses=statuses,
             limit=500,
@@ -358,6 +441,10 @@ class MemoryStore:
                 raise LookupError(f"memory not found: {memory_id}")
             replacement = MemoryRecord(
                 user_id=old.user_id,
+                subject_kind=old.subject_kind,
+                subject_key=old.subject_key,
+                fact_key=old.fact_key,
+                origin_kind=old.origin_kind,
                 type=old.type,
                 content=new_content,
                 summary=summary if summary is not None else old.summary,
@@ -727,6 +814,10 @@ class MemoryStore:
         return MemoryEntry(
             id=record.id,
             user_id=record.user_id,
+            subject_kind=record.subject_kind,
+            subject_key=record.subject_key,
+            fact_key=record.fact_key,
+            origin_kind=record.origin_kind,
             type=record.type,
             content=record.content,
             summary=record.summary,

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from contextlib import suppress
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -17,6 +18,8 @@ from app.llm import LLMRouteExhausted
 from app.privacy import EgressBlocked
 from app.schemas import PrivacyLevel
 from app.schemas.common import StrictModel
+
+logger = logging.getLogger(__name__)
 
 
 class AuthenticateFrame(StrictModel):
@@ -193,14 +196,42 @@ class ChatWebSocketManager:
                         payload={"reason_code": "generation_cancelled"},
                     ),
                 )
-        except (EgressBlocked, LLMRouteExhausted) as error:
+        except LLMRouteExhausted as error:
+            logger.error(
+                "chat websocket model route failed conversation_id=%s generation_id=%s "
+                "reason=%s failures=[%s]",
+                frame.conversation_id,
+                pending.generation_id if pending else None,
+                error.reason_code,
+                ", ".join(
+                    f"{item.endpoint}#{item.attempt}:{item.error_type}"
+                    for item in error.failures
+                ),
+            )
             await self._send_failure(
                 connection,
                 frame,
                 pending,
-                getattr(error, "reason_code", str(error)),
+                error.reason_code,
+            )
+        except EgressBlocked as error:
+            logger.warning(
+                "chat websocket model egress blocked conversation_id=%s generation_id=%s reason=%s",
+                frame.conversation_id,
+                pending.generation_id if pending else None,
+                str(error),
+            )
+            await self._send_failure(
+                connection,
+                frame,
+                pending,
+                str(error),
             )
         except Exception:
+            # 前端只拿通用 reason_code; 真实异常必须落日志, 否则线上无法定位.
+            logger.exception(
+                "chat generation failed for conversation %s", frame.conversation_id
+            )
             await self._send_failure(connection, frame, pending, "generation_failed")
         finally:
             if pending is not None:

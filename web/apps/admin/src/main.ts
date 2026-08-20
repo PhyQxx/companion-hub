@@ -1,5 +1,7 @@
 import { createApp } from "vue";
 import { createRouter, createWebHistory } from "vue-router";
+import ElementPlus from "element-plus";
+import "element-plus/dist/index.css";
 import App from "./App.vue";
 import "./style.css";
 
@@ -10,6 +12,7 @@ const router = createRouter({
     { path: "/models", component: () => import("./views/ModelsView.vue") },
     { path: "/personas", component: () => import("./views/PersonasView.vue") },
     { path: "/memory", component: () => import("./views/MemoryView.vue") },
+    { path: "/timeline", component: () => import("./views/TimelineView.vue") },
     {
       path: "/:module(devices|logs|privacy|settings)",
       component: () => import("./views/PlaceholderView.vue"),
@@ -19,4 +22,4 @@ const router = createRouter({
   ],
 });
 
-createApp(App).use(router).mount("#app");
+createApp(App).use(router).use(ElementPlus).mount("#app");

@@ -11,11 +11,13 @@ from pydantic import Field
 from app.memory import (
     MemoryCandidate,
     MemoryEntry,
+    MemoryOriginKind,
     MemoryRetriever,
     MemorySourceKind,
     MemorySourceRef,
     MemoryStatus,
     MemoryStore,
+    MemorySubjectKind,
     MemoryType,
     replay_deletions,
 )
@@ -27,6 +29,10 @@ from .admin_config import AdminTokenGuard
 class MemoryView(StrictModel):
     id: int
     user_id: UUID
+    subject: MemorySubjectKind
+    subject_key: str
+    fact_key: str | None
+    origin_kind: MemoryOriginKind
     type: MemoryType
     content: str
     summary: str | None
@@ -64,6 +70,9 @@ class MemoryDetailView(MemoryView):
 
 class ManualMemoryCreate(StrictModel):
     user_id: UUID
+    subject: MemorySubjectKind = MemorySubjectKind.USER
+    subject_key: Annotated[str | None, Field(min_length=1, max_length=160)] = None
+    fact_key: Annotated[str | None, Field(min_length=1, max_length=160)] = None
     type: MemoryType
     content: Annotated[str, Field(min_length=2, max_length=2_000)]
     summary: Annotated[str | None, Field(max_length=2_000)] = None
@@ -138,6 +147,10 @@ def _view(entry: MemoryEntry) -> MemoryView:
     return MemoryView(
         id=entry.id,
         user_id=entry.user_id,
+        subject=MemorySubjectKind(entry.subject_kind),
+        subject_key=entry.subject_key,
+        fact_key=entry.fact_key,
+        origin_kind=MemoryOriginKind(entry.origin_kind),
         type=MemoryType(entry.type),
         content=entry.content,
         summary=entry.summary,
@@ -161,6 +174,17 @@ def _view(entry: MemoryEntry) -> MemoryView:
         embedding_dimension=entry.embedding_dimension,
         embedding_version=entry.embedding_version,
     )
+
+
+def _default_subject_key(subject: MemorySubjectKind) -> str:
+    """给管理端省略 subject_key 的常见单主体场景提供稳定默认值。"""
+
+    subject_kind = MemorySubjectKind(subject)
+    if subject_kind is MemorySubjectKind.ASSISTANT:
+        return "assistant:primary"
+    if subject_kind is MemorySubjectKind.SHARED:
+        return "shared:user-assistant"
+    return "user:self"
 
 
 def create_admin_memory_router(store: MemoryStore, *, admin_token: str | None) -> APIRouter:
@@ -195,6 +219,10 @@ def create_admin_memory_router(store: MemoryStore, *, admin_token: str | None) -
     @router.get("", response_model=list[MemoryView])
     async def list_memories(
         user_id: UUID | None = None,
+        subject: MemorySubjectKind | None = None,
+        subject_key: str | None = None,
+        fact_key: str | None = None,
+        origin_kind: MemoryOriginKind | None = None,
         type: MemoryType | None = None,
         memory_status: Annotated[MemoryStatus | None, Query(alias="status")] = None,
         min_importance: float | None = None,
@@ -202,6 +230,10 @@ def create_admin_memory_router(store: MemoryStore, *, admin_token: str | None) -
     ) -> list[MemoryView]:
         entries = await store.list_memories(
             user_id=user_id,
+            subject_kind=subject,
+            subject_key=subject_key,
+            fact_key=fact_key,
+            origin_kind=origin_kind,
             type=type,
             status=memory_status,
             min_importance=min_importance,
@@ -214,6 +246,10 @@ def create_admin_memory_router(store: MemoryStore, *, admin_token: str | None) -
         if payload.privacy_level == PrivacyLevel.L3:
             raise HTTPException(422, "L3 cannot be stored")
         candidate = MemoryCandidate(
+            subject_kind=payload.subject,
+            subject_key=payload.subject_key or _default_subject_key(payload.subject),
+            fact_key=payload.fact_key,
+            origin_kind=MemoryOriginKind.MANUAL,
             type=payload.type,
             content=payload.content,
             privacy_level=payload.privacy_level,

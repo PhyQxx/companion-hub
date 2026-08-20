@@ -48,3 +48,4 @@ python_version = "3.11"
 plugins = ["pydantic.mypy"]
 strict = true
 files = ["server/app", "server/tests"]
+mypy_path = "server:integrations/open_llm_vtuber/src"

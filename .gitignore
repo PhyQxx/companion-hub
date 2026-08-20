@@ -16,3 +16,4 @@ build/
 *.egg-info/
 node_modules/
 .pnpm-store/
+docs/history-session/

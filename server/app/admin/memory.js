@@ -5,6 +5,19 @@ const $ = (selector) => document.querySelector(selector);
 const escapeHtml = (value) => String(value ?? "").replace(/[&<>'"]/g, (char) => ({"&":"&amp;","<":"&lt;",">":"&gt;","'":"&#39;",'"':"&quot;"})[char]);
 const toast = (message, error = false) => { const node = $("#toast"); node.textContent = message; node.className = `show${error ? " error" : ""}`; clearTimeout(node.timer); node.timer = setTimeout(() => node.className = "", 3500); };
 const fmtTime = (value) => value ? new Date(value).toLocaleString() : "—";
+const typeLabels = {
+  semantic: "语义",
+  preference: "偏好",
+  commitment: "承诺",
+  episodic: "情景",
+  emotional: "情感",
+};
+const statusLabels = {
+  active: "活跃",
+  conflict: "冲突",
+  archived: "已归档",
+  superseded: "已废止",
+};
 
 async function request(path, options = {}) {
   const response = await fetch(path.startsWith("http") ? path : `${api}${path}`, { ...options, headers: {"Content-Type":"application/json", "Authorization":`Bearer ${token}`, ...(options.headers || {})} });
@@ -29,9 +42,9 @@ async function loadStats() {
 function renderMemories(items) {
   $("#memories").innerHTML = items.map((item) => `<tr>
     <td><strong>#${item.id}</strong>${item.superseded_by ? `<small>→ #${item.superseded_by}</small>` : ""}${item.conflict_with ? `<small>⚠ vs #${item.conflict_with}</small>` : ""}</td>
-    <td><span class="type-chip">${item.type}</span>${item.pin ? "<small>置顶</small>" : ""}</td>
+    <td><span class="type-chip">${typeLabels[item.type] || item.type}</span>${item.pin ? "<small>置顶</small>" : ""}</td>
     <td class="content">${escapeHtml(item.content)}${item.summary ? `<small>${escapeHtml(item.summary)}</small>` : ""}</td>
-    <td><span class="status ${item.status}">${item.status}</span><small>${item.privacy_level}${item.extractor_version ? ` · ${item.extractor_version}` : ""}</small></td>
+    <td><span class="status ${item.status}">${statusLabels[item.status] || item.status}</span><small>${item.privacy_level}${item.extractor_version ? ` · ${item.extractor_version}` : ""}</small></td>
     <td>${item.importance.toFixed(2)}</td>
     <td>${item.access_count}</td>
     <td><small>${fmtTime(item.updated_at)}</small></td>
@@ -80,13 +93,13 @@ async function showDetail(id) {
   try {
     const item = await request(`/${id}`);
     const sourceRows = item.sources.map((source) => `<div><code>${source.source_kind}:${escapeHtml(source.source_id)}</code>${source.excerpt_hash ? ` <small>${source.excerpt_hash.slice(0, 19)}…</small>` : ""}</div>`).join("") || '<p class="hint">无来源记录</p>';
-    const lineageRows = item.lineage.map((entry) => `<div>#${entry.id} <span class="status ${entry.status}">${entry.status}</span> ${escapeHtml(entry.content)}</div>`).join("");
+    const lineageRows = item.lineage.map((entry) => `<div>#${entry.id} <span class="status ${entry.status}">${statusLabels[entry.status] || entry.status}</span> ${escapeHtml(entry.content)}</div>`).join("");
     $("#detail-body").innerHTML = `<dl class="detail-grid">
-      <dt>记忆</dt><dd><strong>#${item.id}</strong>（${item.type} · ${item.privacy_level}）</dd>
+      <dt>记忆</dt><dd><strong>#${item.id}</strong>（${typeLabels[item.type] || item.type} · ${item.privacy_level}）</dd>
       <dt>内容</dt><dd>${escapeHtml(item.content)}</dd>
       <dt>摘要</dt><dd>${escapeHtml(item.summary || "—")}</dd>
       <dt>重要性 / 置顶</dt><dd>${item.importance.toFixed(2)} / ${item.pin ? "是" : "否"}</dd>
-      <dt>状态</dt><dd><span class="status ${item.status}">${item.status}</span>${item.superseded_by ? ` → #${item.superseded_by}` : ""}${item.supersede_reason ? `（${escapeHtml(item.supersede_reason)}）` : ""}</dd>
+      <dt>状态</dt><dd><span class="status ${item.status}">${statusLabels[item.status] || item.status}</span>${item.superseded_by ? ` → #${item.superseded_by}` : ""}${item.supersede_reason ? `（${escapeHtml(item.supersede_reason)}）` : ""}</dd>
       <dt>有效期</dt><dd>${fmtTime(item.valid_from)} ～ ${item.valid_to ? fmtTime(item.valid_to) : "永久"}</dd>
       <dt>提取器</dt><dd>${escapeHtml(item.extractor_version || "—")} · 置信度 ${item.confidence ?? "—"}</dd>
       <dt>创建</dt><dd>${fmtTime(item.created_at)} · ${escapeHtml(item.created_by)}</dd>
@@ -152,7 +165,7 @@ async function archiveMemory(id) {
 }
 
 async function resolveConflict(id, action) {
-  const label = action === "adopt" ? "采纳新记忆（旧版本转入 superseded）" : "保留旧值（新记忆归档）";
+  const label = action === "adopt" ? "采纳新记忆（旧版本转入已废止）" : "保留旧值（新记忆归档）";
   if (!confirm(`冲突裁决 #${id}：${label}？`)) return;
   try { await request(`/${id}/resolve`, { method: "POST", body: JSON.stringify({ action }) }); toast(`冲突 #${id} 已裁决`); await refresh(); }
   catch (error) { toast(error.message, true); }
@@ -172,7 +185,7 @@ async function runQuery(event) {
   try {
     const result = await request("/query", { method: "POST", body: JSON.stringify({ user_id: user, query: $("#query-text").value.trim(), privacy_level: $("#query-privacy").value }) });
     $("#query-result").innerHTML = result.hits.length
-      ? `<p class="hint">${result.candidate_count} 个候选 · 策略 ${result.policy_version} · 命中 ${result.hits.length} 条</p>` + result.hits.map((hit) => `<div class="hit"><span class="score">${hit.final_score.toFixed(3)}</span><span><strong>#${hit.memory.id}</strong> <span class="type-chip">${hit.memory.type}</span> ${escapeHtml(hit.memory.content)} <span class="reasons">vec ${hit.vector_score.toFixed(2)} · lex ${hit.lexical_score.toFixed(2)} · ${hit.reasons.join("+")}</span></span></div>`).join("")
+      ? `<p class="hint">${result.candidate_count} 个候选 · 策略 ${result.policy_version} · 命中 ${result.hits.length} 条</p>` + result.hits.map((hit) => `<div class="hit"><span class="score">${hit.final_score.toFixed(3)}</span><span><strong>#${hit.memory.id}</strong> <span class="type-chip">${typeLabels[hit.memory.type] || hit.memory.type}</span> ${escapeHtml(hit.memory.content)} <span class="reasons">vec ${hit.vector_score.toFixed(2)} · lex ${hit.lexical_score.toFixed(2)} · ${hit.reasons.join("+")}</span></span></div>`).join("")
       : '<p class="hint">没有命中。检查过滤条件或隐私等级。</p>';
   } catch (error) { toast(error.message, true); }
 }

@@ -26,8 +26,9 @@ const moduleLabels: Record<string, string> = {
 const navItems = [
   { to: "/", label: "总览" },
   { to: "/models", label: "模型与路由" },
-  { to: "/personas", label: "Persona" },
+  { to: "/personas", label: "人格" },
   { to: "/memory", label: "记忆质量" },
+  { to: "/timeline", label: "历史时间线" },
   { to: "/devices", label: "设备" },
   { to: "/logs", label: "日志追踪" },
   { to: "/privacy", label: "隐私审计" },
@@ -40,6 +41,7 @@ const heading = computed(() => {
   if (path === "/models") return "模型与路由";
   if (path === "/personas") return "角色与表达";
   if (path === "/memory") return "记忆库";
+  if (path === "/timeline") return "历史时间线";
   return moduleLabels[String(route.params.module ?? "")] ?? "管理后台";
 });
 
@@ -66,28 +68,26 @@ if (api.token) void connect(api.token);
 </script>
 
 <template>
-  <form v-if="!connected" class="auth" @submit.prevent="connect(tokenInput)">
-    <div class="card">
+  <div v-if="!connected" class="auth">
+    <el-card class="card" shadow="never">
       <h1>Aria 管理后台</h1>
       <p class="hint">输入 ARIA_ADMIN_TOKEN 连接管理 API，仅保存在当前浏览器会话中。</p>
-      <input v-model="tokenInput" type="password" placeholder="ARIA_ADMIN_TOKEN" autocomplete="current-password" />
-      <button class="primary" type="submit">连接</button>
+      <el-input v-model="tokenInput" type="password" show-password placeholder="ARIA_ADMIN_TOKEN" autocomplete="current-password" @keyup.enter="connect(tokenInput)" />
+      <el-button type="primary" @click="connect(tokenInput)">连接</el-button>
       <p v-if="statusText" class="status" :class="{ error: statusError }">{{ statusText }}</p>
-    </div>
-  </form>
+    </el-card>
+  </div>
 
-  <div v-else class="shell">
+  <div v-else class="shell admin-shell">
     <aside>
       <div class="brand"><span class="brand-mark">A</span><span>Aria Hub</span></div>
-      <nav>
-        <router-link v-for="item in navItems" :key="item.to" :to="item.to">
-          {{ item.label }}
-        </router-link>
-      </nav>
+      <el-menu router :default-active="route.path" class="side-menu">
+        <el-menu-item v-for="item in navItems" :key="item.to" :index="item.to">{{ item.label }}</el-menu-item>
+      </el-menu>
       <div class="privacy-note"><span class="dot"></span>管理 API 已连接</div>
     </aside>
     <main>
-      <header class="topbar">
+      <header v-if="route.path.replace(/\/$/, '') !== '/models'" class="topbar">
         <h1>{{ heading }}</h1>
         <span class="status" :class="{ error: statusError }">{{ statusText }}</span>
       </header>
@@ -98,7 +98,8 @@ if (api.token) void connect(api.token);
 
 <style scoped>
 .auth { display: grid; place-items: center; height: 100%; }
-.card { display: grid; gap: 12px; width: min(380px, 90vw); background: var(--panel); border: 1px solid var(--line); border-radius: 16px; padding: 28px; }
+.card { width: min(380px, 90vw); border-radius: 16px; }
+.card :deep(.el-card__body) { display:grid; gap:12px; padding:28px; }
 .card h1 { margin: 0; font-size: 20px; }
 .hint, .status { color: var(--muted); font-size: 13px; margin: 0; }
 .status.error { color: var(--danger); }
@@ -107,18 +108,28 @@ if (api.token) void connect(api.token);
 aside { display: flex; flex-direction: column; gap: 18px; border-right: 1px solid var(--line); padding: 16px; }
 .brand { display: flex; align-items: center; gap: 10px; font-weight: 600; }
 .brand-mark { display: grid; place-items: center; width: 30px; height: 30px; border-radius: 9px; background: var(--accent); color: #fff; }
-nav { display: grid; gap: 4px; }
-nav a { color: var(--muted); text-decoration: none; padding: 8px 12px; border-radius: 8px; font-size: 14px; }
-nav a.router-link-active { color: var(--text); background: #1b2540; }
+.side-menu { border-right: 0; background: transparent; }
+.side-menu :deep(.el-menu-item) { height: 38px; line-height: 38px; border-radius: 8px; margin: 2px 0; padding: 0 12px !important; color: #66738a; font-size: 14px; }
+.side-menu :deep(.el-menu-item:hover) { background: #f7f9fd; color: #172033; }
+.side-menu :deep(.el-menu-item.is-active) { color: #3658e8; background: #eef2ff; font-weight: 600; }
 .privacy-note { margin-top: auto; display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: 12px; }
 .dot { width: 8px; height: 8px; border-radius: 50%; background: #7ee2a8; }
 main { display: flex; flex-direction: column; min-height: 0; }
 .topbar { display: flex; justify-content: space-between; align-items: center; padding: 18px 24px; border-bottom: 1px solid var(--line); }
 .topbar h1 { margin: 0; font-size: 18px; }
 
+.admin-shell { background: #f6f8fc; color: #172033; }
+.admin-shell aside { background: #fff; border-right-color: #e3e8f2; }
+.admin-shell .brand { color: #172033; }
+.admin-shell .privacy-note { color: #66738a; }
+.admin-shell main { background: #f6f8fc; color: #172033; }
+.admin-shell .topbar { background: #fff; border-bottom-color: #e3e8f2; }
+.admin-shell .topbar h1 { color: #172033; }
+.admin-shell .topbar .status { color: #68748a; }
+
 @media (max-width: 720px) {
   .shell { grid-template-columns: 1fr; }
   aside { flex-direction: row; align-items: center; overflow-x: auto; }
-  nav { display: flex; }
+  .side-menu { display: flex; min-width: max-content; }
 }
 </style>

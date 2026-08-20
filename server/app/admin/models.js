@@ -4,6 +4,11 @@ let config = null;
 const $ = (selector) => document.querySelector(selector);
 const escapeHtml = (value) => String(value ?? "").replace(/[&<>'"]/g, (char) => ({"&":"&amp;","<":"&lt;",">":"&gt;","'":"&#39;",'"':"&quot;"})[char]);
 const toast = (message, error = false) => { const node = $("#toast"); node.textContent = message; node.className = `show${error ? " error" : ""}`; clearTimeout(node.timer); node.timer = setTimeout(() => node.className = "", 3500); };
+const statusLabels = {
+  published: "已发布",
+  draft: "草稿",
+  superseded: "已废止",
+};
 
 async function request(path, options = {}) {
   const response = await fetch(`${api}${path}`, { ...options, headers: {"Content-Type":"application/json", "Authorization": `Bearer ${token}`, ...(options.headers || {})} });
@@ -18,7 +23,7 @@ function field(label, name, value, type = "text", wide = false) {
 function renderModels() {
   const root = $("#models"); root.innerHTML = Object.entries(config.models).map(([name, model]) => `
     <article class="model-card" data-model-card>
-      <div class="model-head"><div class="model-title"><span class="model-icon">◇</span><div><strong>${escapeHtml(name)}</strong><div><span class="badge ${model.enabled ? "" : "off"}">${model.enabled ? "enabled" : "disabled"}</span></div></div></div></div>
+      <div class="model-head"><div class="model-title"><span class="model-icon">◇</span><div><strong>${escapeHtml(name)}</strong><div><span class="badge ${model.enabled ? "" : "off"}">${model.enabled ? "已启用" : "已停用"}</span></div></div></div></div>
       <div class="fields">
         ${field("端点名称", "name", name)}${field("模型 ID", "model", model.model)}
         ${field("Provider", "provider", model.provider)}${field("Base URL", "base_url", model.base_url, "url")}
@@ -62,7 +67,7 @@ async function load() {
   catch (error) { $("#workspace").hidden = true; $("#auth-panel").hidden = false; toast(error.message, true); }
 }
 function renderVersions(versions) {
-  $("#versions").innerHTML = versions.map(item => `<tr><td><strong>v${item.version}</strong>${item.rollback_from_version ? `<small> ↩ v${item.rollback_from_version}</small>` : ""}</td><td><span class="status ${item.status}">${item.status}</span></td><td>${escapeHtml(item.created_by)}</td><td>${new Date(item.created_at).toLocaleString()}</td><td><code>${item.content_hash.slice(0, 12)}</code></td><td><div class="table-actions">${item.status === "draft" ? `<button class="primary" data-publish="${item.version}">发布</button>` : `<button class="secondary" data-rollback="${item.version}">回滚到此版</button>`}</div></td></tr>`).join("");
+  $("#versions").innerHTML = versions.map(item => `<tr><td><strong>v${item.version}</strong>${item.rollback_from_version ? `<small> ↩ v${item.rollback_from_version}</small>` : ""}</td><td><span class="status ${item.status}">${statusLabels[item.status] || item.status}</span></td><td>${escapeHtml(item.created_by)}</td><td>${new Date(item.created_at).toLocaleString()}</td><td><code>${item.content_hash.slice(0, 12)}</code></td><td><div class="table-actions">${item.status === "draft" ? `<button class="primary" data-publish="${item.version}">发布</button>` : `<button class="secondary" data-rollback="${item.version}">回滚到此版</button>`}</div></td></tr>`).join("");
   document.querySelectorAll("[data-publish]").forEach(button => button.addEventListener("click", () => publish(button.dataset.publish)));
   document.querySelectorAll("[data-rollback]").forEach(button => button.addEventListener("click", () => rollback(button.dataset.rollback)));
 }

@@ -1,8 +1,9 @@
 # ruff: noqa: RUF002, RUF003
 from __future__ import annotations
 
+import asyncio
 import logging
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Coroutine
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Protocol
@@ -26,14 +27,30 @@ from app.memory import (
     DeletionReceipt,
     ExtractionBackend,
     MemoryExtractor,
+    MemoryHit,
     MemoryIngester,
     MemoryRetriever,
+    MemoryStatus,
     MemoryStore,
+    MemorySubjectKind,
     RetrievalResult,
 )
 from app.persona import PersonaConfig, PersonaStore
 from app.schemas import PrivacyLevel
+from app.timeline import (
+    HistoryRecallResult,
+    HistoryRecallService,
+    RecallMode,
+    TimelineStore,
+    has_history_intent,
+)
 
+from .capabilities import (
+    RuntimeActionCapability,
+    RuntimeCapabilityProvider,
+    render_reality_grounding,
+)
+from .memory_consistency import MemoryConsistencyGuard, MemoryConsistencyOutcome
 from .reply import ControlStreamFilter, parse_agent_reply, structured_reply_instruction
 
 MAX_CONTEXT_MESSAGES = 20
@@ -94,6 +111,8 @@ class PendingTurn:
     persona: PersonaConfig
     persona_version: int
     memory_retrieval: RetrievalResult | None = None
+    history_recall: HistoryRecallResult | None = None
+    runtime_capabilities: tuple[RuntimeActionCapability, ...] = ()
 
 
 class TurnCancelled(RuntimeError):
@@ -110,17 +129,28 @@ class ChatService:
         persona_store: PersonaStore | None = None,
         memory_store: MemoryStore | None = None,
         memory_extractor: MemoryExtractor | None = None,
+        timeline_store: TimelineStore | None = None,
+        history_recall_service: HistoryRecallService | None = None,
+        capability_provider: RuntimeCapabilityProvider | None = None,
     ) -> None:
         self._database = database
         self._config_store = config_store
         self._persona_store = persona_store
         self._memory_store = memory_store
+        self._timeline_store = timeline_store
+        self._history_recall = history_recall_service or (
+            HistoryRecallService(timeline_store) if timeline_store is not None else None
+        )
+        self._capability_provider = capability_provider
+        self._memory_consistency_guard = MemoryConsistencyGuard()
         self._memory_retriever = MemoryRetriever(memory_store) if memory_store else None
         self._memory_ingester = (
             MemoryIngester(memory_store, extractor=memory_extractor)
             if memory_store
             else None
         )
+        # 后台记忆任务的强引用集合：既防止任务被 GC，也支持停机前等待收尾
+        self._background_tasks: set[asyncio.Task[None]] = set()
         secrets = EnvSecretProvider()
         self._router_builder = router_builder or (
             lambda config: build_router(config, secrets)
@@ -217,7 +247,12 @@ class ChatService:
         now = datetime.now(UTC)
         turn_id = uuid7()
         generation_id = uuid7()
+        user_timezone = "Asia/Shanghai"
         async with self._database.sessions.begin() as session:
+            user = await session.get(AppUserRecord, user_id)
+            if user is None or user.status != "active":
+                raise LookupError("active user not found")
+            user_timezone = user.timezone
             conversation = await session.scalar(
                 select(ConversationRecord)
                 .where(ConversationRecord.id == conversation_id)
@@ -256,24 +291,71 @@ class ChatService:
             )
 
         history = await self._context_messages(conversation_id)
-        snapshot = self._config_store.current
-        persona_snapshot = self._persona_store.current if self._persona_store else None
+        snapshot = (
+            await self._config_store.refresh()
+            if isinstance(self._config_store, DatabaseConfigStore)
+            else self._config_store.current
+        )
+        persona_snapshot = await self._persona_store.refresh() if self._persona_store else None
         persona = persona_snapshot.persona if persona_snapshot else PersonaConfig()
+        profile_overrides = await self._assistant_profile_overrides(user_id, turn_id=turn_id)
+        runtime_capabilities: tuple[RuntimeActionCapability, ...] = ()
+        if self._capability_provider is not None:
+            try:
+                runtime_capabilities = tuple(
+                    await self._capability_provider.available_actions(user_id)
+                )
+            except Exception:
+                # 设备能力查询失败不能影响聊天；失败时按“没有现实能力”收紧边界。
+                logger.warning("runtime capability lookup failed", exc_info=True)
+        reality_block = render_reality_grounding(runtime_capabilities)
+        history_intent = has_history_intent(text)
         memory_retrieval: RetrievalResult | None = None
+        grounded_memory_hits: tuple[MemoryHit, ...] = ()
         memory_block = ""
         if self._memory_retriever is not None:
             memory_retrieval = await self._memory_retriever.retrieve(
                 text, user_id=user_id, privacy_level=privacy_level
             )
-            memory_block = MemoryRetriever.render_context(memory_retrieval)
+            grounded_memory_hits = self._memory_retriever.grounded_hits(memory_retrieval)
+            # Top-K 仍保留在 decision_meta 供调试，但只有证据级命中进入 Prompt。
+            # 这样 importance/pin/subject bonus 只能给相关记忆排序，不能把弱近邻
+            # 变成聊天中无缘无故冒出来的“记忆”。
+            memory_block = MemoryRetriever.render_context(
+                memory_retrieval,
+                hits=grounded_memory_hits,
+            )
+        history_recall: HistoryRecallResult | None = None
+        history_block = ""
+        if self._history_recall is not None and history_intent:
+            try:
+                history_recall = await self._history_recall.recall(
+                    text,
+                    user_id=user_id,
+                    privacy_level=privacy_level,
+                    now=now,
+                    timezone_name=user_timezone,
+                )
+                if not (
+                    history_recall.mode is RecallMode.NONE
+                    and grounded_memory_hits
+                ):
+                    history_block = HistoryRecallService.render_context(history_recall)
+            except Exception:
+                # 历史索引是增强路径，故障不能让普通聊天不可用。
+                logger.warning("history recall failed for turn %s", turn_id, exc_info=True)
         request = CompletionRequest(
             trace_id=turn_id,
             messages=[
                 LLMMessage(
                     role="system",
-                    content=persona.render_system_prompt()
+                    content=persona.render_system_prompt(
+                        profile_overrides=profile_overrides
+                    )
                     + structured_reply_instruction(persona)
-                    + (f"\n\n{memory_block}" if memory_block else ""),
+                    + f"\n\n{reality_block}"
+                    + (f"\n\n{memory_block}" if memory_block else "")
+                    + (f"\n\n{history_block}" if history_block else ""),
                 ),
                 *[
                     LLMMessage(role=message.role, content=message.content)
@@ -299,6 +381,8 @@ class ChatService:
             persona=persona,
             persona_version=persona_snapshot.version if persona_snapshot else 0,
             memory_retrieval=memory_retrieval,
+            history_recall=history_recall,
+            runtime_capabilities=runtime_capabilities,
         )
 
     async def run_stream(
@@ -309,6 +393,9 @@ class ChatService:
         await self._transition(pending.turn_id, {"accepted"}, "thinking")
         emitted = False
         stream_filter = ControlStreamFilter()
+        buffer_for_consistency = self._memory_consistency_guard.requires_buffering(
+            pending.memory_retrieval
+        )
 
         async def guarded_delta(delta: str) -> None:
             nonlocal emitted
@@ -320,15 +407,47 @@ class ChatService:
             await on_delta(delta)
 
         async def filtered_delta(delta: str) -> None:
+            nonlocal emitted
             for visible in stream_filter.feed(delta):
-                await guarded_delta(visible)
+                if buffer_for_consistency:
+                    if not emitted:
+                        await self._transition(pending.turn_id, {"thinking"}, "streaming")
+                        emitted = True
+                    elif not await self._turn_is_active(pending.turn_id):
+                        raise TurnCancelled("generation_cancelled")
+                else:
+                    await guarded_delta(visible)
 
         try:
             backend = self._router_builder(pending.config)
             result = await backend.stream(pending.request, filtered_delta)
             for visible in stream_filter.finish():
-                await guarded_delta(visible)
-            return await self._commit_turn(pending, result, backend=backend)
+                if buffer_for_consistency:
+                    if not emitted:
+                        await self._transition(pending.turn_id, {"thinking"}, "streaming")
+                        emitted = True
+                    elif not await self._turn_is_active(pending.turn_id):
+                        raise TurnCancelled("generation_cancelled")
+                else:
+                    await guarded_delta(visible)
+            consistency = await self._memory_consistency_guard.enforce(
+                result=result,
+                request=pending.request,
+                persona=pending.persona,
+                retrieval=pending.memory_retrieval,
+                backend=backend,
+            )
+            if buffer_for_consistency:
+                # 未校验的 delta 已被上面的 filter 消费但没有发送给前端；这里只
+                # 发布通过 Guard 的最终正文，避免错误事实先出现在页面再被修正。
+                safe_text = parse_agent_reply(consistency.result.text, pending.persona).text
+                await guarded_delta(safe_text)
+            return await self._commit_turn(
+                pending,
+                consistency.result,
+                backend=backend,
+                consistency=consistency,
+            )
         except BaseException:
             await self._fail_if_active(pending.turn_id)
             raise
@@ -411,6 +530,9 @@ class ChatService:
                 reason="conversation deleted by user",
                 always_record=True,
             )
+        if self._timeline_store is not None:
+            # Timeline 是 Source 的派生索引，必须在原消息删除前清除，避免形成删除旁路。
+            await self._timeline_store.purge_conversation(conversation_id)
         async with self._database.sessions.begin() as session:
             conversation = await session.scalar(
                 select(ConversationRecord)
@@ -454,7 +576,17 @@ class ChatService:
         result: CompletionResult,
         *,
         backend: CompletionBackend | None = None,
+        consistency: MemoryConsistencyOutcome | None = None,
     ) -> ChatTurn:
+        if consistency is None:
+            consistency = await self._memory_consistency_guard.enforce(
+                result=result,
+                request=pending.request,
+                persona=pending.persona,
+                retrieval=pending.memory_retrieval,
+                backend=backend,
+            )
+            result = consistency.result
         reply = parse_agent_reply(result.text, pending.persona)
         decision_meta: dict[str, object] = {
             "schema_version": 1,
@@ -469,20 +601,69 @@ class ChatService:
             "usage": result.usage.model_dump(mode="json"),
             "latency_ms": result.latency_ms,
         }
+        grounded_memory_hits = (
+            self._memory_retriever.grounded_hits(pending.memory_retrieval)
+            if self._memory_retriever is not None and pending.memory_retrieval is not None
+            else ()
+        )
+        grounded_memory_ids = {hit.memory.id for hit in grounded_memory_hits}
         if pending.memory_retrieval is not None:
             decision_meta["memory"] = {
                 "policy_version": pending.memory_retrieval.policy_version,
                 "candidate_count": pending.memory_retrieval.candidate_count,
+                "consistency": {
+                    "checked": consistency.checked,
+                    "repaired": consistency.repaired,
+                    "fallback_used": consistency.fallback_used,
+                    "conflict_memory_ids": list(consistency.conflict_memory_ids),
+                },
                 "hits": [
                     {
                         "id": hit.memory.id,
+                        "subject": hit.memory.subject_kind,
+                        "subject_key": hit.memory.subject_key,
+                        "fact_key": hit.memory.fact_key,
                         "type": hit.memory.type,
                         "score": round(hit.final_score, 4),
                         "reasons": list(hit.reasons),
+                        "grounded": hit.memory.id in grounded_memory_ids,
                     }
                     for hit in pending.memory_retrieval.hits
                 ],
             }
+        if pending.history_recall is not None:
+            recall_mode = pending.history_recall.mode.value
+            if (
+                pending.history_recall.mode is RecallMode.NONE
+                and grounded_memory_hits
+            ):
+                recall_mode = RecallMode.MEMORY.value
+            decision_meta["recall"] = {
+                "mode": recall_mode,
+                "timeline_ids": [item.id for item in pending.history_recall.events],
+                "source_ids": [item.source_id for item in pending.history_recall.evidence],
+                "time_range": {
+                    "start_at": (
+                        pending.history_recall.plan.start_at.isoformat()
+                        if pending.history_recall.plan.start_at
+                        else None
+                    ),
+                    "end_at": (
+                        pending.history_recall.plan.end_at.isoformat()
+                        if pending.history_recall.plan.end_at
+                        else None
+                    ),
+                },
+                "search_count": pending.history_recall.search_count,
+                "candidate_count": pending.history_recall.candidate_count,
+            }
+        elif grounded_memory_hits:
+            decision_meta["recall"] = {"mode": RecallMode.MEMORY.value}
+        else:
+            decision_meta["recall"] = {"mode": RecallMode.WORKING.value}
+        decision_meta["runtime_capabilities"] = [
+            item.capability_id for item in pending.runtime_capabilities
+        ]
         assistant_time = datetime.now(UTC)
         async with self._database.sessions.begin() as session:
             conversation = await session.scalar(
@@ -523,21 +704,101 @@ class ChatService:
             user_message=pending.user_message,
             assistant_message=self._message_view(assistant_record),
         )
-        await self._consolidate_memory(pending, backend=backend)
+        await self._index_timeline(pending, assistant_message=turn_result.assistant_message)
+        # 记忆沉淀含 LLM 提取，耗时不可控；转后台执行，绝不阻塞回复提交
+        self._spawn_background(
+            self._consolidate_memory(
+                pending,
+                assistant_message=turn_result.assistant_message,
+                backend=backend,
+            )
+        )
         return turn_result
 
+    async def _index_timeline(
+        self,
+        pending: PendingTurn,
+        *,
+        assistant_message: MessageView,
+    ) -> None:
+        if self._timeline_store is None:
+            return
+        try:
+            await self._timeline_store.index_completed_turn(
+                user_id=pending.user_id,
+                conversation_id=pending.conversation_id,
+                user_message_id=pending.user_message.id,
+                user_text=pending.user_message.content,
+                user_occurred_at=pending.user_message.created_at,
+                assistant_message_id=assistant_message.id,
+                assistant_text=assistant_message.content,
+                assistant_occurred_at=assistant_message.created_at,
+                privacy_level=pending.request.privacy_level,
+            )
+        except Exception:
+            logger.warning("timeline indexing failed for turn %s", pending.turn_id, exc_info=True)
+
+    async def _assistant_profile_overrides(
+        self, user_id: UUID, *, turn_id: UUID
+    ) -> dict[str, str]:
+        """读取记忆库中用户明确告知的助手档案事实，按 fact_key 覆盖 Persona 基线。"""
+        if self._memory_store is None:
+            return {}
+        try:
+            slots = await self._memory_store.list_memories(
+                user_id=user_id,
+                subject_kind=MemorySubjectKind.ASSISTANT,
+                subject_key="assistant:primary",
+                status=MemoryStatus.ACTIVE,
+                limit=32,
+            )
+        except Exception:
+            # 档案查询失败只损失覆盖能力，回退 Persona 基线即可
+            logger.warning(
+                "assistant profile lookup failed for turn %s", turn_id, exc_info=True
+            )
+            return {}
+        return {
+            slot.fact_key: slot.content
+            for slot in slots
+            if slot.fact_key is not None
+        }
+
+    def _spawn_background(self, coroutine: Coroutine[None, None, None]) -> None:
+        task = asyncio.create_task(coroutine, name="aria-memory-consolidation")
+        self._background_tasks.add(task)
+        task.add_done_callback(self._background_tasks.discard)
+
+    async def drain_background_work(self) -> None:
+        """等待后台记忆任务完成；测试断言与优雅停机使用。"""
+        if self._background_tasks:
+            await asyncio.gather(*self._background_tasks)
+
     async def _consolidate_memory(
-        self, pending: PendingTurn, *, backend: ExtractionBackend | None = None
+        self,
+        pending: PendingTurn,
+        *,
+        assistant_message: MessageView,
+        backend: ExtractionBackend | None = None,
     ) -> None:
         if self._memory_ingester is None:
             return
         try:
-            await self._memory_ingester.ingest_message(
+            retrieved_memories = (
+                tuple(hit.memory for hit in pending.memory_retrieval.hits)
+                if pending.memory_retrieval is not None
+                else ()
+            )
+            await self._memory_ingester.ingest_turn(
                 user_id=pending.user_id,
-                message_id=pending.user_message.id,
-                text=pending.user_message.content,
+                user_message_id=pending.user_message.id,
+                user_text=pending.user_message.content,
+                user_occurred_at=pending.user_message.created_at,
+                assistant_message_id=assistant_message.id,
+                assistant_text=assistant_message.content,
+                assistant_occurred_at=assistant_message.created_at,
                 privacy_level=pending.request.privacy_level,
-                occurred_at=pending.user_message.created_at,
+                retrieved_memories=retrieved_memories,
                 backend=backend,
             )
         except Exception:

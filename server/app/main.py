@@ -1,3 +1,4 @@
+# ruff: noqa: RUF003
 from __future__ import annotations
 
 import os
@@ -16,10 +17,12 @@ from app.api import (
     create_admin_config_router,
     create_admin_memory_router,
     create_admin_persona_router,
+    create_admin_timeline_router,
     create_auth_router,
     create_chat_router,
     create_chat_websocket_router,
     create_deletion_ledger_router,
+    create_model_capability_router,
 )
 from app.api.events import create_event_router
 from app.auth import AuthService
@@ -28,7 +31,10 @@ from app.chat import ChatService
 from app.config import ConfigStore, ConfigWatcher, DatabaseConfigStore
 from app.db import Database, create_database
 from app.memory import LlmMemoryExtractor, MemoryExtractor, MemoryStore
+from app.model_capabilities import CapabilityModelService
+from app.observability import apply_observability, configure_logging
 from app.persona import PersonaStore
+from app.timeline import HistoryRecallService, TimelineStore
 
 
 def create_app(
@@ -42,6 +48,7 @@ def create_app(
     watch_config: bool | None = None,
     admin_token: str | None = None,
 ) -> FastAPI:
+    configure_logging(os.getenv("ARIA_LOG_LEVEL", "INFO"))
     database_url = os.getenv("ARIA_DATABASE_URL")
     runtime_database = database or (create_database(database_url) if database_url else None)
     owns_database = database is None and runtime_database is not None
@@ -59,9 +66,15 @@ def create_app(
     if config_watch_enabled is None:
         config_watch_enabled = os.getenv("ARIA_WATCH_CONFIG", "true").lower() == "true"
     config_watcher = (
-        ConfigWatcher(runtime_config)
+        ConfigWatcher(
+            runtime_config,
+            on_reload=lambda snapshot: apply_observability(snapshot.config),
+        )
         if isinstance(runtime_config, ConfigStore) and config_watch_enabled
         else None
+    )
+    capability_models = (
+        CapabilityModelService(runtime_config) if runtime_config is not None else None
     )
     dispatcher_enabled = run_dispatcher
     if dispatcher_enabled is None:
@@ -70,8 +83,22 @@ def create_app(
     runtime_chat_service: ChatService | None = None
     persona_store = PersonaStore(runtime_database) if runtime_database is not None else None
     memory_store = MemoryStore(runtime_database) if runtime_database is not None else None
+    timeline_store = TimelineStore(runtime_database) if runtime_database is not None else None
+    history_recall = (
+        HistoryRecallService(
+            timeline_store,
+            timezone_name=os.getenv("ARIA_DEFAULT_TIMEZONE", "Asia/Shanghai"),
+        )
+        if timeline_store is not None
+        else None
+    )
     memory_extractor: MemoryExtractor | None = None
-    if memory_store is not None and os.getenv("ARIA_MEMORY_EXTRACTOR", "rule") == "llm":
+    # 默认 LLM 提取器(llm-utility-v1): utility 路由结构化提取, 规则提取器
+    # 仅在模型故障时兜底; 需要纯离线确定性时显式设 ARIA_MEMORY_EXTRACTOR=rule
+    if (
+        memory_store is not None
+        and os.getenv("ARIA_MEMORY_EXTRACTOR", "llm") == "llm"
+    ):
         memory_extractor = LlmMemoryExtractor()
     if dispatcher_enabled and runtime_database is not None:
         publisher = event_publisher or LocalEventPublisher(runtime_database)
@@ -81,6 +108,7 @@ def create_app(
     async def lifespan(_: FastAPI) -> AsyncIterator[None]:
         if runtime_config is not None:
             await runtime_config.load()
+            apply_observability(runtime_config.current.config)
         if persona_store is not None:
             await persona_store.load()
         if runtime_chat_service is not None:
@@ -92,6 +120,9 @@ def create_app(
         try:
             yield
         finally:
+            if runtime_chat_service is not None:
+                # 等待仍在执行的后台记忆沉淀收尾，避免丢最后一轮的事实
+                await runtime_chat_service.drain_background_work()
             if worker is not None:
                 await worker.stop()
             if config_watcher is not None:
@@ -107,6 +138,9 @@ def create_app(
     app.state.config_watcher = config_watcher
     app.state.persona_store = persona_store
     app.state.memory_store = memory_store
+    app.state.timeline_store = timeline_store
+    app.state.history_recall_service = history_recall
+    app.state.capability_model_service = capability_models
 
     admin_root = Path(__file__).parent / "admin"
     app.mount("/admin/legacy", StaticFiles(directory=admin_root), name="admin-legacy")
@@ -191,10 +225,11 @@ def create_app(
             if runtime_config.last_error is not None:
                 result["status"] = "degraded"
         if persona_store is not None:
+            persona_snapshot = await persona_store.refresh()
             result["persona"] = {
-                "version": persona_store.current.version,
-                "content_hash": persona_store.current.content_hash,
-                "name": persona_store.current.persona.name,
+                "version": persona_snapshot.version,
+                "content_hash": persona_snapshot.content_hash,
+                "name": persona_snapshot.persona.name,
             }
         return result
 
@@ -209,6 +244,18 @@ def create_app(
                 "aria.output-intent/1",
             ],
         }
+
+    @app.get("/api/v1/meta/runtime", tags=["system"])
+    async def runtime_meta() -> dict[str, object]:
+        result: dict[str, object] = {}
+        if persona_store is not None:
+            persona_snapshot = await persona_store.refresh()
+            result["persona"] = {
+                "version": persona_snapshot.version,
+                "content_hash": persona_snapshot.content_hash,
+                "name": persona_snapshot.persona.name,
+            }
+        return result
 
     @app.get("/api/v1/meta/adapters", tags=["system"])
     async def adapters() -> dict[str, object]:
@@ -231,6 +278,7 @@ def create_app(
             "models": [
                 {
                     "name": name,
+                    "kind": endpoint.kind,
                     "provider": endpoint.provider,
                     "model": endpoint.model,
                     "enabled": endpoint.enabled,
@@ -243,6 +291,7 @@ def create_app(
                 route: policy.model_dump(mode="json")
                 for route, policy in snapshot.config.routes.items()
             },
+            "capability_models": snapshot.config.capability_models.model_dump(mode="json"),
         }
 
     dev_enabled = enable_dev_endpoints
@@ -267,6 +316,13 @@ def create_app(
                     admin_token=runtime_admin_token,
                 )
             )
+        if timeline_store is not None:
+            app.include_router(
+                create_admin_timeline_router(
+                    timeline_store,
+                    admin_token=runtime_admin_token,
+                )
+            )
         if memory_store is not None:
             app.include_router(
                 create_admin_memory_router(
@@ -288,6 +344,8 @@ def create_app(
                 persona_store=persona_store,
                 memory_store=memory_store,
                 memory_extractor=memory_extractor,
+                timeline_store=timeline_store,
+                history_recall_service=history_recall,
             )
             app.state.auth_service = auth_service
             app.state.chat_service = runtime_chat_service
@@ -295,6 +353,10 @@ def create_app(
                 create_auth_router(auth_service, admin_token=runtime_admin_token)
             )
             app.include_router(create_chat_router(runtime_chat_service, auth_service))
+            if capability_models is not None:
+                app.include_router(
+                    create_model_capability_router(capability_models, auth_service)
+                )
             websocket_router, websocket_manager = create_chat_websocket_router(
                 runtime_chat_service, auth_service
             )

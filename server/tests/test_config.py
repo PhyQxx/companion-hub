@@ -8,6 +8,7 @@ from httpx import ASGITransport, AsyncClient
 
 from app.config import ConfigStore, ConfigWatcher
 from app.config.models import HubConfig
+from app.config.store import load_config_file
 from app.main import create_app
 
 
@@ -138,3 +139,20 @@ async def test_app_exposes_payload_free_config_metadata(tmp_path: Path) -> None:
     assert "secret_ref" not in response.text
     assert "MODEL_API_KEY" not in response.text
     assert health.json()["configuration"]["version"] == 1
+
+
+def test_example_config_selects_latest_free_glm_models_by_capability() -> None:
+    root = Path(__file__).resolve().parents[2]
+    config, _ = load_config_file(root / "config/hub.example.yaml")
+
+    assert config.models["zhipu_text_free"].model == "glm-4.7-flash"
+    assert config.models["zhipu_text_free"].kind == "text"
+    assert config.models["zhipu_vision_free"].model == "glm-4.6v-flash"
+    assert config.models["zhipu_vision_free"].kind == "vision"
+    assert config.models["zhipu_image_free"].model == "cogview-3-flash"
+    assert config.models["zhipu_image_free"].kind == "image_generation"
+    assert config.models["zhipu_video_free"].model == "cogvideox-flash"
+    assert config.models["zhipu_video_free"].kind == "video_generation"
+    assert config.capability_models.vision == "zhipu_vision_free"
+    assert config.capability_models.image_generation == "zhipu_image_free"
+    assert config.capability_models.video_generation == "zhipu_video_free"

@@ -129,14 +129,10 @@ async def test_admin_api_requires_token_and_manages_drafts(
         assert current.status_code == 200, current.text
         candidate = current.json()["config"]
         candidate["models"]["cloud"]["model"] = "dialogue-v2"
-        draft = await client.post(
-            "/api/v1/admin/config/versions",
+        published = await client.put(
+            "/api/v1/admin/config/current",
             headers=headers,
             json=candidate,
-        )
-        published = await client.post(
-            f"/api/v1/admin/config/versions/{draft.json()['version']}/publish",
-            headers=headers,
         )
         versions = await client.get("/api/v1/admin/config/versions", headers=headers)
         page = await client.get("/admin/models")
@@ -157,7 +153,6 @@ async def test_admin_api_requires_token_and_manages_drafts(
 
     assert unauthorized.status_code == 401
     assert current.status_code == 200
-    assert draft.status_code == 201 and draft.json()["status"] == "draft"
     assert published.status_code == 200
     assert published.json()["config"]["models"]["cloud"]["model"] == "dialogue-v2"
     assert [item["status"] for item in versions.json()] == ["published", "superseded"]
@@ -183,6 +178,70 @@ async def test_admin_api_requires_token_and_manages_drafts(
     assert (
         '<div id="app"></div>' in chat_page.text or "文字聊天调试台" in chat_page.text
     )
+
+
+async def test_admin_model_connection_uses_lm_studio_native_model_list(
+    database: Database,
+    bootstrap: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, object] = {}
+
+    def fake_fetch_json(
+        url: str,
+        *,
+        headers: dict[str, str],
+        timeout_seconds: float,
+    ) -> object:
+        captured.update(url=url, headers=headers, timeout_seconds=timeout_seconds)
+        return {
+            "models": [
+                {
+                    "type": "llm",
+                    "key": "local-model",
+                    "display_name": "Local Model",
+                    "loaded_instances": [{"id": "local-model"}],
+                },
+                {
+                    "type": "llm",
+                    "key": "other-model",
+                    "display_name": "Other Model",
+                    "loaded_instances": [],
+                },
+            ]
+        }
+
+    monkeypatch.setattr("app.api.admin_config._fetch_json", fake_fetch_json)
+    store = DatabaseConfigStore(database, bootstrap)
+    app = create_app(
+        database,
+        config_store=store,
+        watch_config=False,
+        admin_token="test-admin-token",
+    )
+    headers = {"Authorization": "Bearer test-admin-token"}
+
+    async with app.router.lifespan_context(app), AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        current = await client.get("/api/v1/admin/config/current", headers=headers)
+        endpoint = current.json()["config"]["models"]["local"]
+        endpoint["base_url"] = "http://127.0.0.1:1234"
+        response = await client.post(
+            "/api/v1/admin/config/models/test",
+            headers=headers,
+            json={"endpoint": endpoint},
+        )
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["ok"] is True
+    assert body["probe_kind"] == "lm_studio_native_v1"
+    assert body["target_url"] == "http://127.0.0.1:1234/api/v1/models"
+    assert body["model_available"] is True
+    assert body["model_loaded"] is True
+    assert [item["key"] for item in body["models"]] == ["local-model", "other-model"]
+    assert captured["url"] == "http://127.0.0.1:1234/api/v1/models"
 
 
 async def test_failed_publish_keeps_database_pointer_and_draft_state(

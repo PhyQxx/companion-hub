@@ -1,6 +1,8 @@
+# ruff: noqa: RUF001
 from __future__ import annotations
 
 from collections.abc import AsyncIterator
+from pathlib import Path
 
 import pytest
 from httpx import ASGITransport, AsyncClient
@@ -44,7 +46,7 @@ async def test_persona_store_publishes_and_rolls_back(persona_database: Database
 
 
 async def test_persona_admin_api_manages_versions(
-    persona_database: Database, tmp_path
+    persona_database: Database, tmp_path: Path
 ) -> None:
     config_path = tmp_path / "hub.yaml"
     config_path.write_text(config_yaml(), encoding="utf-8")
@@ -74,3 +76,27 @@ async def test_persona_admin_api_manages_versions(
     assert current.status_code == 200
     assert draft.status_code == 201
     assert published.json()["persona"]["speaking_style"] == "温暖但不啰嗦"
+
+
+def test_persona_profile_renders_into_system_prompt() -> None:
+    persona = PersonaConfig(
+        name="Nova",
+        profile={"profile.height": "165 厘米", "profile.birthday": "12月27日"},
+    )
+
+    prompt = persona.render_system_prompt()
+
+    assert "身高：165 厘米" in prompt
+    assert "生日：12月27日" in prompt
+    assert "基本档案" in prompt
+
+
+def test_persona_profile_render_prefers_overrides() -> None:
+    persona = PersonaConfig(profile={"profile.height": "165 厘米"})
+
+    prompt = persona.render_system_prompt(
+        profile_overrides={"profile.height": "助手身高为 170 厘米"}
+    )
+
+    assert "身高：170 厘米" in prompt
+    assert "身高：165 厘米" not in prompt

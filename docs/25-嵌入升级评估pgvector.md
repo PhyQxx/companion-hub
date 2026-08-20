@@ -1,5 +1,8 @@
 # P3 嵌入升级评估：pgvector 落地验收记录
 
+> 文档类型：Phase Record / Historical
+> 说明：记录 pgvector 落地基线；新的 Memory/Timeline 召回策略分别以 `30/31` 为准。
+
 > 日期：2026-08-18
 > 范围：pgvector 向量列、双写与 ANN 召回、迁移回填、真实 PostgreSQL 验证
 > 关联：docs/02 §3.6 检索策略与向量版本管理；TASKS.md P3 最后一项

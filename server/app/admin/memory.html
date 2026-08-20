@@ -12,7 +12,7 @@
       <div class="brand"><span class="brand-mark">A</span><span>Aria Hub</span></div>
       <nav aria-label="后台主导航">
         <a href="/admin">总览</a><a href="/admin/models">模型与路由</a>
-        <a href="/admin/personas">Persona</a><a class="active" aria-current="page" href="/admin/memory">记忆质量</a>
+        <a href="/admin/personas">人格</a><a class="active" aria-current="page" href="/admin/memory">记忆质量</a>
         <a href="/admin/devices">设备</a><a href="/admin/logs">日志追踪</a><a href="/admin/privacy">隐私审计</a>
         <a href="/admin/settings">系统配置</a>
       </nav>
@@ -36,7 +36,7 @@
       <div id="workspace" hidden>
         <section class="stats">
           <article><span>活跃记忆</span><strong id="stat-active">—</strong><small>参与检索的版本</small></article>
-          <article><span>待裁决冲突</span><strong id="stat-conflict">—</strong><small>等待 adopt / keep</small></article>
+          <article><span>待裁决冲突</span><strong id="stat-conflict">—</strong><small>等待裁决</small></article>
           <article><span>已归档</span><strong id="stat-archived">—</strong><small>不参与检索</small></article>
           <article><span>删除台账</span><strong id="stat-deleted">—</strong><small id="stat-deleted-note">尚无硬删除</small></article>
         </section>
@@ -54,8 +54,8 @@
 
         <section class="section-heading"><div><p class="eyebrow">MEMORY STORE</p><h2>记忆列表</h2><p>编辑会产生替代版本；冲突裁决和硬删除不可撤销。</p></div></section>
         <section class="filter-bar">
-          <select id="filter-type"><option value="">全部类型</option><option>semantic</option><option>preference</option><option>commitment</option><option>episodic</option><option>emotional</option></select>
-          <select id="filter-status"><option value="">全部状态</option><option>active</option><option>conflict</option><option>archived</option><option>superseded</option></select>
+          <select id="filter-type"><option value="">全部类型</option><option value="semantic">语义</option><option value="preference">偏好</option><option value="commitment">承诺</option><option value="episodic">情景</option><option value="emotional">情感</option></select>
+          <select id="filter-status"><option value="">全部状态</option><option value="active">活跃</option><option value="conflict">冲突</option><option value="archived">已归档</option><option value="superseded">已废止</option></select>
           <label class="inline"><input id="filter-importance" type="number" min="0" max="1" step="0.1" placeholder="最低重要性" /></label>
           <select id="filter-limit"><option>25</option><option selected>50</option><option>100</option><option>200</option></select>
           <button class="secondary" id="apply-filters">应用过滤</button>
@@ -70,7 +70,7 @@
     <dialog id="edit-dialog">
       <form method="dialog" id="edit-form">
         <h3>纠错编辑 <small id="edit-id"></small></h3>
-        <p class="hint">保存后生成替代版本，原版本转入 superseded 并保留溯源。</p>
+        <p class="hint">保存后生成替代版本，原版本转入已废止并保留溯源。</p>
         <label>内容<textarea id="edit-content" rows="4" required></textarea></label>
         <label>摘要<input id="edit-summary" /></label>
         <div class="row"><label>重要性<input id="edit-importance" type="number" min="0" max="1" step="0.05" /></label>
@@ -85,7 +85,7 @@
         <h3>手动添加记忆</h3>
         <label>用户 ID<input id="add-user" required placeholder="app_user UUID" /></label>
         <div class="row">
-          <label>类型<select id="add-type"><option>semantic</option><option>preference</option><option>commitment</option><option>episodic</option><option>emotional</option></select></label>
+          <label>类型<select id="add-type"><option value="semantic">语义</option><option value="preference">偏好</option><option value="commitment">承诺</option><option value="episodic">情景</option><option value="emotional">情感</option></select></label>
           <label>隐私等级<select id="add-privacy"><option>L0</option><option selected>L1</option><option>L2</option></select></label>
           <label>重要性<input id="add-importance" type="number" min="0" max="1" step="0.05" value="0.6" /></label>
         </div>

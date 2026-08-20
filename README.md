@@ -1,134 +1,205 @@
 # Aria · 伴侣中枢（Companion Hub）
 
-> 一个部署在自有设备上的 AI 伴侣中枢：可插拔接入大模型，具备四层记忆与主动思考能力，
-> 通过统一协议接入多种输入源（文字 / 语音 / 传感器）与输出端（聊天 / 语音 / Live2D / 3D / 投影）。
+> 一个部署在自有设备上的 AI 伴侣中枢。它把聊天、长期记忆、历史回溯、模型路由、隐私边界和未来设备能力放在同一个可扩展运行时中。
 
-## 项目文档
+当前阶段：**P5 · 文字稳定性闸门**。核心文字链路已经具备，多主体长期记忆已打通数据模型、检索、完整回合沉淀、冲突保护和跨会话助手自我事实闭环；Timeline / History Recall 的第一版后端最小链路也已落地。20 组 L1 真实模型用例已经逐项通过，其中包括“新伴侣首次建立身高/体重/三围 → 三槽位持久化 → 新会话一致召回”的角色自我档案用例。当前主要剩余 L2 本地模型验收、管理前端/浏览器验收和连续 14 天真实使用。语音、Live2D 和真实设备控制属于后续阶段。
 
-| 文档 | 内容 |
+当前后端质量基线：完整 pytest、`ruff check server`、严格 `mypy server/app server/tests`（102 个 source files）和 `git diff --check` 均保持全绿。机器上存在 nvm Node v22/pnpm，但当前 Coding MCP 禁止执行 workspace 外可执行文件，因此本会话无法完成前端 typecheck/build；这属于工具执行边界，不代表前端代码已经通过或失败。
+
+P5 收口阶段统一使用 `make p5-backend`、`make p5-frontend` 和 `make p5-real`。真实模型矩阵还可拆成 `make p5-real-l1` 与 `make p5-real-l2`：前者只跑云端允许的 L0/L1 用例，后者只跑强制 `local_private` 的 L2 隔离用例。脚本默认从 `.env.local` 安全加载模型环境变量、使用 `config/hub.example.yaml` 路由，不打印 secret，也不写入项目业务数据库。示例配置的本地 private 基线已切到 LM Studio：原生管理 API 为 `http://127.0.0.1:1234/api/v1/*`，Hub 当前 OpenAI-compatible 运行时 Base URL 使用 `http://127.0.0.1:1234/v1`。当前实际数据库配置仍需在管理页保存后才会切换。报告路径分别可用 `P5_REPORT`、`P5_L1_REPORT`、`P5_L2_REPORT` 覆盖。
+
+## 项目定位
+
+Aria 不是单一聊天 UI，而是一个长期运行的本地 Companion Hub：
+
+- 可插拔接入云端和本地大模型；
+- 统一处理文字、语音、传感器和未来工具/设备输入；
+- 通过 Persona、Memory、Timeline 和 Runtime Capability 分离“她是谁、她记得什么、过去发生过什么、现在能做什么”；
+- 使用 L0～L3 隐私分级控制持久化和模型出站；
+- 通过统一 Input/Output/Adapter 契约扩展新的终端和设备。
+
+## 当前已经具备
+
+- **文字聊天**：REST + WebSocket 流式回复、取消、消息持久化和多连接广播；
+- **本地聊天身份**：首次设置、密码哈希、短期会话、资源归属和撤销；
+- **模型路由**：`dialogue / utility / private` 三类路由，L2 强制本地，L3 不进入持久聊天；
+- **模型配置**：后台“保存并生效”，区分文本/视觉/生图/视频模型；文本走三类路由，视觉/生成走独立能力槽位。当前智谱免费能力映射为 GLM-4.7-Flash、GLM-4.6V-Flash、CogView-3-Flash、CogVideoX-Flash；
+- **Persona**：数据库草稿、发布、回滚，聊天新回合跨 worker 刷新当前版本；
+- **结构化回复**：字幕、TTS 文本、情绪、表达和动作控制块；
+- **Memory v1**：持久化、混合检索、来源、冲突、纠错、pgvector、删除台账；
+- **管理后台**：Vue 3 + Element Plus，覆盖模型、Persona、记忆和基础观测；
+- **正式 Chat 前端**：Vue 3 + Vite；
+- **现实能力边界**：模型只能把已上报的真实在线/授权能力当作可执行动作。
+
+## 当前正在开发
+
+### 多主体长期记忆
+
+长期记忆从默认“关于用户”扩展为：
+
+```text
+user       关于用户
+assistant  关于助手自身
+shared     关于双方共同经历/约定
+```
+
+并增加 `fact_key` 稳定事实槽位、冲突检测、助手复述防自我强化和生成一致性检查。
+
+设计见 [docs/30-多主体持久化记忆设计.md](./docs/30-多主体持久化记忆设计.md)。当前 Batch A～D 后端已落地并通过回归：Admin API 可管理主体，默认检索覆盖 user / assistant / shared，`fact_key` 支持精确槽位召回，已完成回合会沉淀助手自述和受证据约束的 shared 约定，并抑制“记忆注入后复述”造成的自我强化；同主体同槽位走确定性冲突，`MemoryConsistencyGuard` 会在提交前 repair 冲突事实，流式 exact fact 回合也不会先泄露未校验的错误值。Batch E 的 Vue 记忆后台主体筛选/字段/手动创建代码已落地；机器上存在 nvm Node v22/pnpm，但当前 Coding MCP 禁止执行 workspace 外可执行文件，因此前端 typecheck/build 尚待可执行环境验证。
+
+### 时间线与历史回溯
+
+系统不要求把所有历史都提升为长期 Memory。新的上位设计允许 AI “忘记”普通细节，但在用户提供大致时间、主题、人物或设备线索时，受控地检索 Timeline 和原始 Source。
+
+设计见 [docs/31-记忆时间线与历史回溯设计.md](./docs/31-记忆时间线与历史回溯设计.md)。当前 Phase A/B 后端最小闭环已落地：`0011_timeline_event` 会为已有 message/event 做安全回填，完成回合与后续 EventBus 事件持续进入 Timeline；历史意图、用户时区相对时间解析、有界检索、有限 Source Expansion、无证据不编造、L2 索引壳与 `decision_meta.recall` 已接入 ChatService。Timeline Vue 管理页也已接入时间、actor/source/event_type、隐私与 conversation 筛选、事件详情和受控 Source 下钻；当前主要剩 Node 环境下的 typecheck/build、浏览器/真实历史数据验收，以及后续设备聚合/retention 和 Memory Promotion。
+
+## 架构速览
+
+```text
+输入源
+聊天 / 语音 / 设备 / 工具
+          │
+          ▼
+InputGateway / Adapter
+          │
+          ▼
+CognitionCore
+  ├─ Persona             她是谁、怎么表达
+  ├─ Working Context     当前发生什么
+  ├─ Long-term Memory    平时就记得什么
+  ├─ Timeline Recall     忘记后可回查什么
+  └─ Runtime Capability  现在真正能做什么
+          │
+          ▼
+LLM Router
+dialogue / utility / private
+          │
+          ▼
+AgentReply → OutputIntent → Output Adapter
+```
+
+完整总体架构见 [docs/02-功能设计.md](./docs/02-功能设计.md)。
+
+## 文档入口
+
+不要从 README 继续向下考古所有 Markdown。统一从：
+
+**[docs/00-文档索引与架构总览.md](./docs/00-文档索引与架构总览.md)**
+
+进入文档体系。它会标明：
+
+- 哪份是当前设计真源；
+- 哪些只是历史验收记录；
+- 哪些 ADR 仍然有效；
+- 同一个概念在多份文档出现时应该以哪份为准。
+
+最常用入口：
+
+| 文档 | 用途 |
 |---|---|
-| [docs/01-需求分析.md](./docs/01-需求分析.md) | 愿景与定位、假设约束、用户故事、功能/非功能需求清单（FR/NFR 编号）、范围外事项、风险分析、v1 验收标准 |
-| [docs/02-功能设计.md](./docs/02-功能设计.md) | 总体架构、核心协议（InputEnvelope / AgentReply / OutputIntent / 设备描述）、九大模块设计、关键流程时序、数据库 DDL、REST/WS/MQTT 接口清单、隐私分级与安全设计 |
-| [docs/03-开发规划.md](./docs/03-开发规划.md) | 技术栈定稿、里程碑（M0~M5）任务分解与验收标准、仓库结构、硬件采购清单、测试策略、部署方案、成本预估、启动检查单 |
-| [docs/04-视觉示意与原型.md](./docs/04-视觉示意与原型.md) | 产品概念图、总体架构、可靠事件链路、隐私分流、记忆生命周期、桌面端线框与阶段路线 |
-| [docs/05-管理后台与可观测性.md](./docs/05-管理后台与可观测性.md) | 后台原型、配置中心、指标口径、统计分析、日志追踪、隐私审计、告警与备份恢复 |
-| [docs/06-主题与视觉系统.md](./docs/06-主题与视觉系统.md) | 多主题原型、Design Token、自定义、自动切换、形象联动、无障碍、数据模型与 API |
-| [docs/07-伴侣形象与角色系统.md](./docs/07-伴侣形象与角色系统.md) | 多种典型形象、自定义/导入、用户形象实例、默认 Aria 示例、跨引擎能力、Live2D 与安全验收 |
-| [docs/08-静态图片动态化.md](./docs/08-静态图片动态化.md) | 单图生成轻量 2D/神经 2.5D 伴侣的流水线、实时驱动、Live2D 精修路线、API 与隐私验收 |
-| [docs/09-运行状态机与多端同步.md](./docs/09-运行状态机与多端同步.md) | 统一回合状态、取消打断、音频租约、多端同步、降级体验与本地身份闭环 |
-| [docs/10-任务资产与升级运维.md](./docs/10-任务资产与升级运维.md) | Job/Scheduler、Asset Store、保留配额、备份升级、许可证、工具安全与运维验收 |
-| [docs/11-统一数据模型与API契约.md](./docs/11-统一数据模型与API契约.md) | 统一实体、ID、外键、身份、工具执行、REST/WS、分页、幂等、上传与版本兼容 |
-| [docs/12-安全边界同意与陪伴伦理.md](./docs/12-安全边界同意与陪伴伦理.md) | 用户控制、访客同意、录音/传感器、真人素材、高风险建议、非操纵关系与红队验收 |
-| [docs/13-需求追踪与架构决策.md](./docs/13-需求追踪与架构决策.md) | FR/NFR→设计→里程碑→测试追踪矩阵、发布定义、ADR、待决问题与设计冻结规则 |
-| [docs/14-输入输出扩展契约.md](./docs/14-输入输出扩展契约.md) | 统一多模态输入/输出协议、L3 临时信号管道、Adapter 生命周期、能力协商、路由降级与 M0 契约测试 |
-| [docs/15-M0输入输出骨架验收报告.md](./docs/15-M0输入输出骨架验收报告.md) | I/O 扩展、隐私隔离、可靠事件、故障恢复和容器鉴权的实现验收矩阵 |
-| [docs/16-M0模型路由与配置中心.md](./docs/16-M0模型路由与配置中心.md) | 商汤 / GLM / 本地模型分工、隐私路由、配置热更新、回滚、观测与连通性验证 |
-| [docs/17-M1文字聊天闭环.md](./docs/17-M1文字聊天闭环.md) | 会话与消息持久化、聊天 API、动态模型路由、隐私约束、调试页与当前边界 |
-| [docs/18-本地聊天身份边界.md](./docs/18-本地聊天身份边界.md) | 首次设置、密码哈希、短期聊天会话、资源归属、撤销、限流和后续身份演进 |
-| [docs/19-WebSocket流式回合.md](./docs/19-WebSocket流式回合.md) | 真实模型流、回合状态、取消隔离、多端广播、消息游标补拉和协议边界 |
-| [docs/20-结构化回复与Persona.md](./docs/20-结构化回复与Persona.md) | AgentReply 控制协议、Persona 数据库版本、管理后台与 Open-LLM-VTuber 映射 |
-| [docs/21-记忆系统v1.md](./docs/21-记忆系统v1.md) | 记忆存储与溯源、混合检索重排、候选沉淀判定、纠错闭环与隐私闸门 |
-| [docs/22-删除闭环与记忆后台.md](./docs/22-删除闭环与记忆后台.md) | 硬删除台账、版本链删除、删除 API 与 `/admin/memory` 可视化后台 |
-| [docs/23-utility提取器与L2脱敏.md](./docs/23-utility提取器与L2脱敏.md) | LLM 结构化记忆提取、L2 事件级脱敏沉淀与规则回退 |
-| [docs/24-消息删除级联与台账重放.md](./docs/24-消息删除级联与台账重放.md) | 会话删除级联清理记忆、删除台账重放与 dry-run 验证 |
-| [docs/25-嵌入升级评估pgvector.md](./docs/25-嵌入升级评估pgvector.md) | pgvector 向量列与双写、ANN 召回、迁移回填与真实环境验证 |
-| [docs/26-前端决策ADR-018.md](./docs/26-前端决策ADR-018.md) | Vue 3 正式前端与 Open-LLM-VTuber 边界决策、分阶段迁移计划 |
-| [docs/27-Vue聊天前端P4a.md](./docs/27-Vue聊天前端P4a.md) | web monorepo、shared API/WS 客户端与 Vue 聊天前端落地 |
-| [docs/28-管理后台Vue迁移P4b.md](./docs/28-管理后台Vue迁移P4b.md) | admin SPA、FastAPI 双模式托管、迁移修复与浏览器实测 |
+| [01-需求分析](./docs/01-需求分析.md) | 产品范围、FR/NFR、风险和发布标准 |
+| [02-功能设计](./docs/02-功能设计.md) | 总体架构与模块关系 |
+| [03-开发规划](./docs/03-开发规划.md) | 里程碑与质量闸门 |
+| [05-管理后台与可观测性](./docs/05-管理后台与可观测性.md) | Admin、指标、日志和配置语义 |
+| [11-统一数据模型与 API 契约](./docs/11-统一数据模型与API契约.md) | 数据和 API 通用规则 |
+| [12-安全边界同意与陪伴伦理](./docs/12-安全边界同意与陪伴伦理.md) | 隐私、同意和安全边界 |
+| [14-输入输出扩展契约](./docs/14-输入输出扩展契约.md) | Adapter、能力协商和 I/O 协议 |
+| [16-模型路由与配置中心](./docs/16-M0模型路由与配置中心.md) | 当前模型/路由配置语义 |
+| [20-结构化回复与 Persona](./docs/20-结构化回复与Persona.md) | AgentReply、Persona、现实能力边界 |
+| [30-多主体持久化记忆设计](./docs/30-多主体持久化记忆设计.md) | user / assistant / shared 长期记忆 |
+| [31-记忆时间线与历史回溯设计](./docs/31-记忆时间线与历史回溯设计.md) | Timeline、History Recall、按时间回查 |
 
-## 一图速览
+当前任务状态看 [TASKS.md](./TASKS.md)，不要从历史验收文档推断当前进度。
 
+## 配置生命周期
+
+不同配置域不使用同一套 UI 生命周期：
+
+| 配置域 | 当前语义 |
+|---|---|
+| 模型 / 路由 / 日志运行配置 | **保存即生效** |
+| Persona | **草稿 → 发布 → 回滚** |
+| Theme / 主动规则等未来配置 | 按风险决定是否版本化发布 |
+
+模型配置底层仍可保留不可变 revision 用于审计，但不向用户暴露“模型配置版本工作流”。
+
+## 隐私底线
+
+| 等级 | 处理原则 |
+|---|---|
+| L0 | 普通环境/公开信息，可按策略持久化 |
+| L1 | 个人信息，仅在用户数据域内持久化和使用 |
+| L2 | 敏感/亲密内容，只允许本地模型；持久化必须满足脱敏策略 |
+| L3 | 原始高敏传感数据，不进入通用持久化、日志、备份或云端 |
+
+隐私和同意的完整规则见 [docs/12-安全边界同意与陪伴伦理.md](./docs/12-安全边界同意与陪伴伦理.md)。
+
+## 仓库结构
+
+```text
+server/        FastAPI 后端、聊天、记忆、模型路由和管理 API
+web/           Vue 3 chat/admin monorepo
+contracts/     JSON Schema / TypeScript 契约
+config/        配置样例
+integrations/  Open-LLM-VTuber 等外部集成
+firmware/      未来设备/固件
+docs/          需求、设计、ADR、阶段验收记录
+deploy/        部署相关资源
 ```
-输入源(聊天/语音/传感器) → InputEnvelope / EphemeralSignal → 事件或临时信号管道
-  → 感知引擎(语义事件) + 主动引擎(分寸控制)
-  → 认知核心(人格+记忆检索+LLM) → AgentReply(结构化)
-  → 记忆系统(沉淀/反思) + OutputIntent → 输出网关(仲裁/分发/回执)
-  → 文字 / TTS语音 / Live2D看板娘 / VRM 3D / 投影端
-```
-
-## 快速事实
-
-- **技术栈**：Python 3.11 + FastAPI + PostgreSQL(pgvector) + Mosquitto(MQTT)；前端 Vue3 + pixi-live2d-display / three-vrm；固件 ESP32 + ESPHome
-- **周期**：单人业余开发（每周 10~15h），以质量闸门推进；核心 v1 预计约 12~18 个月，形象工厂和多端 3D 属后续增强
-- **月成本**：常规路线 ¥30~90（云端 LLM 按量 + 免费 TTS + 家中主机）
-- **隐私底线**：数据分 L0~L3 四级，传感器原始数据（L3）永不上云、默认不落库；亲密语境（L2）仅事件级标签且强制走本地模型
-
-## 当前状态
-
-- [x] 产品范围冻结（v1.3，2026-08-17；核心 v1 截止 M3A）
-- [x] M0.1 初始工程骨架 —— Python 3.11、FastAPI、uv、ruff、mypy、pytest、CI
-- [x] M0.3 协议首版 —— Pydantic → JSON Schema → TypeScript，含 UUIDv7、durable/ephemeral 分流和 mock adapter 测试
-- [x] M0.2/M0.4 基础实现 —— PostgreSQL/Alembic、event/outbox/inbox/dead-letter、dispatcher 租约恢复、Mosquitto 和 Docker Compose
-- [x] M0.4 单实例集成 —— 真实 PostgreSQL/Mosquitto 容器迁移、鉴权、幂等写入、outbox 发布与回收验证
-- [x] 入口隐私闸门 —— 服务端重分类、L3 落库阻断、带 TTL 和背压策略的有界内存信号缓冲
-- [x] 常驻事件分发 —— FastAPI 生命周期 worker、本地命名消费者、inbox 去重、失败重试与健康状态
-- [x] M0.4 并发恢复闸门 —— PostgreSQL `SKIP LOCKED` 多 worker 竞争和 lease 持有者终止恢复测试
-- [x] M0 I/O 契约闸门 —— 显式 registry、四个参考 adapter、能力交集、降级、取消和 unknown outcome
-- [x] M0.5 模型适配与双路由 —— OpenAI-compatible 适配、对话/后台/私密路由、重试降级和 L2/L3 出站闸门
-- [x] M0.6 配置与最小观测 —— 数据库版本、事务发布/回滚、可视化后台、安全元数据、结构化日志和耗时 span
-- [x] M1 文字闭环第一阶段 —— 会话/消息落库、最近 20 条上下文、动态读取已发布模型配置、L2 本地强制路由、L3 持久聊天阻断和调试页
-- [x] 本地聊天身份第一阶段 —— 管理员授权首次设置、scrypt 密码哈希、8 小时随机会话、退出撤销、登录限流及会话归属隔离
-- [x] M1 WebSocket 回合第一阶段 —— 首帧认证、真实供应商 delta、generation 取消、迟到提交阻断、多连接广播和已提交消息补拉
-- [x] P1 结构化回复与 Persona —— 字幕/TTS/情绪/动作协议、数据库草稿发布回滚、管理后台和 Open-LLM-VTuber 原生输出映射
-- [x] P2 记忆系统 v1 —— 可检索/可溯源/可纠错长期记忆：混合召回重排、来源版本链、冲突裁决、聊天注入与隐私闸门
-- [x] P3 删除闭环与记忆后台（第一批）—— 硬删除版本链与来源、删除台账、`/admin/memory` 可视化管理
-- [x] P3 utility 提取器 —— LLM 结构化提取（`ARIA_MEMORY_EXTRACTOR=llm` 启用）、L2 事件级脱敏沉淀、规则回退
-- [x] P3 删除闭环收口 —— 会话删除级联清理沉淀记忆、台账重放（API + `server/scripts/replay_deletions.py`）
-- [x] P3 嵌入升级 —— pgvector 向量列双写 + ANN 召回（迁移 0009，PostgreSQL 专属，真实容器验证）
-- [x] P4 前端决策（ADR-018）—— Vue 3 自建 chat/admin 正式前端，Open-LLM-VTuber 仅作 P6 渲染/语音端
-- [x] P4a Vue 聊天前端 —— `web/` monorepo、shared 客户端、登录/会话/流式/取消/删除/隐私等级，`/chat` 服务构建产物（旧调试页保留于 `/chat/debug`）
-- [x] P4b Vue 管理后台 —— 总览/模型/Persona/记忆库/占位页迁入 `web/apps/admin`，`/admin/*` 双模式托管，浏览器实测通过
 
 ## 本地开发
 
-要求：Python 3.11、[uv](https://docs.astral.sh/uv/)、Node 20、pnpm 10。
+要求：
 
-代码规范：界面与提示文案使用中文；代码注释统一使用中文并尽量详尽（模块 docstring 说明设计意图，关键分支加行内注释），ruff 已豁免中文全角标点（RUF001/002/003）。
+- Python 3.11
+- `uv`
+- Node 20
+- pnpm 10
+- PostgreSQL + pgvector（完整后端环境）
+
+安装和基础检查：
 
 ```bash
-uv sync --dev
-uv run pytest
-uv run ruff check server
-uv run mypy server/app
-uv run python server/scripts/export_schemas.py
-pnpm --dir contracts install --frozen-lockfile
-pnpm --dir contracts run generate
-pnpm --dir contracts run check
+make install
+make test
+make lint
+make schemas
 pnpm --dir web install
-pnpm --dir web run build
 pnpm --dir web run typecheck
-uv run uvicorn app.main:app --app-dir server --reload
+pnpm --dir web run build
 ```
 
-- 健康检查：`GET /healthz`
-- 协议元数据：`GET /api/v1/meta/protocol`
-- 已登记 Adapter：`GET /api/v1/meta/adapters`
-- 已发布模型配置（不返回密钥引用）：`GET /api/v1/meta/config`
-- 模型配置后台：`GET /admin/models`（Vue SPA；未构建时回退 vanilla 页面）
-- Persona 管理后台：`GET /admin/personas`
-- 记忆库后台：`GET /admin/memory`（过滤、溯源、纠错、冲突裁决、检索调试与硬删除台账）
-- 记忆管理 API：`/api/v1/admin/memories*` 与 `/api/v1/admin/deletion-ledger`
-- 文字聊天调试页：`GET /chat`（Vue 正式前端，未构建时回退旧页；调试页在 `GET /chat/debug`）
-- 聊天身份 API：`/api/v1/auth/status|setup|login|me|logout`
-- 文字聊天 API：`/api/v1/chat/conversations*`（仅接受独立聊天会话 Token；`DELETE` 删除会话并级联清理其沉淀记忆）
-- 实时聊天：`WS /ws/chat`（连接后 5 秒内发送 `authenticate` 首帧）
-- JSON Schema：`contracts/jsonschema/`
-- TypeScript 类型：`contracts/types/index.d.ts`
-
-`ARIA_RUN_DISPATCHER` 默认关闭。只有当应用已为所有会产生的 topic 注册命名消费者后才应开启；开启后 `/healthz` 会增加 `dispatcher` 运行状态。Adapter 输入必须经过 `GuardedInputSink`，设备声明的隐私等级只是下限，服务端策略可以上调，L3 数据不会进入 event/outbox 数据库。
-
-连接数据库时，首次启动从 `config/hub.example.yaml` 引导模型配置版本 1，并自动建立默认 Aria Persona；之后模型与 Persona 的草稿、发布指针和回滚历史都保存在数据库。后台地址为 `/admin/models` 和 `/admin/personas`，管理 API 必须配置 `ARIA_ADMIN_TOKEN` 才会启用；未连接数据库时仍保留 YAML 文件模式。密钥只允许通过 `env:变量名` 引用，不保存明文。手工验证商汤连接：
+启动后端：
 
 ```bash
-set -a
-. ./.env.local
-set +a
-make llm-check
+make run
 ```
 
-不要把 `.env.local` 提交到仓库。若要启用预留的 GLM-5.3 运行时配置，必须使用独立的普通 API 授权密钥；GLM Coding Plan Pro 密钥只用于其官方支持的编码工具。
+开发前端可分别启动：
 
-源码启动后打开 `http://127.0.0.1:8000/chat`。首次使用时通过 `ARIA_ADMIN_TOKEN` 授权创建聊天密码；之后管理 Token 不能读取或发送聊天内容，只能使用 8 小时有效、可撤销的独立聊天会话。页面优先使用 WebSocket 展示真实模型 delta 并支持取消，连接不可用时退回同步 REST。L0/L1 可使用数据库当前发布的云模型；L2 强制走 `private` 本地路由，本地模型不可用时返回明确失败，不会降级到云端。AgentReply 控制块会从可见流中剥离并作为 `reply.control` 单独广播；解析失败自动降级为普通文本。每轮对话会检索长期记忆注入系统提示（`decision_meta.memory` 记录命中 ID 与策略版本），回合提交后提取器异步沉淀候选记忆：默认规则提取器，设置 `ARIA_MEMORY_EXTRACTOR=llm` 启用 utility 模型结构化提取（L2 内容强制脱敏为事件级描述且只进本地路由，坏输出自动回退规则提取）。refresh 轮换和设备配对仍属于后续工作。
+```bash
+pnpm --dir web --filter @aria/chat dev
+pnpm --dir web --filter @aria/admin dev
+```
+
+当前 Vite 开发端口：
+
+- Chat：`http://localhost:5175/chat/`
+- Admin：`http://localhost:5174/admin/`
+
+后端默认：`http://127.0.0.1:8000/`
+
+常用接口：
+
+- `GET /healthz`
+- `GET /api/v1/meta/runtime`
+- `GET /api/v1/meta/protocol`
+- `GET /api/v1/meta/adapters`
+- `GET /api/v1/meta/config`
+- `/api/v1/chat/conversations*`
+- `WS /ws/chat`
+- `/api/v1/admin/memories*`
+- `/api/v1/admin/deletion-ledger`
 
 ## 容器启动
 
@@ -137,15 +208,42 @@ cp .env.example .env
 # 编辑 .env，替换 PostgreSQL、MQTT 密码和 ARIA_ADMIN_TOKEN
 docker compose up --build -d
 curl http://localhost:8000/healthz
-docker compose logs -f hub
 ```
 
-PostgreSQL 默认映射到宿主机 `5433`，可通过 `POSTGRES_PORT` 修改，避免占用本机常见的 `5432`。
-
-停止服务但保留数据：
+停止但保留数据：
 
 ```bash
 docker compose down
 ```
 
-开发 Compose 会自动执行 Alembic migration，并显式启用 `/api/v1/dev/events` 测试入口。该入口没有设计为生产 API；共享部署前必须关闭 `ARIA_ENABLE_DEV_ENDPOINTS` 并完成身份模块。
+PostgreSQL 默认映射到宿主机 `5433`，可通过 `POSTGRES_PORT` 修改。
+
+## 密钥与本地配置
+
+- 不要提交 `.env.local` 或真实密钥；
+- 模型密钥只通过 `env:变量名` 引用，不写入数据库正文；
+- `ARIA_ADMIN_TOKEN` 只用于管理能力和首次身份设置，不应成为读取私人聊天的通用 Token；
+- GLM Coding Plan 等特定产品授权不要当作普通模型 API Key 复用。
+
+## 当前阶段与下一步
+
+当前执行清单以 [TASKS.md](./TASKS.md) 为准。P5 主要目标是：
+
+1. 收口 LM Studio/Qwen3.6 的 reasoning 输出适配，并把当前数据库 `local_private` 更新到本机 LM Studio `/v1` 配置后补齐 Batch F 的 L2 隐私真实调用；
+2. 补齐 Memory/Timeline 管理前端的构建、浏览器和真实数据验收；
+3. 完成 Chat Persona 浏览器最终联调；
+4. 在 Node/pnpm 可用环境补齐前端 typecheck/build；
+5. 进入连续 14 天真实文字使用；
+6. 只根据真实问题修复，不在稳定性闸门期间无边界扩功能。
+
+P5 通过后，再进入语音、Live2D 和真实设备能力产品化。
+
+## 文档维护约定
+
+- README 只做项目入口，不复制详细架构；
+- `docs/00` 是文档地图；
+- Active 文档定义当前规则；
+- Phase Record 只记录某一阶段当时的实现和验收；
+- `TASKS.md` 只维护执行状态；
+- 实际数据库结构以 Alembic migration 为准；
+- 代码、界面文案和注释以中文为主，必要的协议/标识保留英文。

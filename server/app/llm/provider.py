@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 from collections.abc import Awaitable, Callable, Mapping
 from time import perf_counter
@@ -9,8 +10,11 @@ from typing import Any, Protocol
 import litellm
 
 from app.ids import uuid7
+from app.observability import redact_fields
 
 from .contracts import CompletionRequest, CompletionResult, ModelEndpoint, ModelUsage
+
+logger = logging.getLogger(__name__)
 
 
 class SecretNotFound(LookupError):
@@ -59,10 +63,11 @@ class LiteLLMProvider:
     async def complete(self, request: CompletionRequest) -> CompletionResult:
         started = perf_counter()
         arguments = self._arguments(request)
+        self._log_arguments(arguments)
         response = await litellm.acompletion(**arguments)
         choice = response.choices[0]
         content = choice.message.content or ""
-        return self._result(
+        result = self._result(
             request=request,
             text=content,
             request_id=response.id,
@@ -70,12 +75,16 @@ class LiteLLMProvider:
             usage=response.usage,
             started=started,
         )
+        self._log_result(result)
+        return result
 
     async def stream(
         self, request: CompletionRequest, on_delta: Callable[[str], Awaitable[None]]
     ) -> CompletionResult:
         started = perf_counter()
-        response = await litellm.acompletion(**self._arguments(request), stream=True)
+        arguments = self._arguments(request)
+        self._log_arguments(arguments)
+        response = await litellm.acompletion(**arguments, stream=True)
         text_parts: list[str] = []
         request_id: str | None = None
         finish_reason: str | None = None
@@ -94,7 +103,7 @@ class LiteLLMProvider:
             if delta:
                 text_parts.append(delta)
                 await on_delta(delta)
-        return self._result(
+        result = self._result(
             request=request,
             text="".join(text_parts),
             request_id=request_id,
@@ -102,6 +111,8 @@ class LiteLLMProvider:
             usage=usage,
             started=started,
         )
+        self._log_result(result)
+        return result
 
     def _arguments(self, request: CompletionRequest) -> dict[str, Any]:
         arguments: dict[str, Any] = {
@@ -113,10 +124,22 @@ class LiteLLMProvider:
             "timeout": self.endpoint.timeout_ms / 1_000,
             "num_retries": 0,
         }
-        if self.endpoint.secret_ref is not None:
+        if self.endpoint.secret_value is not None:
+            arguments["api_key"] = self.endpoint.secret_value
+        elif self.endpoint.secret_ref is not None:
             arguments["api_key"] = self._secrets.resolve(self.endpoint.secret_ref)
+        elif self.endpoint.runs_local:
+            # OpenAI-compatible clients require a non-empty api_key argument even
+            # when a local runtime such as LM Studio has authentication disabled.
+            # This fixed placeholder is not a credential and never leaves the
+            # configured local endpoint.
+            arguments["api_key"] = "local-no-auth"
         if request.json_mode and self.endpoint.supports_json_mode:
             arguments["response_format"] = {"type": "json_object"}
+        if self.endpoint.thinking_mode != "provider_default":
+            arguments["extra_body"] = {
+                "thinking": {"type": self.endpoint.thinking_mode},
+            }
         return arguments
 
     def _result(
@@ -150,6 +173,33 @@ class LiteLLMProvider:
                 estimated_cost=estimated_cost,
             ),
             latency_ms=(perf_counter() - started) * 1_000,
+        )
+
+    def _log_arguments(self, arguments: dict[str, Any]) -> None:
+        safe = {k: v for k, v in arguments.items() if k != "api_key"}
+        logger.info(
+            "llm request endpoint=%s model=%s arguments=%s",
+            self.endpoint_name,
+            self.endpoint.model,
+            json.dumps(
+                redact_fields(safe),
+                sort_keys=True,
+                ensure_ascii=False,
+                default=str,
+            ),
+        )
+
+    def _log_result(self, result: CompletionResult) -> None:
+        logger.info(
+            "llm response endpoint=%s model=%s result=%s",
+            self.endpoint_name,
+            self.endpoint.model,
+            json.dumps(
+                redact_fields(result.model_dump(mode="json")),
+                sort_keys=True,
+                ensure_ascii=False,
+                default=str,
+            ),
         )
 
     async def probe(self) -> None:

@@ -25,6 +25,7 @@ const adminToken = ref("");
 const authBusy = ref(false);
 const statusText = ref("");
 const statusError = ref(false);
+const personaMeta = ref<{ version: number; name: string } | null>(null);
 
 const conversations = ref<Conversation[]>([]);
 const activeId = ref<string | null>(null);
@@ -56,14 +57,57 @@ function setStatus(text: string, error = false) {
   statusError.value = error;
 }
 
+function personaVersionOf(message: ChatMessage): number | null {
+  const value = (message.decision_meta as { persona_version?: unknown } | null)?.persona_version;
+  return typeof value === "number" && value > 0 ? value : null;
+}
+
+const recallLabels: Record<string, string> = {
+  working: "当前上下文",
+  memory: "长期记忆",
+  timeline: "历史回溯",
+  source: "历史回溯",
+  none: "未找到历史",
+};
+
+function recallLabelOf(message: ChatMessage): string | null {
+  const recall = (
+    message.decision_meta as { recall?: { mode?: unknown } } | null
+  )?.recall;
+  const mode = recall?.mode;
+  return typeof mode === "string" ? (recallLabels[mode] ?? null) : null;
+}
+
+async function loadRuntimeMeta() {
+  try {
+    const runtime = await api.runtimeMeta();
+    personaMeta.value = runtime.persona
+      ? { version: runtime.persona.version, name: runtime.persona.name }
+      : null;
+  } catch {
+    personaMeta.value = null;
+  }
+}
+
 async function scrollToEnd() {
   await nextTick();
   messagesRoot.value?.scrollTo({ top: messagesRoot.value.scrollHeight });
 }
 
+const emotionLabels: Record<string, string> = {
+  neutral: "平静",
+  happy: "开心",
+  sad: "难过",
+  angry: "生气",
+  surprised: "惊讶",
+  thinking: "思考",
+  concerned: "关切",
+};
+
 function emotionOf(message: ChatMessage): string | null {
   const reply = (message.decision_meta as { agent_reply?: AgentReplyControl } | null)?.agent_reply;
-  return reply?.emotion ?? null;
+  const emotion = reply?.emotion ?? null;
+  return emotion ? (emotionLabels[emotion] ?? emotion) : null;
 }
 
 function rememberSession(session: AuthSession) {
@@ -119,6 +163,7 @@ function closeSocket() {
 }
 
 async function enterChat() {
+  await loadRuntimeMeta();
   await loadConversations();
   connectSocket();
 }
@@ -268,11 +313,14 @@ function handleEvent(event: SocketEvent) {
   if (conversation) conversation.last_seq = Math.max(conversation.last_seq, message.seq);
   if (event.type === "reply.committed" || event.type === "message.committed") {
     if (streaming.value?.generationId === event.generation_id) streaming.value = null;
+    if (event.type === "reply.committed") void loadRuntimeMeta();
   }
   if (conversationId === activeId.value) void scrollToEnd();
 }
 
-function send() {
+async function send() {
+  if (!canSend.value || !activeId.value) return;
+  await loadRuntimeMeta();
   if (!canSend.value || !activeId.value) return;
   socket?.sendMessage(activeId.value, draft.value.trim(), privacy.value);
   draft.value = "";
@@ -285,6 +333,7 @@ function cancelStreaming() {
 onMounted(async () => {
   const saved = localStorage.getItem(TOKEN_KEY);
   if (!saved) {
+    void loadRuntimeMeta();
     try {
       setupRequired.value = (await api.authStatus()).setup_required;
     } catch {
@@ -312,7 +361,7 @@ onBeforeUnmount(closeSocket);
 <template>
   <div v-if="!token" class="auth">
     <form class="card" @submit.prevent="submitAuth">
-      <h1>Aria</h1>
+      <h1>{{ personaMeta?.name ?? '助手' }}</h1>
       <p class="hint">{{ setupRequired ? "首次使用：设置聊天密码" : "输入聊天密码登录" }}</p>
       <template v-if="setupRequired">
         <input v-model="adminToken" type="password" placeholder="ARIA_ADMIN_TOKEN（仅首次）" />
@@ -334,7 +383,8 @@ onBeforeUnmount(closeSocket);
   <div v-else class="shell">
     <aside>
       <header>
-        <strong>Aria</strong>
+        <strong>{{ personaMeta?.name ?? '助手' }}</strong>
+        <small v-if="personaMeta" class="persona-version">Persona v{{ personaMeta.version }}</small>
         <div class="aside-meta">
           <span>{{ displayName }}</span>
           <button class="ghost" type="button" @click="logout">退出</button>
@@ -366,13 +416,15 @@ onBeforeUnmount(closeSocket);
             <div class="bubble">
               {{ message.content }}
               <span v-if="message.role === 'assistant' && emotionOf(message)" class="emotion">{{ emotionOf(message) }}</span>
+              <span v-if="message.role === 'assistant' && personaVersionOf(message)" class="persona-badge">P v{{ personaVersionOf(message) }}</span>
+              <span v-if="message.role === 'assistant' && recallLabelOf(message)" class="recall-badge">{{ recallLabelOf(message) }}</span>
             </div>
           </div>
         </template>
         <div v-if="streaming && streaming.conversationId === activeId" class="message assistant">
           <div class="bubble streaming">
             {{ streaming.text }}▋
-            <span v-if="streaming.emotion" class="emotion">{{ streaming.emotion }}</span>
+            <span v-if="streaming.emotion" class="emotion">{{ emotionLabels[streaming.emotion] ?? streaming.emotion }}</span>
           </div>
         </div>
       </div>
@@ -413,6 +465,7 @@ onBeforeUnmount(closeSocket);
 .shell { display: grid; grid-template-columns: 250px 1fr; height: 100%; }
 aside { display: flex; flex-direction: column; gap: 12px; border-right: 1px solid var(--line); padding: 14px; min-height: 0; }
 aside header strong { font-size: 16px; }
+.persona-version { display:block; margin-top:3px; color:var(--muted); font-size:10px; }
 .aside-meta { display: flex; justify-content: space-between; align-items: center; color: var(--muted); font-size: 12px; margin-top: 4px; }
 .new-chat { width: 100%; }
 .conversation-list { flex: 1; min-height: 0; overflow-y: auto; display: grid; align-content: start; gap: 6px; }
@@ -432,6 +485,8 @@ main { display: grid; grid-template-rows: minmax(0, 1fr) auto; min-height: 0; }
 .user .bubble { background: var(--accent); color: #fff; }
 .bubble.streaming::after { content: ""; }
 .emotion { display: inline-block; margin-left: 8px; font-size: 11px; color: var(--muted); border: 1px solid var(--line); border-radius: 999px; padding: 0 8px; vertical-align: 1px; }
+.persona-badge { display:inline-block; margin-left:6px; font-size:10px; color:var(--muted); opacity:.75; }
+.recall-badge { display:inline-block; margin-left:6px; font-size:10px; color:var(--muted); border:1px solid var(--line); border-radius:999px; padding:0 7px; opacity:.8; }
 
 .composer { border-top: 1px solid var(--line); padding: 12px 16px; display: grid; gap: 8px; }
 .composer-meta { display: flex; align-items: center; gap: 12px; }

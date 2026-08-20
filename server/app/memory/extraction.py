@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import re
+from collections.abc import Sequence
 from datetime import datetime, timedelta
 from typing import Protocol, final
 from uuid import UUID
@@ -20,8 +21,11 @@ from app.schemas.common import PrivacyLevel
 from .models import (
     ExtractedCandidates,
     MemoryCandidate,
+    MemoryEntry,
+    MemoryOriginKind,
     MemorySourceKind,
     MemorySourceRef,
+    MemorySubjectKind,
     MemoryType,
 )
 
@@ -43,6 +47,49 @@ _PREFERENCE_PATTERNS = (
 )
 _SEMANTIC_PATTERN = re.compile(r"我(是|姓|叫|住在|家在|从事|工作是|在.{1,12}(工作|上学|生活))")
 _PERSONA_DIRECTED = re.compile(r"[你妳]")
+_UNCERTAIN_SELF = re.compile(r"(也许|可能|大概|或许|如果|假如|好像|差不多|左右|不确定)")
+_MEASUREMENTS_PATTERN = re.compile(
+    r"(?:我的)?三围(?:是|为|[:：])?\s*(\d{2,3})\s*[-—–/－]\s*(\d{2,3})"
+    r"\s*[-—–/－]\s*(\d{2,3})"
+)
+_HEIGHT_PATTERN = re.compile(
+    r"(?:我的|你的)?身高(?:是|为|[:：])?\s*(\d{2,3}(?:\.\d+)?)\s*(?:cm|厘米|公分)?",
+    re.IGNORECASE,
+)
+# 口语里常省略“身高”二字（“我165厘米”“你170cm”），此时必须有单位锚定，
+# 否则“我买了个165厘米的柜子”这类句子会误入档案
+_HEIGHT_VALUE_PATTERN = re.compile(
+    r"(?:我|你)[的啊呀]?(?:身高)?(?:大概|大约|差不多)?[是为一有]?[\s，,]*"
+    r"(\d{2,3}(?:\.\d+)?)\s*(?:cm|厘米|公分)",
+    re.IGNORECASE,
+)
+_WEIGHT_PATTERN = re.compile(
+    r"(?:我的|你的)?体重(?:是|为|[:：])?\s*(\d{2,3}(?:\.\d+)?)\s*(?:kg|公斤|千克)?",
+    re.IGNORECASE,
+)
+_WEIGHT_VALUE_PATTERN = re.compile(
+    r"(?:我|你)[的啊呀]?(?:体重)?(?:大概|大约|差不多)?[是为一有]?[\s，,]*"
+    r"(\d{2,3}(?:\.\d+)?)\s*(?:kg|公斤|千克)",
+    re.IGNORECASE,
+)
+_BIRTHDAY_PATTERN = re.compile(
+    r"(?:我的|你的)?生日(?:是|为|[:：])\s*([^，。！？!?\n；;]{2,24})"
+)
+_SELF_NAME_PATTERN = re.compile(r"(?:我叫|我的名字是)\s*([^，。！？!?\n；;]{1,24})")
+_USER_SET_NAME_PATTERN = re.compile(
+    r"(?:记住[，,:：\s]*)?(?:你叫|你的名字是)\s*([^，。！？!?\n；;]{1,24})"
+)
+_NICKNAME_PATTERN = re.compile(
+    r"(?:你(?:以后)?可以叫我|以后叫我|叫我)\s*([^，。！？!?\n；;]{1,24})"
+)
+_SELF_PREFERENCE_PATTERN = re.compile(
+    r"我(?:很|最)?喜欢(?P<verb>吃|喝)?\s*(?P<value>[^，。！？!?\n；;]{1,48})"
+)
+_SHARED_MARKER = re.compile(r"(我们|咱们|咱俩|我们俩)")
+_SHARED_COMMITMENT = re.compile(
+    r"(约好|约定|以后|下次|明天|后天|今晚|周末|周[一二三四五六日天]).*"
+    r"(一起|要|去|看|做|聊|玩|吃|喝)"
+)
 
 
 class ExtractionBackend(Protocol):
@@ -59,6 +106,81 @@ class MemoryExtractor(Protocol):
         occurred_at: datetime,
         backend: ExtractionBackend | None = None,
     ) -> list[MemoryCandidate]: ...
+
+
+@final
+class TurnMemoryExtractor:
+    """在已完成回合上提取 user / assistant / shared 三类候选。
+
+    现有 message extractor 继续负责用户事实和 L2 脱敏；助手自述与 shared
+    约定先使用保守的确定性规则，避免为 Batch C 额外增加一次 utility 调用。
+    后续可在不改变调用接口的前提下升级为一次性 full-turn LLM extractor。
+    """
+
+    def __init__(self, message_extractor: MemoryExtractor | None = None) -> None:
+        self._message_extractor = message_extractor or RuleBasedExtractor()
+
+    async def extract_turn(
+        self,
+        *,
+        user_text: str,
+        user_message_id: UUID,
+        user_occurred_at: datetime,
+        assistant_text: str,
+        assistant_message_id: UUID,
+        assistant_occurred_at: datetime,
+        privacy_level: PrivacyLevel,
+        retrieved_memories: Sequence[MemoryEntry] = (),
+        backend: ExtractionBackend | None = None,
+    ) -> list[MemoryCandidate]:
+        privacy = PrivacyLevel(privacy_level)
+        if privacy is PrivacyLevel.L3:
+            return []
+
+        candidates = await self._message_extractor.extract(
+            user_text,
+            message_id=user_message_id,
+            privacy_level=privacy,
+            occurred_at=user_occurred_at,
+            backend=backend,
+        )
+
+        # L2 只允许已有 LLM 脱敏提取器产生事件级候选；确定性规则没有
+        # 足够的脱敏能力，因此不从用户/助手正文再提取主体事实。
+        if privacy is PrivacyLevel.L2:
+            return candidates
+
+        candidates.extend(
+            _extract_user_directed_candidates(
+                user_text,
+                message_id=user_message_id,
+                occurred_at=user_occurred_at,
+            )
+        )
+        candidates.extend(
+            _extract_assistant_candidates(
+                assistant_text,
+                message_id=assistant_message_id,
+                occurred_at=assistant_occurred_at,
+            )
+        )
+        return _dedupe_and_suppress_echo(candidates, retrieved_memories)
+
+
+def extract_assistant_fact_assertions(text: str) -> list[tuple[str, str]]:
+    """提取助手回复里明确声明的稳定槽位，供一致性 Guard 复用。"""
+
+    assertions: list[tuple[str, str]] = []
+    for raw_sentence in _SENTENCE_SPLIT.split(text):
+        sentence = raw_sentence.strip()
+        if not sentence or _UNCERTAIN_SELF.search(sentence):
+            continue
+        for _, fact_key, content in _assistant_facts_from_sentence(
+            sentence, user_directed=False
+        ):
+            if fact_key is not None:
+                assertions.append((fact_key, content))
+    return assertions
 
 
 def extraction_instruction(privacy_level: PrivacyLevel) -> str:
@@ -255,3 +377,201 @@ def _default_importance(memory_type: MemoryType) -> float:
     if memory_type in {MemoryType.PREFERENCE, MemoryType.SEMANTIC}:
         return 0.6
     return 0.5
+
+
+def _extract_user_directed_candidates(
+    text: str, *, message_id: UUID, occurred_at: datetime
+) -> list[MemoryCandidate]:
+    """提取用户明确赋予助手的事实，以及有用户证据的 shared 约定。"""
+
+    results: list[MemoryCandidate] = []
+    source = MemorySourceRef(
+        source_kind=MemorySourceKind.MESSAGE,
+        source_id=str(message_id),
+    )
+    for raw_sentence in _SENTENCE_SPLIT.split(text):
+        sentence = raw_sentence.strip()
+        if not sentence:
+            continue
+        for memory_type, fact_key, content in _assistant_facts_from_sentence(
+            sentence, user_directed=True
+        ):
+            results.append(
+                MemoryCandidate(
+                    subject_kind=MemorySubjectKind.ASSISTANT,
+                    subject_key="assistant:primary",
+                    fact_key=fact_key,
+                    origin_kind=MemoryOriginKind.USER_STATEMENT,
+                    type=memory_type,
+                    content=content,
+                    privacy_level=PrivacyLevel.L1,
+                    sources=[source],
+                    importance=0.75,
+                    confidence=0.9,
+                    extractor_version="turn-rule-v1",
+                    valid_from=occurred_at,
+                )
+            )
+        if _SHARED_MARKER.search(sentence) and _SHARED_COMMITMENT.search(sentence):
+            results.append(
+                MemoryCandidate(
+                    subject_kind=MemorySubjectKind.SHARED,
+                    subject_key="shared:user-assistant",
+                    origin_kind=MemoryOriginKind.SHARED_TURN,
+                    type=MemoryType.COMMITMENT,
+                    content=f"双方约定：{sentence}",
+                    privacy_level=PrivacyLevel.L1,
+                    sources=[source],
+                    importance=0.7,
+                    confidence=0.8,
+                    extractor_version="turn-rule-v1",
+                    valid_from=occurred_at,
+                )
+            )
+    return results
+
+
+def _extract_assistant_candidates(
+    text: str, *, message_id: UUID, occurred_at: datetime
+) -> list[MemoryCandidate]:
+    """只提取明确、稳定的助手自述；不把舞台动作和不确定说法长期化。"""
+
+    results: list[MemoryCandidate] = []
+    source = MemorySourceRef(
+        source_kind=MemorySourceKind.MESSAGE,
+        source_id=str(message_id),
+    )
+    for raw_sentence in _SENTENCE_SPLIT.split(text):
+        sentence = raw_sentence.strip()
+        if not sentence or _UNCERTAIN_SELF.search(sentence):
+            continue
+        for memory_type, fact_key, content in _assistant_facts_from_sentence(
+            sentence, user_directed=False
+        ):
+            results.append(
+                MemoryCandidate(
+                    subject_kind=MemorySubjectKind.ASSISTANT,
+                    subject_key="assistant:primary",
+                    fact_key=fact_key,
+                    origin_kind=MemoryOriginKind.ASSISTANT_STATEMENT,
+                    type=memory_type,
+                    content=content,
+                    privacy_level=PrivacyLevel.L1,
+                    sources=[source],
+                    importance=0.75 if memory_type is MemoryType.SEMANTIC else 0.65,
+                    confidence=0.9,
+                    extractor_version="turn-rule-v1",
+                    valid_from=occurred_at,
+                )
+            )
+    return results
+
+
+def _assistant_facts_from_sentence(
+    sentence: str, *, user_directed: bool
+) -> list[tuple[MemoryType, str | None, str]]:
+    """把一句话中的多个助手稳定属性全部归一为 canonical content。"""
+
+    if user_directed and not re.search(r"(你|你的)", sentence):
+        return []
+    if not user_directed and not re.search(r"(我|我的|叫我)", sentence):
+        return []
+
+    results: list[tuple[MemoryType, str | None, str]] = []
+
+    measurements = _MEASUREMENTS_PATTERN.search(sentence)
+    if measurements:
+        value = "-".join(measurements.groups())
+        results.append(
+            (MemoryType.SEMANTIC, "profile.measurements", f"助手三围为 {value} 厘米")
+        )
+
+    height = _HEIGHT_PATTERN.search(sentence) or _HEIGHT_VALUE_PATTERN.search(sentence)
+    if height:
+        results.append(
+            (MemoryType.SEMANTIC, "profile.height", f"助手身高为 {height.group(1)} 厘米")
+        )
+
+    weight = _WEIGHT_PATTERN.search(sentence) or _WEIGHT_VALUE_PATTERN.search(sentence)
+    if weight:
+        results.append(
+            (MemoryType.SEMANTIC, "profile.weight", f"助手体重为 {weight.group(1)} 公斤")
+        )
+
+    birthday = _BIRTHDAY_PATTERN.search(sentence)
+    if birthday:
+        value = birthday.group(1).strip()
+        results.append((MemoryType.SEMANTIC, "profile.birthday", f"助手生日为 {value}"))
+
+    if user_directed:
+        name = _USER_SET_NAME_PATTERN.search(sentence)
+    else:
+        name = _SELF_NAME_PATTERN.search(sentence)
+    if name:
+        value = name.group(1).strip()
+        results.append((MemoryType.SEMANTIC, "profile.name", f"助手名字为 {value}"))
+
+    if not user_directed:
+        nickname = _NICKNAME_PATTERN.search(sentence)
+        if nickname:
+            value = nickname.group(1).strip()
+            results.append(
+                (MemoryType.SEMANTIC, "profile.nickname", f"助手昵称为 {value}")
+            )
+
+        preference = _SELF_PREFERENCE_PATTERN.search(sentence)
+        if preference:
+            value = preference.group("value").strip()
+            if value.startswith(("你", "这样", "这么")):
+                return results
+            verb = preference.group("verb")
+            fact_key = None
+            if verb == "吃" or any(
+                token in value for token in ("甜点", "蛋糕", "糕", "菜", "食物")
+            ):
+                fact_key = "preference.food"
+            elif verb == "喝" or any(
+                token in value for token in ("茶", "咖啡", "饮料", "果汁")
+            ):
+                fact_key = "preference.drink"
+            results.append((MemoryType.PREFERENCE, fact_key, f"助手喜欢{value}"))
+    return results
+
+
+def _dedupe_and_suppress_echo(
+    candidates: Sequence[MemoryCandidate], retrieved_memories: Sequence[MemoryEntry]
+) -> list[MemoryCandidate]:
+    """去重，并阻止“记忆注入 → 助手复述 → 再当新证据”的回声链。"""
+
+    retrieved_assistant = [
+        memory
+        for memory in retrieved_memories
+        if memory.subject_kind == MemorySubjectKind.ASSISTANT.value
+        and memory.subject_key == "assistant:primary"
+    ]
+    seen: set[tuple[str, str, str | None, str, str]] = set()
+    results: list[MemoryCandidate] = []
+    for candidate in candidates:
+        subject = MemorySubjectKind(candidate.subject_kind).value
+        memory_type = MemoryType(candidate.type).value
+        key = (
+            subject,
+            candidate.subject_key,
+            candidate.fact_key,
+            memory_type,
+            _normalize_memory_text(candidate.content),
+        )
+        if key in seen:
+            continue
+        seen.add(key)
+        if subject == MemorySubjectKind.ASSISTANT.value and any(
+            _normalize_memory_text(memory.content) == key[-1]
+            for memory in retrieved_assistant
+        ):
+            continue
+        results.append(candidate)
+    return results
+
+
+def _normalize_memory_text(text: str) -> str:
+    return re.sub(r"[\s，。！？!?、：:；;（）()\-—–]+", "", text).lower()

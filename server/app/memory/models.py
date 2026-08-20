@@ -19,13 +19,31 @@ from app.schemas.common import PrivacyLevel, StrictModel
 
 
 class MemoryType(StrEnum):
-    """记忆的五种类型，对应 docs/02 §3.6 的四层记忆结构。"""
+    """长期记忆的五种内容类型；主体由 MemorySubjectKind 独立表达。"""
 
     EPISODIC = "episodic"  # 情景记忆：带时间戳的对话要点、事件经历
-    SEMANTIC = "semantic"  # 语义记忆：用户稳定事实（"用户在杭州工作"）
-    PREFERENCE = "preference"  # 偏好记忆："用户不吃香菜"
-    COMMITMENT = "commitment"  # 承诺记忆："用户周五要汇报"（带有效期）
+    SEMANTIC = "semantic"  # 语义记忆：主体的稳定事实
+    PREFERENCE = "preference"  # 偏好记忆：主体的长期偏好
+    COMMITMENT = "commitment"  # 承诺记忆：用户/助手/双方的约定（可带有效期）
     EMOTIONAL = "emotional"  # 情感记忆：关系里程碑、共同情绪事件
+
+
+class MemorySubjectKind(StrEnum):
+    """记忆描述的主体；user_id 仍然是数据所有权/权限边界。"""
+
+    USER = "user"
+    ASSISTANT = "assistant"
+    SHARED = "shared"
+
+
+class MemoryOriginKind(StrEnum):
+    """记忆事实的原始证据类型。"""
+
+    USER_STATEMENT = "user_statement"
+    ASSISTANT_STATEMENT = "assistant_statement"
+    SHARED_TURN = "shared_turn"
+    SYSTEM_EVENT = "system_event"
+    MANUAL = "manual"
 
 
 class MemoryStatus(StrEnum):
@@ -72,6 +90,10 @@ class MemorySourceRef(StrictModel):
 class MemoryCandidate(StrictModel):
     """待沉淀的记忆候选：由提取器（规则或 LLM）产出，经判定后入库。"""
 
+    subject_kind: MemorySubjectKind = MemorySubjectKind.USER
+    subject_key: Annotated[str, Field(min_length=1, max_length=160)] = "user:self"
+    fact_key: Annotated[str, Field(min_length=1, max_length=160)] | None = None
+    origin_kind: MemoryOriginKind = MemoryOriginKind.USER_STATEMENT
     type: MemoryType
     content: Annotated[str, Field(min_length=2, max_length=2_000)]
     privacy_level: PrivacyLevel
@@ -106,6 +128,10 @@ class MemoryEntry:
 
     id: int
     user_id: UUID
+    subject_kind: str
+    subject_key: str
+    fact_key: str | None
+    origin_kind: str
     type: str
     content: str
     summary: str | None

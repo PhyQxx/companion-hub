@@ -2,8 +2,8 @@ const modules = {
   overview: {
     eyebrow: "ADMIN CONSOLE", title: "后台总览", state: "基础能力已就绪", ready: true,
     description: "查看当前已经交付的能力与后续模块状态。规划中的页面会明确标注，不再出现无反馈的导航。",
-    stats: [["服务状态", "检测中", "读取 /healthz"], ["模型配置", "已上线", "数据库版本化"], ["Persona", "已上线", "草稿、发布与回滚"], ["下一阶段", "P2 记忆", "可检索、可纠错"]],
-    capabilities: [["模型与路由", "配置模型端点、隐私路由和故障降级。", "/admin/models"], ["Persona", "维护人格、表达风格、边界和 Live2D 表情映射。", "/admin/personas"], ["结构化回复", "字幕、TTS、情绪和动作已进入统一协议。"]],
+    stats: [["服务状态", "检测中", "读取 /healthz"], ["模型配置", "已上线", "数据库版本化"], ["人格", "已上线", "草稿、发布与回滚"], ["下一阶段", "P2 记忆", "可检索、可纠错"]],
+    capabilities: [["模型与路由", "配置模型端点、隐私路由和故障降级。", "/admin/models"], ["人格", "维护人格、表达风格、边界和 Live2D 表情映射。", "/admin/personas"], ["结构化回复", "字幕、TTS、情绪和动作已进入统一协议。"]],
     roadmap: ["实现记忆系统 v1 与质量指标", "补齐跨存储删除闭环", "接入设备与正式可观测页面"],
     dependencies: "后续模块按照 TASKS.md 的 P2～P6 顺序推进。当前页面只展示真实交付状态。", action: ["进入模型配置", "/admin/models"]
   },
@@ -13,7 +13,7 @@ const modules = {
     stats: [["阶段", "P2", "下一开发批次"], ["存储", "待接入", "PostgreSQL + pgvector"], ["可溯源", "设计完成", "来源与时间证据"], ["删除闭环", "P3", "跨存储清理"]],
     capabilities: [["会话消息", "聊天正文已在 PostgreSQL 持久化，可作为记忆提取来源。"], ["隐私等级", "L0～L3 分级已建立，记忆写入会复用隐私闸门。"]],
     roadmap: ["定义记忆记录、证据和版本模型", "实现提取、检索与引用链", "增加纠错、遗忘和质量评估后台"],
-    dependencies: "依赖稳定的结构化回复与聊天身份；这两项已经完成。", action: ["查看 Persona", "/admin/personas"]
+    dependencies: "依赖稳定的结构化回复与聊天身份；这两项已经完成。", action: ["查看人格", "/admin/personas"]
   },
   devices: {
     eyebrow: "DEVICE REGISTRY", title: "设备", state: "P6 · 规划中",
@@ -27,7 +27,7 @@ const modules = {
     eyebrow: "OBSERVABILITY", title: "日志追踪", state: "基础观测已具备",
     description: "追踪请求、模型路由、回合状态与适配器投递；可视化查询仍在规划中。",
     stats: [["健康检查", "在线", "/healthz"], ["回合状态", "已记录", "accepted → completed"], ["模型元数据", "已记录", "provider / model / latency"], ["日志检索", "待实现", "过滤与关联查询"]],
-    capabilities: [["结构化元数据", "消息记录保留模型、配置、Persona、耗时与 token 用量。"], ["服务健康", "配置错误和 dispatcher 状态可进入健康检查。"]],
+    capabilities: [["结构化元数据", "消息记录保留模型、配置、人格、耗时与 token 用量。"], ["服务健康", "配置错误和 dispatcher 状态可进入健康检查。"]],
     roadmap: ["增加 trace 与 correlation 查询 API", "实现回合和模型调用筛选", "补齐错误详情、指标趋势与告警入口"],
     dependencies: "可视化查询需要先冻结日志保留策略，避免后台依赖不稳定字段。", action: ["查看模型路由", "/admin/models"]
   },
@@ -42,8 +42,8 @@ const modules = {
   settings: {
     eyebrow: "SYSTEM SETTINGS", title: "系统配置", state: "部分能力已上线",
     description: "汇总服务运行参数、身份策略和配置版本。敏感环境变量不会在浏览器中显示。",
-    stats: [["模型配置", "数据库", "版本化发布"], ["Persona", "数据库", "版本化发布"], ["聊天会话", "8 小时", "可撤销 Token"], ["通用设置", "待实现", "统一配置入口"]],
-    capabilities: [["模型配置版本", "草稿、校验、发布和回滚已经可用。", "/admin/models"], ["Persona 版本", "人格设置拥有独立发布指针。", "/admin/personas"], ["密钥边界", "后台只管理 env: 引用，不保存供应商明文密钥。"]],
+    stats: [["模型配置", "数据库", "版本化发布"], ["人格", "数据库", "版本化发布"], ["聊天会话", "8 小时", "可撤销 Token"], ["通用设置", "待实现", "统一配置入口"]],
+    capabilities: [["模型配置版本", "草稿、校验、发布和回滚已经可用。", "/admin/models"], ["人格版本", "人格设置拥有独立发布指针。", "/admin/personas"], ["密钥边界", "后台只管理 env: 引用，不保存供应商明文密钥。"]],
     roadmap: ["定义可在线修改与必须重启的设置边界", "增加身份、会话和保留周期设置", "实现配置导入、导出与变更审计"],
     dependencies: "不会把数据库密码、模型 API Key 或聊天密码回显到管理页面。", action: ["进入模型配置", "/admin/models"]
   }

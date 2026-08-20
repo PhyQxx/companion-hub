@@ -13,12 +13,15 @@ from .extraction import (
     ExtractionBackend,
     MemoryExtractor,
     RuleBasedExtractor,
+    TurnMemoryExtractor,
 )
 from .models import (
     ConsolidateDecision,
     ConsolidateOutcome,
     MemoryCandidate,
+    MemoryEntry,
     MemoryStatus,
+    MemorySubjectKind,
     MemoryType,
 )
 from .store import MemoryStore
@@ -58,14 +61,54 @@ class MemoryIngester:
         self._store = store
         self._policy = policy or ConsolidationPolicy()
         self._extractor: MemoryExtractor = extractor or RuleBasedExtractor()
+        self._turn_extractor = TurnMemoryExtractor(self._extractor)
 
     async def ingest(
         self, candidate: MemoryCandidate, *, user_id: UUID, actor: str = "extractor"
     ) -> ConsolidateOutcome:
+        if candidate.fact_key is not None:
+            slot = await self._store.list_memories(
+                user_id=user_id,
+                subject_kind=MemorySubjectKind(candidate.subject_kind),
+                subject_key=candidate.subject_key,
+                fact_key=candidate.fact_key,
+                status=MemoryStatus.ACTIVE,
+                limit=5,
+            )
+            if slot:
+                current = slot[0]
+                if _normalize_fact_content(current.content) == _normalize_fact_content(
+                    candidate.content
+                ):
+                    updated = await self._store.register_support(
+                        current.id,
+                        sources=candidate.sources,
+                        importance_step=self._policy.support_importance_step,
+                    )
+                    return ConsolidateOutcome(
+                        decision=ConsolidateDecision.SUPPORTED,
+                        memory=updated,
+                        related=current,
+                    )
+                created = await self._store.add(
+                    candidate,
+                    user_id=user_id,
+                    actor=actor,
+                    status=MemoryStatus.CONFLICT,
+                    conflict_with=current.id,
+                )
+                return ConsolidateOutcome(
+                    decision=ConsolidateDecision.CONFLICT,
+                    memory=created,
+                    related=current,
+                )
+
         similar = await self._store.find_similar(
             candidate.content,
             user_id=user_id,
             type=MemoryType(candidate.type),
+            subject_kind=candidate.subject_kind,
+            subject_key=candidate.subject_key,
             limit=self._policy.similar_limit,
         )
         best = similar[0] if similar else None
@@ -121,3 +164,43 @@ class MemoryIngester:
             )
             for candidate in candidates
         ]
+
+    async def ingest_turn(
+        self,
+        *,
+        user_id: UUID,
+        user_message_id: UUID,
+        user_text: str,
+        user_occurred_at: datetime,
+        assistant_message_id: UUID,
+        assistant_text: str,
+        assistant_occurred_at: datetime,
+        privacy_level: PrivacyLevel,
+        retrieved_memories: tuple[MemoryEntry, ...] = (),
+        backend: ExtractionBackend | None = None,
+    ) -> list[ConsolidateOutcome]:
+        candidates = await self._turn_extractor.extract_turn(
+            user_text=user_text,
+            user_message_id=user_message_id,
+            user_occurred_at=user_occurred_at,
+            assistant_text=assistant_text,
+            assistant_message_id=assistant_message_id,
+            assistant_occurred_at=assistant_occurred_at,
+            privacy_level=privacy_level,
+            retrieved_memories=retrieved_memories,
+            backend=backend,
+        )
+        return [
+            await self.ingest(
+                candidate,
+                user_id=user_id,
+                actor=candidate.extractor_version or RULE_EXTRACTOR_VERSION,
+            )
+            for candidate in candidates
+        ]
+
+
+def _normalize_fact_content(content: str) -> str:
+    """槽位事实使用保守文本归一化；不同值宁可进入 conflict，也不静默覆盖。"""
+
+    return "".join(content.split()).rstrip("。.!")

@@ -10,16 +10,17 @@ const labels: Record<string, { title: string; note: string }> = {
 
 <template>
   <section class="content">
-    <div class="card">
+    <el-card class="card" shadow="never">
       <h2>{{ labels[module]?.title ?? module }}</h2>
       <p>{{ labels[module]?.note ?? "该模块尚未交付。" }}</p>
-    </div>
+    </el-card>
   </section>
 </template>
 
 <style scoped>
 .content { padding: 20px 24px; }
-.card { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 20px; max-width: 560px; }
+.card { max-width: 560px; border-radius: 12px; }
+.card :deep(.el-card__body) { padding:20px; }
 h2 { margin: 0 0 8px; font-size: 16px; }
 p { color: var(--muted); margin: 0; font-size: 14px; }
 </style>

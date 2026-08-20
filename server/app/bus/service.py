@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db import ConsumerInboxRecord, EventRecord, OutboxRecord
 from app.schemas import InputEnvelope
+from app.timeline import timeline_record_from_event
 
 EventHandler: TypeAlias = Callable[[AsyncSession, InputEnvelope], Awaitable[None]]
 
@@ -77,8 +78,12 @@ async def append_event(
 
     try:
         async with session.begin_nested():
-            session.add(envelope_to_record(event))
+            event_record = envelope_to_record(event)
+            session.add(event_record)
             await session.flush()
+            timeline_record = timeline_record_from_event(event_record)
+            if timeline_record is not None:
+                session.add(timeline_record)
             session.add_all(
                 OutboxRecord(event_id=event.event_id, topic=topic)
                 for topic in dict.fromkeys(topics)

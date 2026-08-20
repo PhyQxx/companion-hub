@@ -67,7 +67,7 @@ def create_admin_persona_router(store: PersonaStore, *, admin_token: str | None)
 
     @router.get("/current", response_model=CurrentPersonaView)
     async def current() -> CurrentPersonaView:
-        return _current_view(store.current)
+        return _current_view(await store.refresh())
 
     @router.get("/versions", response_model=list[PersonaVersionView])
     async def versions() -> list[PersonaVersionView]:

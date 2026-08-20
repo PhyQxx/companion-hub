@@ -1,9 +1,10 @@
-# ruff: noqa: RUF001
+# ruff: noqa: RUF001, RUF003
 from __future__ import annotations
 
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Awaitable, Callable
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import Any, cast
 from uuid import uuid4
 
 import pytest
@@ -28,19 +29,29 @@ from app.memory import (
     HashingEmbeddingProvider,
     LlmMemoryExtractor,
     MemoryCandidate,
+    MemoryExtractor,
+    MemoryHit,
     MemoryIngester,
+    MemoryOriginKind,
     MemoryRetriever,
     MemorySourceKind,
     MemorySourceRef,
     MemoryStatus,
     MemoryStore,
+    MemorySubjectKind,
     MemoryType,
+    RetrievalResult,
+    RuleBasedExtractor,
+    TurnMemoryExtractor,
     cosine_similarity,
+    extract_assistant_fact_assertions,
     replay_deletions,
 )
 from app.schemas import PrivacyLevel
 
-NOW = datetime(2026, 8, 18, 10, 0, tzinfo=UTC)
+# 检索侧冻结时钟必须晚于真实墙钟：store.add 用当前时间落 valid_from，
+# 若冻结点已过，valid_from <= now 过滤会排除全部新记忆导致测试随时间腐烂
+NOW = datetime(2099, 1, 1, tzinfo=UTC)
 
 
 @pytest.fixture
@@ -79,8 +90,17 @@ def candidate(
         content=content,
         privacy_level=privacy_level,
         sources=[MemorySourceRef(source_kind=MemorySourceKind.MANUAL, source_id="admin:1")],
-        **kwargs,  # type: ignore[arg-type]
+        **kwargs,
     )
+
+
+def meta_section(
+    meta: dict[str, object] | None,
+    key: str,
+) -> dict[str, Any]:
+    raw = (meta or {}).get(key)
+    assert isinstance(raw, dict)
+    return cast(dict[str, Any], raw)
 
 
 async def test_hashing_embedding_is_deterministic_and_orders_similarity() -> None:
@@ -93,6 +113,59 @@ async def test_hashing_embedding_is_deterministic_and_orders_similarity() -> Non
     assert first[0] == second[0]
     assert cosine_similarity(first[0], related) > cosine_similarity(first[0], unrelated)
     assert cosine_similarity(first[0], unrelated) < 0.35
+
+
+async def test_grounded_memory_hits_require_actual_relevance(
+    store: MemoryStore, user: AppUserRecord
+) -> None:
+    entry = await store.add(
+        candidate("用户喜欢黑咖啡", fact_key="preference.drink", importance=0.8),
+        user_id=user.id,
+    )
+    retriever = MemoryRetriever(store)
+
+    def result(hit: MemoryHit) -> RetrievalResult:
+        return RetrievalResult(
+            hits=(hit,),
+            policy_version="hybrid-subject-v3",
+            candidate_count=1,
+            vector_recalled=1,
+            lexical_recalled=1,
+        )
+
+    weak_vector = MemoryHit(
+        memory=entry,
+        vector_score=0.22,
+        lexical_score=0.0,
+        final_score=0.42,
+        reasons=("vector", "pin"),
+    )
+    lexical = MemoryHit(
+        memory=entry,
+        vector_score=0.10,
+        lexical_score=0.20,
+        final_score=0.40,
+        reasons=("vector", "lexical"),
+    )
+    semantic_vector = MemoryHit(
+        memory=entry,
+        vector_score=0.60,
+        lexical_score=0.0,
+        final_score=0.50,
+        reasons=("vector",),
+    )
+    exact = MemoryHit(
+        memory=entry,
+        vector_score=0.0,
+        lexical_score=0.0,
+        final_score=1.0,
+        reasons=("exact_fact",),
+    )
+
+    assert retriever.grounded_hits(result(weak_vector)) == ()
+    assert retriever.grounded_hits(result(lexical)) == (lexical,)
+    assert retriever.grounded_hits(result(semantic_vector)) == (semantic_vector,)
+    assert retriever.grounded_hits(result(exact)) == (exact,)
 
 
 async def test_store_add_get_list_and_sources(
@@ -119,6 +192,10 @@ async def test_store_add_get_list_and_sources(
 
     loaded = await store.get(created.id, user_id=user.id)
     assert loaded.content == "用户不吃香菜"
+    assert loaded.subject_kind == "user"
+    assert loaded.subject_key == "user:self"
+    assert loaded.fact_key is None
+    assert loaded.origin_kind == "user_statement"
     assert loaded.type == "preference"
     assert loaded.status == "active"
     assert loaded.embedding_version == "char-ngram-hash/1"
@@ -140,6 +217,47 @@ async def test_store_add_get_list_and_sources(
         await store.get(created.id, user_id=uuid4())
 
 
+async def test_store_filters_memory_subject_scope(
+    store: MemoryStore, user: AppUserRecord
+) -> None:
+    user_memory = await store.add(candidate("用户不吃香菜"), user_id=user.id)
+    assistant_memory = await store.add(
+        candidate(
+            "助手身高为 160 厘米",
+            subject_kind=MemorySubjectKind.ASSISTANT,
+            subject_key="assistant:primary",
+            fact_key="profile.height",
+            origin_kind=MemoryOriginKind.ASSISTANT_STATEMENT,
+        ),
+        user_id=user.id,
+    )
+    shared_memory = await store.add(
+        candidate(
+            "双方约好周末看电影",
+            type=MemoryType.COMMITMENT,
+            subject_kind=MemorySubjectKind.SHARED,
+            subject_key="shared:user-assistant",
+            origin_kind=MemoryOriginKind.SHARED_TURN,
+        ),
+        user_id=user.id,
+    )
+
+    assistant_only = await store.list_memories(
+        user_id=user.id,
+        subject_kind=MemorySubjectKind.ASSISTANT,
+        subject_key="assistant:primary",
+    )
+    by_fact = await store.list_memories(user_id=user.id, fact_key="profile.height")
+    shared_only = await store.list_memories(
+        user_id=user.id, origin_kind=MemoryOriginKind.SHARED_TURN
+    )
+
+    assert [item.id for item in assistant_only] == [assistant_memory.id]
+    assert [item.id for item in by_fact] == [assistant_memory.id]
+    assert [item.id for item in shared_only] == [shared_memory.id]
+    assert user_memory.id not in {assistant_memory.id, shared_memory.id}
+
+
 async def test_retrieval_ranks_relevant_memory_and_records_access(
     store: MemoryStore, user: AppUserRecord
 ) -> None:
@@ -151,11 +269,11 @@ async def test_retrieval_ranks_relevant_memory_and_records_access(
         "帮我点菜，我能吃香菜吗", user_id=user.id, privacy_level=PrivacyLevel.L1, now=NOW
     )
 
-    assert result.policy_version == "hybrid-quota-v1"
+    assert result.policy_version == "hybrid-subject-v3"
     assert result.hits
     assert result.hits[0].memory.id == target.id
     assert "香菜" in MemoryRetriever.render_context(result)
-    assert "【相关记忆】" in MemoryRetriever.render_context(result)
+    assert "【长期记忆】" in MemoryRetriever.render_context(result)
     assert any("vector" in hit.reasons or "lexical" in hit.reasons for hit in result.hits)
 
     refreshed = await store.get(target.id)
@@ -180,6 +298,88 @@ async def test_retrieval_isolates_users_and_expired_memories(
     )
     assert result.hits == ()
     assert result.candidate_count == 0
+
+
+async def test_retrieval_prioritizes_assistant_exact_fact(
+    store: MemoryStore, user: AppUserRecord
+) -> None:
+    await store.add(
+        candidate(
+            "用户曾记录自己的身材数据为 80-60-82",
+            fact_key="profile.measurements",
+        ),
+        user_id=user.id,
+    )
+    assistant = await store.add(
+        candidate(
+            "助手自述三围为 91-63-88 厘米",
+            subject_kind=MemorySubjectKind.ASSISTANT,
+            subject_key="assistant:primary",
+            fact_key="profile.measurements",
+            origin_kind=MemoryOriginKind.ASSISTANT_STATEMENT,
+            importance=0.8,
+            pin=True,
+        ),
+        user_id=user.id,
+    )
+
+    result = await MemoryRetriever(store).retrieve(
+        "你的身材数据是多少？",
+        user_id=user.id,
+        privacy_level=PrivacyLevel.L1,
+        now=NOW,
+    )
+
+    assert result.subject_hint == "assistant"
+    assert result.fact_hint == "profile.measurements"
+    assert result.hits[0].memory.id == assistant.id
+    assert "exact_fact" in result.hits[0].reasons
+    assert "subject_bonus" in result.hits[0].reasons
+    context = MemoryRetriever.render_context(result)
+    assert "[关于你自己]" in context
+    assert "91-63-88" in context
+
+
+async def test_retrieval_exactly_recalls_multiple_requested_assistant_profile_slots(
+    store: MemoryStore, user: AppUserRecord
+) -> None:
+    expected = {
+        "profile.height": "助手身高为 160 厘米",
+        "profile.weight": "助手体重为 48 公斤",
+        "profile.measurements": "助手三围为 82-60-86 厘米",
+    }
+    for fact_key, content in expected.items():
+        await store.add(
+            candidate(
+                content,
+                subject_kind=MemorySubjectKind.ASSISTANT,
+                subject_key="assistant:primary",
+                fact_key=fact_key,
+                origin_kind=MemoryOriginKind.ASSISTANT_STATEMENT,
+                importance=0.8,
+            ),
+            user_id=user.id,
+        )
+
+    retriever = MemoryRetriever(store)
+    result = await retriever.retrieve(
+        "告诉我你的身高、体重和三围",
+        user_id=user.id,
+        privacy_level=PrivacyLevel.L1,
+        now=NOW,
+    )
+
+    exact_by_fact = {
+        hit.memory.fact_key: hit
+        for hit in result.hits
+        if "exact_fact" in hit.reasons and hit.memory.subject_kind == "assistant"
+    }
+    assert set(expected).issubset(exact_by_fact)
+    assert all(exact_by_fact[key].memory.content == value for key, value in expected.items())
+    grounded = retriever.grounded_hits(result)
+    assert set(expected).issubset(
+        {hit.memory.fact_key for hit in grounded if hit.memory.subject_kind == "assistant"}
+    )
 
 
 async def test_retrieval_privacy_gating(
@@ -267,6 +467,49 @@ async def test_consolidation_supports_conflicts_and_creates(
         candidate("用户养了一只猫", type=MemoryType.SEMANTIC), user_id=user.id
     )
     assert unrelated.decision is ConsolidateDecision.CREATED
+
+
+async def test_fact_key_conflict_is_deterministic_and_subject_scoped(
+    store: MemoryStore, user: AppUserRecord
+) -> None:
+    ingester = MemoryIngester(store)
+    assistant_160 = candidate(
+        "助手身高为 160 厘米",
+        subject_kind=MemorySubjectKind.ASSISTANT,
+        subject_key="assistant:primary",
+        fact_key="profile.height",
+        origin_kind=MemoryOriginKind.ASSISTANT_STATEMENT,
+    )
+    first = await ingester.ingest(assistant_160, user_id=user.id)
+    assert first.decision is ConsolidateDecision.CREATED
+
+    repeated = await ingester.ingest(assistant_160, user_id=user.id)
+    assert repeated.decision is ConsolidateDecision.SUPPORTED
+    assert repeated.memory.id == first.memory.id
+
+    changed = await ingester.ingest(
+        candidate(
+            "助手身高为 165 厘米",
+            subject_kind=MemorySubjectKind.ASSISTANT,
+            subject_key="assistant:primary",
+            fact_key="profile.height",
+            origin_kind=MemoryOriginKind.ASSISTANT_STATEMENT,
+        ),
+        user_id=user.id,
+    )
+    assert changed.decision is ConsolidateDecision.CONFLICT
+    assert changed.memory.conflict_with == first.memory.id
+
+    user_height = await ingester.ingest(
+        candidate(
+            "用户身高为 175 厘米",
+            fact_key="profile.height",
+        ),
+        user_id=user.id,
+    )
+    assert user_height.decision is ConsolidateDecision.CREATED
+    assert user_height.memory.subject_kind == "user"
+    assert user_height.memory.conflict_with is None
 
 
 async def test_conflict_resolution_adopt_and_keep(
@@ -362,10 +605,14 @@ async def test_rule_extractor_classifies_and_privacy_skips(store: MemoryStore) -
         occurred_at=NOW,
     )
     by_type = {item.type: item for item in results}
-    assert set(by_type) == {"preference", "commitment", "semantic"}
-    assert by_type["preference"].content == "用户不吃香菜"
-    assert by_type["semantic"].content == "用户叫小明"
-    commitment = by_type["commitment"]
+    assert set(by_type) == {
+        MemoryType.PREFERENCE,
+        MemoryType.COMMITMENT,
+        MemoryType.SEMANTIC,
+    }
+    assert by_type[MemoryType.PREFERENCE].content == "用户不吃香菜"
+    assert by_type[MemoryType.SEMANTIC].content == "用户叫小明"
+    commitment = by_type[MemoryType.COMMITMENT]
     assert commitment.valid_to == NOW + timedelta(days=7)
 
     message_source = [
@@ -382,6 +629,93 @@ async def test_rule_extractor_classifies_and_privacy_skips(store: MemoryStore) -
         occurred_at=NOW,
     )
     assert outcomes == []
+
+
+async def test_turn_extractor_creates_assistant_and_shared_candidates() -> None:
+    extractor = TurnMemoryExtractor()
+    user_message_id = uuid4()
+    assistant_message_id = uuid4()
+
+    candidates = await extractor.extract_turn(
+        user_text="记住，你的生日是12月27日。以后我们周五晚上一起看电影。",
+        user_message_id=user_message_id,
+        user_occurred_at=NOW,
+        assistant_text="我的三围是91-63-88。我喜欢桂花味的甜点。",
+        assistant_message_id=assistant_message_id,
+        assistant_occurred_at=NOW,
+        privacy_level=PrivacyLevel.L1,
+    )
+
+    by_fact = {item.fact_key: item for item in candidates if item.fact_key}
+    assert by_fact["profile.birthday"].subject_kind == "assistant"
+    assert by_fact["profile.birthday"].origin_kind == "user_statement"
+    assert by_fact["profile.measurements"].content == "助手三围为 91-63-88 厘米"
+    assert by_fact["profile.measurements"].origin_kind == "assistant_statement"
+    assert by_fact["preference.food"].content == "助手喜欢桂花味的甜点"
+    shared = [item for item in candidates if item.subject_kind == "shared"]
+    assert len(shared) == 1
+    assert shared[0].type == "commitment"
+    assert shared[0].origin_kind == "shared_turn"
+
+
+async def test_turn_extractor_keeps_multiple_profile_facts_from_one_sentence() -> None:
+    extractor = TurnMemoryExtractor()
+
+    candidates = await extractor.extract_turn(
+        user_text="告诉我你的身高、体重和三围。",
+        user_message_id=uuid4(),
+        user_occurred_at=NOW,
+        assistant_text="我身高160厘米，体重48公斤，三围82-60-86。",
+        assistant_message_id=uuid4(),
+        assistant_occurred_at=NOW,
+        privacy_level=PrivacyLevel.L1,
+    )
+
+    by_fact = {
+        item.fact_key: item.content
+        for item in candidates
+        if item.subject_kind == "assistant" and item.fact_key is not None
+    }
+    assert by_fact["profile.height"] == "助手身高为 160 厘米"
+    assert by_fact["profile.weight"] == "助手体重为 48 公斤"
+    assert by_fact["profile.measurements"] == "助手三围为 82-60-86 厘米"
+
+    assertions = dict(
+        extract_assistant_fact_assertions(
+            "我身高160厘米，体重48公斤，三围82-60-86。"
+        )
+    )
+    assert assertions == {
+        "profile.height": "助手身高为 160 厘米",
+        "profile.weight": "助手体重为 48 公斤",
+        "profile.measurements": "助手三围为 82-60-86 厘米",
+    }
+
+
+async def test_turn_extractor_suppresses_retrieved_assistant_echo(
+    store: MemoryStore, user: AppUserRecord
+) -> None:
+    existing = await store.add(
+        candidate(
+            "助手身高为 160 厘米",
+            subject_kind=MemorySubjectKind.ASSISTANT,
+            subject_key="assistant:primary",
+            fact_key="profile.height",
+            origin_kind=MemoryOriginKind.ASSISTANT_STATEMENT,
+        ),
+        user_id=user.id,
+    )
+    candidates = await TurnMemoryExtractor().extract_turn(
+        user_text="你的身高是多少？",
+        user_message_id=uuid4(),
+        user_occurred_at=NOW,
+        assistant_text="我的身高是160厘米。",
+        assistant_message_id=uuid4(),
+        assistant_occurred_at=NOW,
+        privacy_level=PrivacyLevel.L1,
+        retrieved_memories=(existing,),
+    )
+    assert not any(item.fact_key == "profile.height" for item in candidates)
 
 
 async def test_l3_memory_is_rejected(store: MemoryStore, user: AppUserRecord) -> None:
@@ -413,6 +747,7 @@ async def test_chat_turn_builds_memory_loop(
         text="记住：我不吃香菜。",
         privacy_level=PrivacyLevel.L1,
     )
+    await service.drain_background_work()
     store = MemoryStore(database)
     memories = await store.list_memories(user_id=user.id, status=MemoryStatus.ACTIVE)
     assert [item.content for item in memories] == ["用户不吃香菜"]
@@ -426,13 +761,17 @@ async def test_chat_turn_builds_memory_loop(
         text="帮我点菜，我能吃香菜吗",
         privacy_level=PrivacyLevel.L1,
     )
+    await service.drain_background_work()
     system_prompt = requests[-1].messages[0].content
-    assert "【相关记忆】" in system_prompt
+    assert "【长期记忆】" in system_prompt
     assert "用户不吃香菜" in system_prompt
-    memory_meta = second.assistant_message.decision_meta or {}
-    assert memory_meta["memory"]["policy_version"] == "hybrid-quota-v1"
-    assert memory_meta["memory"]["hits"][0]["id"] == memories[0].id
-    assert memory_meta["memory"]["hits"][0]["type"] == "preference"
+    memory_meta = meta_section(second.assistant_message.decision_meta, "memory")
+    assert memory_meta["policy_version"] == "hybrid-subject-v3"
+    assert memory_meta["hits"][0]["id"] == memories[0].id
+    assert memory_meta["hits"][0]["subject"] == "user"
+    assert memory_meta["hits"][0]["subject_key"] == "user:self"
+    assert memory_meta["hits"][0]["fact_key"] is None
+    assert memory_meta["hits"][0]["type"] == "preference"
 
     fresh = await store.get(memories[0].id)
     assert fresh.access_count == 1
@@ -465,6 +804,7 @@ async def test_chat_memory_failure_never_breaks_turn(
         text="我不吃香菜。",
         privacy_level=PrivacyLevel.L1,
     )
+    await service.drain_background_work()
     assert turn.assistant_message.content == "reply from dialogue-v1"
 
 
@@ -498,6 +838,30 @@ async def test_admin_memory_api_manages_lifecycle(
             },
         )
         memory_id = created.json()["id"]
+        assistant_created = await client.post(
+            "/api/v1/admin/memories",
+            headers=headers,
+            json={
+                "user_id": str(user.id),
+                "subject": "assistant",
+                "type": "semantic",
+                "fact_key": "profile.measurements",
+                "content": "助手自述三围为 91-63-88 厘米",
+                "privacy_level": "L1",
+                "importance": 0.8,
+                "pin": True,
+            },
+        )
+        assistant_listing = await client.get(
+            "/api/v1/admin/memories",
+            headers=headers,
+            params={
+                "user_id": str(user.id),
+                "subject": "assistant",
+                "fact_key": "profile.measurements",
+                "origin_kind": "manual",
+            },
+        )
         listing = await client.get(
             "/api/v1/admin/memories",
             headers=headers,
@@ -531,12 +895,25 @@ async def test_admin_memory_api_manages_lifecycle(
     assert unauthorized.status_code == 401
     assert created.status_code == 201
     assert created.json()["status"] == "active"
-    assert listing.json()[0]["content"] == "用户在杭州工作"
+    assert created.json()["subject"] == "user"
+    assert created.json()["subject_key"] == "user:self"
+    assert created.json()["origin_kind"] == "manual"
+    assert assistant_created.status_code == 201
+    assert assistant_created.json()["subject"] == "assistant"
+    assert assistant_created.json()["subject_key"] == "assistant:primary"
+    assert assistant_created.json()["fact_key"] == "profile.measurements"
+    assert assistant_created.json()["origin_kind"] == "manual"
+    assert [item["id"] for item in assistant_listing.json()] == [
+        assistant_created.json()["id"]
+    ]
+    assert any(item["content"] == "用户在杭州工作" for item in listing.json())
     assert detail.json()["sources"][0]["source_kind"] == "manual"
     assert edited.json()["content"] == "用户在上海工作"
     assert edited.json()["id"] != memory_id
+    assert edited.json()["subject"] == "user"
+    assert edited.json()["subject_key"] == "user:self"
     assert detail.json()["lineage"] or True
-    assert queried.json()["policy_version"] == "hybrid-quota-v1"
+    assert queried.json()["policy_version"] == "hybrid-subject-v3"
     assert queried.json()["hits"]
     assert l3_rejected.status_code == 422
     assert archived.json()["status"] == "archived"
@@ -670,8 +1047,36 @@ class ScriptedRouter:
             latency_ms=3.0,
         )
 
-    async def stream(self, request: CompletionRequest, on_delta: object) -> CompletionResult:
+    async def stream(
+        self,
+        request: CompletionRequest,
+        on_delta: Callable[[str], Awaitable[None]],
+    ) -> CompletionResult:
+        del on_delta
         return await self.complete(request)
+
+
+class StreamingConsistencyRouter(ScriptedRouter):
+    """首个响应按流式发出, 后续 complete 用作一致性 repair。"""
+
+    async def stream(
+        self,
+        request: CompletionRequest,
+        on_delta: Callable[[str], Awaitable[None]],
+    ) -> CompletionResult:
+        self.requests.append(request)
+        text = self._replies.pop(0) if self._replies else "好的。"
+        await on_delta(text)
+        return CompletionResult(
+            text=text,
+            provider="openai_compatible",
+            model="utility-v1",
+            endpoint="cloud",
+            route=request.route,
+            finish_reason="stop",
+            usage=ModelUsage(),
+            latency_ms=3.0,
+        )
 
 
 async def _chat_service(
@@ -679,7 +1084,7 @@ async def _chat_service(
     tmp_path: Path,
     router: ScriptedRouter,
     *,
-    extractor: object,
+    extractor: MemoryExtractor,
 ) -> ChatService:
     config_path = tmp_path / "hub.yaml"
     config_path.write_text(config_yaml(), encoding="utf-8")
@@ -688,10 +1093,197 @@ async def _chat_service(
     return ChatService(
         database,
         config_store,
-        router_builder=lambda config: router,  # type: ignore[arg-type]
+        router_builder=lambda config: router,
         memory_store=MemoryStore(database),
-        memory_extractor=extractor,  # type: ignore[arg-type]
+        memory_extractor=extractor,
     )
+
+
+async def test_assistant_self_fact_persists_across_conversations_without_echo_growth(
+    database: Database, user: AppUserRecord, tmp_path: Path
+) -> None:
+    router = ScriptedRouter(
+        [
+            "我的身高是160厘米。",
+            "当然，我的身高是160厘米。",
+        ]
+    )
+    service = await _chat_service(
+        database,
+        tmp_path,
+        router,
+        extractor=RuleBasedExtractor(),
+    )
+
+    first_conversation = await service.create_conversation(user_id=user.id, title="self-a")
+    await service.send_message(
+        first_conversation.id,
+        user_id=user.id,
+        text="你的身高是多少？",
+        privacy_level=PrivacyLevel.L1,
+    )
+    await service.drain_background_work()
+
+    store = MemoryStore(database)
+    assistant_memories = await store.list_memories(
+        user_id=user.id,
+        subject_kind=MemorySubjectKind.ASSISTANT,
+        fact_key="profile.height",
+        status=MemoryStatus.ACTIVE,
+    )
+    assert len(assistant_memories) == 1
+    established = assistant_memories[0]
+    assert established.content == "助手身高为 160 厘米"
+    assert established.origin_kind == "assistant_statement"
+    assert established.importance == 0.75
+
+    second_conversation = await service.create_conversation(user_id=user.id, title="self-b")
+    second_turn = await service.send_message(
+        second_conversation.id,
+        user_id=user.id,
+        text="你的身高是多少？",
+        privacy_level=PrivacyLevel.L1,
+    )
+    await service.drain_background_work()
+
+    second_system_prompt = router.requests[-1].messages[0].content
+    assert "[关于你自己]" in second_system_prompt
+    assert "助手身高为 160 厘米" in second_system_prompt
+    memory_meta = meta_section(second_turn.assistant_message.decision_meta, "memory")
+    assert memory_meta["hits"][0]["id"] == established.id
+    assert memory_meta["hits"][0]["subject"] == "assistant"
+    assert memory_meta["hits"][0]["fact_key"] == "profile.height"
+    assert "exact_fact" in memory_meta["hits"][0]["reasons"]
+
+    after_echo = await store.list_memories(
+        user_id=user.id,
+        subject_kind=MemorySubjectKind.ASSISTANT,
+        fact_key="profile.height",
+        status=MemoryStatus.ACTIVE,
+    )
+    assert len(after_echo) == 1
+    assert after_echo[0].id == established.id
+    assert after_echo[0].importance == established.importance
+
+
+async def test_memory_consistency_guard_repairs_wrong_assistant_fact(
+    database: Database, user: AppUserRecord, tmp_path: Path
+) -> None:
+    established = await MemoryStore(database).add(
+        candidate(
+            "助手身高为 160 厘米",
+            subject_kind=MemorySubjectKind.ASSISTANT,
+            subject_key="assistant:primary",
+            fact_key="profile.height",
+            origin_kind=MemoryOriginKind.ASSISTANT_STATEMENT,
+            importance=0.8,
+        ),
+        user_id=user.id,
+    )
+    router = ScriptedRouter(["我的身高是165厘米。", "我的身高是160厘米。"])
+    service = await _chat_service(
+        database,
+        tmp_path,
+        router,
+        extractor=RuleBasedExtractor(),
+    )
+    conversation = await service.create_conversation(user_id=user.id, title="guard-repair")
+
+    turn = await service.send_message(
+        conversation.id,
+        user_id=user.id,
+        text="你的身高是多少？",
+        privacy_level=PrivacyLevel.L1,
+    )
+    await service.drain_background_work()
+
+    assert turn.assistant_message.content == "我的身高是160厘米。"
+    assert len(router.requests) == 2
+    assert "【一致性修复】" in router.requests[1].messages[0].content
+    meta = meta_section(turn.assistant_message.decision_meta, "memory")
+    assert meta["consistency"] == {
+        "checked": True,
+        "repaired": True,
+        "fallback_used": False,
+        "conflict_memory_ids": [established.id],
+    }
+
+
+async def test_memory_consistency_guard_falls_back_after_failed_repair(
+    database: Database, user: AppUserRecord, tmp_path: Path
+) -> None:
+    established = await MemoryStore(database).add(
+        candidate(
+            "助手身高为 160 厘米",
+            subject_kind=MemorySubjectKind.ASSISTANT,
+            subject_key="assistant:primary",
+            fact_key="profile.height",
+            origin_kind=MemoryOriginKind.ASSISTANT_STATEMENT,
+        ),
+        user_id=user.id,
+    )
+    router = ScriptedRouter(["我的身高是165厘米。", "我还是觉得自己身高165厘米。"])
+    service = await _chat_service(
+        database,
+        tmp_path,
+        router,
+        extractor=RuleBasedExtractor(),
+    )
+    conversation = await service.create_conversation(user_id=user.id, title="guard-fallback")
+
+    turn = await service.send_message(
+        conversation.id,
+        user_id=user.id,
+        text="你的身高是多少？",
+        privacy_level=PrivacyLevel.L1,
+    )
+    await service.drain_background_work()
+
+    assert "我身高为 160 厘米" in turn.assistant_message.content
+    meta = meta_section(turn.assistant_message.decision_meta, "memory")
+    assert meta["consistency"]["checked"] is True
+    assert meta["consistency"]["repaired"] is False
+    assert meta["consistency"]["fallback_used"] is True
+    assert meta["consistency"]["conflict_memory_ids"] == [established.id]
+
+
+async def test_streaming_exact_fact_never_emits_unchecked_conflicting_delta(
+    database: Database, user: AppUserRecord, tmp_path: Path
+) -> None:
+    await MemoryStore(database).add(
+        candidate(
+            "助手身高为 160 厘米",
+            subject_kind=MemorySubjectKind.ASSISTANT,
+            subject_key="assistant:primary",
+            fact_key="profile.height",
+            origin_kind=MemoryOriginKind.ASSISTANT_STATEMENT,
+        ),
+        user_id=user.id,
+    )
+    router = StreamingConsistencyRouter(["我的身高是165厘米。", "我的身高是160厘米。"])
+    service = await _chat_service(
+        database,
+        tmp_path,
+        router,
+        extractor=RuleBasedExtractor(),
+    )
+    conversation = await service.create_conversation(user_id=user.id, title="guard-stream")
+    pending = await service.start_turn(
+        conversation.id,
+        user_id=user.id,
+        text="你的身高是多少？",
+        privacy_level=PrivacyLevel.L1,
+    )
+    deltas: list[str] = []
+
+    async def capture(delta: str) -> None:
+        deltas.append(delta)
+
+    turn = await service.run_stream(pending, capture)
+
+    assert deltas == ["我的身高是160厘米。"]
+    assert all("165" not in delta for delta in deltas)
+    assert turn.assistant_message.content == "我的身高是160厘米。"
 
 
 async def test_llm_extractor_stores_desensitized_l2_memory(
@@ -714,6 +1306,7 @@ async def test_llm_extractor_stores_desensitized_l2_memory(
         text="（亲密对话占位文本）今晚聊了很久",
         privacy_level=PrivacyLevel.L2,
     )
+    await service.drain_background_work()
 
     assert len(router.requests) == 2
     reply_request, extraction_request = router.requests
@@ -756,6 +1349,7 @@ async def test_llm_extractor_falls_back_to_rules_on_bad_output(
         text="记住：我不吃香菜。",
         privacy_level=PrivacyLevel.L1,
     )
+    await service.drain_background_work()
 
     memories = await MemoryStore(database).list_memories(
         user_id=user.id, status=MemoryStatus.ACTIVE
@@ -779,6 +1373,7 @@ async def test_llm_extractor_with_empty_candidates_stores_nothing(
         text="今天天气不错",
         privacy_level=PrivacyLevel.L1,
     )
+    await service.drain_background_work()
     assert turn.assistant_message.content == "好的。"
     memories = await MemoryStore(database).list_memories(user_id=user.id)
     assert memories == []
@@ -806,6 +1401,7 @@ async def test_delete_conversation_cascades_and_replay_is_idempotent(
     await service.send_message(
         conversation_b.id, user_id=user.id, text="我叫小雷。", privacy_level=PrivacyLevel.L1
     )
+    await service.drain_background_work()
 
     store = MemoryStore(database)
     memories = {
@@ -950,3 +1546,57 @@ async def test_admin_replay_endpoint_reports_and_is_idempotent(
     }
     assert applied.json()["dry_run"] is False
     assert applied.json()["memories_deleted"] == 0
+
+
+async def test_turn_extractor_captures_height_without_keyword() -> None:
+    """“我165厘米”这类省略“身高”二字的自述也必须进档案槽位。"""
+
+    candidates = await TurnMemoryExtractor().extract_turn(
+        user_text="你多高啊",
+        user_message_id=uuid4(),
+        user_occurred_at=NOW,
+        assistant_text="我啊，168公分。不算高，但穿高跟鞋刚刚好。",
+        assistant_message_id=uuid4(),
+        assistant_occurred_at=NOW,
+        privacy_level=PrivacyLevel.L1,
+    )
+    by_fact = {
+        item.fact_key: item.content
+        for item in candidates
+        if item.subject_kind == "assistant" and item.fact_key is not None
+    }
+    assert by_fact["profile.height"] == "助手身高为 168 厘米"
+    assert dict(extract_assistant_fact_assertions("我啊，168公分。")) == {
+        "profile.height": "助手身高为 168 厘米"
+    }
+
+
+async def test_turn_extractor_captures_user_granted_height_without_keyword() -> None:
+    candidates = await TurnMemoryExtractor().extract_turn(
+        user_text="你170cm就挺好的。",
+        user_message_id=uuid4(),
+        user_occurred_at=NOW,
+        assistant_text="哈哈，谢谢你这么说。",
+        assistant_message_id=uuid4(),
+        assistant_occurred_at=NOW,
+        privacy_level=PrivacyLevel.L1,
+    )
+    granted = [
+        item
+        for item in candidates
+        if item.fact_key == "profile.height" and item.origin_kind == "user_statement"
+    ]
+    assert [item.content for item in granted] == ["助手身高为 170 厘米"]
+
+
+async def test_turn_extractor_ignores_unit_mention_unrelated_to_body() -> None:
+    candidates = await TurnMemoryExtractor().extract_turn(
+        user_text="我买了个165厘米的柜子，你觉得放你家行吗？",
+        user_message_id=uuid4(),
+        user_occurred_at=NOW,
+        assistant_text="听起来不错，量好尺寸再买更稳妥。",
+        assistant_message_id=uuid4(),
+        assistant_occurred_at=NOW,
+        privacy_level=PrivacyLevel.L1,
+    )
+    assert [item for item in candidates if item.fact_key == "profile.height"] == []

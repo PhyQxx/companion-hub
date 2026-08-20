@@ -1,8 +1,10 @@
 <script setup lang="ts">
 import { inject, onMounted, ref } from "vue";
+import { useRouter } from "vue-router";
 import { AdminApi } from "@aria/shared";
 
 const api = inject("adminApi") as AdminApi;
+const router = useRouter();
 const emit = defineEmits<{ status: [text: string, error?: boolean] }>();
 
 const config = ref<{ version: number; content_hash: string; config?: unknown } | null>(null);
@@ -27,15 +29,16 @@ onMounted(async () => {
 <template>
   <section class="content">
     <div class="stats">
-      <article><span>模型配置</span><strong>v{{ config?.version ?? "—" }}</strong><small>{{ config?.content_hash?.slice(0, 12) ?? "" }}</small></article>
-      <article><span>当前 Persona</span><strong>{{ personas?.persona?.name ?? "—" }}</strong><small>v{{ personas?.version ?? "—" }}</small></article>
-      <article><span>活跃记忆</span><strong>{{ memories ?? "—" }}</strong><small>参与检索</small></article>
-      <article><span>删除台账</span><strong>{{ ledger?.length ?? "—" }}</strong><small>硬删除记录</small></article>
+      <el-card shadow="never"><span>模型配置</span><strong>v{{ config?.version ?? "—" }}</strong><small>{{ config?.content_hash?.slice(0, 12) ?? "" }}</small></el-card>
+      <el-card shadow="never"><span>当前人格</span><strong>{{ personas?.persona?.name ?? "—" }}</strong><small>v{{ personas?.version ?? "—" }}</small></el-card>
+      <el-card shadow="never"><span>活跃记忆</span><strong>{{ memories ?? "—" }}</strong><small>参与检索</small></el-card>
+      <el-card shadow="never"><span>删除台账</span><strong>{{ ledger?.length ?? "—" }}</strong><small>硬删除记录</small></el-card>
     </div>
     <div class="links">
-      <router-link to="/models">管理模型与路由 →</router-link>
-      <router-link to="/personas">编辑 Persona →</router-link>
-      <router-link to="/memory">记忆库治理 →</router-link>
+      <el-button link type="primary" @click="router.push('/models')">管理模型与路由 →</el-button>
+      <el-button link type="primary" @click="router.push('/personas')">编辑人格 →</el-button>
+      <el-button link type="primary" @click="router.push('/memory')">记忆库治理 →</el-button>
+      <el-button link type="primary" @click="router.push('/timeline')">历史时间线 →</el-button>
     </div>
   </section>
 </template>
@@ -43,10 +46,10 @@ onMounted(async () => {
 <style scoped>
 .content { padding: 20px 24px; display: grid; gap: 18px; align-content: start; overflow-y: auto; }
 .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; }
-.stats article { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 14px; display: grid; gap: 4px; }
+.stats :deep(.el-card__body) { padding: 14px; display: grid; gap: 4px; }
 .stats span { color: var(--muted); font-size: 12px; }
 .stats strong { font-size: 20px; }
 .stats small { color: var(--muted); font-size: 11px; }
 .links { display: grid; gap: 8px; }
-.links a { color: var(--accent); text-decoration: none; font-size: 14px; }
+.links :deep(.el-button) { justify-self:start; padding-left:0; }
 </style>

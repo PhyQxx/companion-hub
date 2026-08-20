@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from collections.abc import Awaitable, Callable
 from types import SimpleNamespace
 from typing import Any
@@ -12,6 +13,7 @@ from app.llm import (
     CompletionResult,
     EnvSecretProvider,
     LiteLLMProvider,
+    LLMEndpointFailure,
     LLMRoute,
     LLMRouteExhausted,
     LLMRouter,
@@ -165,6 +167,70 @@ async def test_fallback_and_retry_are_bounded() -> None:
     assert len(fallback.requests) == 1
 
 
+async def test_exhausted_route_keeps_safe_failure_diagnostics_only() -> None:
+    first = FakeProvider("first", fail=True)
+    fallback = FakeProvider("fallback", fail=True)
+    instance = LLMRouter(
+        endpoints={
+            "first": endpoint(local=False, retries=1),
+            "fallback": endpoint(local=False),
+            "private": endpoint(local=True, max_privacy="L2"),
+        },
+        routes={
+            LLMRoute.DIALOGUE: RoutePolicy(primary="first", fallbacks=["fallback"]),
+            LLMRoute.UTILITY: RoutePolicy(primary="fallback"),
+            LLMRoute.PRIVATE: RoutePolicy(primary="private"),
+        },
+        providers={
+            "first": first,
+            "fallback": fallback,
+            "private": FakeProvider("private"),
+        },
+    )
+
+    with pytest.raises(LLMRouteExhausted) as captured:
+        await instance.complete(request("L1"))
+
+    assert captured.value.reason_code == "all_model_routes_failed"
+    assert captured.value.failures == (
+        LLMEndpointFailure("first", 1, "RuntimeError"),
+        LLMEndpointFailure("first", 2, "RuntimeError"),
+        LLMEndpointFailure("fallback", 1, "RuntimeError"),
+    )
+    serialized = repr(captured.value.failures)
+    assert "provider_failed_with_private_payload" not in serialized
+    assert "private test phrase" not in serialized
+
+
+async def test_route_failure_logs_actionable_reason_without_secrets(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    class DiagnosticProvider(FakeProvider):
+        async def complete(self, request: CompletionRequest) -> CompletionResult:
+            self.requests.append(request)
+            raise RuntimeError(
+                "status=429 too many requests api_key=super-secret-key "
+                "Authorization: Bearer bearer-secret"
+            )
+
+    failing = DiagnosticProvider("cloud")
+    instance = router(cloud=failing)
+    caplog.set_level(logging.WARNING, logger="app.llm.router")
+
+    with pytest.raises(LLMRouteExhausted):
+        await instance.complete(request("L1"))
+
+    logs = "\n".join(record.getMessage() for record in caplog.records)
+    assert "llm endpoint failed" in logs
+    assert "all_model_routes_failed" in logs
+    assert "status=429 too many requests" in logs
+    assert "RuntimeError" in logs
+    assert "super-secret-key" not in logs
+    assert "bearer-secret" not in logs
+    assert "<redacted>" in logs
+    assert "private test phrase" not in logs
+
+
 async def test_stream_falls_back_only_before_first_visible_delta() -> None:
     failed = FakeProvider("failed", fail=True)
     fallback = FakeProvider("fallback")
@@ -219,6 +285,9 @@ async def test_stream_never_splices_fallback_after_visible_delta() -> None:
         await instance.stream(request("L1"), _append_to(deltas))
 
     assert captured.value.reason_code == "stream_interrupted"
+    assert captured.value.failures == (
+        LLMEndpointFailure("partial", 1, "RuntimeError"),
+    )
     assert deltas == ["partial-delta"]
     assert fallback.requests == []
 
@@ -372,6 +441,68 @@ async def test_litellm_adapter_streams_real_deltas(
     assert result.text == "hello world"
     assert result.finish_reason == "stop"
     assert result.usage.total_tokens == 5
+
+
+async def test_local_openai_compatible_provider_uses_non_secret_placeholder_key(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, Any] = {}
+
+    async def fake_completion(**kwargs: Any) -> Any:
+        captured.update(kwargs)
+        return SimpleNamespace(
+            id="local-request-id",
+            choices=[
+                SimpleNamespace(
+                    message=SimpleNamespace(content="OK"),
+                    finish_reason="stop",
+                )
+            ],
+            usage=SimpleNamespace(prompt_tokens=1, completion_tokens=1),
+        )
+
+    monkeypatch.setattr("app.llm.provider.litellm.acompletion", fake_completion)
+    provider = LiteLLMProvider(
+        "private",
+        endpoint(local=True, max_privacy="L2"),
+        EnvSecretProvider({}),
+    )
+
+    await provider.complete(request("L2"))
+
+    assert captured["api_key"] == "local-no-auth"
+    assert captured["api_base"] == "http://127.0.0.1:11434/v1"
+
+
+async def test_litellm_adapter_passes_explicit_thinking_mode(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, Any] = {}
+
+    async def fake_completion(**kwargs: Any) -> Any:
+        captured.update(kwargs)
+        return SimpleNamespace(
+            id="thinking-request-id",
+            choices=[
+                SimpleNamespace(
+                    message=SimpleNamespace(content="OK"),
+                    finish_reason="stop",
+                )
+            ],
+            usage=SimpleNamespace(prompt_tokens=1, completion_tokens=1),
+        )
+
+    monkeypatch.setattr("app.llm.provider.litellm.acompletion", fake_completion)
+    model = endpoint(local=False).model_copy(update={"thinking_mode": "disabled"})
+    provider = LiteLLMProvider(
+        "cloud",
+        model,
+        EnvSecretProvider({"TEST_MODEL_KEY": "test-only-key"}),
+    )
+
+    await provider.complete(request("L1"))
+
+    assert captured["extra_body"] == {"thinking": {"type": "disabled"}}
 
 
 def _append_to(target: list[str]) -> Callable[[str], Awaitable[None]]:

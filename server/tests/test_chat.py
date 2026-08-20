@@ -1,7 +1,9 @@
+# ruff: noqa: RUF001, RUF002
 from __future__ import annotations
 
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Awaitable, Callable
 from pathlib import Path
+from uuid import UUID
 
 import pytest
 from fastapi import FastAPI
@@ -10,7 +12,7 @@ from sqlalchemy import func, select
 
 from app.api import create_chat_router
 from app.auth import AuthService
-from app.chat import ChatService
+from app.chat import ChatService, RuntimeActionCapability
 from app.config import DatabaseConfigStore, HubConfig
 from app.db import AppUserRecord, Base, Database, MessageRecord, create_database
 from app.ids import uuid7
@@ -21,6 +23,8 @@ from app.llm import (
     LLMRouteExhausted,
     ModelUsage,
 )
+from app.main import create_app
+from app.persona import PersonaConfig, PersonaStore
 from app.schemas import PrivacyLevel
 
 
@@ -93,6 +97,27 @@ class FakeRouter:
             latency_ms=12.5,
         )
 
+    async def stream(
+        self,
+        request: CompletionRequest,
+        on_delta: Callable[[str], Awaitable[None]],
+    ) -> CompletionResult:
+        result = await self.complete(request)
+        await on_delta(result.text)
+        return result
+
+
+class FakeCapabilityProvider:
+    async def available_actions(self, user_id: UUID) -> list[RuntimeActionCapability]:
+        del user_id
+        return [
+            RuntimeActionCapability(
+                capability_id="device.tv.living_room.power",
+                label="客厅电视",
+                description="可以打开或关闭客厅电视",
+            )
+        ]
+
 
 async def create_user(database: Database, name: str = "Test") -> AppUserRecord:
     user = AppUserRecord(id=uuid7(), display_name=name, status="active")
@@ -151,6 +176,8 @@ async def test_chat_persists_turn_and_uses_recent_context(
             "estimated_cost": 0,
         },
         "latency_ms": 12.5,
+        "recall": {"mode": "working"},
+        "runtime_capabilities": [],
     }
     assert [message.content for message in requests[1].messages[1:]] == [
         "hello",
@@ -158,6 +185,35 @@ async def test_chat_persists_turn_and_uses_recent_context(
         "again",
     ]
     assert second.user_message.turn_id == second.assistant_message.turn_id
+
+
+async def test_chat_injects_only_reported_runtime_capabilities(
+    database: Database, store: DatabaseConfigStore
+) -> None:
+    requests: list[CompletionRequest] = []
+    service = ChatService(
+        database,
+        store,
+        router_builder=lambda config: FakeRouter(config.models["cloud"].model, requests),
+        capability_provider=FakeCapabilityProvider(),
+    )
+    user = await create_user(database)
+    conversation = await service.create_conversation(user_id=user.id, title="capability")
+
+    result = await service.send_message(
+        conversation.id,
+        user_id=user.id,
+        text="不想聊这个了，换个事情做吧",
+        privacy_level=PrivacyLevel.L1,
+    )
+
+    system_prompt = requests[-1].messages[0].content
+    assert "【现实能力边界】" in system_prompt
+    assert "device.tv.living_room.power" in system_prompt
+    assert "客厅电视" in system_prompt
+    assert "不得把角色设定中的场景当作真实能力" in system_prompt
+    meta = result.assistant_message.decision_meta or {}
+    assert meta["runtime_capabilities"] == ["device.tv.living_room.power"]
 
 
 async def test_published_database_config_is_used_on_next_turn(
@@ -192,10 +248,137 @@ async def test_published_database_config_is_used_on_next_turn(
     assert result.assistant_message.decision_meta["model"] == "dialogue-v2"
 
 
+async def test_persona_published_by_another_store_is_used_on_next_turn(
+    database: Database, store: DatabaseConfigStore
+) -> None:
+    requests: list[CompletionRequest] = []
+    chat_personas = PersonaStore(database)
+    admin_personas = PersonaStore(database)
+    await chat_personas.load()
+    await admin_personas.load()
+
+    service = ChatService(
+        database,
+        store,
+        router_builder=lambda config: FakeRouter(config.models["cloud"].model, requests),
+        persona_store=chat_personas,
+    )
+    user = await create_user(database)
+    conversation = await service.create_conversation(user_id=user.id, title=None)
+
+    first = await service.send_message(
+        conversation.id, user_id=user.id, text="before", privacy_level=PrivacyLevel.L1
+    )
+    assert first.assistant_message.decision_meta is not None
+    assert first.assistant_message.decision_meta["persona_version"] == 1
+
+    draft = await admin_personas.create_draft(
+        PersonaConfig(
+            name="Nova",
+            identity="第二版人格",
+            system_prompt="这是第二版核心要求",
+            speaking_style="简洁直接",
+            relationship="长期伙伴",
+        ),
+        actor="admin-worker",
+    )
+    published = await admin_personas.publish(draft.version)
+    assert published.version == 2
+    # Simulate another process: chat_personas still has its old in-memory v1.
+    assert chat_personas.current.version == 1
+
+    second = await service.send_message(
+        conversation.id, user_id=user.id, text="after", privacy_level=PrivacyLevel.L1
+    )
+
+    assert second.assistant_message.decision_meta is not None
+    assert second.assistant_message.decision_meta["persona_version"] == 2
+    assert chat_personas.current.version == 2
+    assert requests[-1].messages[0].role == "system"
+    assert "你是 Nova：第二版人格。" in requests[-1].messages[0].content
+    assert "核心要求：这是第二版核心要求" in requests[-1].messages[0].content
+
+
+async def test_runtime_meta_and_rest_chat_share_published_persona_version(
+    database: Database,
+    store: DatabaseConfigStore,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    requests: list[CompletionRequest] = []
+    app = create_app(
+        database,
+        config_store=store,
+        watch_config=False,
+        admin_token="test-admin-token",
+    )
+    chat_service: ChatService = app.state.chat_service
+    monkeypatch.setattr(
+        chat_service,
+        "_router_builder",
+        lambda config: FakeRouter(config.models["cloud"].model, requests),
+    )
+
+    async with app.router.lifespan_context(app):
+        persona_store: PersonaStore = app.state.persona_store
+        draft = await persona_store.create_draft(
+            PersonaConfig(
+                name="Nova",
+                identity="第二版人格",
+                system_prompt="这是第二版核心要求",
+                speaking_style="简洁直接",
+                relationship="长期伙伴",
+            ),
+            actor="test",
+        )
+        published = await persona_store.publish(draft.version)
+        auth_service: AuthService = app.state.auth_service
+        auth_session = await auth_service.setup(
+            display_name="Test",
+            password="correct horse battery staple",
+        )
+        headers = {"Authorization": f"Bearer {auth_session.access_token}"}
+
+        async with AsyncClient(
+            transport=ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            runtime = await client.get("/api/v1/meta/runtime")
+            conversation = await client.post(
+                "/api/v1/chat/conversations",
+                headers=headers,
+                json={"title": "persona contract"},
+            )
+            turn = await client.post(
+                f"/api/v1/chat/conversations/{conversation.json()['id']}/messages",
+                headers=headers,
+                json={"text": "你好", "privacy_level": "L1"},
+            )
+
+    assert runtime.status_code == 200
+    assert runtime.json()["persona"] == {
+        "version": published.version,
+        "content_hash": published.content_hash,
+        "name": "Nova",
+    }
+    assert conversation.status_code == 201
+    assert turn.status_code == 200
+    assistant = turn.json()["assistant_message"]
+    assert assistant["decision_meta"]["persona_version"] == published.version
+    assert requests[0].messages[0].role == "system"
+    assert "你是 Nova：第二版人格。" in requests[0].messages[0].content
+
+
 class FailingRouter:
     async def complete(self, request: CompletionRequest) -> CompletionResult:
         del request
         raise LLMRouteExhausted("all_model_routes_failed")
+
+    async def stream(
+        self,
+        request: CompletionRequest,
+        on_delta: Callable[[str], Awaitable[None]],
+    ) -> CompletionResult:
+        del on_delta
+        return await self.complete(request)
 
 
 async def test_model_failure_keeps_user_message_for_retry(
@@ -296,3 +479,49 @@ async def test_chat_api_auth_validation_and_stable_failure(
     async with database.sessions() as session:
         count = await session.scalar(select(func.count()).select_from(MessageRecord))
     assert count == 1
+
+
+async def test_chat_merges_profile_overrides_and_consolidates_in_background(
+    database: Database, store: DatabaseConfigStore
+) -> None:
+    """用户告知的助手档案覆盖系统提示词；记忆沉淀后台完成不阻塞回复。"""
+
+    from app.memory import (
+        MemoryCandidate,
+        MemoryOriginKind,
+        MemoryStore,
+        MemorySubjectKind,
+        MemoryType,
+    )
+
+    memory_store = MemoryStore(database)
+    requests: list[CompletionRequest] = []
+    service = ChatService(
+        database,
+        store,
+        router_builder=lambda config: FakeRouter(config.models["cloud"].model, requests),
+        memory_store=memory_store,
+    )
+    user = await create_user(database)
+    conversation = await service.create_conversation(user_id=user.id, title="档案覆盖")
+    await memory_store.add(
+        MemoryCandidate(
+            type=MemoryType.SEMANTIC,
+            content="助手身高为 170 厘米",
+            privacy_level=PrivacyLevel.L1,
+            subject_kind=MemorySubjectKind.ASSISTANT,
+            subject_key="assistant:primary",
+            fact_key="profile.height",
+            origin_kind=MemoryOriginKind.USER_STATEMENT,
+        ),
+        user_id=user.id,
+    )
+
+    await service.send_message(
+        conversation.id, user_id=user.id, text="我喜欢吃火锅", privacy_level=PrivacyLevel.L1
+    )
+
+    assert "身高：170 厘米" in requests[0].messages[0].content
+    await service.drain_background_work()
+    stored = await memory_store.list_memories(user_id=user.id)
+    assert any("火锅" in entry.content for entry in stored)

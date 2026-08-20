@@ -27,3 +27,9 @@ async def test_builtin_adapter_metadata() -> None:
         "builtin.mock_text_output",
         "builtin.mock_streaming_output",
     }
+
+
+async def test_openapi_schema_is_renderable() -> None:
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        response = await client.get("/openapi.json")
+    assert response.status_code == 200, response.text

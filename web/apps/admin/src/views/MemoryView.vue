@@ -1,10 +1,15 @@
 <script setup lang="ts">
 import { computed, inject, onMounted, reactive, ref } from "vue";
 import { AdminApi } from "@aria/shared";
+import { ElMessageBox } from "element-plus";
 
 interface MemoryItem {
   id: number;
   user_id: string;
+  subject: string;
+  subject_key: string;
+  fact_key: string | null;
+  origin_kind: string;
   type: string;
   content: string;
   summary: string | null;
@@ -54,25 +59,63 @@ const emit = defineEmits<{ status: [text: string, error?: boolean] }>();
 
 const types = ["semantic", "preference", "commitment", "episodic", "emotional"];
 const statuses = ["active", "conflict", "archived", "superseded"];
+const subjects = ["user", "assistant", "shared"];
+const subjectLabels: Record<string, string> = {
+  user: "关于用户",
+  assistant: "关于助手",
+  shared: "关于双方",
+};
+const originLabels: Record<string, string> = {
+  user_statement: "用户陈述",
+  assistant_statement: "助手自述",
+  shared_turn: "共同回合",
+  system_event: "系统事件",
+  manual: "手动添加",
+};
+const typeLabels: Record<string, string> = {
+  semantic: "语义",
+  preference: "偏好",
+  commitment: "承诺",
+  episodic: "情景",
+  emotional: "情感",
+};
+const statusLabels: Record<string, string> = {
+  active: "活跃",
+  conflict: "冲突",
+  archived: "已归档",
+  superseded: "已废止",
+};
 
 const memories = ref<MemoryItem[]>([]);
 const ledger = ref<LedgerItem[]>([]);
 const stats = reactive({ active: 0, conflict: 0, archived: 0, deleted: 0 });
-const filters = reactive({ type: "", status: "", minImportance: "", limit: "50" });
+const filters = reactive({ subject: "", type: "", status: "", factKey: "", minImportance: "", limit: "50" });
 const fallbackUser = ref("");
 
 const detail = ref<MemoryDetail | null>(null);
 const editing = ref<MemoryItem | null>(null);
 const editForm = reactive({ content: "", summary: "", importance: 0.6, pin: false, reason: "" });
 const adding = ref(false);
-const addForm = reactive({ user_id: "", type: "semantic", privacy_level: "L1", importance: 0.6, content: "", pin: false });
+const addForm = reactive({
+  user_id: "",
+  subject: "user",
+  subject_key: "",
+  fact_key: "",
+  type: "semantic",
+  privacy_level: "L1",
+  importance: 0.6,
+  content: "",
+  pin: false,
+});
 const queryForm = reactive({ text: "", privacy: "L1", user: "" });
 const queryResult = ref<{ policy_version: string; candidate_count: number; hits: HitItem[] } | null>(null);
 
 const memoryParams = computed(() => {
   const params = new URLSearchParams();
+  if (filters.subject) params.set("subject", filters.subject);
   if (filters.type) params.set("type", filters.type);
   if (filters.status) params.set("status", filters.status);
+  if (filters.factKey.trim()) params.set("fact_key", filters.factKey.trim());
   if (filters.minImportance) params.set("min_importance", filters.minImportance);
   params.set("limit", filters.limit);
   return params.toString();
@@ -142,19 +185,23 @@ async function submitEdit() {
 }
 
 async function submitAdd() {
+  const body: Record<string, unknown> = {
+    user_id: addForm.user_id || fallbackUser.value,
+    subject: addForm.subject,
+    type: addForm.type,
+    privacy_level: addForm.privacy_level,
+    importance: addForm.importance,
+    content: addForm.content,
+    pin: addForm.pin,
+  };
+  if (addForm.subject_key.trim()) body.subject_key = addForm.subject_key.trim();
+  if (addForm.fact_key.trim()) body.fact_key = addForm.fact_key.trim();
   try {
     const created = await api.request<MemoryItem>("/api/v1/admin/memories", {
       method: "POST",
-      body: JSON.stringify({
-        user_id: addForm.user_id || fallbackUser,
-        type: addForm.type,
-        privacy_level: addForm.privacy_level,
-        importance: addForm.importance,
-        content: addForm.content,
-        pin: addForm.pin,
-      }),
+      body: JSON.stringify(body),
     });
-    emit("status", `记忆 #${created.id} 已添加`);
+    emit("status", `${subjectLabels[created.subject] ?? created.subject}记忆 #${created.id} 已添加`);
     adding.value = false;
     await load();
   } catch (error) {
@@ -163,7 +210,11 @@ async function submitAdd() {
 }
 
 async function archive(id: number) {
-  if (!confirm(`归档记忆 #${id}？归档后不再参与检索。`)) return;
+  try {
+    await ElMessageBox.confirm(`归档记忆 #${id}？归档后不再参与检索。`, "确认归档", { type: "warning", confirmButtonText: "归档", cancelButtonText: "取消" });
+  } catch {
+    return;
+  }
   try {
     await api.request(`/api/v1/admin/memories/${id}/archive`, { method: "POST" });
     emit("status", `记忆 #${id} 已归档`);
@@ -174,8 +225,12 @@ async function archive(id: number) {
 }
 
 async function resolve(id: number, action: "adopt" | "keep") {
-  const label = action === "adopt" ? "采纳新记忆（旧版本转入 superseded）" : "保留旧值（新记忆归档）";
-  if (!confirm(`冲突裁决 #${id}：${label}？`)) return;
+  const label = action === "adopt" ? "采纳新记忆（旧版本转入已废止）" : "保留旧值（新记忆归档）";
+  try {
+    await ElMessageBox.confirm(`冲突裁决 #${id}：${label}？`, "确认裁决", { type: "warning", confirmButtonText: "确认", cancelButtonText: "取消" });
+  } catch {
+    return;
+  }
   try {
     await api.request(`/api/v1/admin/memories/${id}/resolve`, {
       method: "POST",
@@ -189,8 +244,19 @@ async function resolve(id: number, action: "adopt" | "keep") {
 }
 
 async function remove(id: number) {
-  const reason = prompt(`硬删除记忆 #${id} 及其整个版本链，不可撤销并记入台账。\n请输入删除原因：`);
-  if (reason === null) return;
+  let reason = "";
+  try {
+    const result = await ElMessageBox.prompt(`硬删除记忆 #${id} 及其整个版本链，不可撤销并记入台账。`, "删除记忆", {
+      type: "error",
+      inputPlaceholder: "请输入删除原因",
+      inputValidator: (value) => value.trim().length >= 2 || "请填写删除原因",
+      confirmButtonText: "确认删除",
+      cancelButtonText: "取消",
+    });
+    reason = result.value;
+  } catch {
+    return;
+  }
   try {
     const receipt = await api.request<{ ledger_id: number; deleted_ids: number[] }>(
       `/api/v1/admin/memories/${id}?reason=${encodeURIComponent(reason)}`,
@@ -212,7 +278,7 @@ async function runQuery() {
     }>("/api/v1/admin/memories/query", {
       method: "POST",
       body: JSON.stringify({
-        user_id: queryForm.user || fallbackUser,
+        user_id: queryForm.user || fallbackUser.value,
         query: queryForm.text,
         privacy_level: queryForm.privacy,
       }),
@@ -224,7 +290,13 @@ async function runQuery() {
 
 async function replayLedger(dryRun: boolean) {
   const label = dryRun ? "试运行" : "执行";
-  if (!dryRun && !confirm("重放删除台账？将清除备份恢复后复活的数据。")) return;
+  if (!dryRun) {
+    try {
+      await ElMessageBox.confirm("重放删除台账？将清除备份恢复后复活的数据。", "确认重放", { type: "warning", confirmButtonText: "执行", cancelButtonText: "取消" });
+    } catch {
+      return;
+    }
+  }
   try {
     const report = await api.request<{
       ledger_rows: number;
@@ -259,20 +331,22 @@ onMounted(load);
 
     <div class="panel">
       <h2>检索调试</h2>
-      <form class="query-row" @submit.prevent="runQuery">
-        <input v-model="queryForm.text" placeholder="例如：帮我点菜，我能吃香菜吗" required />
-        <select v-model="queryForm.privacy">
-          <option value="L0">L0</option><option value="L1">L1</option><option value="L2">L2（本地）</option>
-        </select>
-        <input v-model="queryForm.user" placeholder="user_id（留空自动）" />
-        <button class="primary" type="submit">检索</button>
-      </form>
+      <div class="query-row">
+        <el-input v-model="queryForm.text" placeholder="例如：帮我点菜，我能吃香菜吗" @keyup.enter="runQuery" />
+        <el-select v-model="queryForm.privacy"><el-option label="L0" value="L0" /><el-option label="L1" value="L1" /><el-option label="L2（本地）" value="L2" /></el-select>
+        <el-input v-model="queryForm.user" placeholder="user_id（留空自动）" />
+        <el-button type="primary" @click="runQuery">检索</el-button>
+      </div>
       <div v-if="queryResult" class="query-result">
         <p class="hint">{{ queryResult.candidate_count }} 个候选 · {{ queryResult.policy_version }} · 命中 {{ queryResult.hits.length }} 条</p>
         <div v-for="hit in queryResult.hits" :key="hit.memory.id" class="hit">
           <span class="score">{{ hit.final_score.toFixed(3) }}</span>
           <span>
-            <strong>#{{ hit.memory.id }}</strong> [{{ hit.memory.type }}] {{ hit.memory.content }}
+            <strong>#{{ hit.memory.id }}</strong>
+            [{{ subjectLabels[hit.memory.subject] ?? hit.memory.subject }}]
+            [{{ typeLabels[hit.memory.type] ?? hit.memory.type }}]
+            <code v-if="hit.memory.fact_key">{{ hit.memory.fact_key }}</code>
+            {{ hit.memory.content }}
             <small>vec {{ hit.vector_score.toFixed(2) }} · lex {{ hit.lexical_score.toFixed(2) }} · {{ hit.reasons.join("+") }}</small>
           </span>
         </div>
@@ -283,76 +357,63 @@ onMounted(load);
     <div class="panel">
       <div class="panel-head">
         <h2>记忆列表</h2>
-        <button class="primary" @click="adding = true">手动添加</button>
+        <el-button type="primary" @click="adding = true">手动添加</el-button>
       </div>
+      <el-radio-group v-model="filters.subject" class="subject-switch" @change="load">
+        <el-radio-button value="">全部主体</el-radio-button>
+        <el-radio-button v-for="subject in subjects" :key="subject" :value="subject">
+          {{ subjectLabels[subject] }}
+        </el-radio-button>
+      </el-radio-group>
       <div class="filters">
-        <select v-model="filters.type"><option value="">全部类型</option><option v-for="t in types" :key="t">{{ t }}</option></select>
-        <select v-model="filters.status"><option value="">全部状态</option><option v-for="s in statuses" :key="s">{{ s }}</option></select>
-        <input v-model="filters.minImportance" type="number" min="0" max="1" step="0.1" placeholder="最低重要性" />
-        <select v-model="filters.limit"><option>25</option><option>50</option><option>100</option><option>200</option></select>
-        <button @click="load">应用过滤</button>
+        <el-select v-model="filters.type" placeholder="全部类型" clearable><el-option v-for="t in types" :key="t" :label="typeLabels[t] ?? t" :value="t" /></el-select>
+        <el-select v-model="filters.status" placeholder="全部状态" clearable><el-option v-for="s in statuses" :key="s" :label="statusLabels[s] ?? s" :value="s" /></el-select>
+        <el-input v-model="filters.factKey" placeholder="fact_key" clearable />
+        <el-input v-model="filters.minImportance" placeholder="最低重要性" />
+        <el-select v-model="filters.limit"><el-option v-for="limit in ['25','50','100','200']" :key="limit" :label="`${limit} 条`" :value="limit" /></el-select>
+        <el-button @click="load">应用过滤</el-button>
       </div>
-      <table>
-        <thead><tr><th>ID</th><th>类型</th><th>内容</th><th>状态</th><th>重要性</th><th>访问</th><th>操作</th></tr></thead>
-        <tbody>
-          <tr v-for="item in memories" :key="item.id">
-            <td>
-              <strong>#{{ item.id }}</strong>
-              <small v-if="item.superseded_by">→ #{{ item.superseded_by }}</small>
-              <small v-if="item.conflict_with">⚠ vs #{{ item.conflict_with }}</small>
-            </td>
-            <td>{{ item.type }}{{ item.pin ? " 📌" : "" }}</td>
-            <td class="content-cell">{{ item.content }}</td>
-            <td><span class="status" :class="item.status">{{ item.status }}</span><small>{{ item.privacy_level }}</small></td>
-            <td>{{ item.importance.toFixed(2) }}</td>
-            <td>{{ item.access_count }}</td>
-            <td class="actions">
-              <button @click="showDetail(item.id)">溯源</button>
-              <button v-if="item.status === 'active' || item.status === 'conflict'" @click="openEdit(item)">编辑</button>
-              <button v-if="item.status === 'active'" @click="archive(item.id)">归档</button>
-              <template v-if="item.status === 'conflict'">
-                <button class="primary" @click="resolve(item.id, 'adopt')">采纳</button>
-                <button @click="resolve(item.id, 'keep')">保留旧值</button>
-              </template>
-              <button class="danger" @click="remove(item.id)">删除</button>
-            </td>
-          </tr>
-          <tr v-if="!memories.length"><td colspan="7" class="hint">没有匹配的记忆。</td></tr>
-        </tbody>
-      </table>
+      <el-table :data="memories" empty-text="没有匹配的记忆" style="width:100%">
+        <el-table-column label="ID" width="100"><template #default="{ row }"><strong>#{{ row.id }}</strong><small v-if="row.superseded_by">→ #{{ row.superseded_by }}</small><small v-if="row.conflict_with">⚠ vs #{{ row.conflict_with }}</small></template></el-table-column>
+        <el-table-column label="主体" width="110"><template #default="{ row }"><el-tag size="small" effect="plain">{{ subjectLabels[row.subject] ?? row.subject }}</el-tag><small>{{ row.subject_key }}</small></template></el-table-column>
+        <el-table-column label="类型" width="110"><template #default="{ row }">{{ typeLabels[row.type] ?? row.type }}{{ row.pin ? ' 📌' : '' }}</template></el-table-column>
+        <el-table-column prop="content" label="内容" min-width="320" show-overflow-tooltip />
+        <el-table-column label="事实槽位" min-width="160"><template #default="{ row }"><code>{{ row.fact_key ?? '—' }}</code><small>{{ originLabels[row.origin_kind] ?? row.origin_kind }}</small></template></el-table-column>
+        <el-table-column label="状态" width="120"><template #default="{ row }"><el-tag :type="row.status === 'active' ? 'success' : row.status === 'conflict' ? 'warning' : 'info'">{{ statusLabels[row.status] ?? row.status }}</el-tag><small>{{ row.privacy_level }}</small></template></el-table-column>
+        <el-table-column label="重要性" width="90"><template #default="{ row }">{{ row.importance.toFixed(2) }}</template></el-table-column>
+        <el-table-column prop="access_count" label="访问" width="75" />
+        <el-table-column label="操作" min-width="320" fixed="right"><template #default="{ row }"><div class="actions"><el-button size="small" @click="showDetail(row.id)">溯源</el-button><el-button v-if="row.status === 'active' || row.status === 'conflict'" size="small" @click="openEdit(row)">编辑</el-button><el-button v-if="row.status === 'active'" size="small" @click="archive(row.id)">归档</el-button><template v-if="row.status === 'conflict'"><el-button type="primary" size="small" @click="resolve(row.id, 'adopt')">采纳</el-button><el-button size="small" @click="resolve(row.id, 'keep')">保留旧值</el-button></template><el-button type="danger" plain size="small" @click="remove(row.id)">删除</el-button></div></template></el-table-column>
+      </el-table>
     </div>
 
     <div class="panel">
       <div class="panel-head">
         <h2>删除台账</h2>
         <div class="row">
-          <button @click="replayLedger(true)">重放试运行</button>
-          <button @click="replayLedger(false)">执行重放</button>
+          <el-button @click="replayLedger(true)">重放试运行</el-button>
+          <el-button type="warning" plain @click="replayLedger(false)">执行重放</el-button>
         </div>
       </div>
-      <table>
-        <thead><tr><th>台账</th><th>实体</th><th>被删版本</th><th>操作人</th><th>原因</th><th>时间</th></tr></thead>
-        <tbody>
-          <tr v-for="item in ledger" :key="item.id">
-            <td><strong>#{{ item.id }}</strong></td>
-            <td>{{ item.entity_kind }} #{{ item.entity_id.slice(0, 8) }}</td>
-            <td>{{ item.deleted_ids.map((id) => `#${id}`).join(" ") }}</td>
-            <td>{{ item.requested_by }}</td>
-            <td>{{ item.reason ?? "—" }}</td>
-            <td><small>{{ fmt(item.created_at) }}</small></td>
-          </tr>
-          <tr v-if="!ledger.length"><td colspan="6" class="hint">暂无删除记录。</td></tr>
-        </tbody>
-      </table>
+      <el-table :data="ledger" empty-text="暂无删除记录" style="width:100%">
+        <el-table-column label="台账" width="90"><template #default="{ row }"><strong>#{{ row.id }}</strong></template></el-table-column>
+        <el-table-column label="实体" min-width="150"><template #default="{ row }">{{ row.entity_kind }} #{{ row.entity_id.slice(0, 8) }}</template></el-table-column>
+        <el-table-column label="被删版本" min-width="180"><template #default="{ row }">{{ row.deleted_ids.map((id) => `#${id}`).join(' ') }}</template></el-table-column>
+        <el-table-column prop="requested_by" label="操作人" min-width="130" />
+        <el-table-column label="原因" min-width="180"><template #default="{ row }">{{ row.reason ?? '—' }}</template></el-table-column>
+        <el-table-column label="时间" min-width="180"><template #default="{ row }">{{ fmt(row.created_at) }}</template></el-table-column>
+      </el-table>
     </div>
 
-    <div v-if="detail" class="overlay" @click.self="detail = null">
-      <div class="dialog">
-        <h3>记忆 #{{ detail.id }}（{{ detail.type }} · {{ detail.privacy_level }}）</h3>
+    <el-dialog :model-value="!!detail" width="680px" :title="detail ? `记忆 #${detail.id}` : '记忆详情'" @update:model-value="value => { if (!value) detail = null }">
+      <template v-if="detail">
+        <h3>记忆 #{{ detail.id }}（{{ typeLabels[detail.type] ?? detail.type }} · {{ detail.privacy_level }}）</h3>
         <dl class="detail-grid">
           <dt>内容</dt><dd>{{ detail.content }}</dd>
           <dt>摘要</dt><dd>{{ detail.summary ?? "—" }}</dd>
-          <dt>状态</dt><dd>{{ detail.status }}{{ detail.superseded_by ? ` → #${detail.superseded_by}` : "" }}{{ detail.supersede_reason ? `（${detail.supersede_reason}）` : "" }}</dd>
+          <dt>主体</dt><dd>{{ subjectLabels[detail.subject] ?? detail.subject }} · <code>{{ detail.subject_key }}</code></dd>
+          <dt>事实槽位</dt><dd><code>{{ detail.fact_key ?? "—" }}</code></dd>
+          <dt>来源语义</dt><dd>{{ originLabels[detail.origin_kind] ?? detail.origin_kind }}</dd>
+          <dt>状态</dt><dd>{{ statusLabels[detail.status] ?? detail.status }}{{ detail.superseded_by ? ` → #${detail.superseded_by}` : "" }}{{ detail.supersede_reason ? `（${detail.supersede_reason}）` : "" }}</dd>
           <dt>有效期</dt><dd>{{ fmt(detail.valid_from) }} ～ {{ detail.valid_to ? fmt(detail.valid_to) : "永久" }}</dd>
           <dt>提取器</dt><dd>{{ detail.extractor_version ?? "—" }} · 置信度 {{ detail.confidence ?? "—" }}</dd>
           <dt>创建</dt><dd>{{ fmt(detail.created_at) }} · {{ detail.created_by }}</dd>
@@ -364,47 +425,45 @@ onMounted(load);
         </div>
         <h4>版本链（{{ detail.lineage.length }}）</h4>
         <div v-for="entry in detail.lineage" :key="entry.id" class="source-row">
-          #{{ entry.id }} <span class="status" :class="entry.status">{{ entry.status }}</span> {{ entry.content }}
+          #{{ entry.id }} <span class="status" :class="entry.status">{{ statusLabels[entry.status] ?? entry.status }}</span>
+          [{{ subjectLabels[entry.subject] ?? entry.subject }}]<code v-if="entry.fact_key"> {{ entry.fact_key }}</code> {{ entry.content }}
         </div>
-        <div class="row"><button @click="detail = null">关闭</button></div>
-      </div>
-    </div>
+      </template>
+      <template #footer><el-button @click="detail = null">关闭</el-button></template>
+    </el-dialog>
 
-    <div v-if="editing" class="overlay" @click.self="editing = null">
-      <div class="dialog">
+    <el-dialog :model-value="!!editing" width="620px" title="纠错编辑" @update:model-value="value => { if (!value) editing = null }">
+      <template v-if="editing">
         <h3>纠错编辑 #{{ editing.id }}</h3>
         <p class="hint">保存后生成替代版本，原版本转入 superseded 并保留溯源。</p>
-        <label>内容<textarea v-model="editForm.content" rows="4" /></label>
-        <label>摘要<input v-model="editForm.summary" /></label>
+        <label>内容<el-input v-model="editForm.content" type="textarea" :rows="4" /></label>
+        <label>摘要<el-input v-model="editForm.summary" /></label>
         <div class="row">
-          <label>重要性<input v-model="editForm.importance" type="number" min="0" max="1" step="0.05" /></label>
-          <label class="check"><input v-model="editForm.pin" type="checkbox" /> 置顶</label>
+          <label>重要性<el-input-number v-model="editForm.importance" :min="0" :max="1" :step="0.05" /></label>
+          <el-checkbox v-model="editForm.pin">置顶</el-checkbox>
         </div>
-        <label>原因（必填）<input v-model="editForm.reason" minlength="3" /></label>
-        <div class="row">
-          <button @click="editing = null">取消</button>
-          <button class="primary" :disabled="editForm.reason.trim().length < 3" @click="submitEdit">保存替代版本</button>
-        </div>
-      </div>
-    </div>
+        <label>原因（必填）<el-input v-model="editForm.reason" minlength="3" /></label>
+      </template>
+      <template #footer><el-button @click="editing = null">取消</el-button><el-button type="primary" :disabled="editForm.reason.trim().length < 3" @click="submitEdit">保存替代版本</el-button></template>
+    </el-dialog>
 
-    <div v-if="adding" class="overlay" @click.self="adding = false">
-      <div class="dialog">
+    <el-dialog v-model="adding" width="620px" title="手动添加记忆">
         <h3>手动添加记忆</h3>
-        <label>用户 ID<input v-model="addForm.user_id" :placeholder="fallbackUser || 'app_user UUID'" /></label>
+        <label>用户 ID<el-input v-model="addForm.user_id" :placeholder="fallbackUser || 'app_user UUID'" /></label>
         <div class="row">
-          <label>类型<select v-model="addForm.type"><option v-for="t in types" :key="t">{{ t }}</option></select></label>
-          <label>隐私<select v-model="addForm.privacy_level"><option>L0</option><option>L1</option><option>L2</option></select></label>
-          <label>重要性<input v-model="addForm.importance" type="number" min="0" max="1" step="0.05" /></label>
+          <label>主体<el-select v-model="addForm.subject"><el-option v-for="subject in subjects" :key="subject" :label="subjectLabels[subject]" :value="subject" /></el-select></label>
+          <label>类型<el-select v-model="addForm.type"><el-option v-for="t in types" :key="t" :label="typeLabels[t] ?? t" :value="t" /></el-select></label>
+          <label>隐私<el-select v-model="addForm.privacy_level"><el-option v-for="level in ['L0','L1','L2']" :key="level" :label="level" :value="level" /></el-select></label>
         </div>
-        <label>内容<textarea v-model="addForm.content" rows="3" /></label>
-        <label class="check"><input v-model="addForm.pin" type="checkbox" /> 置顶</label>
         <div class="row">
-          <button @click="adding = false">取消</button>
-          <button class="primary" :disabled="addForm.content.trim().length < 2" @click="submitAdd">添加</button>
+          <label>subject_key（可选）<el-input v-model="addForm.subject_key" placeholder="留空使用主体默认值" /></label>
+          <label>fact_key（可选）<el-input v-model="addForm.fact_key" placeholder="如 profile.height" /></label>
+          <label>重要性<el-input-number v-model="addForm.importance" :min="0" :max="1" :step="0.05" /></label>
         </div>
-      </div>
-    </div>
+        <label>内容<el-input v-model="addForm.content" type="textarea" :rows="3" /></label>
+        <el-checkbox v-model="addForm.pin">置顶</el-checkbox>
+      <template #footer><el-button @click="adding = false">取消</el-button><el-button type="primary" :disabled="addForm.content.trim().length < 2" @click="submitAdd">添加</el-button></template>
+    </el-dialog>
   </section>
 </template>
 
@@ -420,31 +479,25 @@ onMounted(load);
 .hint { color: var(--muted); font-size: 12px; margin: 0; }
 .row { display: flex; gap: 10px; align-items: end; }
 .query-row { display: flex; gap: 8px; flex-wrap: wrap; }
-.query-row input:first-child { flex: 1; min-width: 220px; }
+.query-row > :first-child { flex: 1; min-width: 260px; }
+.query-row :deep(.el-select) { width: 140px; }
 .query-result .hit { display: flex; gap: 10px; padding: 5px 0; border-bottom: 1px dashed #232736; font-size: 13px; }
 .score { color: var(--accent); min-width: 46px; font-variant-numeric: tabular-nums; }
 .filters { display: flex; gap: 8px; flex-wrap: wrap; }
-table { width: 100%; border-collapse: collapse; font-size: 13px; }
-th { text-align: left; color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em; padding: 8px; border-bottom: 1px solid var(--line); }
-td { padding: 8px; border-bottom: 1px solid #1c1f2b; vertical-align: top; }
-td.content-cell { max-width: 320px; }
+.subject-switch { justify-self: start; }
+.filters :deep(.el-select) { width: 150px; }
+.filters :deep(.el-input) { width: 150px; }
 small { color: var(--muted); display: block; font-size: 11px; }
 .actions { display: flex; gap: 6px; flex-wrap: wrap; }
-.actions button { padding: 4px 10px; font-size: 12px; }
-button.danger { color: var(--danger); border-color: #4b2b36; }
 .status { display: inline-block; padding: 2px 10px; border-radius: 999px; font-size: 11px; border: 1px solid; }
-.status.active { color: #7ee2a8; border-color: #2c5c41; background: #12241b; }
+.status.active { color: #168e59; border-color: #bfe8d2; background: #e9f8f0; }
 .status.conflict { color: #f2c078; border-color: #6b5325; background: #2a2113; }
-.status.archived { color: #9aa0b4; border-color: #3a3f52; background: #191c27; }
-.status.superseded { color: #b7a6f0; border-color: #4b3f76; background: #1d1830; }
-.overlay { position: fixed; inset: 0; background: #05060a99; display: grid; place-items: center; z-index: 20; padding: 20px; }
-.dialog { background: #141724; border: 1px solid #303342; border-radius: 14px; padding: 20px; width: min(620px, 94vw); max-height: 86vh; overflow-y: auto; display: grid; gap: 10px; }
-.dialog h3 { margin: 0; }
-.dialog h4 { margin: 8px 0 0; font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted); }
-.dialog label { display: grid; gap: 6px; font-size: 12px; color: var(--muted); }
-.dialog textarea, .dialog input, .dialog select { width: 100%; }
-.check { display: flex; align-items: center; gap: 8px; }
-.check input { width: auto; }
+.status.archived { color: #68748a; border-color: #d8deea; background: #f1f3f7; }
+.status.superseded { color: #6f63a8; border-color: #dcd7f2; background: #f1effb; }
+:deep(.el-dialog__body) { display:grid; gap:12px; color:var(--text); }
+:deep(.el-dialog__body > label) { display:grid; gap:6px; color:var(--muted); font-size:12px; }
+:deep(.el-dialog__body .row > label) { min-width:0; flex:1; display:grid; gap:6px; color:var(--muted); font-size:12px; }
+:deep(.el-dialog__body .el-select), :deep(.el-dialog__body .el-input-number) { width:100%; }
 .detail-grid { display: grid; grid-template-columns: auto 1fr; gap: 6px 14px; font-size: 13px; margin: 0; }
 .detail-grid dt { color: var(--muted); }
 .detail-grid dd { margin: 0; word-break: break-all; }

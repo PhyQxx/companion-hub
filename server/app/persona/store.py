@@ -74,6 +74,21 @@ class PersonaStore:
             self._current = self._snapshot(version)
             return self._current
 
+    async def refresh(self) -> PersonaSnapshot:
+        """Reload the published persona pointer from the database.
+
+        Admin publish and chat traffic may be handled by different worker
+        processes. The in-memory snapshot therefore cannot be treated as a
+        cross-process cache. Refreshing before a new turn guarantees that the
+        chat worker observes the latest published persona.
+        """
+        async with self._lock:
+            version = await self._read_current()
+            if version is None:
+                raise RuntimeError("persona pointer is missing")
+            self._current = self._snapshot(version)
+            return self._current
+
     async def create_draft(self, persona: PersonaConfig, *, actor: str) -> PersonaVersion:
         async with self._database.sessions.begin() as session:
             record = PersonaVersionRecord(
@@ -110,7 +125,6 @@ class PersonaStore:
                 target.status = "published"
                 target.published_at = now
                 pointer.current_version_id = target.id
-                await session.refresh(target)
             result = self._from_record(target)
             self._current = self._snapshot(result)
             return self._current

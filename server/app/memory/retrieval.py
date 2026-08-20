@@ -17,10 +17,16 @@ from uuid import UUID
 from app.schemas.common import PrivacyLevel
 
 from .embeddings import cosine_similarity, lexical_cosine, text_tokens
-from .models import MemoryEntry, MemoryStatus, MemoryType
+from .models import MemoryEntry, MemoryStatus, MemorySubjectKind, MemoryType
 from .store import MemoryStore, RetrievalCandidate
 
-RETRIEVAL_POLICY_VERSION = "hybrid-quota-v1"
+RETRIEVAL_POLICY_VERSION = "hybrid-subject-v3"
+
+DEFAULT_SUBJECT_SCOPES: tuple[tuple[MemorySubjectKind, str], ...] = (
+    (MemorySubjectKind.USER, "user:self"),
+    (MemorySubjectKind.ASSISTANT, "assistant:primary"),
+    (MemorySubjectKind.SHARED, "shared:user-assistant"),
+)
 
 DEFAULT_TYPE_QUOTAS: Mapping[str, int] = {
     MemoryType.SEMANTIC.value: 3,
@@ -47,6 +53,8 @@ class RetrievalResult:
     candidate_count: int
     vector_recalled: int
     lexical_recalled: int
+    subject_hint: str | None = None
+    fact_hint: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -58,8 +66,12 @@ class RetrievalPolicy:
     relevance_weight: float = 0.55
     importance_weight: float = 0.25
     pin_bonus: float = 0.2
+    subject_hint_bonus: float = 0.15
+    exact_fact_bonus: float = 1.0
     episodic_recency_weight: float = 0.15
     recency_tau_days: float = 30.0
+    grounded_lexical_threshold: float = 0.15
+    grounded_vector_threshold: float = 0.55
 
 
 @final
@@ -77,15 +89,20 @@ class MemoryRetriever:
         now: datetime | None = None,
     ) -> RetrievalResult:
         moment = now or datetime.now(UTC)
+        privacy = PrivacyLevel(privacy_level)
+        subject_hint = _infer_subject_hint(query)
+        fact_hints = _infer_fact_keys(query)
+        fact_hint = fact_hints[0] if fact_hints else None
         # 隐私闸门：L2 记忆只能进入强制本地路由的 L2 上下文，
         # 绝不允许随 L0/L1 云端调用出站
         allowed_levels = (
             (PrivacyLevel.L0, PrivacyLevel.L1, PrivacyLevel.L2)
-            if privacy_level is PrivacyLevel.L2
+            if privacy is PrivacyLevel.L2
             else (PrivacyLevel.L0, PrivacyLevel.L1)
         )
         candidates = await self._store.retrieval_candidates(
             user_id,
+            subject_scopes=DEFAULT_SUBJECT_SCOPES,
             statuses=(MemoryStatus.ACTIVE,),
             privacy_levels=allowed_levels,
             valid_at=moment,
@@ -112,6 +129,7 @@ class MemoryRetriever:
                 user_id=user_id,
                 embedding_version=provider.version,
                 privacy_levels=[level.value for level in allowed_levels],
+                subject_keys=[key for _, key in DEFAULT_SUBJECT_SCOPES],
                 valid_at=moment,
                 limit=self._policy.recall_k,
             )
@@ -147,6 +165,9 @@ class MemoryRetriever:
                 # 置顶加成：用户手动固定的关键事实优先进入上下文
                 score += self._policy.pin_bonus
                 reasons.append("pin")
+            if subject_hint is not None and entry.subject_kind == subject_hint.value:
+                score += self._policy.subject_hint_bonus
+                reasons.append("subject_bonus")
             # 新近度只作用于情景记忆：稳定事实（语义/偏好）不随时间衰减
             if entry.type == MemoryType.EPISODIC.value and entry.created_at is not None:
                 age_days = max((moment - entry.created_at).total_seconds() / 86_400.0, 0.0)
@@ -163,12 +184,72 @@ class MemoryRetriever:
                     reasons=tuple(reasons),
                 )
             )
+
+        exact_entries: list[MemoryEntry] = []
+        for exact_fact_key in fact_hints:
+            exact_entries.extend(
+                await self._store.fact_candidates(
+                    user_id=user_id,
+                    fact_key=exact_fact_key,
+                    subject_scopes=DEFAULT_SUBJECT_SCOPES,
+                    privacy_levels=allowed_levels,
+                    valid_at=moment,
+                )
+            )
+        if exact_entries:
+            ranked_by_id = {hit.memory.id: hit for hit in ranked}
+            for entry in exact_entries:
+                existing = ranked_by_id.get(entry.id)
+                subject_bonus = (
+                    self._policy.subject_hint_bonus
+                    if subject_hint is not None and entry.subject_kind == subject_hint.value
+                    else 0.0
+                )
+                if existing is not None:
+                    exact_reasons = tuple(dict.fromkeys((*existing.reasons, "exact_fact")))
+                    ranked_by_id[entry.id] = MemoryHit(
+                        memory=entry,
+                        vector_score=existing.vector_score,
+                        lexical_score=existing.lexical_score,
+                        final_score=existing.final_score + self._policy.exact_fact_bonus,
+                        reasons=exact_reasons,
+                    )
+                    continue
+                exact_reasons_list = ["exact_fact"]
+                if subject_bonus:
+                    exact_reasons_list.append("subject_bonus")
+                score = (
+                    self._policy.exact_fact_bonus
+                    + self._policy.importance_weight * entry.importance
+                    + subject_bonus
+                )
+                if entry.pin:
+                    score += self._policy.pin_bonus
+                    exact_reasons_list.append("pin")
+                ranked_by_id[entry.id] = MemoryHit(
+                    memory=entry,
+                    vector_score=0.0,
+                    lexical_score=0.0,
+                    final_score=score,
+                    reasons=tuple(exact_reasons_list),
+                )
+            ranked = list(ranked_by_id.values())
         ranked.sort(key=lambda hit: hit.final_score, reverse=True)
 
         selected: list[MemoryHit] = []
         used: Counter[str] = Counter()
+        # 确定性槽位事实先占位，不受普通类型配额挤出。
+        for hit in ranked:
+            if "exact_fact" not in hit.reasons:
+                continue
+            selected.append(hit)
+            used[hit.memory.type] += 1
+            if len(selected) >= self._policy.top_k:
+                break
         # 按类型配额截取 Top-K：单一类型不能挤占全部上下文位
         for hit in ranked:
+            if hit in selected:
+                continue
             quota = self._policy.quotas.get(hit.memory.type)
             if quota is not None and used[hit.memory.type] >= quota:
                 continue
@@ -181,26 +262,98 @@ class MemoryRetriever:
         return RetrievalResult(
             hits=tuple(selected),
             policy_version=RETRIEVAL_POLICY_VERSION,
-            candidate_count=len(candidates),
+            candidate_count=len(
+                {item.entry.id for item in candidates} | {entry.id for entry in exact_entries}
+            ),
             vector_recalled=len(vector_top),
             lexical_recalled=len(lexical_top),
+            subject_hint=subject_hint.value if subject_hint is not None else None,
+            fact_hint=fact_hint,
+        )
+
+    def grounded_hits(self, result: RetrievalResult) -> tuple[MemoryHit, ...]:
+        """Return only hits strong enough to be treated as remembered evidence.
+
+        Retrieval top-k is intentionally permissive so the model can receive useful
+        context. Evidence semantics are stricter: exact fact slots always qualify,
+        lexical matches need a minimum overlap, and vector-only matches need a high
+        similarity. Importance, pin and subject bonuses may order relevant memories,
+        but must never manufacture relevance by themselves.
+        """
+        return tuple(
+            hit
+            for hit in result.hits
+            if "exact_fact" in hit.reasons
+            or hit.lexical_score >= self._policy.grounded_lexical_threshold
+            or hit.vector_score >= self._policy.grounded_vector_threshold
         )
 
     @staticmethod
-    def render_context(result: RetrievalResult) -> str:
-        """把命中记忆渲染成注入系统提示的【相关记忆】块；无命中返回空串。"""
-        if not result.hits:
+    def render_context(
+        result: RetrievalResult,
+        *,
+        hits: Sequence[MemoryHit] | None = None,
+    ) -> str:
+        """按 user / assistant / shared 分组渲染长期记忆，避免主体串线。"""
+        selected_hits = tuple(result.hits if hits is None else hits)
+        if not selected_hits:
             return ""
-        lines = [
-            f"- [{hit.memory.type}] {hit.memory.content}"
-            + (f"（{hit.memory.summary}）" if hit.memory.summary else "")
-            for hit in result.hits
+        labels = {
+            MemorySubjectKind.USER.value: "关于用户",
+            MemorySubjectKind.ASSISTANT.value: "关于你自己",
+            MemorySubjectKind.SHARED.value: "关于你们",
+        }
+        grouped: dict[str, list[str]] = {key: [] for key in labels}
+        for hit in selected_hits:
+            fact = f"[{hit.memory.fact_key}]" if hit.memory.fact_key else ""
+            line = f"- [{hit.memory.type}]{fact} {hit.memory.content}"
+            if hit.memory.summary:
+                line += f"（{hit.memory.summary}）"
+            grouped.setdefault(hit.memory.subject_kind, []).append(line)
+        blocks = [
+            "【长期记忆】以下内容来自可追溯的长期记忆。优先遵守 active 的稳定事实；"
+            "不要把不同主体混淆。不确定时可以明确说不确定，不要编造。"
         ]
-        return (
-            "【相关记忆】以下是关于用户的长期记忆，仅供自然参考："
-            "只依据记忆谈论用户，不确定就问；不要逐条罗列或声称拥有记忆列表。\n"
-            + "\n".join(lines)
+        for subject_kind, label in labels.items():
+            lines = grouped.get(subject_kind) or []
+            if lines:
+                blocks.append(f"[{label}]\n" + "\n".join(lines))
+        blocks.append(
+            "助手自身记忆用于角色连续性，可以作为身高、体重、三围、生日、偏好等稳定"
+            "自我档案直接回答；这类角色自我设定不自动赋予现实动作能力。现实中的移动、"
+            "触碰、设备控制或其他实际执行仍以【现实能力边界】为准。"
         )
+        return "\n\n".join(blocks)
+
+
+def _infer_subject_hint(query: str) -> MemorySubjectKind | None:
+    normalized = query.strip().lower()
+    if any(token in normalized for token in ("我们", "咱们", "咱俩", "我们俩")):
+        return MemorySubjectKind.SHARED
+    if any(token in normalized for token in ("你的", "你自己", "你叫什么", "你多高", "你多重")):
+        return MemorySubjectKind.ASSISTANT
+    if any(token in normalized for token in ("我的", "我自己", "我叫", "我是不是", "我喜欢")):
+        return MemorySubjectKind.USER
+    return None
+
+
+def _infer_fact_keys(query: str) -> tuple[str, ...]:
+    normalized = query.strip().lower()
+    patterns: tuple[tuple[str, tuple[str, ...]], ...] = (
+        ("profile.measurements", ("三围", "身材数据", "身体围度", "胸围腰围臀围")),
+        ("profile.height", ("身高", "多高")),
+        ("profile.weight", ("体重", "多重")),
+        ("profile.birthday", ("生日", "出生日期")),
+        ("profile.nickname", ("昵称", "小名")),
+        ("profile.name", ("名字", "姓名", "叫什么")),
+        ("preference.food", ("饮食偏好", "喜欢吃", "爱吃", "不吃")),
+        ("preference.drink", ("饮料偏好", "喜欢喝", "爱喝")),
+    )
+    return tuple(
+        fact_key
+        for fact_key, tokens in patterns
+        if any(token in normalized for token in tokens)
+    )
 
 
 def _rank(

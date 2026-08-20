@@ -70,19 +70,22 @@ erDiagram
 
 ## 4. 领域表目录
 
+本目录同时包含已落库的当前表和后续里程碑的目标实体。**是否已经真实存在，以 Alembic migration 为准**；专项设计可以先定义未来字段/表，但在 migration 落地前不得把它描述为当前运行时能力。
+
 | 领域 | 权威表 | 主删除策略 |
 |---|---|---|
 | 身份 | `app_user`, `auth_credential`, `auth_session`, `recovery_key`, `device_client` | 撤销会话；用户删除走专用 Job |
 | 会话 | `conversation`, `interaction_turn`, `message` | 会话删除同时删除消息并触发衍生记忆检查 |
 | 事件 | `event`, `outbox`, `consumer_inbox`, `dead_letter` | 按保留策略清理，不级联删除领域事实 |
-| 记忆 | `memory`, `memory_version`, `memory_source`, `deletion_ledger` | 专用删除任务，不允许通用 ORM delete |
-| 人格 | `persona`, `persona_version`, `agent_state` | 版本化；当前人格不可直接删除 |
+| 记忆 | `memory`, `memory_source`, `deletion_ledger` | 专用删除任务，不允许通用 ORM delete；多主体字段演进见 docs/30 |
+| 历史时间线（规划） | `timeline_event` | 跟随 Source 删除/保留策略；不得成为删除后的数据旁路，见 docs/31 |
+| 人格 | `persona_version`, `persona_pointer`；`agent_state` 为后续状态模型 | 版本化；当前发布指针不可直接悬空 |
 | 形象 | `avatar_pack`, `avatar_instance`, `persona_avatar_binding` | 删除实例后释放资产引用 |
 | 主题 | `ui_theme`, `ui_preference` | 已发布主题归档，草稿可删除 |
 | 设备 | `iot_device`, `device_channel`, `user_mode`, `runtime_lease` | IoT 注销保留非敏感审计 |
 | 长任务 | `job`, `job_step`, `job_artifact`, `schedule` | 任务清理前先释放临时资产 |
 | 资产 | `asset`, `asset_reference`, `asset_derivation` | 最后引用删除后进入宽限 GC |
-| 配置运维 | `config_version`, `audit_log`, `alert`, `migration_run` | 追加/归档，受保留策略约束 |
+| 配置运维 | 当前：`config_version`, `config_pointer`；后续：`audit_log`, `alert`, `migration_run` | revision 追加/归档，当前指针原子切换，受保留策略约束 |
 | 工具 | `tool_definition`, `tool_grant`, `tool_execution` | 执行记录按审计策略保留 |
 
 ## 5. 核心表约束

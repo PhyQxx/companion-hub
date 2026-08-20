@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import asyncio
+import logging
+import re
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
 from contextlib import asynccontextmanager
+from dataclasses import dataclass
 
 from app.observability import TraceRecorder
 from app.privacy import EgressBlocked, EgressDestination, EgressGuard
@@ -17,10 +20,36 @@ from .contracts import (
 )
 from .provider import LLMProvider
 
+logger = logging.getLogger(__name__)
+
+_SECRET_PATTERNS: tuple[re.Pattern[str], ...] = (
+    re.compile(r"(?i)(authorization\s*[:=]\s*bearer\s+)[^\s,;]+"),
+    re.compile(
+        r"(?i)((?:api[_-]?key|access[_-]?token|token|secret)\s*[:=]\s*)"
+        r"['\"]?[^'\"\s,;}]+"
+    ),
+    re.compile(r"(?i)([?&](?:api_key|key|token|access_token)=)[^&\s]+"),
+    re.compile(r"\bsk-[A-Za-z0-9_-]{8,}\b"),
+)
+_MAX_ERROR_DETAIL_CHARS = 1_200
+
+
+@dataclass(frozen=True, slots=True)
+class LLMEndpointFailure:
+    endpoint: str
+    attempt: int
+    error_type: str
+
 
 class LLMRouteExhausted(RuntimeError):
-    def __init__(self, reason_code: str) -> None:
+    def __init__(
+        self,
+        reason_code: str,
+        *,
+        failures: tuple[LLMEndpointFailure, ...] = (),
+    ) -> None:
         self.reason_code = reason_code
+        self.failures = failures
         super().__init__(reason_code)
 
 
@@ -52,6 +81,7 @@ class LLMRouter:
         policy = self._routes[selected_route]
         rejected_for_privacy = 0
         failures = 0
+        failure_details: list[LLMEndpointFailure] = []
         for endpoint_name in [policy.primary, *policy.fallbacks]:
             endpoint = self._endpoints[endpoint_name]
             try:
@@ -79,13 +109,59 @@ class LLMRouter:
                             provider.complete(routed_request),
                             timeout=timeout_ms / 1_000,
                         )
-                except TimeoutError:
+                except TimeoutError as error:
                     failures += 1
-                except Exception:
+                    failure_details.append(
+                        LLMEndpointFailure(
+                            endpoint=endpoint_name,
+                            attempt=attempt,
+                            error_type="TimeoutError",
+                        )
+                    )
+                    self._log_endpoint_failure(
+                        request=routed_request,
+                        endpoint_name=endpoint_name,
+                        endpoint=endpoint,
+                        attempt=attempt,
+                        max_attempts=endpoint.max_retries + 1,
+                        timeout_ms=timeout_ms,
+                        error=error,
+                    )
+                except Exception as error:
                     failures += 1
+                    failure_details.append(
+                        LLMEndpointFailure(
+                            endpoint=endpoint_name,
+                            attempt=attempt,
+                            error_type=type(error).__name__,
+                        )
+                    )
+                    self._log_endpoint_failure(
+                        request=routed_request,
+                        endpoint_name=endpoint_name,
+                        endpoint=endpoint,
+                        attempt=attempt,
+                        max_attempts=endpoint.max_retries + 1,
+                        timeout_ms=timeout_ms,
+                        error=error,
+                    )
         if rejected_for_privacy and not failures:
+            logger.error(
+                "llm route rejected by privacy guard trace_id=%s route=%s privacy=%s",
+                routed_request.trace_id,
+                selected_route.value,
+                privacy.value,
+            )
             raise LLMRouteExhausted("no_privacy_compatible_model")
-        raise LLMRouteExhausted("all_model_routes_failed")
+        self._log_route_exhausted(
+            request=routed_request,
+            reason_code="all_model_routes_failed",
+            failures=failure_details,
+        )
+        raise LLMRouteExhausted(
+            "all_model_routes_failed",
+            failures=tuple(failure_details),
+        )
 
     async def stream(
         self,
@@ -102,6 +178,7 @@ class LLMRouter:
         policy = self._routes[selected_route]
         rejected_for_privacy = 0
         failures = 0
+        failure_details: list[LLMEndpointFailure] = []
         for endpoint_name in [policy.primary, *policy.fallbacks]:
             endpoint = self._endpoints[endpoint_name]
             try:
@@ -130,13 +207,101 @@ class LLMRouter:
                     async with self._span(routed_request, endpoint_name, attempt):
                         async with asyncio.timeout(timeout_ms / 1_000):
                             return await provider.stream(routed_request, guarded_delta)
-                except Exception:
+                except Exception as error:
                     failures += 1
+                    failure_details.append(
+                        LLMEndpointFailure(
+                            endpoint=endpoint_name,
+                            attempt=attempt,
+                            error_type=type(error).__name__,
+                        )
+                    )
+                    self._log_endpoint_failure(
+                        request=routed_request,
+                        endpoint_name=endpoint_name,
+                        endpoint=endpoint,
+                        attempt=attempt,
+                        max_attempts=endpoint.max_retries + 1,
+                        timeout_ms=timeout_ms,
+                        error=error,
+                    )
                     if emitted:
-                        raise LLMRouteExhausted("stream_interrupted") from None
+                        self._log_route_exhausted(
+                            request=routed_request,
+                            reason_code="stream_interrupted",
+                            failures=failure_details,
+                        )
+                        raise LLMRouteExhausted(
+                            "stream_interrupted",
+                            failures=tuple(failure_details),
+                        ) from None
         if rejected_for_privacy and not failures:
+            logger.error(
+                "llm route rejected by privacy guard trace_id=%s route=%s privacy=%s",
+                routed_request.trace_id,
+                selected_route.value,
+                privacy.value,
+            )
             raise LLMRouteExhausted("no_privacy_compatible_model")
-        raise LLMRouteExhausted("all_model_routes_failed")
+        self._log_route_exhausted(
+            request=routed_request,
+            reason_code="all_model_routes_failed",
+            failures=failure_details,
+        )
+        raise LLMRouteExhausted(
+            "all_model_routes_failed",
+            failures=tuple(failure_details),
+        )
+
+    def _log_endpoint_failure(
+        self,
+        *,
+        request: CompletionRequest,
+        endpoint_name: str,
+        endpoint: ModelEndpoint,
+        attempt: int,
+        max_attempts: int,
+        timeout_ms: int,
+        error: BaseException,
+    ) -> None:
+        status_code = getattr(error, "status_code", None)
+        detail = _safe_error_detail(error)
+        if isinstance(error, TimeoutError) and not detail:
+            detail = f"request timed out after {timeout_ms}ms"
+        logger.warning(
+            "llm endpoint failed trace_id=%s route=%s privacy=%s endpoint=%s "
+            "provider=%s model=%s attempt=%s/%s error_type=%s status_code=%s detail=%s",
+            request.trace_id,
+            request.route,
+            request.privacy_level,
+            endpoint_name,
+            endpoint.provider,
+            endpoint.model,
+            attempt,
+            max_attempts,
+            type(error).__name__,
+            status_code if status_code is not None else "-",
+            detail or "-",
+        )
+
+    @staticmethod
+    def _log_route_exhausted(
+        *,
+        request: CompletionRequest,
+        reason_code: str,
+        failures: list[LLMEndpointFailure],
+    ) -> None:
+        summary = ", ".join(
+            f"{item.endpoint}#{item.attempt}:{item.error_type}" for item in failures
+        )
+        logger.error(
+            "llm route exhausted trace_id=%s route=%s privacy=%s reason=%s failures=[%s]",
+            request.trace_id,
+            request.route,
+            request.privacy_level,
+            reason_code,
+            summary,
+        )
 
     def _validate_configuration(self) -> None:
         missing_routes = set(LLMRoute) - self._routes.keys()
@@ -171,3 +336,13 @@ class LLMRouter:
             },
         ):
             yield
+
+
+def _safe_error_detail(error: BaseException) -> str:
+    """Return a bounded diagnostic message while stripping common secret shapes."""
+    detail = " ".join(str(error).split())
+    for pattern in _SECRET_PATTERNS:
+        detail = pattern.sub(r"\1<redacted>" if pattern.groups else "<redacted>", detail)
+    if len(detail) > _MAX_ERROR_DETAIL_CHARS:
+        detail = detail[:_MAX_ERROR_DETAIL_CHARS] + "…"
+    return detail

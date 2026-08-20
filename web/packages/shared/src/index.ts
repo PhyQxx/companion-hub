@@ -10,6 +10,24 @@ export interface SetupStatus {
   setup_required: boolean;
 }
 
+export interface RuntimeMeta {
+  persona?: {
+    version: number;
+    content_hash: string;
+    name: string;
+  };
+}
+
+export interface SystemHealth {
+  status: string;
+  version: string;
+  persona?: {
+    version: number;
+    content_hash: string;
+    name: string;
+  };
+}
+
 export interface SessionUser {
   id: string;
   display_name: string;
@@ -86,6 +104,30 @@ export class ApiError extends Error {
   }
 }
 
+/**
+ * 展开后端错误响应的 detail 字段：
+ * 字符串直接透传；{reason_code} 对象取其码；FastAPI 422 的校验错误
+ * 数组逐条转为「字段路径: 原因」，避免界面只显示裸的 HTTP 状态码。
+ */
+function describeDetail(detail: unknown, fallback: string): string {
+  if (typeof detail === "string") return detail;
+  if (detail && typeof detail === "object") {
+    const reasonCode = (detail as { reason_code?: unknown }).reason_code;
+    if (typeof reasonCode === "string" && reasonCode) return reasonCode;
+    if (Array.isArray(detail)) {
+      const lines = detail.map((item) => {
+        if (!item || typeof item !== "object") return String(item);
+        const { loc, msg } = item as { loc?: unknown; msg?: unknown };
+        const path = Array.isArray(loc) ? loc.filter((part) => part !== "body").join(".") : "";
+        const text = typeof msg === "string" ? msg.replace(/^Value error,\s*/, "") : JSON.stringify(item);
+        return path ? `${path}: ${text}` : text;
+      });
+      if (lines.length) return lines.join("；");
+    }
+  }
+  return fallback;
+}
+
 /** 聊天侧 REST 客户端：身份、会话与消息（不含管理端点） */
 export class ChatApi {
   constructor(private baseUrl = "") {}
@@ -101,18 +143,21 @@ export class ChatApi {
     const body = await response.json().catch(() => ({}));
     if (!response.ok) {
       const detail = (body as { detail?: unknown }).detail;
-      const message =
-        typeof detail === "string"
-          ? detail
-          : ((detail as { reason_code?: string } | null)?.reason_code ??
-            `HTTP ${response.status}`);
-      throw new ApiError(response.status, message);
+      throw new ApiError(response.status, describeDetail(detail, `HTTP ${response.status}`));
     }
     return body as T;
   }
 
   authStatus() {
     return this.request<SetupStatus>("/api/v1/auth/status", { method: "GET" });
+  }
+
+  health() {
+    return this.request<SystemHealth>("/healthz", { method: "GET" });
+  }
+
+  runtimeMeta() {
+    return this.request<RuntimeMeta>("/api/v1/meta/runtime", { method: "GET" });
   }
 
   setup(password: string, adminToken: string, displayName = "主人") {
@@ -188,13 +233,7 @@ export class AdminApi {
     const response = await fetch(`${this.baseUrl}${path}`, { ...init, headers });
     if (!response.ok) {
       const body = (await response.json().catch(() => ({}))) as { detail?: unknown };
-      const detail = body.detail;
-      const message =
-        typeof detail === "string"
-          ? detail
-          : ((detail as { reason_code?: string } | null)?.reason_code ??
-            `HTTP ${response.status}`);
-      throw new ApiError(response.status, message);
+      throw new ApiError(response.status, describeDetail(body.detail, `HTTP ${response.status}`));
     }
     if (response.status === 204) return {} as T;
     return (await response.json()) as T;
