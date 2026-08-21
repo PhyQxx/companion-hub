@@ -2,9 +2,9 @@
 
 > 一个部署在自有设备上的 AI 伴侣中枢。它把聊天、长期记忆、历史回溯、模型路由、隐私边界和未来设备能力放在同一个可扩展运行时中。
 
-当前阶段：**P6 · 语音与 Live2D 产品化**（P5 的 14 天真实文字使用期并行，但截至 2026-08-21 尚无可计入的每日日志）。P5 可开发项已全部收口。P6 Batch A 已落地 `/ws/voice` 语音闭环；Batch B 的浏览器麦克风/PTT/分句播放/整链打断、Silero VAD 适配层与 openWakeWord 可选唤醒门已落地；Batch C 的 50ms `voice.viseme`、按实际播放时钟驱动的 Chat 口型调试条、语音延迟 P50/P90 滑动窗口和 Admin 总览卡片也已接入。本轮前端 typecheck/build 已通过；当前主线剩余真实浏览器麦克风/播放/口型验收、真机 20 完成回合 + 20 打断样本的 M2 判卷，达标后再进入 Live2D/桌宠。faster-whisper 作为可选 L2/离线语音能力后置。
+当前阶段：**M3A · 地图/天气运维收口**（P5 的 14 天真实文字使用期并行，截至 2026-08-21 尚无可计入的每日日志）。P6 Batch A～C 的语音代码、自动化和真浏览器全链已经完成，本地 faster-whisper 暖态 ASR 与 82ms 打断均已实测；但当前组合的理想首音频下限约 3.3s，无法满足 1.8s 指标，因此 M2 延迟转为非阻塞优化项，待流式 ASR 与低延迟语音专用 LLM 方案成熟后再做 20+20 判卷。地图/天气的真实高德调用、精确定位、模糊候选、TTL 缓存和结构化结果卡片已经完成，下一步补 Admin 独立自检与最近 200 次工具台账/延迟报告。
 
-当前完整质量基线（2026-08-21 现场复验）：pytest **232 通过 / 2 跳过**（234 collected）、`ruff check server`、严格 `mypy server/app server/tests`（134 个 source files）、`git diff --check`、Alembic 单 head、`pnpm --dir web typecheck` 与 `pnpm --dir web build` 均通过。运行中 Uvicorn `/healthz=200`，配置为 v32；`/api/v1/meta/voice/latency=200`，但当前真实窗口为 **0 完成回合 / 0 打断样本**，因此 M2 四项 acceptance 均未达标。确定性 soak 已覆盖同一 `/ws/voice` 连接内 20 完成 + 20 打断，但不替代真实设备延迟和肉眼口型验收。当前 `.venv` 未安装 silero-vad/torch/onnxruntime/openWakeWord/faster-whisper，真实运行为 Energy VAD + 自动监听/PTT，无唤醒词与本地 ASR。地图/天气 Query Tools 已完成 fake provider 基础回归，尚待真实高德 Key 与浏览器定位验收。
+当前完整质量基线（2026-08-21 现场复验）：pytest **245 通过 / 2 跳过**（247 collected）、`ruff check server`、严格 `mypy server/app server/tests`（136 个 source files）、`git diff --check`、Alembic 单 head、`pnpm --dir web typecheck` 与 `pnpm --dir web build` 均通过。运行配置为 v39，对话主路由已回滚 `sensenova_deepseek-v4-flash`，本地 ASR 为 faster-whisper `base/cpu/int8`；Silero/openWakeWord 运行依赖仍未安装，因此 VAD/唤醒保持 Energy VAD + 自动监听/PTT。真实高德 Key 的天气、附近 POI、路线与浏览器 WGS84→GCJ-02 定位已经端到端通过。
 
 质量闸门统一使用 `make p5-backend`（ruff/mypy/pytest/diff-check）、`make p5-frontend`（web typecheck/build）和 `make p5-real`。真实模型矩阵可拆 `make p5-real-l1` 与 `make p5-real-l2`：前者只跑云端允许的 L0/L1 用例，后者只跑强制 `local_private` 的 L2 隔离用例。脚本默认从 `.env.local` 安全加载模型环境变量、使用 `config/hub.example.yaml` 路由，不打印 secret，也不写入项目业务数据库。示例配置的本地 private 基线为 LM Studio（OpenAI-compatible `http://127.0.0.1:1234/v1`，思考开销 `reasoning_overhead_tokens: 2048`、超时 120s）。报告路径可用 `P5_REPORT`、`P5_L1_REPORT`、`P5_L2_REPORT` 覆盖。
 
@@ -31,18 +31,22 @@ Aria 不是单一聊天 UI，而是一个长期运行的本地 Companion Hub：
 - **时间线与历史回溯**：Timeline 索引、相对时间解析、有界检索、Source 下钻、无证据不编造、L2 索引壳隔离；
 - **记忆评估集**：`server/tests/memory_eval/` 确定性回归（正例 20 / 负例 20 / 冲突 / 删除 / 隔离），阈值对齐 Release Criteria；
 - **语音闭环（P6 Batch A）**：`/ws/voice` 双向音频通道、VAD 断句、PTT、MiMo ASR/TTS + edge-tts 故障转移链、句级流式合成、barge-in 打断、L2 拒绝云端出站；语音配置在管理后台「模型与路由 → 语音」可视化管理并保存即生效；
-- **地图与天气 Query Tools（M3A 基础）**：Function Calling、服务端高德天气/附近 POI/路线、路网距离复核、L2/L3 出站闸门、文字/语音工具状态和 Admin 配置；真实 Key、精确定位与结果卡片待验收；
+- **地图与天气 Query Tools（M3A 主链）**：Function Calling、真实高德天气/附近 POI/路线、路网距离复核、浏览器临时精确定位、模糊候选、跨轮次 TTL 缓存、结构化天气/POI/路线卡片、安全导航按钮和 L2/L3 出站闸门；
 - **管理后台**：Vue 3 + Element Plus，覆盖模型、路由、语音、Persona、记忆、时间线和基础观测；
 - **正式 Chat 前端**：Vue 3 + Vite；
 - **现实能力边界**：模型只能把已上报的真实在线/授权能力当作可执行动作。
 
 ## 当前正在开发
 
-### P6 语音化（Batch A～C 代码已完成，M2 真机验收进行中）
+### M3A 地图/天气运维收口
+
+主查询链已经完成，设计与验收真源见 [docs/35-地图与天气工具设计.md](./docs/35-地图与天气工具设计.md)。当前实现包含真实高德天气、附近 POI、步行/驾车距离复核、路线概要、浏览器临时精确定位、模糊地点候选、跨轮次有界 TTL 缓存和持久化结构化结果卡片。剩余工作是 Admin 高德独立自检，以及最近 200 次脱敏工具调用台账和延迟报告。
+
+### P6 语音化（Batch A～C 已完成，M2 延迟非阻塞优化）
 
 设计见 [docs/33-P6语音化第一批设计.md](./docs/33-P6语音化第一批设计.md)。Batch A 已落地完整后端垂直切片：`/ws/voice` 通道（与聊天同鉴权、PCM16/16k）、能量 VAD 断句、MiMo 云端 ASR（PCM 包 WAV 头上传）、`TtsProviderChain` 提供方链（MiMo PCM 直出为主、edge-tts 免费兜底；逐句选择、首块前失败无感切换、60s 冷却）、LLM 流式按句切分首句即合成、播放中人声打断（cancel 回合 + 中止 TTS）、ASR/首token/首音频延迟打点。语音配置（密钥/音色/语种/链顺序）全部在管理后台配置，每条话语开始前从配置中心刷新，改配置即时生效。
 
-Batch B/C 的浏览器采集、PTT、分句播放、整链打断、Silero/openWakeWord 可选适配、50ms viseme、延迟滑窗、Admin M2 卡片和判卷脚本均已落地。前端 typecheck/build 已于 2026-08-21 复验通过。当前 config v32 已启用 MiMo ASR + MiMo→edge TTS；`.venv` 未安装 silero-vad/torch/onnxruntime/openWakeWord/faster-whisper，实际运行为 Energy VAD + 自动监听/PTT。剩余主线只有真浏览器音频/口型验收和 M2 20+20 真机计样。
+Batch B/C 的浏览器采集、PTT、分句播放、整链打断、Silero/openWakeWord 可选适配、50ms viseme、延迟滑窗、Admin M2 卡片和判卷脚本均已落地，真浏览器麦克风、ASR、LLM、TTS、口型与打断全链已验收。当前 config v39 使用 faster-whisper `base/cpu/int8` 本地 ASR；真人暖态样本为 ASR 0.832s / 首 token 4.861s / 首音频 5.707s，打断 82ms。M2 延迟作为非阻塞优化项保留，20+20 真机判卷暂停到架构优化完成后。
 
 ### P5 使用期（并行）
 
@@ -227,13 +231,13 @@ PostgreSQL 默认映射到宿主机 `5433`，可通过 `POSTGRES_PORT` 修改。
 
 ## 当前阶段与下一步
 
-当前执行清单以 [TASKS.md](./TASKS.md) 为准。P6 下一步是：
+当前执行清单以 [TASKS.md](./TASKS.md) 为准。下一步是：
 
-1. **真浏览器闭环**：完成麦克风授权、PCM 采集、分句播放、整链打断和 viseme 时序检查；
-2. **M2 语音验收**：在真实设备完成至少 20 个完成回合和 20 个打断样本，运行 `make p6-voice-m2`；要求首音频 P90 ≤1.8s、打断 P90 ≤300ms、口型肉眼同步、连续 20 轮无积压；
-3. **Batch D（M2 达标后）**：OLV Live2D 最小渲染壳接入与 Tauri 桌宠评估；
-4. **地图/天气真实验收**：配置高德 Web 服务 Key 与通过 Function Calling probe 的对话模型，完成真天气/附近医院/路线测试，再补精确定位、缓存与结果卡片；
-5. **可选本地语音链**：需要 L2/离线语音时再安装并验收 faster-whisper、Silero 与 openWakeWord。
+1. **地图/天气运维收口**：实现 Admin 高德独立自检，以及最近 200 次工具调用台账和延迟报告；
+2. **P5 真实使用期**：从第一条可核验每日日志起连续记录 14 天，期满复跑闸门并定稿 docs/32；
+3. **M2 延迟优化**：评估流式 ASR 与低延迟语音专用 LLM，达到可行延迟后再重置窗口完成 20+20 真机判卷；
+4. **Batch D**：仍以 M2 指标达标为前置，之后再进入 OLV Live2D 最小壳与 Tauri 桌宠评估；
+5. **可选唤醒增强**：需要时再安装并验收 Silero 与 openWakeWord，不阻塞当前主线。
 
 并行约束：P5 的 14 天真实文字使用从 docs/32 首条有效日志重启计数，期间发现的 P0/P1 文字链路问题优先修复；P5 期满达标后输出闸门报告定稿。
 
