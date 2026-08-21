@@ -824,6 +824,10 @@ class ChatService:
                 }
                 for execution in tool_executions
             ]
+            presentation = _tool_presentation(tool_executions[0].result)
+            if presentation is not None:
+                # 只落前端展示所需的公开字段，不含用户起点坐标或 provider 原始响应。
+                decision_meta["tool_result"] = presentation
         grounded_memory_hits = (
             self._memory_retriever.grounded_hits(pending.memory_retrieval)
             if self._memory_retriever is not None and pending.memory_retrieval is not None
@@ -1129,6 +1133,71 @@ def _tool_result_count(result: ToolResult) -> int:
         if isinstance(value, list):
             return len(value)
     return 1 if result.ok else 0
+
+
+def _tool_presentation(result: ToolResult) -> dict[str, object] | None:
+    data = result.data
+    if not result.ok:
+        candidates = data.get("candidates")
+        if result.reason_code != "location_ambiguous" or not isinstance(candidates, list):
+            return None
+        return {
+            "kind": "location_ambiguous",
+            "tool_name": result.tool_name,
+            "candidates": [
+                {"name": str(item.get("name") or ""), "adcode": str(item.get("adcode") or "")}
+                for item in candidates[:3]
+                if isinstance(item, dict) and item.get("name")
+            ],
+        }
+    common: dict[str, object] = {
+        "provider": result.provider or "amap",
+        "cache_hit": result.cache_hit,
+    }
+    if result.tool_name == "get_weather":
+        return {
+            **common,
+            "kind": "weather",
+            "fetched_at": data.get("fetched_at"),
+            "report_time": data.get("report_time"),
+            "location": data.get("resolved_location"),
+            "current": data.get("current"),
+            "forecast": data.get("forecast", []),
+        }
+    if result.tool_name == "search_nearby":
+        results = data.get("results")
+        return {
+            **common,
+            "kind": "nearby",
+            "fetched_at": data.get("fetched_at"),
+            "origin": data.get("resolved_origin"),
+            "rank_by": data.get("rank_by"),
+            "results": [
+                {
+                    key: item.get(key)
+                    for key in (
+                        "name", "address", "category", "distance_m", "duration_s",
+                        "distance_basis", "navigation_uri",
+                    )
+                }
+                for item in (results if isinstance(results, list) else [])[:3]
+                if isinstance(item, dict)
+            ],
+        }
+    if result.tool_name == "plan_route":
+        return {
+            **common,
+            "kind": "route",
+            "fetched_at": data.get("fetched_at"),
+            "origin": data.get("origin"),
+            "destination": data.get("destination"),
+            "mode": data.get("mode"),
+            "distance_m": data.get("distance_m"),
+            "duration_s": data.get("duration_s"),
+            "steps": data.get("steps", []),
+            "navigation_uri": data.get("navigation_uri"),
+        }
+    return None
 
 
 def _tool_label(tool_name: str) -> str:

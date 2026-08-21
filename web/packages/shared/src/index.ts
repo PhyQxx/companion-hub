@@ -165,6 +165,31 @@ export interface AgentReplyControl {
   parse_status?: string;
 }
 
+export interface LocationCandidate {
+  name: string;
+  adcode?: string;
+}
+
+export type ToolPresentation =
+  | { kind: "location_ambiguous"; tool_name: string; candidates: LocationCandidate[] }
+  | {
+      kind: "weather"; provider: string; cache_hit: boolean; fetched_at?: string | null;
+      report_time?: string | null; location?: { name?: string; adcode?: string } | null;
+      current?: { weather?: string; temperature_c?: number; humidity_percent?: number; wind?: string | null } | null;
+      forecast?: Array<{ date?: string; day_weather?: string; night_weather?: string; low_c?: number; high_c?: number }>;
+    }
+  | {
+      kind: "nearby"; provider: string; cache_hit: boolean; fetched_at?: string | null;
+      origin?: { name?: string; adcode?: string } | null; rank_by?: string;
+      results: Array<{ name?: string; address?: string; category?: string; distance_m?: number;
+        duration_s?: number | null; distance_basis?: string; navigation_uri?: string }>;
+    }
+  | {
+      kind: "route"; provider: string; cache_hit: boolean; fetched_at?: string | null;
+      origin?: string; destination?: string; mode?: string; distance_m?: number;
+      duration_s?: number | null; steps?: string[]; navigation_uri?: string;
+    };
+
 export interface SocketEvent {
   proto_version: number;
   stream: string;

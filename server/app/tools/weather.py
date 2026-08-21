@@ -37,6 +37,7 @@ class WeatherTool:
 
     async def execute(self, arguments: BaseModel, context: ToolContext) -> ToolResult:
         started = perf_counter()
+        cache_hits_before = self._provider.cache_hits
         args = cast(GetWeatherArgs, arguments)
         try:
             resolved = await resolve_location(
@@ -103,18 +104,26 @@ class WeatherTool:
                 provider="amap",
                 data=data,
                 latency_ms=(perf_counter() - started) * 1_000,
+                cache_hit=self._provider.cache_hits > cache_hits_before,
                 location_source=resolved.source,
             )
         except AmapProviderError as error:
-            return self._failure(error.reason_code, started)
+            return self._failure(error.reason_code, started, candidates=error.candidates)
 
-    def _failure(self, reason_code: str, started: float) -> ToolResult:
+    def _failure(
+        self,
+        reason_code: str,
+        started: float,
+        *,
+        candidates: list[dict[str, str]] | None = None,
+    ) -> ToolResult:
         return ToolResult(
             ok=False,
             tool_name=self.name,
             provider="amap",
             reason_code=reason_code,
             latency_ms=(perf_counter() - started) * 1_000,
+            data={"candidates": candidates} if candidates else {},
         )
 
 

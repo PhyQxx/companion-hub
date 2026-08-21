@@ -442,6 +442,16 @@ async def test_weather_tool_round_hides_preamble_and_records_redacted_metadata(
         }
     ]
     assert "济南市" not in repr(meta["tool_calls"])
+    assert meta["tool_result"] == {
+        "kind": "weather",
+        "provider": "amap",
+        "cache_hit": False,
+        "fetched_at": None,
+        "report_time": None,
+        "location": {"name": "济南市", "adcode": "370100"},
+        "current": {"weather": "多云", "temperature_c": 29},
+        "forecast": [],
+    }
 
 
 async def test_published_database_config_is_used_on_next_turn(

@@ -1,9 +1,13 @@
 from __future__ import annotations
 
+from urllib.parse import parse_qs, urlparse
+
 import httpx
+import pytest
 
 from app.tools import (
     AmapProvider,
+    AmapProviderError,
     NearbyTool,
     PlanRouteArgs,
     RouteTool,
@@ -143,6 +147,9 @@ async def test_route_tool_returns_bounded_route_summary() -> None:
     assert result.data["duration_s"] == 720
     assert result.data["steps"] == ["向东步行100米", "到达目的地"]
     assert result.data["navigation_uri"].startswith("https://uri.amap.com/navigation?")
+    navigation_query = parse_qs(urlparse(result.data["navigation_uri"]).query)
+    assert "from" not in navigation_query
+    assert navigation_query["to"][0].startswith("117.130000,36.690000")
 
 
 async def test_nearby_requires_explicit_origin_when_no_default_city() -> None:
@@ -156,3 +163,78 @@ async def test_nearby_requires_explicit_origin_when_no_default_city() -> None:
         await client.aclose()
 
     assert result.reason_code == "location_required"
+
+
+async def test_provider_ttl_cache_is_shared_without_plaintext_request_keys() -> None:
+    calls = 0
+
+    def transport(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        return httpx.Response(
+            200,
+            json={"status": "1", "infocode": "10000", "lives": []},
+        )
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(transport))
+    first = AmapProvider(
+        "cache-test-key",
+        base_url="https://cache-test.amap.invalid",
+        client=client,
+        cache_namespace="provider-cache-test",
+    )
+    second = AmapProvider(
+        "cache-test-key",
+        base_url="https://cache-test.amap.invalid",
+        client=client,
+        cache_namespace="provider-cache-test",
+    )
+    try:
+        await first.weather("370100", extensions="base")
+        await second.weather("370100", extensions="base")
+    finally:
+        await client.aclose()
+
+    assert calls == 1
+    assert second.cache_hits == 1
+    assert all("370100" not in key for key in AmapProvider._cache)
+
+
+async def test_geocode_ambiguity_returns_three_safe_candidates() -> None:
+    def transport(request: httpx.Request) -> httpx.Response:
+        del request
+        return httpx.Response(
+            200,
+            json={
+                "status": "1",
+                "infocode": "10000",
+                "geocodes": [
+                    {
+                        "formatted_address": f"候选地点{i}",
+                        "adcode": f"37010{i}",
+                        "citycode": "0531",
+                        "location": f"117.{i},36.{i}",
+                    }
+                    for i in range(4)
+                ],
+            },
+        )
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(transport))
+    provider = AmapProvider(
+        "ambiguity-test-key",
+        base_url="https://ambiguity-test.amap.invalid",
+        client=client,
+    )
+    try:
+        with pytest.raises(AmapProviderError) as captured:
+            await provider.geocode("同名地点")
+    finally:
+        await client.aclose()
+
+    assert captured.value.reason_code == "location_ambiguous"
+    assert captured.value.candidates == [
+        {"name": "候选地点0", "adcode": "370100", "citycode": "0531"},
+        {"name": "候选地点1", "adcode": "370101", "citycode": "0531"},
+        {"name": "候选地点2", "adcode": "370102", "citycode": "0531"},
+    ]

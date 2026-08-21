@@ -94,20 +94,20 @@
 - [~] M2 语音验收：确定性后端 soak 已通过同一 `/ws/voice` 连接的 20 完成 + 20 打断。2026-08-21 真浏览器已打通麦克风授权、PCM 采集、ASR、流式生成、TTS 播放、viseme 和打断。云 ASR 样本为 ASR 2.596s / 首音频 6.890s；本地 ASR 真人暖态样本为 ASR 0.832s / 首 token 4.861s / 首音频 5.707s，转写把“小艾/只回答”识别为“小孩/指挥答”，语义可用但准确率待校准；打断 82ms 已达标。将 `sensenova_6.8-flash-lite` 临时提为主路由后首 token 反而降至约 6.891s，已在 config v39 回滚 `sensenova_deepseek-v4-flash` 为主路由。当前主阻塞是对话模型首 token，不应在端点基准/语音专用路由决策前机械凑满 20+20。
 - [x] M2 端点首 token 基准脚本：`make llm-first-token-bench` 不写聊天消息、不输出密钥，逐个测试当前 dialogue 路由。首轮实测仅 `deepseek-v4-flash` 成功（首 token 1.623s / 总计 1.635s）；`6.8-flash-lite` 20s 超时，其余三个云端点均限流。即使按分段理想值，0.832s ASR + 1.623s LLM + 约 0.846s TTS 也约为 3.3s，当前组合无法达到 1.8s；需要流式 ASR + 低延迟语音专用 LLM，或正式调整验收线。
 - [ ] Batch D（M2 达标后）：OLV Live2D 最小渲染壳接入与 Tauri 桌宠评估；完整形象中心/多形象/主题仍属于 M3B。
-- [~] M3A 地图/天气 Query Tools 基础实现已落地（`docs/35`）：Function Calling 完整/流式契约与真能力 probe、工具端点筛选、单工具回注、高德固定域名客户端、`get_weather/search_nearby/plan_route`、路网距离复核、L2/L3 零出站、文字/语音工具状态、Admin 配置、真实高德 Key 端到端验收，以及浏览器临时精确定位/WGS84→GCJ-02 均已完成。待办：模糊候选交互、TTL 缓存、结构化结果卡片/导航按钮、Admin 独立自检、最近 200 次工具台账与延迟报告。
+- [~] M3A 地图/天气 Query Tools 主链已落地（`docs/35`）：Function Calling 完整/流式契约与真能力 probe、工具端点筛选、单工具回注、高德固定域名客户端、`get_weather/search_nearby/plan_route`、路网距离复核、L2/L3 零出站、文字/语音工具状态、Admin 配置、真实高德 Key 端到端验收、浏览器临时精确定位/WGS84→GCJ-02、模糊候选按钮、跨轮次有界 TTL 缓存，以及天气/POI/路线结构化卡片与安全导航按钮均已完成。待办：Admin 独立自检、最近 200 次工具台账与延迟报告。
 
 ## 下一步执行顺序
 
 按依赖推进，P5 使用期与 P6 开发并行，但发现 P0/P1 文字/隐私问题时必须优先暂停 P6 新功能并修复：
 
-1. **真浏览器语音闭环**（当前唯一主线阻塞）：麦克风授权/PCM 采集/分句播放/整链打断，同时确认 Admin 延迟卡片与 Chat viseme 按实际播放时序工作；
-2. **M2 真机计样与判卷**：先重置指标窗口，完成至少 20 个语音回合与 20 个打断样本，再执行 `make p6-voice-m2`；要求首音频 P90 ≤1.8s、打断 P90 ≤300ms，并人工确认口型同步、连续 20 轮无积压；
-3. **地图/天气产品收口**：真实高德 Key、Function Calling 模型、真天气/附近医院/路线与浏览器临时精确定位已经验收；随后补模糊候选交互、TTL 缓存、结构化结果卡片/导航按钮、Admin 独立自检和最近 200 次工具台账/延迟报告；
+1. **地图/天气运维收口**：主查询链、精确定位、模糊候选、TTL 缓存和结构化结果卡片已经完成；下一步补 Admin 独立自检与最近 200 次工具台账/延迟报告；
+2. **并行重启 P5 14 天真实文字使用计数**：从第一条可核验每日日志开始连续计 14 天；期满复跑 P5 闸门并定稿 docs/32。若出现未处置 P0/P1，暂停扩展直至整改完成；
+3. **M2 延迟优化（非阻塞优化项）**：现有真浏览器语音闭环和 82ms 打断已验收，但实测链路理论下限约 3.3s，无法满足 1.8s 首音频目标；后续需流式 ASR + 低延迟语音专用 LLM，优化后再重置窗口完成 20+20 真机判卷；
 4. **P6 Batch D（M2 达标后）**：OLV Live2D 最小渲染壳接入与 Tauri 桌宠评估；完整形象中心/多形象/主题仍留在 M3B；
 5. **可选本地语音链**：需要 L2/离线语音时再安装并验收 faster-whisper、Silero 与 openWakeWord，不影响当前云端语音主线；
-6. **并行重启 P5 14 天真实文字使用计数**：从第一条可核验每日日志开始连续计 14 天；期满复跑 P5 闸门并定稿 docs/32。若出现未处置 P0/P1，P6 暂停扩展直至整改完成。
+6. **M3B 后续能力**：完整形象中心、多形象与主题继续保持后置，不抢占地图可观测性和 P5 使用期。
 
-当前完整质量基线：pytest **243 通过 / 2 跳过**（245 collected）、`ruff check server` 全绿、`mypy server/app server/tests` **136 source files** 全绿；`git diff --check`、Alembic 单 head 与前端 typecheck/build 通过。新增地图/天气专项覆盖完整/流式 Function Calling、端点能力筛选、天气、附近 POI、步行路网排序、路线概要、L2 零调用、工具结果回注、浏览器临时精确定位与脱敏元数据。Uvicorn `health=200`、faster-whisper 配置 200/422 正反校验、MiMo TTS→ASR 真实探针、LM Studio Qwen 本地生成探针、config v32 L1 真模型请求与真实高德 Key 端到端调用均已通过基线。
+当前完整质量基线：pytest **245 通过 / 2 跳过**（247 collected）、`ruff check server` 全绿、`mypy server/app server/tests` **136 source files** 全绿；`git diff --check`、Alembic 单 head 与前端 typecheck/build 通过。地图/天气专项新增跨 runtime TTL 缓存与命名空间隔离、模糊地点 3 候选、结构化展示载荷、路线起点坐标零持久化和安全导航链接覆盖。Uvicorn `health=200`、faster-whisper 配置 200/422 正反校验、MiMo TTS→ASR 真实探针、LM Studio Qwen 本地生成探针、config v32 L1 真模型请求与真实高德 Key 端到端调用均已通过基线。
 
 ## 已完成
 

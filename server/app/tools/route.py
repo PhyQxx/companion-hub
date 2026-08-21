@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from time import perf_counter
 from typing import Annotated, Literal, cast
 from urllib.parse import urlencode
@@ -38,6 +39,7 @@ class RouteTool:
 
     async def execute(self, arguments: BaseModel, context: ToolContext) -> ToolResult:
         started = perf_counter()
+        cache_hits_before = self._provider.cache_hits
         args = cast(PlanRouteArgs, arguments)
         try:
             origin = await resolve_location(
@@ -64,8 +66,10 @@ class RouteTool:
                 tool_name=self.name,
                 provider="amap",
                 latency_ms=(perf_counter() - started) * 1_000,
+                cache_hit=self._provider.cache_hits > cache_hits_before,
                 data={
                     "provider": "amap",
+                    "fetched_at": datetime.now(UTC).isoformat(),
                     "origin": origin.name,
                     "destination": str(
                         destination.get("formatted_address") or args.destination
@@ -84,23 +88,30 @@ class RouteTool:
                 location_source=origin.source,
             )
         except AmapProviderError as error:
-            return self._failure(error.reason_code, started)
+            return self._failure(error.reason_code, started, candidates=error.candidates)
 
-    def _failure(self, reason_code: str, started: float) -> ToolResult:
+    def _failure(
+        self,
+        reason_code: str,
+        started: float,
+        *,
+        candidates: list[dict[str, str]] | None = None,
+    ) -> ToolResult:
         return ToolResult(
             ok=False,
             tool_name=self.name,
             provider="amap",
             reason_code=reason_code,
             latency_ms=(perf_counter() - started) * 1_000,
+            data={"candidates": candidates} if candidates else {},
         )
 
 
 def _navigation_uri(origin: str, destination: str, name: str, mode: str) -> str:
+    del origin  # 不把用户起点坐标回注模型或持久化;高德打开后从当前位置起航。
     uri_mode = {"walking": "walk", "driving": "car", "transit": "bus"}[mode]
     return "https://uri.amap.com/navigation?" + urlencode(
         {
-            "from": origin,
             "to": f"{destination},{name}",
             "mode": uri_mode,
             "src": "companion-hub",

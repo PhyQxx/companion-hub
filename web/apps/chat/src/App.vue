@@ -13,6 +13,7 @@ import {
   type Conversation,
   type PrivacyLevel,
   type SocketEvent,
+  type ToolPresentation,
   type VoiceControlEvent,
 } from "@aria/shared";
 import {
@@ -21,6 +22,7 @@ import {
   type VoiceSentenceMeta,
   type VoiceVisemeFrame,
 } from "./voice";
+import ToolResultCard from "./ToolResultCard.vue";
 
 // 聊天前端主组件：登录 → 会话侧栏 → 流式消息区 → 发送区。
 // 令牌持久化在 localStorage；WS 断线自动重连（最多 3 次）。
@@ -470,6 +472,21 @@ function recallLabelOf(message: ChatMessage): string | null {
   return typeof mode === "string" ? (recallLabels[mode] ?? null) : null;
 }
 
+function toolResultOf(message: ChatMessage): ToolPresentation | null {
+  const value = (message.decision_meta as { tool_result?: unknown } | null)?.tool_result;
+  if (!value || typeof value !== "object") return null;
+  const kind = (value as { kind?: unknown }).kind;
+  return ["location_ambiguous", "weather", "nearby", "route"].includes(String(kind))
+    ? value as ToolPresentation
+    : null;
+}
+
+async function chooseLocation(name: string) {
+  draft.value = `请使用地点“${name}”继续刚才的查询`;
+  await nextTick();
+  if (canSend.value) await send();
+}
+
 function messageTimeOf(message: ChatMessage): string {
   const date = new Date(message.created_at);
   if (Number.isNaN(date.getTime())) return "";
@@ -855,6 +872,11 @@ onBeforeUnmount(() => {
           <div v-if="message.role !== 'system'" class="message" :class="message.role">
             <div class="bubble">
               {{ message.content }}
+              <ToolResultCard
+                v-if="message.role === 'assistant' && toolResultOf(message)"
+                :result="toolResultOf(message)!"
+                @choose-location="chooseLocation"
+              />
               <span v-if="message.role === 'assistant' && emotionOf(message)" class="emotion">{{ emotionOf(message) }}</span>
               <span v-if="message.role === 'assistant' && personaVersionOf(message)" class="persona-badge">P v{{ personaVersionOf(message) }}</span>
               <span v-if="message.role === 'assistant' && recallLabelOf(message)" class="recall-badge">{{ recallLabelOf(message) }}</span>

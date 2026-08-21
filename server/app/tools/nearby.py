@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from datetime import UTC, datetime
 from time import perf_counter
 from typing import Annotated, Any, Literal, cast
 from urllib.parse import urlencode
@@ -61,6 +62,7 @@ class NearbyTool:
 
     async def execute(self, arguments: BaseModel, context: ToolContext) -> ToolResult:
         started = perf_counter()
+        cache_hits_before = self._provider.cache_hits
         args = cast(SearchNearbyArgs, arguments)
         try:
             origin = await resolve_location(
@@ -110,8 +112,10 @@ class NearbyTool:
                 tool_name=self.name,
                 provider="amap",
                 latency_ms=(perf_counter() - started) * 1_000,
+                cache_hit=self._provider.cache_hits > cache_hits_before,
                 data={
                     "provider": "amap",
+                    "fetched_at": datetime.now(UTC).isoformat(),
                     "resolved_origin": {
                         "name": origin.name,
                         "adcode": origin.adcode,
@@ -123,7 +127,7 @@ class NearbyTool:
                 location_source=origin.source,
             )
         except AmapProviderError as error:
-            return self._failure(error.reason_code, started)
+            return self._failure(error.reason_code, started, candidates=error.candidates)
 
     async def _verify_route_distances(
         self,
@@ -150,13 +154,20 @@ class NearbyTool:
 
         await asyncio.gather(*(verify(item) for item in selected))
 
-    def _failure(self, reason_code: str, started: float) -> ToolResult:
+    def _failure(
+        self,
+        reason_code: str,
+        started: float,
+        *,
+        candidates: list[dict[str, str]] | None = None,
+    ) -> ToolResult:
         return ToolResult(
             ok=False,
             tool_name=self.name,
             provider="amap",
             reason_code=reason_code,
             latency_ms=(perf_counter() - started) * 1_000,
+            data={"candidates": candidates} if candidates else {},
         )
 
 

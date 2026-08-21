@@ -1,23 +1,44 @@
 from __future__ import annotations
 
 import asyncio
+import copy
+import hashlib
+import json
 import math
-from collections import deque
+from collections import OrderedDict, deque
 from collections.abc import Mapping
+from dataclasses import dataclass
 from time import monotonic
-from typing import Any
+from typing import Any, ClassVar
+from uuid import uuid4
 
 import httpx
 
 
 class AmapProviderError(RuntimeError):
-    def __init__(self, reason_code: str) -> None:
+    def __init__(
+        self,
+        reason_code: str,
+        *,
+        candidates: list[dict[str, str]] | None = None,
+    ) -> None:
         self.reason_code = reason_code
+        self.candidates = candidates or []
         super().__init__(reason_code)
+
+
+@dataclass(slots=True)
+class _CacheEntry:
+    expires_at: float
+    payload: dict[str, Any]
 
 
 class AmapProvider:
     """Bounded client for the fixed Amap Web Service API surface."""
+
+    # 进程内跨轮次缓存。键只保存请求摘要,不保留地址或精确坐标明文;容量有界。
+    _cache: ClassVar[OrderedDict[str, _CacheEntry]] = OrderedDict()
+    _cache_max_entries: ClassVar[int] = 512
 
     def __init__(
         self,
@@ -29,6 +50,7 @@ class AmapProvider:
         max_concurrency: int = 2,
         requests_per_minute: int = 30,
         client: httpx.AsyncClient | None = None,
+        cache_namespace: str | None = None,
     ) -> None:
         if not api_key:
             raise ValueError("amap api key is required")
@@ -42,8 +64,18 @@ class AmapProvider:
         self._rate_lock = asyncio.Lock()
         self._client = client or httpx.AsyncClient()
         self._owns_client = client is None
+        self._cache_namespace = cache_namespace or (
+            f"runtime:{self._base_url}"
+            if client is None
+            else f"injected:{uuid4()}"
+        )
         self._consecutive_failures = 0
         self._circuit_open_until = 0.0
+        self._cache_hits = 0
+
+    @property
+    def cache_hits(self) -> int:
+        return self._cache_hits
 
     async def close(self) -> None:
         if self._owns_client:
@@ -53,12 +85,21 @@ class AmapProvider:
         params = {"address": address}
         if city:
             params["city"] = city
-        payload = await self._request("/v3/geocode/geo", params)
+        payload = await self._request("/v3/geocode/geo", params, cache_ttl_s=86_400)
         geocodes = payload.get("geocodes")
         if not isinstance(geocodes, list) or not geocodes:
             raise AmapProviderError("location_not_found")
         if len(geocodes) > 1:
-            raise AmapProviderError("location_ambiguous")
+            candidates = [
+                {
+                    "name": str(item.get("formatted_address") or address),
+                    "adcode": str(item.get("adcode") or ""),
+                    "citycode": str(item.get("citycode") or ""),
+                }
+                for item in geocodes[:3]
+                if isinstance(item, dict)
+            ]
+            raise AmapProviderError("location_ambiguous", candidates=candidates)
         item = geocodes[0]
         if not isinstance(item, dict) or not item.get("adcode") or not item.get("location"):
             raise AmapProviderError("tool_result_invalid")
@@ -68,6 +109,7 @@ class AmapProvider:
         return await self._request(
             "/v3/weather/weatherInfo",
             {"city": adcode, "extensions": extensions},
+            cache_ttl_s=300 if extensions == "base" else 1_800,
         )
 
     async def regeo(self, location: str) -> dict[str, Any]:
@@ -75,6 +117,7 @@ class AmapProvider:
         payload = await self._request(
             "/v3/geocode/regeo",
             {"location": location, "extensions": "base"},
+            cache_ttl_s=900,
         )
         regeocode = payload.get("regeocode")
         if not isinstance(regeocode, dict):
@@ -103,7 +146,7 @@ class AmapProvider:
         if region:
             params["region"] = region
             params["city_limit"] = "true"
-        return await self._request("/v5/place/around", params)
+        return await self._request("/v5/place/around", params, cache_ttl_s=120)
 
     async def route(
         self,
@@ -135,9 +178,25 @@ class AmapProvider:
             path = "/v5/direction/transit/integrated"
         else:
             raise AmapProviderError("route_mode_invalid")
-        return await self._request(path, params)
+        return await self._request(path, params, cache_ttl_s=120)
 
-    async def _request(self, path: str, params: Mapping[str, str]) -> dict[str, Any]:
+    async def _request(
+        self,
+        path: str,
+        params: Mapping[str, str],
+        *,
+        cache_ttl_s: int = 0,
+    ) -> dict[str, Any]:
+        cache_key = self._cache_key(path, params) if cache_ttl_s > 0 else None
+        if cache_key is not None:
+            cached = self._cache.get(cache_key)
+            now = monotonic()
+            if cached is not None and cached.expires_at > now:
+                self._cache.move_to_end(cache_key)
+                self._cache_hits += 1
+                return copy.deepcopy(cached.payload)
+            if cached is not None:
+                del self._cache[cache_key]
         now = monotonic()
         if now < self._circuit_open_until:
             raise AmapProviderError("provider_circuit_open")
@@ -173,6 +232,14 @@ class AmapProvider:
                     self._record_failure()
                     raise AmapProviderError("provider_unavailable") from None
                 self._consecutive_failures = 0
+                if cache_key is not None:
+                    self._cache[cache_key] = _CacheEntry(
+                        expires_at=monotonic() + cache_ttl_s,
+                        payload=copy.deepcopy(payload),
+                    )
+                    self._cache.move_to_end(cache_key)
+                    while len(self._cache) > self._cache_max_entries:
+                        self._cache.popitem(last=False)
                 return payload
         raise AmapProviderError("provider_unavailable")
 
@@ -188,6 +255,14 @@ class AmapProvider:
         self._consecutive_failures += 1
         if self._consecutive_failures >= 5:
             self._circuit_open_until = monotonic() + 60
+
+    def _cache_key(self, path: str, params: Mapping[str, str]) -> str:
+        raw = json.dumps(
+            [self._cache_namespace, self._api_key, path, sorted(params.items())],
+            ensure_ascii=False,
+            separators=(",", ":"),
+        )
+        return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
     @staticmethod
     def _validate_business_status(payload: Mapping[str, Any]) -> None:
