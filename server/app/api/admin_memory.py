@@ -89,7 +89,7 @@ class MemoryEditRequest(StrictModel):
     importance: Annotated[float | None, Field(ge=0, le=1)] = None
     pin: bool | None = None
     valid_to: datetime | None = None
-    reason: Annotated[str, Field(min_length=3, max_length=400)]
+    reason: Annotated[str, Field(min_length=1, max_length=400)]
 
 
 class ConflictResolveRequest(StrictModel):

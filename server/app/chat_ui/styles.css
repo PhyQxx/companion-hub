@@ -69,6 +69,9 @@ aside { min-height: 0; padding: 14px; display: flex; flex-direction: column; ove
 .privacy-row label { display: flex; align-items: center; gap: 8px; }
 .privacy-row select { padding-block: 7px; }
 .privacy-row .muted { font-size: 12px; text-align: right; }
+.voice-toggle { cursor: pointer; user-select: none; white-space: nowrap; }
+.voice-toggle input { width: 36px; height: 20px; margin: 0; padding: 0; accent-color: #5876ee; cursor: pointer; }
+.voice-toggle input:disabled { cursor: not-allowed; }
 .compose-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: end; gap: 10px; }
 .composer-input { min-width: 0; padding: 9px 12px 7px; background: #0b0e14; border: 1px solid #303847; border-radius: 12px; transition: 150ms ease; }
 .composer-input:focus-within { border-color: #6f8cff; box-shadow: 0 0 0 3px rgba(111,140,255,.12); }

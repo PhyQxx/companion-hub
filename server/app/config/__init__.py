@@ -1,8 +1,9 @@
 from .database import DatabaseConfigStore, DatabaseConfigVersion
-from .models import HubConfig, ObservabilityConfig
+from .models import AmapToolConfig, HubConfig, ObservabilityConfig, QueryToolConfig, ToolsConfig
 from .store import ConfigAudit, ConfigSnapshot, ConfigStore, ConfigWatcher
 
 __all__ = [
+    "AmapToolConfig",
     "ConfigAudit",
     "ConfigSnapshot",
     "ConfigStore",
@@ -11,4 +12,6 @@ __all__ = [
     "DatabaseConfigVersion",
     "HubConfig",
     "ObservabilityConfig",
+    "QueryToolConfig",
+    "ToolsConfig",
 ]

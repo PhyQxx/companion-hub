@@ -6,6 +6,12 @@ export interface VoiceSentenceMeta {
   provider: string | null;
 }
 
+export interface VoiceVisemeFrame {
+  amp: number;
+  offsetMs: number;
+  durationMs: number;
+}
+
 /** 浏览器麦克风：采集任意输入采样率，降采样为服务端要求的 PCM16/16k/mono。 */
 export class PcmMicrophoneCapture {
   private stream: MediaStream | null = null;
@@ -71,8 +77,14 @@ export class VoicePlaybackQueue {
   private tail: Promise<void> = Promise.resolve();
   private active: AudioBufferSourceNode | null = null;
   private epoch = 0;
+  private visemeTimers = new Set<number>();
 
-  enqueue(meta: VoiceSentenceMeta, chunks: ArrayBuffer[]): void {
+  enqueue(
+    meta: VoiceSentenceMeta,
+    chunks: ArrayBuffer[],
+    visemes: VoiceVisemeFrame[] = [],
+    onViseme?: (amp: number) => void,
+  ): void {
     const epoch = this.epoch;
     const payload = concatBuffers(chunks);
     this.tail = this.tail
@@ -84,12 +96,13 @@ export class VoicePlaybackQueue {
           ? decodePcm16(context, payload, meta.sampleRate)
           : await context.decodeAudioData(payload.slice(0));
         if (epoch !== this.epoch) return;
-        await this.playBuffer(context, buffer, epoch);
+        await this.playBuffer(context, buffer, epoch, visemes, onViseme);
       });
   }
 
   interrupt(): void {
     this.epoch += 1;
+    this.clearVisemeTimers();
     if (this.active) {
       try {
         this.active.stop();
@@ -115,7 +128,13 @@ export class VoicePlaybackQueue {
     return this.context;
   }
 
-  private playBuffer(context: AudioContext, buffer: AudioBuffer, epoch: number): Promise<void> {
+  private playBuffer(
+    context: AudioContext,
+    buffer: AudioBuffer,
+    epoch: number,
+    visemes: VoiceVisemeFrame[],
+    onViseme?: (amp: number) => void,
+  ): Promise<void> {
     return new Promise((resolve) => {
       if (epoch !== this.epoch) {
         resolve();
@@ -125,13 +144,37 @@ export class VoicePlaybackQueue {
       this.active = source;
       source.buffer = buffer;
       source.connect(context.destination);
+      if (onViseme) {
+        for (const frame of visemes) {
+          const timer = window.setTimeout(() => {
+            this.visemeTimers.delete(timer);
+            if (epoch === this.epoch) onViseme(frame.amp);
+          }, Math.max(0, frame.offsetMs));
+          this.visemeTimers.add(timer);
+        }
+        const last = visemes.at(-1);
+        if (last) {
+          const resetTimer = window.setTimeout(() => {
+            this.visemeTimers.delete(resetTimer);
+            if (epoch === this.epoch) onViseme(0);
+          }, Math.max(0, last.offsetMs + last.durationMs));
+          this.visemeTimers.add(resetTimer);
+        }
+      }
       source.onended = () => {
+        this.clearVisemeTimers();
+        onViseme?.(0);
         source.disconnect();
         if (this.active === source) this.active = null;
         resolve();
       };
       source.start();
     });
+  }
+
+  private clearVisemeTimers(): void {
+    for (const timer of this.visemeTimers) window.clearTimeout(timer);
+    this.visemeTimers.clear();
   }
 }
 

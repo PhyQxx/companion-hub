@@ -2,9 +2,9 @@
 
 > 一个部署在自有设备上的 AI 伴侣中枢。它把聊天、长期记忆、历史回溯、模型路由、隐私边界和未来设备能力放在同一个可扩展运行时中。
 
-当前阶段：**P6 · 语音与 Live2D 产品化**（P5 的 14 天真实文字使用并行进行，日志见 docs/32）。P5 可开发项已全部收口：多主体长期记忆、Timeline 历史回溯、L2 本地链路（Qwen3.6 reasoning 适配，真实 `l2-isolation` 用例通过，期间发现并修复一处 L2 档案覆盖泄漏的隐私漏洞）、确定性记忆评估集（正例 20/20、负例 0 误引）与前后端浏览器验收。P6 Batch A 已落地 `/ws/voice` 语音闭环垂直切片：VAD 断句、MiMo ASR/TTS 与 edge-tts 故障转移链、句级流式合成、barge-in 打断，语音配置全部进管理后台。剩余：chat 前端麦克风 UI、本地 ASR（L2 语音路径）、口型 viseme 与 Live2D/桌宠。
+当前阶段：**P6 · 语音与 Live2D 产品化**（P5 的 14 天真实文字使用期并行，但截至 2026-08-21 尚无可计入的每日日志）。P5 可开发项已全部收口。P6 Batch A 已落地 `/ws/voice` 语音闭环；Batch B 的浏览器麦克风/PTT/分句播放/整链打断、Silero VAD 适配层与 openWakeWord 可选唤醒门已落地；Batch C 的 50ms `voice.viseme`、按实际播放时钟驱动的 Chat 口型调试条、语音延迟 P50/P90 滑动窗口和 Admin 总览卡片也已接入。本轮前端 typecheck/build 已通过；当前主线剩余真实浏览器麦克风/播放/口型验收、真机 20 完成回合 + 20 打断样本的 M2 判卷，达标后再进入 Live2D/桌宠。faster-whisper 作为可选 L2/离线语音能力后置。
 
-当前完整后端质量基线（2026-08-20）：pytest **200 通过 / 2 跳过**（202 collected）、`ruff check server`、严格 `mypy server/app server/tests`（118 个 source files）均通过，`git diff --check` 通过。本轮还实际验证了运行中 Uvicorn `/healthz=200`、faster-whisper 配置正反校验（200/422）、config v23 的 MiMo TTS→ASR 真连（均 200）以及 LM Studio Qwen 本地生成探针（200）。前端 typecheck/build 最近一次旧基线为全绿，但本轮有前端业务改动，必须重新验收。
+当前完整质量基线（2026-08-21 现场复验）：pytest **232 通过 / 2 跳过**（234 collected）、`ruff check server`、严格 `mypy server/app server/tests`（134 个 source files）、`git diff --check`、Alembic 单 head、`pnpm --dir web typecheck` 与 `pnpm --dir web build` 均通过。运行中 Uvicorn `/healthz=200`，配置为 v32；`/api/v1/meta/voice/latency=200`，但当前真实窗口为 **0 完成回合 / 0 打断样本**，因此 M2 四项 acceptance 均未达标。确定性 soak 已覆盖同一 `/ws/voice` 连接内 20 完成 + 20 打断，但不替代真实设备延迟和肉眼口型验收。当前 `.venv` 未安装 silero-vad/torch/onnxruntime/openWakeWord/faster-whisper，真实运行为 Energy VAD + 自动监听/PTT，无唤醒词与本地 ASR。地图/天气 Query Tools 已完成 fake provider 基础回归，尚待真实高德 Key 与浏览器定位验收。
 
 质量闸门统一使用 `make p5-backend`（ruff/mypy/pytest/diff-check）、`make p5-frontend`（web typecheck/build）和 `make p5-real`。真实模型矩阵可拆 `make p5-real-l1` 与 `make p5-real-l2`：前者只跑云端允许的 L0/L1 用例，后者只跑强制 `local_private` 的 L2 隔离用例。脚本默认从 `.env.local` 安全加载模型环境变量、使用 `config/hub.example.yaml` 路由，不打印 secret，也不写入项目业务数据库。示例配置的本地 private 基线为 LM Studio（OpenAI-compatible `http://127.0.0.1:1234/v1`，思考开销 `reasoning_overhead_tokens: 2048`、超时 120s）。报告路径可用 `P5_REPORT`、`P5_L1_REPORT`、`P5_L2_REPORT` 覆盖。
 
@@ -31,21 +31,22 @@ Aria 不是单一聊天 UI，而是一个长期运行的本地 Companion Hub：
 - **时间线与历史回溯**：Timeline 索引、相对时间解析、有界检索、Source 下钻、无证据不编造、L2 索引壳隔离；
 - **记忆评估集**：`server/tests/memory_eval/` 确定性回归（正例 20 / 负例 20 / 冲突 / 删除 / 隔离），阈值对齐 Release Criteria；
 - **语音闭环（P6 Batch A）**：`/ws/voice` 双向音频通道、VAD 断句、PTT、MiMo ASR/TTS + edge-tts 故障转移链、句级流式合成、barge-in 打断、L2 拒绝云端出站；语音配置在管理后台「模型与路由 → 语音」可视化管理并保存即生效；
+- **地图与天气 Query Tools（M3A 基础）**：Function Calling、服务端高德天气/附近 POI/路线、路网距离复核、L2/L3 出站闸门、文字/语音工具状态和 Admin 配置；真实 Key、精确定位与结果卡片待验收；
 - **管理后台**：Vue 3 + Element Plus，覆盖模型、路由、语音、Persona、记忆、时间线和基础观测；
 - **正式 Chat 前端**：Vue 3 + Vite；
 - **现实能力边界**：模型只能把已上报的真实在线/授权能力当作可执行动作。
 
 ## 当前正在开发
 
-### P6 语音化（Batch A 已完成，Batch B 进行中）
+### P6 语音化（Batch A～C 代码已完成，M2 真机验收进行中）
 
 设计见 [docs/33-P6语音化第一批设计.md](./docs/33-P6语音化第一批设计.md)。Batch A 已落地完整后端垂直切片：`/ws/voice` 通道（与聊天同鉴权、PCM16/16k）、能量 VAD 断句、MiMo 云端 ASR（PCM 包 WAV 头上传）、`TtsProviderChain` 提供方链（MiMo PCM 直出为主、edge-tts 免费兜底；逐句选择、首块前失败无感切换、60s 冷却）、LLM 流式按句切分首句即合成、播放中人声打断（cancel 回合 + 中止 TTS）、ASR/首token/首音频延迟打点。语音配置（密钥/音色/语种/链顺序）全部在管理后台配置，每条话语开始前从配置中心刷新，改配置即时生效。
 
-Batch B 浏览器端核心代码已落地：`@aria/shared` 新增 `VoiceSocket`；chat 端采集麦克风并重采样为 PCM16/16k/mono，`voice.ready` 会先返回 ASR/TTS 与本地性摘要。无 ASR，或 L2 只有云 ASR 时，页面在申请麦克风权限前就阻断；后台热改语音配置后下一次点击自动重连刷新。分句 PCM/MP3 进入顺序播放队列，显式打断覆盖 ASR→LLM→TTS，并可停止文字已经提交后的剩余 TTS 而不误取消已完成文字回合。faster-whisper 已进入配置契约、延迟加载运行时和管理后台，新增只读“检查本地环境”接口/按钮；provider 按 voice 配置指纹缓存，避免每句话重新建模。能量 VAD 已移除 Python 3.13 废弃的 `audioop`。当前运行数据库 **config v23** 已启用 MiMo `mimo-v2.5-asr` 与 MiMo `mimo-v2.5-tts` → edge-tts，真实 TTS→ASR 探针均为 200；`dialogue` 路由在云主模型后优先使用 LM Studio `local_private` 兜底，并把 route timeout 收到 12s。LLM Router 对 429 和 timeout 不再重复撞同一 endpoint，而是立即切下一个 fallback，避免语音场景长时间卡住。当前产品决策先使用 MiMo 云 ASR，faster-whisper 保留为后续 L2/离线可选能力，不再阻塞主线。当前剩余优先级为：前端 typecheck/build + 真浏览器麦克风验收 → silero-vad/openWakeWord → Batch C viseme + 延迟报表 → M2 指标验收。
+Batch B/C 的浏览器采集、PTT、分句播放、整链打断、Silero/openWakeWord 可选适配、50ms viseme、延迟滑窗、Admin M2 卡片和判卷脚本均已落地。前端 typecheck/build 已于 2026-08-21 复验通过。当前 config v32 已启用 MiMo ASR + MiMo→edge TTS；`.venv` 未安装 silero-vad/torch/onnxruntime/openWakeWord/faster-whisper，实际运行为 Energy VAD + 自动监听/PTT。剩余主线只有真浏览器音频/口型验收和 M2 20+20 真机计样。
 
 ### P5 使用期（并行）
 
-以 Vue chat 前端为载体连续 14 天真实文字使用（2026-08-20 起计），问题按 docs/32 §5.2 格式记录；期间只修问题不扩文字功能。消息级 `persona_version` 浏览器确认留待用户本人登录（同一链路已有自动化合同覆盖）。
+以 Vue chat 前端为载体连续 14 天真实文字使用，问题按 docs/32 §5.2 格式记录；截至 2026-08-21 日志仍为空，应从首条可核验记录重新起算 14 天。期间只修问题不扩文字功能。
 
 ## 架构速览
 
@@ -102,6 +103,7 @@ AgentReply → OutputIntent → Output Adapter
 | [20-结构化回复与 Persona](./docs/20-结构化回复与Persona.md) | AgentReply、Persona、现实能力边界 |
 | [30-多主体持久化记忆设计](./docs/30-多主体持久化记忆设计.md) | user / assistant / shared 长期记忆 |
 | [31-记忆时间线与历史回溯设计](./docs/31-记忆时间线与历史回溯设计.md) | Timeline、History Recall、按时间回查 |
+| [35-地图与天气工具设计](./docs/35-地图与天气工具设计.md) | Function Calling、高德天气/POI/路线、隐私与验收 |
 
 当前任务状态看 [TASKS.md](./TASKS.md)，不要从历史验收文档推断当前进度。
 
@@ -225,14 +227,15 @@ PostgreSQL 默认映射到宿主机 `5433`，可通过 `POSTGRES_PORT` 修改。
 
 ## 当前阶段与下一步
 
-当前执行清单以 [TASKS.md](./TASKS.md) 为准。P6 主要目标是：
+当前执行清单以 [TASKS.md](./TASKS.md) 为准。P6 下一步是：
 
-1. **Batch B**：chat 前端麦克风采集/分句播放/打断按钮；后台语音页填入真实 MiMo Key 完成云端真连验证；faster-whisper 本地 ASR 补 L2 语音路径；silero-vad 替换能量 VAD；
-2. **Batch C**：口型 viseme 通道（50ms 幅度包络）、延迟打点报表；
-3. **M2 语音验收**：说完 → 首字 ≤1.8s（P90）、打断 ≤300ms、口型肉眼同步、连续 20 轮无积压；
-4. **Batch D（M2 达标后）**：OLV Live2D 最小渲染壳接入与 Tauri 桌宠评估；完整形象中心、多形象和主题仍留在 M3B。
+1. **真浏览器闭环**：完成麦克风授权、PCM 采集、分句播放、整链打断和 viseme 时序检查；
+2. **M2 语音验收**：在真实设备完成至少 20 个完成回合和 20 个打断样本，运行 `make p6-voice-m2`；要求首音频 P90 ≤1.8s、打断 P90 ≤300ms、口型肉眼同步、连续 20 轮无积压；
+3. **Batch D（M2 达标后）**：OLV Live2D 最小渲染壳接入与 Tauri 桌宠评估；
+4. **地图/天气真实验收**：配置高德 Web 服务 Key 与通过 Function Calling probe 的对话模型，完成真天气/附近医院/路线测试，再补精确定位、缓存与结果卡片；
+5. **可选本地语音链**：需要 L2/离线语音时再安装并验收 faster-whisper、Silero 与 openWakeWord。
 
-并行约束：P5 的 14 天真实文字使用继续记录（docs/32），期间发现的 P0/P1 文字链路问题优先修复；P5 期满达标后输出闸门报告定稿。
+并行约束：P5 的 14 天真实文字使用从 docs/32 首条有效日志重启计数，期间发现的 P0/P1 文字链路问题优先修复；P5 期满达标后输出闸门报告定稿。
 
 ## 文档维护约定
 

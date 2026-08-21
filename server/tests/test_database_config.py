@@ -158,6 +158,8 @@ async def test_admin_api_requires_token_and_manages_drafts(
     assert [item["status"] for item in versions.json()] == ["published", "superseded"]
     assert chat_debug_page.status_code == 200
     assert "聊天密码" in chat_debug_page.text
+    assert 'id="text-reply-voice"' in chat_debug_page.text
+    assert "文字回复播报" in chat_debug_page.text
     # With web/apps/admin/dist present the admin routes serve the Vue SPA;
     # source-only checkouts fall back to the vanilla pages.
     spa_mode = '<div id="app"></div>' in page.text

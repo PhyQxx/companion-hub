@@ -94,7 +94,7 @@ const fallbackUser = ref("");
 
 const detail = ref<MemoryDetail | null>(null);
 const editing = ref<MemoryItem | null>(null);
-const editForm = reactive({ content: "", summary: "", importance: 0.6, pin: false, reason: "" });
+const editForm = ref({ content: "", summary: "", importance: 0.6, pin: false, reason: "" });
 const adding = ref(false);
 const addForm = reactive({
   user_id: "",
@@ -155,22 +155,22 @@ async function showDetail(id: number) {
 
 function openEdit(item: MemoryItem) {
   editing.value = item;
-  editForm.content = item.content;
-  editForm.summary = item.summary ?? "";
-  editForm.importance = item.importance;
-  editForm.pin = item.pin;
-  editForm.reason = "";
+  editForm.value.content = item.content;
+  editForm.value.summary = item.summary ?? "";
+  editForm.value.importance = item.importance;
+  editForm.value.pin = item.pin;
+  editForm.value.reason = "";
 }
 
 async function submitEdit() {
   if (!editing.value) return;
   const body: Record<string, unknown> = {
-    content: editForm.content,
-    reason: editForm.reason,
-    pin: editForm.pin,
+    content: editForm.value.content,
+    reason: editForm.value.reason,
+    pin: editForm.value.pin,
   };
-  if (editForm.summary) body.summary = editForm.summary;
-  if (editForm.importance !== editing.value.importance) body.importance = editForm.importance;
+  if (editForm.value.summary) body.summary = editForm.value.summary;
+  if (editForm.value.importance !== editing.value.importance) body.importance = editForm.value.importance;
   try {
     const updated = await api.request<MemoryItem>(
       `/api/v1/admin/memories/${editing.value.id}`,
@@ -442,9 +442,9 @@ onMounted(load);
           <label>重要性<el-input-number v-model="editForm.importance" :min="0" :max="1" :step="0.05" /></label>
           <el-checkbox v-model="editForm.pin">置顶</el-checkbox>
         </div>
-        <label>原因（必填）<el-input v-model="editForm.reason" minlength="3" /></label>
+        <label>原因（必填）<el-input v-model="editForm.reason" /></label>
       </template>
-      <template #footer><el-button @click="editing = null">取消</el-button><el-button type="primary" :disabled="editForm.reason.trim().length < 3" @click="submitEdit">保存替代版本</el-button></template>
+      <template #footer><el-button @click="editing = null">取消</el-button><el-button type="primary" :disabled="!editForm.reason.trim()" @click="submitEdit">保存替代版本</el-button></template>
     </el-dialog>
 
     <el-dialog v-model="adding" width="620px" title="手动添加记忆">

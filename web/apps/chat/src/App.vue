@@ -5,9 +5,11 @@ import {
   ChatApi,
   ChatSocket,
   VoiceSocket,
+  matchesLocationIntent,
   type AgentReplyControl,
   type AuthSession,
   type ChatMessage,
+  type ClientLocationPayload,
   type Conversation,
   type PrivacyLevel,
   type SocketEvent,
@@ -17,12 +19,17 @@ import {
   PcmMicrophoneCapture,
   VoicePlaybackQueue,
   type VoiceSentenceMeta,
+  type VoiceVisemeFrame,
 } from "./voice";
 
 // 聊天前端主组件：登录 → 会话侧栏 → 流式消息区 → 发送区。
 // 令牌持久化在 localStorage；WS 断线自动重连（最多 3 次）。
 const api = new ChatApi();
 const TOKEN_KEY = "ariaChatToken";
+const TEXT_REPLY_VOICE_KEY = "ariaTextReplyVoice";
+const LOCATION_ENABLED_KEY = "ariaLocationEnabled";
+// 与服务端 tools/location.py 的 LOCATION_TTL(15 分钟)保持一致。
+const LOCATION_TTL_MS = 15 * 60 * 1000;
 
 const token = ref<string>("");
 const displayName = ref<string>("");
@@ -54,6 +61,64 @@ const voiceRecording = ref(false);
 const voiceBusy = ref(false);
 const voiceStatus = ref("语音未连接");
 const voiceTranscript = ref("");
+const voiceViseme = ref(0);
+const textReplyVoice = ref(localStorage.getItem(TEXT_REPLY_VOICE_KEY) === "1");
+const voiceTtsConfigured = ref<boolean | null>(null);
+
+// 终端定位：命中位置类查询时才请求/附带(惰性授权)，坐标只随帧内存传输。
+const locationEnabled = ref(localStorage.getItem(LOCATION_ENABLED_KEY) !== "0");
+const locationSupported = typeof navigator !== "undefined" && "geolocation" in navigator;
+const locationPolicy = ref<"ask_each_time" | "allow_session">("ask_each_time");
+let cachedLocation: { payload: ClientLocationPayload; at: number } | null = null;
+
+function freshCachedLocation(): ClientLocationPayload | null {
+  if (cachedLocation && Date.now() - cachedLocation.at < LOCATION_TTL_MS) {
+    return cachedLocation.payload;
+  }
+  cachedLocation = null;
+  return null;
+}
+
+function fetchBrowserPosition(): Promise<ClientLocationPayload | null> {
+  return new Promise((resolve) => {
+    if (!locationSupported) return resolve(null);
+    if (locationPolicy.value === "allow_session") {
+      const cached = freshCachedLocation();
+      if (cached) return resolve(cached);
+    }
+    // ask_each_time: 每次都取新位置(maximumAge 0); 浏览器授权弹窗只在首次出现。
+    navigator.geolocation.getCurrentPosition(
+      (position) => {
+        const payload: ClientLocationPayload = {
+          latitude: position.coords.latitude,
+          longitude: position.coords.longitude,
+          accuracy_m: Math.round(position.coords.accuracy ?? 0),
+        };
+        cachedLocation = { payload, at: Date.now() };
+        resolve(payload);
+      },
+      () => resolve(null),
+      {
+        timeout: 8000,
+        maximumAge: locationPolicy.value === "allow_session" ? LOCATION_TTL_MS : 0,
+        enableHighAccuracy: false,
+      },
+    );
+  });
+}
+
+async function resolveLocationForText(text: string): Promise<ClientLocationPayload | null> {
+  if (!locationEnabled.value || !locationSupported) return null;
+  if (privacy.value === "L2" || !matchesLocationIntent(text)) return null;
+  const payload = await fetchBrowserPosition();
+  if (!payload) setStatus("未获取到本机定位，将使用默认城市", false);
+  return payload;
+}
+
+function onLocationEnabledChanged() {
+  localStorage.setItem(LOCATION_ENABLED_KEY, locationEnabled.value ? "1" : "0");
+  if (!locationEnabled.value) cachedLocation = null;
+}
 
 const asrUnavailableLabels: Record<string, string> = {
   not_configured: "后台尚未启用语音识别",
@@ -69,7 +134,11 @@ let reconnectTimer: number | null = null;
 let reconnectAttempts = 0;
 let voiceSocket: VoiceSocket | null = null;
 let voiceSocketKey = "";
-let voiceSentence: { meta: VoiceSentenceMeta; chunks: ArrayBuffer[] } | null = null;
+let voiceSentence: {
+  meta: VoiceSentenceMeta;
+  chunks: ArrayBuffer[];
+  visemes: VoiceVisemeFrame[];
+} | null = null;
 const microphone = new PcmMicrophoneCapture();
 const playback = new VoicePlaybackQueue();
 
@@ -96,6 +165,7 @@ async function closeVoice() {
   voiceBusy.value = false;
   voiceReady.value = false;
   voiceAsrConfigured.value = null;
+  voiceTtsConfigured.value = null;
   voiceAsrBlockMessage.value = "";
   voiceSocketKey = "";
   voiceSentence = null;
@@ -105,6 +175,7 @@ async function closeVoice() {
   await microphone.stop();
   voiceStatus.value = "语音未连接";
   voiceTranscript.value = "";
+  voiceViseme.value = 0;
 }
 
 async function ensureVoiceSocket(): Promise<VoiceSocket> {
@@ -113,8 +184,7 @@ async function ensureVoiceSocket(): Promise<VoiceSocket> {
   if (
     voiceSocket &&
     voiceReady.value &&
-    voiceSocketKey === key &&
-    voiceAsrConfigured.value !== false
+    voiceSocketKey === key
   ) {
     return voiceSocket;
   }
@@ -138,7 +208,8 @@ async function ensureVoiceSocket(): Promise<VoiceSocket> {
   voiceSocket = next;
   voiceSocketKey = key;
   try {
-    await next.connect(activeId.value, privacy.value);
+    // 纯语音回合没有输入帧, hello 时带上新鲜缓存位置(不触发授权弹窗)。
+    await next.connect(activeId.value, privacy.value, freshCachedLocation());
   } catch (error) {
     if (voiceSocket === next) {
       voiceSocket = null;
@@ -159,6 +230,7 @@ function handleVoiceEvent(event: VoiceControlEvent) {
   switch (event.type) {
     case "voice.ready":
       voiceReady.value = true;
+      voiceTtsConfigured.value = event.tts_configured ?? false;
       if (event.asr_configured === false) {
         voiceAsrConfigured.value = false;
         voiceAsrBlockMessage.value = "后台尚未启用语音识别";
@@ -169,18 +241,63 @@ function handleVoiceEvent(event: VoiceControlEvent) {
         voiceAsrConfigured.value = true;
         voiceAsrBlockMessage.value = "";
       }
-      voiceStatus.value = voiceAsrConfigured.value
-        ? `语音已就绪 · ${event.asr_runs_local ? "本地识别" : "云端识别"}`
-        : voiceAsrBlockMessage.value;
+      if (textReplyVoice.value) {
+        voiceStatus.value = voiceTtsConfigured.value
+          ? "文字语音回复已就绪"
+          : "未配置语音合成，回复将仅显示文字";
+      } else {
+        voiceStatus.value = voiceAsrConfigured.value
+          ? `语音已就绪 · ${event.asr_runs_local ? "本地识别" : "云端识别"} · ${event.vad_backend === "silero" ? "Silero VAD" : "Energy VAD"}${event.wake_word_configured ? " · 唤醒词待命" : ""}`
+          : voiceAsrBlockMessage.value;
+      }
+      break;
+    case "voice.wake_detected":
+      voiceStatus.value = "已唤醒，开始说吧…";
+      break;
+    case "voice.wake_unavailable":
+      voiceStatus.value = "唤醒词不可用，已切回自动监听 / PTT";
       break;
     case "voice.transcript":
       voiceTranscript.value = event.text ?? "";
-      voiceStatus.value = "已识别，正在生成回复…";
+      voiceStatus.value = textReplyVoice.value
+        ? "文字已提交，正在生成回复…"
+        : "已识别，正在生成回复…";
       break;
     case "turn.accepted":
       voiceBusy.value = true;
       voiceStatus.value = "正在生成语音回复…";
+      if (activeId.value && event.generation_id) {
+        streaming.value = {
+          conversationId: activeId.value,
+          generationId: event.generation_id,
+          text: "",
+          emotion: null,
+        };
+      }
       if (activeId.value) void refreshMessages(activeId.value);
+      break;
+    case "reply.delta":
+      if (activeId.value && event.generation_id) {
+        if (streaming.value?.generationId === event.generation_id) {
+          streaming.value.text += event.delta ?? "";
+        } else {
+          streaming.value = {
+            conversationId: activeId.value,
+            generationId: event.generation_id,
+            text: event.delta ?? "",
+            emotion: null,
+          };
+        }
+        void scrollToEnd();
+      }
+      break;
+    case "tool.started":
+      voiceStatus.value = String(event.label ?? "正在查询外部信息…");
+      break;
+    case "tool.finished":
+      voiceStatus.value = event.ok === false
+        ? `查询未完成：${String(event.reason_code ?? "unknown")}`
+        : "查询完成，正在组织回复…";
       break;
     case "voice.sentence":
       voiceSentence = {
@@ -192,32 +309,55 @@ function handleVoiceEvent(event: VoiceControlEvent) {
           provider: event.provider ?? null,
         },
         chunks: [],
+        visemes: [],
       };
       voiceStatus.value = "正在接收语音…";
       break;
     case "voice.sentence.end":
       if (voiceSentence && (event.index ?? voiceSentence.meta.index) === voiceSentence.meta.index) {
-        playback.enqueue(voiceSentence.meta, voiceSentence.chunks);
+        playback.enqueue(
+          voiceSentence.meta,
+          voiceSentence.chunks,
+          voiceSentence.visemes,
+          (amp) => {
+            voiceViseme.value = amp;
+          },
+        );
         voiceSentence = null;
         voiceStatus.value = "正在播放回复…";
       }
       break;
+    case "voice.viseme":
+      if (voiceSentence && (event.sentence_index ?? voiceSentence.meta.index) === voiceSentence.meta.index) {
+        voiceSentence.visemes.push({
+          amp: Math.max(0, Math.min(1, Number(event.amp ?? 0))),
+          offsetMs: Math.max(0, Number(event.offset_ms ?? 0)),
+          durationMs: Math.max(0, Number(event.duration_ms ?? 50)),
+        });
+      }
+      break;
     case "voice.interrupted":
       voiceBusy.value = false;
+      if (streaming.value?.generationId === event.generation_id) streaming.value = null;
       playback.interrupt();
       voiceSentence = null;
+      voiceViseme.value = 0;
       voiceStatus.value = "已打断";
       break;
     case "turn.cancelled":
       voiceBusy.value = false;
+      if (streaming.value?.generationId === event.generation_id) streaming.value = null;
       playback.interrupt();
       voiceSentence = null;
+      voiceViseme.value = 0;
       voiceStatus.value = "语音回合已取消";
       break;
     case "turn.failed":
       voiceBusy.value = false;
+      if (streaming.value?.generationId === event.generation_id) streaming.value = null;
       playback.interrupt();
       voiceSentence = null;
+      voiceViseme.value = 0;
       voiceStatus.value = `语音生成失败：${event.reason_code ?? "unknown"}`;
       break;
     case "voice.asr_unavailable":
@@ -227,10 +367,22 @@ function handleVoiceEvent(event: VoiceControlEvent) {
     case "voice.tts_unavailable":
       voiceStatus.value = `语音合成不可用，将仅显示文字：${event.reason ?? "not_configured"}`;
       break;
+    case "voice.error":
+      voiceBusy.value = false;
+      voiceStatus.value = `语音请求失败：${event.reason ?? "unknown"}`;
+      break;
     case "reply.committed":
       voiceBusy.value = false;
       voiceStatus.value = "语音回复已完成";
-      if (activeId.value) void refreshMessages(activeId.value);
+      if (activeId.value) {
+        const conversationId = activeId.value;
+        const generationId = event.generation_id;
+        void refreshMessages(conversationId).finally(() => {
+          if (streaming.value?.generationId === generationId) streaming.value = null;
+        });
+      } else if (streaming.value?.generationId === event.generation_id) {
+        streaming.value = null;
+      }
       void loadRuntimeMeta();
       break;
   }
@@ -289,6 +441,14 @@ function onPrivacyChanged() {
   if (voiceReady.value || voiceRecording.value) void closeVoice();
 }
 
+function onTextReplyVoiceChanged() {
+  localStorage.setItem(TEXT_REPLY_VOICE_KEY, textReplyVoice.value ? "1" : "0");
+  if (!textReplyVoice.value && !voiceRecording.value) void closeVoice();
+  voiceStatus.value = textReplyVoice.value
+    ? "已开启：文字消息将播放语音回复"
+    : "已关闭文字回复播报";
+}
+
 function personaVersionOf(message: ChatMessage): number | null {
   const value = (message.decision_meta as { persona_version?: unknown } | null)?.persona_version;
   return typeof value === "number" && value > 0 ? value : null;
@@ -310,12 +470,26 @@ function recallLabelOf(message: ChatMessage): string | null {
   return typeof mode === "string" ? (recallLabels[mode] ?? null) : null;
 }
 
+function messageTimeOf(message: ChatMessage): string {
+  const date = new Date(message.created_at);
+  if (Number.isNaN(date.getTime())) return "";
+  return new Intl.DateTimeFormat("zh-CN", {
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: false,
+  }).format(date);
+}
+
 async function loadRuntimeMeta() {
   try {
     const runtime = await api.runtimeMeta();
     personaMeta.value = runtime.persona
       ? { version: runtime.persona.version, name: runtime.persona.name }
       : null;
+    if (runtime.location_policy) locationPolicy.value = runtime.location_policy.precise;
   } catch {
     personaMeta.value = null;
   }
@@ -504,6 +678,18 @@ function handleEvent(event: SocketEvent) {
     setStatus(`协议错误：${String(event.payload.reason_code ?? "")}`, true);
     return;
   }
+  if (event.type === "tool.started") {
+    setStatus(String(event.payload.label ?? "正在查询外部信息…"));
+    return;
+  }
+  if (event.type === "tool.finished") {
+    if (event.payload.ok === false) {
+      setStatus(`查询未完成：${String(event.payload.reason_code ?? "unknown")}`, true);
+    } else {
+      setStatus("查询完成，正在组织回复…");
+    }
+    return;
+  }
   if (!event.payload.message && event.type !== "reply.delta" && event.type !== "reply.control") {
     if (event.type === "turn.failed") {
       streaming.value = null;
@@ -557,7 +743,22 @@ async function send() {
   if (!canSend.value || !activeId.value) return;
   await loadRuntimeMeta();
   if (!canSend.value || !activeId.value) return;
-  socket?.sendMessage(activeId.value, draft.value.trim(), privacy.value);
+  const text = draft.value.trim();
+  const location = await resolveLocationForText(text);
+  if (textReplyVoice.value) {
+    try {
+      const current = await ensureVoiceSocket();
+      voiceBusy.value = true;
+      voiceStatus.value = "文字已提交，正在生成语音回复…";
+      current.submitText(text, location);
+      draft.value = "";
+    } catch (error) {
+      voiceBusy.value = false;
+      setStatus(error instanceof Error ? error.message : "语音连接失败", true);
+    }
+    return;
+  }
+  socket?.sendMessage(activeId.value, text, privacy.value, location);
   draft.value = "";
 }
 
@@ -657,6 +858,7 @@ onBeforeUnmount(() => {
               <span v-if="message.role === 'assistant' && emotionOf(message)" class="emotion">{{ emotionOf(message) }}</span>
               <span v-if="message.role === 'assistant' && personaVersionOf(message)" class="persona-badge">P v{{ personaVersionOf(message) }}</span>
               <span v-if="message.role === 'assistant' && recallLabelOf(message)" class="recall-badge">{{ recallLabelOf(message) }}</span>
+              <span v-if="messageTimeOf(message)" class="message-time">{{ messageTimeOf(message) }}</span>
             </div>
           </div>
         </template>
@@ -675,6 +877,28 @@ onBeforeUnmount(() => {
             <option value="L1">L1 · 常规</option>
             <option value="L2">L2 · 仅本地</option>
           </select>
+          <label class="tts-toggle" title="开启后，文字输入也会播放 TTS 语音回复">
+            <input
+              v-model="textReplyVoice"
+              type="checkbox"
+              :disabled="!!streaming || voiceRecording || voiceBusy"
+              @change="onTextReplyVoiceChanged"
+            />
+            <span>文字回复播报</span>
+          </label>
+          <label
+            v-if="locationSupported"
+            class="tts-toggle"
+            title="天气/附近/路线查询时自动附带本机定位（首次使用会请求浏览器授权，拒绝后回落默认城市）"
+          >
+            <input
+              v-model="locationEnabled"
+              type="checkbox"
+              :disabled="!!streaming || voiceRecording || voiceBusy"
+              @change="onLocationEnabledChanged"
+            />
+            <span>📍自动定位</span>
+          </label>
           <span class="status" :class="{ error: statusError }">{{ statusText }}</span>
         </div>
         <div class="voice-row">
@@ -689,6 +913,9 @@ onBeforeUnmount(() => {
           </button>
           <button v-if="voiceBusy && !voiceRecording" type="button" @click="interruptVoice">打断/停止播报</button>
           <span class="voice-status">{{ voiceStatus }}</span>
+          <span class="viseme-meter" title="实时口型幅度">
+            <span class="viseme-fill" :style="{ transform: `scaleX(${voiceViseme})` }"></span>
+          </span>
           <span v-if="voiceTranscript" class="voice-transcript">识别：{{ voiceTranscript }}</span>
         </div>
         <div class="composer-row">
@@ -743,9 +970,15 @@ main { display: grid; grid-template-rows: minmax(0, 1fr) auto; min-height: 0; }
 
 .composer { border-top: 1px solid var(--line); padding: 12px 16px; display: grid; gap: 8px; }
 .composer-meta { display: flex; align-items: center; gap: 12px; }
+.tts-toggle { display:flex; align-items:center; gap:6px; color:var(--muted); font-size:12px; cursor:pointer; user-select:none; }
+.tts-toggle input { accent-color:var(--accent); cursor:pointer; }
+.tts-toggle input:disabled { cursor:not-allowed; }
 .voice-row { display: flex; align-items: center; gap: 8px; min-width: 0; flex-wrap: wrap; }
 .voice-button.recording { border-color: var(--danger); color: var(--danger); }
 .voice-status { color: var(--muted); font-size: 12px; }
+.viseme-meter { width:44px; height:8px; border:1px solid var(--line); border-radius:999px; overflow:hidden; background:#10131d; }
+.viseme-fill { display:block; width:100%; height:100%; transform-origin:left center; background:var(--accent); transition:transform 50ms linear; }
+.message-time { margin-left:6px; color:var(--muted); font-size:11px; white-space:nowrap; }
 .voice-transcript { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); font-size: 12px; }
 .composer-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 10px; align-items: end; }
 .composer textarea { resize: none; }

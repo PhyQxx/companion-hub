@@ -22,10 +22,12 @@ from app.llm import (
     LLMRoute,
     LLMRouteExhausted,
     ModelUsage,
+    ToolCall,
 )
 from app.main import create_app
 from app.persona import PersonaConfig, PersonaStore
 from app.schemas import PrivacyLevel
+from app.tools import ToolExecution, ToolResult
 
 
 def config_yaml(model: str = "dialogue-v1") -> str:
@@ -119,6 +121,83 @@ class FakeCapabilityProvider:
         ]
 
 
+class FakeToolRouter:
+    def __init__(self) -> None:
+        self.requests: list[CompletionRequest] = []
+
+    async def complete(self, request: CompletionRequest) -> CompletionResult:
+        self.requests.append(request)
+        if request.tools:
+            return CompletionResult(
+                text="我先猜一下天气。",
+                provider="openai_compatible",
+                model="tool-model",
+                endpoint="cloud",
+                route=request.route,
+                finish_reason="tool_calls",
+                latency_ms=10,
+                tool_calls=[
+                    ToolCall(
+                        id="call-weather",
+                        function={
+                            "name": "get_weather",
+                            "arguments": {"location": "济南市"},
+                        },
+                    )
+                ],
+            )
+        return CompletionResult(
+            text="济南现在多云，29℃。",
+            provider="openai_compatible",
+            model="tool-model",
+            endpoint="cloud",
+            route=request.route,
+            finish_reason="stop",
+            latency_ms=8,
+        )
+
+    async def stream(
+        self,
+        request: CompletionRequest,
+        on_delta: Callable[[str], Awaitable[None]],
+    ) -> CompletionResult:
+        result = await self.complete(request)
+        await on_delta(result.text)
+        return result
+
+
+class FakeToolExecutor:
+    async def execute(self, call: ToolCall, context: object) -> ToolExecution:
+        del context
+        return ToolExecution(
+            call_id=call.id,
+            result=ToolResult(
+                ok=True,
+                tool_name=call.function.name,
+                provider="amap",
+                latency_ms=12,
+                data={
+                    "resolved_location": {"name": "济南市", "adcode": "370100"},
+                    "current": {"weather": "多云", "temperature_c": 29},
+                },
+            ),
+        )
+
+
+class FakeToolRuntime:
+    executor = FakeToolExecutor()
+
+    async def close(self) -> None:
+        return None
+
+
+def _append_chat_delta(target: list[str]) -> Callable[[str], Awaitable[None]]:
+    async def append(delta: str) -> None:
+        target.append(delta)
+
+    return append
+
+
 async def create_user(database: Database, name: str = "Test") -> AppUserRecord:
     user = AppUserRecord(id=uuid7(), display_name=name, status="active")
     async with database.sessions.begin() as session:
@@ -187,6 +266,85 @@ async def test_chat_persists_turn_and_uses_recent_context(
     assert second.user_message.turn_id == second.assistant_message.turn_id
 
 
+async def test_start_turn_supports_smaller_context_window_for_voice(
+    database: Database, store: DatabaseConfigStore
+) -> None:
+    requests: list[CompletionRequest] = []
+    service = ChatService(
+        database,
+        store,
+        router_builder=lambda config: FakeRouter(config.models["cloud"].model, requests),
+    )
+    user = await create_user(database)
+    conversation = await service.create_conversation(
+        user_id=user.id, title="Voice trim test"
+    )
+    for index in range(3):
+        await service.send_message(
+            conversation.id,
+            user_id=user.id,
+            text=f"第{index}轮",
+            privacy_level=PrivacyLevel.L1,
+        )
+
+    pending = await service.start_turn(
+        conversation.id,
+        user_id=user.id,
+        text="语音输入",
+        privacy_level=PrivacyLevel.L1,
+        max_context_messages=2,
+    )
+
+    # 3 轮 send_message + 本条语音输入共 7 条历史; 语音窗口只保留最近 2 条
+    assert [message.role for message in pending.request.messages] == [
+        "system",
+        "assistant",
+        "user",
+    ]
+    assert pending.request.messages[-1].content == "语音输入"
+
+    full = await service.start_turn(
+        conversation.id,
+        user_id=user.id,
+        text="再来一条",
+        privacy_level=PrivacyLevel.L1,
+    )
+    assert len(full.request.messages) == 1 + 8
+
+
+async def test_chat_injects_trusted_current_time_in_user_timezone(
+    database: Database, store: DatabaseConfigStore
+) -> None:
+    requests: list[CompletionRequest] = []
+    service = ChatService(
+        database,
+        store,
+        router_builder=lambda config: FakeRouter(config.models["cloud"].model, requests),
+    )
+    user = AppUserRecord(
+        id=uuid7(),
+        display_name="Tokyo user",
+        timezone="Asia/Tokyo",
+        status="active",
+    )
+    async with database.sessions.begin() as session:
+        session.add(user)
+    conversation = await service.create_conversation(user_id=user.id, title="clock")
+
+    await service.send_message(
+        conversation.id,
+        user_id=user.id,
+        text="现在几点？",
+        privacy_level=PrivacyLevel.L1,
+    )
+
+    system_prompt = requests[-1].messages[0].content
+    assert "【当前时间】" in system_prompt
+    assert "用户时区: Asia/Tokyo" in system_prompt
+    assert "+09:00" in system_prompt
+    assert "不要声称自己无法获知当前时间" in system_prompt
+
+
 async def test_chat_injects_only_reported_runtime_capabilities(
     database: Database, store: DatabaseConfigStore
 ) -> None:
@@ -214,6 +372,76 @@ async def test_chat_injects_only_reported_runtime_capabilities(
     assert "不得把角色设定中的场景当作真实能力" in system_prompt
     meta = result.assistant_message.decision_meta or {}
     assert meta["runtime_capabilities"] == ["device.tv.living_room.power"]
+
+
+async def test_weather_tool_round_hides_preamble_and_records_redacted_metadata(
+    database: Database,
+    store: DatabaseConfigStore,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    candidate = store.current.config.model_dump(mode="python")
+    candidate["models"]["cloud"]["supports_tool_calling"] = True
+    candidate["tools"] = {
+        "enabled": True,
+        "query": {"default_city": "济南市"},
+        "amap": {"enabled": True, "secret_value": "test-only-key"},
+    }
+    draft = await store.create_draft(HubConfig.model_validate(candidate), actor="test")
+    await store.publish(draft.version, actor="test")
+    backend = FakeToolRouter()
+    monkeypatch.setattr(
+        "app.chat.service.build_query_tool_runtime",
+        lambda config, secrets: FakeToolRuntime(),
+    )
+    service = ChatService(database, store, router_builder=lambda config: backend)
+    user = await create_user(database)
+    conversation = await service.create_conversation(user_id=user.id, title="weather")
+    deltas: list[str] = []
+    tool_events: list[dict[str, object]] = []
+
+    async def capture_tool_event(event: dict[str, object]) -> None:
+        tool_events.append(event)
+
+    pending = await service.start_turn(
+        conversation.id,
+        user_id=user.id,
+        text="济南今天天气怎么样？",
+        privacy_level=PrivacyLevel.L1,
+    )
+    result = await service.run_stream(
+        pending,
+        _append_chat_delta(deltas),
+        capture_tool_event,
+    )
+
+    assert [tool.name for tool in pending.request.tools] == ["get_weather"]
+    assert deltas == ["济南现在多云，29℃。"]
+    assert [event["type"] for event in tool_events] == [
+        "tool.started",
+        "tool.finished",
+    ]
+    assert tool_events[1]["ok"] is True
+    assert len(backend.requests) == 2
+    followup = backend.requests[1]
+    assert followup.tools == []
+    assert followup.tool_choice == "none"
+    assert followup.messages[-1].role == "tool"
+    assert '"weather":"多云"' in followup.messages[-1].content
+    meta = result.assistant_message.decision_meta or {}
+    assert meta["tool_calls"] == [
+        {
+            "call_id": "call-weather",
+            "tool_name": "get_weather",
+            "latency_ms": 12.0,
+            "outcome": "success",
+            "reason_code": None,
+            "provider": "amap",
+            "result_count": 1,
+            "cache_hit": False,
+            "location_source": None,
+        }
+    ]
+    assert "济南市" not in repr(meta["tool_calls"])
 
 
 async def test_published_database_config_is_used_on_next_turn(

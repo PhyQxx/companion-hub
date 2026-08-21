@@ -6,8 +6,58 @@
 /** 隐私等级：L0 可上云 / L1 常规 / L2 仅本地模型 */
 export type PrivacyLevel = "L0" | "L1" | "L2";
 
+/** 终端 WGS84 临时位置：仅随消息帧在内存中传递，用于工具位置解析，不落库 */
+export interface ClientLocationPayload {
+  latitude: number;
+  longitude: number;
+  accuracy_m: number;
+}
+
+/**
+ * 与服务端 app/tools/intent.py 的查询关键词保持同步：
+ * 文本命中时前端才请求/附带定位，避免每条消息都暴露坐标。
+ */
+const LOCATION_INTENT_TERMS = [
+  "天气", "气温", "温度", "下雨", "降雨", "晴天", "阴天", "台风",
+  "附近", "最近", "周边", "医院", "药店", "餐厅", "充电站",
+  "怎么走", "路线", "导航", "开车去", "步行去", "坐公交",
+];
+
+export function matchesLocationIntent(text: string): boolean {
+  return LOCATION_INTENT_TERMS.some((term) => text.includes(term));
+}
+
 export interface SetupStatus {
   setup_required: boolean;
+}
+
+export interface VoiceLatencyMetricSummary {
+  count: number;
+  p50: number | null;
+  p90: number | null;
+  max: number | null;
+}
+
+export interface VoiceLatencySummary {
+  count: number;
+  window_size: number;
+  asr_ms: VoiceLatencyMetricSummary;
+  first_token_ms: VoiceLatencyMetricSummary;
+  first_audio_ms: VoiceLatencyMetricSummary;
+  total_ms: VoiceLatencyMetricSummary;
+  interrupt_ms: VoiceLatencyMetricSummary;
+  targets: {
+    completed_turns: number;
+    interrupt_samples: number;
+    first_audio_p90_ms: number;
+    interrupt_p90_ms: number;
+  };
+  acceptance: {
+    completed_turns_ready: boolean;
+    interrupt_samples_ready: boolean;
+    first_audio_p90_pass: boolean;
+    interrupt_p90_pass: boolean;
+  };
 }
 
 export interface VoiceControlEvent {
@@ -19,6 +69,7 @@ export interface VoiceControlEvent {
   privacy_level?: PrivacyLevel;
   text?: string;
   content?: string;
+  delta?: string;
   is_final?: boolean;
   index?: number;
   mime?: string;
@@ -32,6 +83,14 @@ export interface VoiceControlEvent {
   asr_provider?: string | null;
   tts_configured?: boolean;
   tts_provider_count?: number;
+  vad_backend?: string;
+  wake_word_configured?: boolean;
+  wake_word_backend?: string | null;
+  backend?: string;
+  amp?: number;
+  offset_ms?: number;
+  duration_ms?: number;
+  sentence_index?: number;
   supported?: {
     format?: string;
     sample_rate?: number;
@@ -45,6 +104,10 @@ export interface RuntimeMeta {
     version: number;
     content_hash: string;
     name: string;
+  };
+  location_policy?: {
+    tools_enabled: boolean;
+    precise: "ask_each_time" | "allow_session";
   };
 }
 
@@ -153,7 +216,11 @@ export class VoiceSocket {
     private handlers: VoiceSocketHandlers,
   ) {}
 
-  connect(conversationId: string, privacyLevel: PrivacyLevel): Promise<void> {
+  connect(
+    conversationId: string,
+    privacyLevel: PrivacyLevel,
+    location?: ClientLocationPayload | null,
+  ): Promise<void> {
     return new Promise((resolve, reject) => {
       const socket = new WebSocket(this.url);
       socket.binaryType = "arraybuffer";
@@ -165,6 +232,7 @@ export class VoiceSocket {
           type: "voice.hello",
           conversation_id: conversationId,
           privacy_level: privacyLevel,
+          ...(location ? { location } : {}),
           format: "pcm_s16le",
           sample_rate: 16_000,
           channels: 1,
@@ -209,6 +277,14 @@ export class VoiceSocket {
 
   endUtterance() {
     this.sendJson({ type: "utterance.end" });
+  }
+
+  submitText(text: string, location?: ClientLocationPayload | null) {
+    this.sendJson({
+      type: "text.submit",
+      text,
+      ...(location ? { location } : {}),
+    });
   }
 
   interrupt() {
@@ -412,12 +488,18 @@ export class ChatSocket {
     this.socket.send(JSON.stringify(frame));
   }
 
-  sendMessage(conversationId: string, text: string, privacyLevel: PrivacyLevel) {
+  sendMessage(
+    conversationId: string,
+    text: string,
+    privacyLevel: PrivacyLevel,
+    location?: ClientLocationPayload | null,
+  ) {
     this.send({
       type: "message.send",
       conversation_id: conversationId,
       text,
       privacy_level: privacyLevel,
+      ...(location ? { location } : {}),
     });
   }
 

@@ -2,12 +2,14 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 from collections.abc import Awaitable, Callable, Coroutine
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Protocol
 from uuid import UUID
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from sqlalchemy import delete, select, update
 
@@ -20,7 +22,7 @@ from app.db import (
     MessageRecord,
 )
 from app.ids import uuid7
-from app.llm import CompletionRequest, CompletionResult, LLMMessage, LLMRoute
+from app.llm import CompletionRequest, CompletionResult, LLMMessage, LLMRoute, ToolCall
 from app.llm.factory import build_router
 from app.llm.provider import EnvSecretProvider
 from app.memory import (
@@ -44,6 +46,17 @@ from app.timeline import (
     TimelineStore,
     has_history_intent,
 )
+from app.tools import (
+    ClientLocation,
+    ToolContext,
+    ToolExecution,
+    ToolResult,
+    build_query_tool_runtime,
+    nearby_tool_definition,
+    route_tool_definition,
+    select_query_tools,
+    weather_tool_definition,
+)
 
 from .capabilities import (
     RuntimeActionCapability,
@@ -56,6 +69,24 @@ from .reply import ControlStreamFilter, parse_agent_reply, structured_reply_inst
 MAX_CONTEXT_MESSAGES = 20
 
 logger = logging.getLogger(__name__)
+
+
+def render_time_context(now: datetime, timezone_name: str) -> str:
+    """Render a trusted per-turn clock for the model in the user's timezone."""
+    try:
+        timezone = ZoneInfo(timezone_name)
+    except (ZoneInfoNotFoundError, ValueError):
+        timezone_name = "UTC"
+        timezone = ZoneInfo("UTC")
+    local_now = now.astimezone(timezone)
+    return (
+        "【当前时间】\n"
+        f"用户当地时间: {local_now.isoformat(timespec='seconds')}\n"
+        f"用户时区: {timezone_name}\n"
+        f"UTC 时间: {now.astimezone(UTC).isoformat(timespec='seconds')}\n"
+        "以上是本条消息进入服务时的可信时间。涉及「现在几点」、日期、早晚或相对时间时, "
+        "以此为准; 不要声称自己无法获知当前时间。"
+    )
 
 
 class CompletionBackend(Protocol):
@@ -113,6 +144,9 @@ class PendingTurn:
     memory_retrieval: RetrievalResult | None = None
     history_recall: HistoryRecallResult | None = None
     runtime_capabilities: tuple[RuntimeActionCapability, ...] = ()
+    tool_names: tuple[str, ...] = ()
+    # 连接级临时位置(L2 原始信号): 仅随轮次存活于内存, 不写入任何持久化记录。
+    client_location: ClientLocation | None = None
 
 
 class TurnCancelled(RuntimeError):
@@ -218,18 +252,42 @@ class ChatService:
         user_id: UUID,
         text: str,
         privacy_level: PrivacyLevel,
+        client_location: ClientLocation | None = None,
     ) -> ChatTurn:
         pending = await self.start_turn(
             conversation_id,
             user_id=user_id,
             text=text,
             privacy_level=privacy_level,
+            client_location=client_location,
         )
         await self._transition(pending.turn_id, {"accepted"}, "thinking")
         try:
             backend = self._router_builder(pending.config)
             result = await backend.complete(pending.request)
-            return await self._commit_turn(pending, result, backend=backend)
+            tool_executions: tuple[ToolExecution, ...] = ()
+            consistency_request = pending.request
+            if result.tool_calls:
+                execution = await self._execute_tool_call(pending, result.tool_calls)
+                tool_executions = (execution,)
+                consistency_request = self._tool_followup_request(
+                    pending.request, result, execution
+                )
+                result = await backend.complete(consistency_request)
+            consistency = await self._memory_consistency_guard.enforce(
+                result=result,
+                request=consistency_request,
+                persona=pending.persona,
+                retrieval=pending.memory_retrieval,
+                backend=backend,
+            )
+            return await self._commit_turn(
+                pending,
+                consistency.result,
+                backend=backend,
+                consistency=consistency,
+                tool_executions=tool_executions,
+            )
         except BaseException:
             await self._fail_if_active(pending.turn_id)
             raise
@@ -241,6 +299,8 @@ class ChatService:
         user_id: UUID,
         text: str,
         privacy_level: PrivacyLevel,
+        max_context_messages: int | None = None,
+        client_location: ClientLocation | None = None,
     ) -> PendingTurn:
         if privacy_level is PrivacyLevel.L3:
             raise ValueError("L3 durable chat is not allowed")
@@ -290,7 +350,9 @@ class ChatService:
                 )
             )
 
-        history = await self._context_messages(conversation_id)
+        history = await self._context_messages(
+            conversation_id, limit=max_context_messages or MAX_CONTEXT_MESSAGES
+        )
         snapshot = (
             await self._config_store.refresh()
             if isinstance(self._config_store, DatabaseConfigStore)
@@ -311,6 +373,7 @@ class ChatService:
                 # 设备能力查询失败不能影响聊天；失败时按“没有现实能力”收紧边界。
                 logger.warning("runtime capability lookup failed", exc_info=True)
         reality_block = render_reality_grounding(runtime_capabilities)
+        time_block = render_time_context(now, user_timezone)
         history_intent = has_history_intent(text)
         memory_retrieval: RetrievalResult | None = None
         grounded_memory_hits: tuple[MemoryHit, ...] = ()
@@ -346,6 +409,17 @@ class ChatService:
             except Exception:
                 # 历史索引是增强路径，故障不能让普通聊天不可用。
                 logger.warning("history recall failed for turn %s", turn_id, exc_info=True)
+        tool_names = (
+            select_query_tools(text, snapshot.config)
+            if privacy_level in {PrivacyLevel.L0, PrivacyLevel.L1}
+            else ()
+        )
+        definition_builders = {
+            "get_weather": weather_tool_definition,
+            "search_nearby": nearby_tool_definition,
+            "plan_route": route_tool_definition,
+        }
+        tool_definitions = [definition_builders[name]() for name in tool_names]
         request = CompletionRequest(
             trace_id=turn_id,
             messages=[
@@ -355,6 +429,7 @@ class ChatService:
                         profile_overrides=profile_overrides
                     )
                     + structured_reply_instruction(persona)
+                    + f"\n\n{time_block}"
                     + f"\n\n{reality_block}"
                     + (f"\n\n{memory_block}" if memory_block else "")
                     + (f"\n\n{history_block}" if history_block else ""),
@@ -368,6 +443,7 @@ class ChatService:
             privacy_level=privacy_level,
             route=LLMRoute.DIALOGUE,
             temperature=0.7,
+            tools=tool_definitions,
         )
         return PendingTurn(
             turn_id=turn_id,
@@ -384,12 +460,15 @@ class ChatService:
             memory_retrieval=memory_retrieval,
             history_recall=history_recall,
             runtime_capabilities=runtime_capabilities,
+            tool_names=tool_names,
+            client_location=client_location,
         )
 
     async def run_stream(
         self,
         pending: PendingTurn,
         on_delta: Callable[[str], Awaitable[None]],
+        on_tool_event: Callable[[dict[str, object]], Awaitable[None]] | None = None,
     ) -> ChatTurn:
         await self._transition(pending.turn_id, {"accepted"}, "thinking")
         emitted = False
@@ -421,7 +500,46 @@ class ChatService:
 
         try:
             backend = self._router_builder(pending.config)
-            result = await backend.stream(pending.request, filtered_delta)
+            consistency_request = pending.request
+            tool_executions: tuple[ToolExecution, ...] = ()
+            if pending.request.tools:
+                initial_chunks: list[str] = []
+
+                async def buffer_delta(delta: str) -> None:
+                    if delta:
+                        initial_chunks.append(delta)
+
+                result = await backend.stream(pending.request, buffer_delta)
+                if result.tool_calls:
+                    if on_tool_event is not None:
+                        await on_tool_event(
+                            {
+                                "type": "tool.started",
+                                "tool": result.tool_calls[0].function.name,
+                                "label": _tool_label(result.tool_calls[0].function.name),
+                            }
+                        )
+                    execution = await self._execute_tool_call(pending, result.tool_calls)
+                    if on_tool_event is not None:
+                        await on_tool_event(
+                            {
+                                "type": "tool.finished",
+                                "tool": execution.result.tool_name,
+                                "ok": execution.result.ok,
+                                "latency_ms": round(execution.result.latency_ms, 1),
+                                "reason_code": execution.result.reason_code,
+                            }
+                        )
+                    tool_executions = (execution,)
+                    consistency_request = self._tool_followup_request(
+                        pending.request, result, execution
+                    )
+                    result = await backend.stream(consistency_request, filtered_delta)
+                else:
+                    for chunk in initial_chunks:
+                        await filtered_delta(chunk)
+            else:
+                result = await backend.stream(pending.request, filtered_delta)
             for visible in stream_filter.finish():
                 if buffer_for_consistency:
                     if not emitted:
@@ -433,7 +551,7 @@ class ChatService:
                     await guarded_delta(visible)
             consistency = await self._memory_consistency_guard.enforce(
                 result=result,
-                request=pending.request,
+                request=consistency_request,
                 persona=pending.persona,
                 retrieval=pending.memory_retrieval,
                 backend=backend,
@@ -448,10 +566,97 @@ class ChatService:
                 consistency.result,
                 backend=backend,
                 consistency=consistency,
+                tool_executions=tool_executions,
             )
         except BaseException:
             await self._fail_if_active(pending.turn_id)
             raise
+
+    async def _execute_tool_call(
+        self,
+        pending: PendingTurn,
+        calls: list[ToolCall],
+    ) -> ToolExecution:
+        if len(calls) != 1:
+            call_id = calls[0].id if calls else "invalid-tool-call"
+            tool_name = calls[0].function.name if calls else "invalid_tool_call"
+            return ToolExecution(
+                call_id=call_id,
+                result=ToolResult(
+                    ok=False,
+                    tool_name=tool_name,
+                    reason_code="multiple_tool_calls_not_allowed",
+                    latency_ms=0,
+                ),
+            )
+        call = calls[0]
+        runtime = None
+        try:
+            runtime = build_query_tool_runtime(pending.config, EnvSecretProvider())
+            return await runtime.executor.execute(
+                call,
+                ToolContext(
+                    privacy_level=pending.request.privacy_level,
+                    default_city=pending.config.tools.query.default_city,
+                    ephemeral_location=pending.client_location,
+                ),
+            )
+        except Exception:
+            logger.warning(
+                "query tool runtime failed turn_id=%s tool=%s",
+                pending.turn_id,
+                call.function.name,
+                exc_info=True,
+            )
+            return ToolExecution(
+                call_id=call.id,
+                result=ToolResult(
+                    ok=False,
+                    tool_name=call.function.name,
+                    reason_code="provider_unavailable",
+                    latency_ms=0,
+                ),
+            )
+        finally:
+            if runtime is not None:
+                await runtime.close()
+
+    @staticmethod
+    def _tool_followup_request(
+        request: CompletionRequest,
+        first_result: CompletionResult,
+        execution: ToolExecution,
+    ) -> CompletionRequest:
+        selected_call = next(
+            (
+                call
+                for call in first_result.tool_calls
+                if call.id == execution.call_id
+            ),
+            first_result.tool_calls[0],
+        )
+        messages = [
+            *request.messages,
+            LLMMessage(role="assistant", content="", tool_calls=[selected_call]),
+            LLMMessage(
+                role="tool",
+                tool_call_id=selected_call.id,
+                name=selected_call.function.name,
+                content=json.dumps(
+                    execution.result.model_dump(mode="json"),
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                ),
+            ),
+        ]
+        return CompletionRequest.model_validate(
+            {
+                **request.model_dump(mode="python"),
+                "messages": messages,
+                "tools": [],
+                "tool_choice": "none",
+            }
+        )
 
     async def cancel_turn(
         self, generation_id: UUID, *, user_id: UUID, reason: str = "user_cancelled"
@@ -578,6 +783,7 @@ class ChatService:
         *,
         backend: CompletionBackend | None = None,
         consistency: MemoryConsistencyOutcome | None = None,
+        tool_executions: tuple[ToolExecution, ...] = (),
     ) -> ChatTurn:
         if consistency is None:
             consistency = await self._memory_consistency_guard.enforce(
@@ -602,6 +808,22 @@ class ChatService:
             "usage": result.usage.model_dump(mode="json"),
             "latency_ms": result.latency_ms,
         }
+        if tool_executions:
+            decision_meta["tool_calls"] = [
+                {
+                    "call_id": execution.call_id,
+                    "tool_name": execution.result.tool_name,
+                    "latency_ms": execution.result.latency_ms,
+                    "outcome": "success" if execution.result.ok else "failed",
+                    "reason_code": execution.result.reason_code,
+                    "provider": execution.result.provider,
+                    "result_count": _tool_result_count(execution.result),
+                    "cache_hit": execution.result.cache_hit,
+                    # docs/35 §6.2: 只记解析来源枚举, 不记坐标或原始地址。
+                    "location_source": execution.result.location_source,
+                }
+                for execution in tool_executions
+            ]
         grounded_memory_hits = (
             self._memory_retriever.grounded_hits(pending.memory_retrieval)
             if self._memory_retriever is not None and pending.memory_retrieval is not None
@@ -854,14 +1076,16 @@ class ChatService:
                 turn.state_version += 1
                 turn.completed_at = now
 
-    async def _context_messages(self, conversation_id: UUID) -> list[MessageRecord]:
+    async def _context_messages(
+        self, conversation_id: UUID, *, limit: int = MAX_CONTEXT_MESSAGES
+    ) -> list[MessageRecord]:
         async with self._database.sessions() as session:
             records = list(
                 await session.scalars(
                     select(MessageRecord)
                     .where(MessageRecord.conversation_id == conversation_id)
                     .order_by(MessageRecord.seq.desc())
-                    .limit(MAX_CONTEXT_MESSAGES)
+                    .limit(limit)
                 )
             )
         records.reverse()
@@ -897,3 +1121,19 @@ class ChatService:
 
 def _aware(value: datetime) -> datetime:
     return value if value.tzinfo is not None else value.replace(tzinfo=UTC)
+
+
+def _tool_result_count(result: ToolResult) -> int:
+    for key in ("results", "forecast", "routes"):
+        value = result.data.get(key)
+        if isinstance(value, list):
+            return len(value)
+    return 1 if result.ok else 0
+
+
+def _tool_label(tool_name: str) -> str:
+    return {
+        "get_weather": "正在查询天气…",
+        "search_nearby": "正在查找附近地点…",
+        "plan_route": "正在规划路线…",
+    }.get(tool_name, "正在使用外部工具…")

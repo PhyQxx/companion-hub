@@ -18,6 +18,7 @@ from app.llm import LLMRouteExhausted
 from app.privacy import EgressBlocked
 from app.schemas import PrivacyLevel
 from app.schemas.common import StrictModel
+from app.tools import ClientLocation, ClientLocationPayload
 
 logger = logging.getLogger(__name__)
 
@@ -37,6 +38,8 @@ class SendFrame(StrictModel):
     conversation_id: UUID
     text: Annotated[str, Field(min_length=1, max_length=20_000)]
     privacy_level: Literal["L0", "L1", "L2"] = "L1"
+    # 可选终端 WGS84 临时位置: 帧内携带或复用连接缓存(TTL 15 分钟, 仅内存)。
+    location: ClientLocationPayload | None = None
 
 
 class CancelFrame(StrictModel):
@@ -56,6 +59,15 @@ class ChatConnection:
     principal: ChatPrincipal
     subscriptions: set[UUID] = field(default_factory=set)
     send_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    # 连接级临时位置缓存: 不落库、不进日志, 失效后自动回落默认城市。
+    location: ClientLocation | None = None
+
+    def resolve_location(
+        self, payload: ClientLocationPayload | None
+    ) -> ClientLocation | None:
+        if payload is not None:
+            self.location = payload.to_client_location()
+        return self.location
 
     async def send(self, event: dict[str, object]) -> None:
         async with self.send_lock:
@@ -122,6 +134,7 @@ class ChatWebSocketManager:
                 user_id=connection.principal.user_id,
                 text=frame.text,
                 privacy_level=PrivacyLevel(frame.privacy_level),
+                client_location=connection.resolve_location(frame.location),
             )
             connection.subscriptions.add(frame.conversation_id)
             current_task = asyncio.current_task()
@@ -160,7 +173,22 @@ class ChatWebSocketManager:
                     ),
                 )
 
-            turn = await self._service.run_stream(pending, on_delta)
+            async def on_tool_event(tool_event: dict[str, object]) -> None:
+                event_type = str(tool_event.get("type") or "tool.status")
+                payload = {key: value for key, value in tool_event.items() if key != "type"}
+                await self.broadcast(
+                    connection.principal.user_id,
+                    frame.conversation_id,
+                    _event(
+                        conversation_id=frame.conversation_id,
+                        event_type=event_type,
+                        seq=None,
+                        generation_id=pending.generation_id,
+                        payload=payload,
+                    ),
+                )
+
+            turn = await self._service.run_stream(pending, on_delta, on_tool_event)
             reply_meta = (turn.assistant_message.decision_meta or {}).get("agent_reply")
             if isinstance(reply_meta, dict):
                 await self.broadcast(
@@ -298,7 +326,7 @@ def create_chat_websocket_router(
             principal = await auth_service.authenticate(auth.access_token)
         except WebSocketDisconnect:
             # 浏览器在鉴权帧发送前主动关闭连接是正常的生命周期事件。
-            # 此时连接已经不可写，不能再发送 4401 close，否则 Starlette
+            # 此时连接已经不可写, 不能再发送 4401 close, 否则 Starlette
             # 会再次抛 WebSocketDisconnect/ClientDisconnected 并污染服务日志。
             return
         except (TimeoutError, ValidationError, InvalidSession):

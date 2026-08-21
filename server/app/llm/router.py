@@ -4,7 +4,7 @@ import asyncio
 import logging
 import re
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 from dataclasses import dataclass
 
 from app.observability import TraceRecorder
@@ -32,6 +32,7 @@ _SECRET_PATTERNS: tuple[re.Pattern[str], ...] = (
     re.compile(r"\bsk-[A-Za-z0-9_-]{8,}\b"),
 )
 _MAX_ERROR_DETAIL_CHARS = 1_200
+_DEFAULT_STREAM_IDLE_TIMEOUT_MS = 10_000
 
 
 @dataclass(frozen=True, slots=True)
@@ -80,10 +81,14 @@ class LLMRouter:
         )
         policy = self._routes[selected_route]
         rejected_for_privacy = 0
+        rejected_for_tools = 0
         failures = 0
         failure_details: list[LLMEndpointFailure] = []
         for endpoint_name in [policy.primary, *policy.fallbacks]:
             endpoint = self._endpoints[endpoint_name]
+            if routed_request.tools and not endpoint.supports_tool_calling:
+                rejected_for_tools += 1
+                continue
             try:
                 self._egress.authorize(
                     privacy,
@@ -164,6 +169,8 @@ class LLMRouter:
                     )
                     if not will_retry:
                         break
+        if rejected_for_tools and not failures:
+            raise LLMRouteExhausted("tool_model_unavailable")
         if rejected_for_privacy and not failures:
             logger.error(
                 "llm route rejected by privacy guard trace_id=%s route=%s privacy=%s",
@@ -196,10 +203,14 @@ class LLMRouter:
         )
         policy = self._routes[selected_route]
         rejected_for_privacy = 0
+        rejected_for_tools = 0
         failures = 0
         failure_details: list[LLMEndpointFailure] = []
         for endpoint_name in [policy.primary, *policy.fallbacks]:
             endpoint = self._endpoints[endpoint_name]
+            if routed_request.tools and not endpoint.supports_tool_calling:
+                rejected_for_tools += 1
+                continue
             try:
                 self._egress.authorize(
                     privacy,
@@ -221,14 +232,21 @@ class LLMRouter:
 
                 async def guarded_delta(delta: str) -> None:
                     nonlocal emitted
+                    if not delta:
+                        return
                     emitted = True
                     await on_delta(delta)
 
                 timeout_ms = policy.timeout_ms or endpoint.timeout_ms
+                first_chunk_ms = policy.stream_first_chunk_timeout_ms or timeout_ms
+                idle_ms = policy.stream_idle_timeout_ms or _DEFAULT_STREAM_IDLE_TIMEOUT_MS
+                watchdog = asyncio.timeout(first_chunk_ms / 1_000)
                 try:
-                    async with self._span(endpoint_request, endpoint_name, attempt):
-                        async with asyncio.timeout(timeout_ms / 1_000):
-                            return await provider.stream(endpoint_request, guarded_delta)
+                    async with self._span(endpoint_request, endpoint_name, attempt), watchdog:
+                        return await provider.stream(
+                            endpoint_request,
+                            _watched_delta(guarded_delta, watchdog, idle_ms / 1_000),
+                        )
                 except Exception as error:
                     failures += 1
                     failure_details.append(
@@ -243,6 +261,13 @@ class LLMRouter:
                         attempt=attempt,
                         max_attempts=endpoint.max_retries + 1,
                     )
+                    timeout_detail = None
+                    if isinstance(error, TimeoutError):
+                        timeout_detail = (
+                            f"stream idle over {idle_ms}ms after first chunk"
+                            if emitted
+                            else f"no first chunk within {first_chunk_ms}ms"
+                        )
                     self._log_endpoint_failure(
                         request=routed_request,
                         endpoint_name=endpoint_name,
@@ -252,6 +277,7 @@ class LLMRouter:
                         timeout_ms=timeout_ms,
                         error=error,
                         will_retry=will_retry,
+                        detail_override=timeout_detail,
                     )
                     if emitted:
                         self._log_route_exhausted(
@@ -265,6 +291,8 @@ class LLMRouter:
                         ) from None
                     if not will_retry:
                         break
+        if rejected_for_tools and not failures:
+            raise LLMRouteExhausted("tool_model_unavailable")
         if rejected_for_privacy and not failures:
             logger.error(
                 "llm route rejected by privacy guard trace_id=%s route=%s privacy=%s",
@@ -294,17 +322,18 @@ class LLMRouter:
         timeout_ms: int,
         error: BaseException,
         will_retry: bool,
+        detail_override: str | None = None,
     ) -> None:
         status_code = getattr(error, "status_code", None)
-        detail = _safe_error_detail(error)
+        detail = detail_override or _safe_error_detail(error)
         if isinstance(error, TimeoutError) and not detail:
             detail = f"request timed out after {timeout_ms}ms"
         if isinstance(error, TimeoutError):
-            cn_note = "【请求超时，降级下一端点】"
+            cn_note = "【请求超时, 降级下一端点】"
         elif status_code == 429 or type(error).__name__ == "RateLimitError":
-            cn_note = "【触发速率限制，降级下一端点】"
+            cn_note = "【触发速率限制, 降级下一端点】"
         else:
-            cn_note = "【请求失败，降级下一端点】"
+            cn_note = "【请求失败, 降级下一端点】"
         logger.warning(
             "%s llm endpoint failed trace_id=%s route=%s privacy=%s endpoint=%s "
             "provider=%s model=%s attempt=%s/%s error_type=%s status_code=%s "
@@ -335,7 +364,7 @@ class LLMRouter:
             f"{item.endpoint}#{item.attempt}:{item.error_type}" for item in failures
         )
         logger.error(
-            "【该路由所有端点均失败，请检查模型配置或网络状况】"
+            "【该路由所有端点均失败, 请检查模型配置或网络状况】"
             "llm route exhausted trace_id=%s route=%s privacy=%s reason=%s failures=[%s]",
             request.trace_id,
             request.route,
@@ -388,6 +417,29 @@ class LLMRouter:
             },
         ):
             yield
+
+
+def _watched_delta(
+    on_delta: Callable[[str], Awaitable[None]],
+    watchdog: asyncio.Timeout,
+    idle_seconds: float,
+) -> Callable[[str], Awaitable[None]]:
+    """Wrap on_delta so every chunk postpones the stream watchdog deadline.
+
+    asyncio.timeout caps total duration and cannot be extended, but its Timeout
+    object exposes reschedule(): each arriving delta moves the deadline to
+    "now + idle_seconds", turning the cap into an idle-gap watchdog. The stream
+    is only cancelled when output truly stops (late first chunk or a stalled
+    generation), never merely because a long reply is still producing tokens.
+    """
+
+    async def watched(delta: str) -> None:
+        with suppress(RuntimeError):
+            # 看门狗此刻已到期且任务取消已在路上, 挂起的取消会照常触发超时
+            watchdog.reschedule(asyncio.get_running_loop().time() + idle_seconds)
+        await on_delta(delta)
+
+    return watched
 
 
 def _safe_error_detail(error: BaseException) -> str:

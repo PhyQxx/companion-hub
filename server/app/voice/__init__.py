@@ -8,6 +8,8 @@ from app.voice.contracts import (
     SpeechSynthesizer,
     VadEvent,
     VoiceActivityDetector,
+    WakeWordDetector,
+    WakeWordUnavailable,
 )
 from app.voice.factory import (
     ConfigVoiceSource,
@@ -17,6 +19,7 @@ from app.voice.factory import (
 )
 from app.voice.failover import TtsProviderChain, TtsSelection
 from app.voice.faster_whisper import FasterWhisperRecognizer
+from app.voice.metrics import VoiceLatencyMetrics, VoiceLatencySample
 from app.voice.mimo import (
     ASR_MODEL,
     DEFAULT_TTS_VOICE,
@@ -25,9 +28,16 @@ from app.voice.mimo import (
     MiMoTtsSynthesizer,
     wrap_wav,
 )
-from app.voice.pipeline import SentenceBuffer
+from app.voice.pipeline import PcmAmplitudeEnvelope, SentenceBuffer
 from app.voice.tts import EdgeTtsSynthesizer
-from app.voice.vad import EnergyVad, pcm16_rms
+from app.voice.vad import (
+    EnergyVad,
+    ResilientVad,
+    SileroVad,
+    create_default_vad,
+    pcm16_rms,
+)
+from app.voice.wakeword import OpenWakeWordDetector, create_default_wake_word
 
 __all__ = [
     "ASR_MODEL",
@@ -40,7 +50,11 @@ __all__ = [
     "LocalOnlySynthesizerError",
     "MiMoAsrRecognizer",
     "MiMoTtsSynthesizer",
+    "OpenWakeWordDetector",
+    "PcmAmplitudeEnvelope",
+    "ResilientVad",
     "SentenceBuffer",
+    "SileroVad",
     "SpeechRecognitionUnavailable",
     "SpeechRecognizer",
     "SpeechSynthesizer",
@@ -49,8 +63,14 @@ __all__ = [
     "TtsSelection",
     "VadEvent",
     "VoiceActivityDetector",
+    "VoiceLatencyMetrics",
+    "VoiceLatencySample",
     "VoiceProviderSource",
+    "WakeWordDetector",
+    "WakeWordUnavailable",
     "build_voice_providers",
+    "create_default_vad",
+    "create_default_wake_word",
     "pcm16_rms",
     "wrap_wav",
 ]

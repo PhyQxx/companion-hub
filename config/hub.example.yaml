@@ -117,9 +117,14 @@ models:
 routes:
   dialogue:
     primary: sensenova_dialogue
-    # 云端限流/超时时优先回落到已加载的本地模型，避免免费云模型一起拥塞时整轮失败。
-    fallbacks: [local_private, zhipu_text_free, sensenova_reasoning_fallback]
+    # 日常 L0/L1 对话优先保持全云链路；本地模型仅保留给 private/L2，
+    # 避免本地模型未启动时把一次云端限流放大成额外的连接失败与等待。
+    fallbacks: [sensenova_utility, zhipu_text_free, sensenova_reasoning_fallback]
+    # timeout_ms 约束非流式调用总时长，以及流式「首个 chunk 到达前」的等待；
+    # 出字后改由 stream_idle_timeout_ms 看护相邻 chunk 间隔，不再限制总时长
+    # （语音回复已播出的部分无法收回，模型持续出字时掐断只会毁掉整个回合）。
     timeout_ms: 12000
+    stream_idle_timeout_ms: 8000
   utility:
     primary: sensenova_utility
     fallbacks: [sensenova_dialogue, zhipu_text_free]
@@ -128,6 +133,26 @@ routes:
     primary: local_private
     fallbacks: []
     timeout_ms: 30000
+
+# 地图/天气工具默认关闭。启用前先设置 AMAP_WEB_SERVICE_KEY，并将至少一个
+# dialogue 模型端点的 supports_tool_calling 设为 true 后通过真实能力探测。
+tools:
+  enabled: false
+  max_tool_rounds: 1
+  query:
+    weather_enabled: true
+    nearby_enabled: true
+    route_enabled: true
+    default_city: 济南市
+    precise_location_policy: ask_each_time
+  amap:
+    enabled: false
+    base_url: https://restapi.amap.com
+    secret_ref: env:AMAP_WEB_SERVICE_KEY
+    timeout_ms: 3500
+    max_retries: 1
+    max_concurrency: 2
+    requests_per_minute: 30
 
 capability_models:
   vision: zhipu_vision_free

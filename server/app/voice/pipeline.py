@@ -3,8 +3,11 @@
 
 from __future__ import annotations
 
+from app.voice.vad import pcm16_rms
+
 SENTENCE_TERMINATORS = ("。", "！", "？", "!", "?", "\n")
 MAX_SENTENCE_CHARS = 60
+VISEME_WINDOW_MS = 50
 
 
 class SentenceBuffer:
@@ -38,3 +41,23 @@ class SentenceBuffer:
         remainder = self._pending.strip()
         self._pending = ""
         return remainder
+
+
+class PcmAmplitudeEnvelope:
+    """把 PCM16 音频按固定窗口转换为 0..1 嘴部开合幅度。"""
+
+    def __init__(self, sample_rate: int, *, window_ms: int = VISEME_WINDOW_MS) -> None:
+        if sample_rate <= 0 or window_ms <= 0:
+            raise ValueError("sample_rate and window_ms must be positive")
+        self.window_ms = window_ms
+        self._bytes_per_window = max(2, sample_rate * 2 * window_ms // 1000)
+        self._buffer = bytearray()
+
+    def push(self, pcm: bytes) -> list[float]:
+        self._buffer.extend(pcm)
+        amplitudes: list[float] = []
+        while len(self._buffer) >= self._bytes_per_window:
+            frame = bytes(self._buffer[: self._bytes_per_window])
+            del self._buffer[: self._bytes_per_window]
+            amplitudes.append(min(1.0, pcm16_rms(frame) / 32_768.0))
+        return amplitudes

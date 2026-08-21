@@ -1,7 +1,7 @@
 # Aria 开发任务清单
 
-> 最后更新：2026-08-20
-> 当前阶段：P6 · 语音与 Live2D 产品化（Batch A 语音闭环已落地；P5 的 14 天真实使用并行进行，日志见 docs/32 §5）
+> 最后更新：2026-08-21
+> 当前阶段：P6 · 语音与 Live2D 产品化（Batch A～C 代码与自动化已落地，当前进入 M2 真浏览器/真机验收；P5 14 天使用日志尚未开始有效记录）
 
 ## 进度概览
 
@@ -12,7 +12,7 @@
 | P2 记忆系统 v1 | 已完成 | 可检索、可溯源、可纠错的长期记忆 |
 | P3 删除闭环与记忆后台 | 已完成 | 跨存储删除与可视化管理 |
 | P4 正式前端决策 | 已完成 | 决定 Vue 3 与 Open-LLM-VTuber 的边界 |
-| P5 文字稳定性闸门 | 使用期 | 自动化闸门全绿，14 天真实使用进行中（docs/32） |
+| P5 文字稳定性闸门 | 使用期 | 自动化闸门全绿；日志未开始，14 天计数待重启（docs/32） |
 | P6 语音与 Live2D 产品化 | 进行中 | 完整语音、打断、表情与桌宠体验 |
 
 ## 上一批次：P2（已完成）
@@ -82,29 +82,31 @@
 - [x] TTS 提供方链：MiMo 为主、edge-tts 兜底；逐句选择、首块前失败无感切换、60s 失败冷却、L2 只选本地提供方；`voice.sentence` 按实际提供方声明 mime/sample_rate。
 - [x] 句级流式切分 + 首句即合成；打断仲裁（barge-in → cancel 回合 + 中止 TTS）；延迟打点（ASR/首 token/首音频，M2.7 埋点）。
 - [x] 语音配置中心化（M2.8 提前完成）：`HubConfig.voice` 节进配置中心，后台「模型与路由 → 语音」页可视化管理（ASR 开关/模型/语种/密钥、TTS 链增删排序/提供方切换/音色/密钥），保存校验与后端 HubConfig 规则对齐，浏览器实测通过；`ConfigVoiceSource` 每条话语解析一次提供方，改配置即时生效，不再依赖 .env.local。
-- [x] 测试 20 项：VAD/切分/WAV 包装/提供方链/MiMo 契约/voice 配置节校验与工厂 + 语音 WS 端到端（完整回路、打断、L2 拒收、PTT）；闸门 ruff / mypy 117 文件 / pytest 187 通过。
+- [x] 语音专项当前 32 项：VAD/切分/WAV 包装/提供方链/MiMo 契约/voice 配置节校验与工厂 + 语音 WS 端到端（完整回路、打断、L2 拒收、PTT、provider readiness）；全量闸门见下方质量基线。
 
 ## 当前批次：P6 待办
 
-- [~] Batch B：chat 前端麦克风采集与播放 UI 核心代码已落地：`VoiceSocket`、PCM16/16k/mono 浏览器采集、PTT、分句 PCM/MP3 播放、`voice.ready` provider 摘要、ASR 忙态保护与整链打断。L2 + 云 ASR 会在申请麦克风权限前直接阻断；后台热启用 ASR 后下一次点击会自动重连刷新能力。打断已覆盖 ASR→LLM→TTS，且文本已提交后的尾句 TTS 也可单独停止、不误标文字回合 cancelled。当前 config v23 已启用 MiMo ASR + MiMo→edge TTS，真实 TTS/ASR 探针通过；dialogue 云主模型 429/timeout 现在直接切 fallback，本地 LM Studio Qwen 已进入第一兜底，避免语音回合在同一云端 endpoint 上重复等待。当前 Coding MCP 无 Node/tsc，前端 typecheck/build 与真浏览器麦克风验收待补。
-- [~] Batch B：faster-whisper 本地 ASR 的配置契约、延迟加载运行时、L2 路由、后台 provider 选择和错误语义已落地；新增“检查本地环境”只读自检，不加载/下载模型。当前产品决策先以 MiMo 云 ASR 为主，faster-whisper 保留为后续可选的 L2/离线能力，不再阻塞 P6 当前主线。下一步优先完成云端语音真机验收，再升级 silero-vad/openWakeWord。
-- [ ] Batch C：viseme 口型通道（50ms 幅度包络）+ 延迟打点报表面板；语音配置中心化已在 Batch A 提前完成，不重复排期。
-- [ ] M2 语音验收：说完 → 首字 ≤1.8s（P90）、打断 ≤300ms、口型肉眼同步、连续 20 轮无积压。
+- [~] Batch B：浏览器麦克风/PTT/分句播放/整链打断代码已落地，L2 + 云 ASR 会在申请麦克风权限前阻断，配置热更新可在下次连接生效。当前 config v32 已启用 MiMo ASR + MiMo→edge TTS；2026-08-21 已复验 chat/admin/shared typecheck 与 production build 全绿。仍待真浏览器麦克风/音箱验收。
+- [~] Batch B：faster-whisper 本地 ASR 的配置契约、延迟加载运行时、L2 路由、后台 provider 选择和错误语义已落地；新增“检查本地环境”只读自检，不加载/下载模型。当前产品决策先以 MiMo 云 ASR 为主，faster-whisper 保留为后续可选的 L2/离线能力，不再阻塞 P6 当前主线。
+- [x] Batch B：silero-vad + openWakeWord 唤醒完善。`VoiceActivityDetector` 统一 `feed/force_end/is_voiced/backend`；检测到 `silero_vad + torch` 时优先使用 16k/512-sample Silero 概率判定，依赖/模型/推理异常一次性降级 Energy VAD；barge-in 继续走独立 RMS，避免推进 Silero 隐状态。openWakeWord 采用可选运行时：依赖存在时启用待命门，未唤醒音频不进入 VAD/ASR，命中后开放一次话语并发送 `voice.wake_detected`；PTT 始终绕过待命门，运行失败会发 `voice.wake_unavailable` 并退回原自动 VAD/PTT。当前 `.venv` 未安装 silero-vad/torch/onnxruntime/openWakeWord，因此真实运行仍为 Energy VAD + 原自动监听/PTT，不阻塞 MiMo 云语音主链。
+- [x] Batch C：viseme 与延迟报表代码已落地。PCM TTS 按 50ms 窗口推送 `voice.viseme`；Chat 按真实播放时钟驱动口型强度条；最近 200 条语音回合/打断可聚合 count/P50/P90/max，Admin 已接入 M2 阈值卡片，`make p6-voice-m2` 可一键判卷。2026-08-21 已通过本轮前端 typecheck/build；剩余真浏览器音频与肉眼口型同步验收。
+- [x] 流式超时看门狗 + 语音上下文裁剪（2026-08-21 线上 `stream_interrupted` 修复）：旧实现用 `asyncio.timeout` 给整段流式生成套总时长上限，flash-lite 在 20 条历史下 14s 出首句、持续出字至 20s 被硬掐断，已播出的 4 句音频无法收回且回复未落库。现 `stream()` 改为首 chunk 看门狗（`stream_first_chunk_timeout_ms`，缺省回退 `timeout_ms`）+ 出字后按相邻 chunk 间隔看护（`stream_idle_timeout_ms`，缺省 10s），出字后不再限制总时长；超时日志可区分「首 chunk 未到」与「出字后断流」。配套把语音回合上下文收窄到最近 8 条（`VOICE_CONTEXT_MESSAGES`，`start_turn(max_context_messages=…)`），压低 lite 模型首 token 延迟。新增回归：长于首 chunk 时限的持续出流必须完整生成、首 chunk 迟到快速降级、出字后断流不 fallback（`stream_interrupted`）与语音窗口接线。
+- [~] M2 语音验收：确定性后端 soak 已通过同一 `/ws/voice` 连接的 20 完成 + 20 打断。2026-08-21 运行中指标窗口实际为 **0 完成 / 0 打断**，四项 acceptance 全 False；尚未开始真机 M2 计样。
 - [ ] Batch D（M2 达标后）：OLV Live2D 最小渲染壳接入与 Tauri 桌宠评估；完整形象中心/多形象/主题仍属于 M3B。
+- [~] M3A 地图/天气 Query Tools 基础实现已落地（`docs/35`）：Function Calling 完整/流式契约与真能力 probe、工具端点筛选、单工具回注、高德固定域名客户端、`get_weather/search_nearby/plan_route`、路网距离复核、L2/L3 零出站、文字/语音工具状态、Admin 配置、真实高德 Key 端到端验收，以及浏览器临时精确定位/WGS84→GCJ-02 均已完成。待办：模糊候选交互、TTL 缓存、结构化结果卡片/导航按钮、Admin 独立自检、最近 200 次工具台账与延迟报告。
 
 ## 下一步执行顺序
 
 按依赖推进，P5 使用期与 P6 开发并行，但发现 P0/P1 文字/隐私问题时必须优先暂停 P6 新功能并修复：
 
-1. **P6 Batch B：浏览器语音端真机验收**（进行中）：在可执行 Node 环境补 typecheck/build 与真浏览器麦克风授权/采集/分句播放/打断验收，并在管理后台启用实际 ASR/TTS provider 完成首轮真连；
-2. **P6 Batch B：VAD / 唤醒完善**：保持 MiMo 云 ASR 主链，使用 silero-vad 替换当前纯 Python RMS VAD，并补 openWakeWord；faster-whisper 本地 ASR 暂列后续可选，不阻塞当前阶段；
-3. **P6 Batch C**：viseme 50ms 幅度包络 + 延迟打点报表；
-4. **M2 语音验收**：说完→首字 P90 ≤1.8s、打断 ≤300ms、口型同步、连续 20 轮无积压；
-5. **P6 Batch D（M2 达标后）**：OLV Live2D 最小渲染壳接入与 Tauri 桌宠评估；完整形象中心/多形象/主题仍留在 M3B；
-6. **可选本地语音链**：需要 L2/离线语音时再安装并验收 faster-whisper，不影响当前云端语音产品化；
-7. **并行完成 P5 14 天真实文字使用**：按 docs/32 §5.2 追加日志；期满复跑 P5 闸门并定稿 docs/32。若出现未处置 P0/P1，P6 暂停扩展直至整改完成。
+1. **真浏览器语音闭环**（当前唯一主线阻塞）：麦克风授权/PCM 采集/分句播放/整链打断，同时确认 Admin 延迟卡片与 Chat viseme 按实际播放时序工作；
+2. **M2 真机计样与判卷**：先重置指标窗口，完成至少 20 个语音回合与 20 个打断样本，再执行 `make p6-voice-m2`；要求首音频 P90 ≤1.8s、打断 P90 ≤300ms，并人工确认口型同步、连续 20 轮无积压；
+3. **地图/天气产品收口**：真实高德 Key、Function Calling 模型、真天气/附近医院/路线与浏览器临时精确定位已经验收；随后补模糊候选交互、TTL 缓存、结构化结果卡片/导航按钮、Admin 独立自检和最近 200 次工具台账/延迟报告；
+4. **P6 Batch D（M2 达标后）**：OLV Live2D 最小渲染壳接入与 Tauri 桌宠评估；完整形象中心/多形象/主题仍留在 M3B；
+5. **可选本地语音链**：需要 L2/离线语音时再安装并验收 faster-whisper、Silero 与 openWakeWord，不影响当前云端语音主线；
+6. **并行重启 P5 14 天真实文字使用计数**：从第一条可核验每日日志开始连续计 14 天；期满复跑 P5 闸门并定稿 docs/32。若出现未处置 P0/P1，P6 暂停扩展直至整改完成。
 
-当前完整质量基线：pytest **200 通过 / 2 跳过**（202 collected）、`ruff check server` 全绿、`mypy server/app server/tests` **118 source files** 全绿；`git diff --check`、Uvicorn `health=200`、faster-whisper 配置 200/422 正反校验、config v23 MiMo TTS→ASR 真实探针及 LM Studio Qwen 本地生成探针均通过。LLM 专项 22/22，覆盖 complete/stream 的 429 快速 fallback 与 timeout 快速 fallback。
+当前完整质量基线：pytest **242 通过 / 2 跳过**（244 collected）、`ruff check server` 全绿、`mypy server/app server/tests` **136 source files** 全绿；`git diff --check`、Alembic 单 head 与前端 typecheck/build 通过。新增地图/天气专项覆盖完整/流式 Function Calling、端点能力筛选、天气、附近 POI、步行路网排序、路线概要、L2 零调用、工具结果回注、浏览器临时精确定位与脱敏元数据。Uvicorn `health=200`、faster-whisper 配置 200/422 正反校验、MiMo TTS→ASR 真实探针、LM Studio Qwen 本地生成探针、config v32 L1 真模型请求与真实高德 Key 端到端调用均已通过基线。
 
 ## 已完成
 

@@ -12,6 +12,7 @@ from app.llm import LLMRouteExhausted
 from app.privacy import EgressBlocked
 from app.schemas import PrivacyLevel
 from app.schemas.common import StrictModel
+from app.tools import ClientLocationPayload
 
 from .auth import ChatSessionGuard
 
@@ -25,6 +26,8 @@ class CreateConversationRequest(StrictModel):
 class SendMessageRequest(StrictModel):
     text: Annotated[str, Field(min_length=1, max_length=20_000)]
     privacy_level: Literal["L0", "L1", "L2"] = "L1"
+    # 可选的终端 WGS84 临时位置; 仅内存 TTL, 用于工具位置解析, 不落库。
+    location: ClientLocationPayload | None = None
 
 
 class ConversationResponse(StrictModel):
@@ -148,6 +151,9 @@ def create_chat_router(service: ChatService, auth_service: AuthService) -> APIRo
                 user_id=principal.user_id,
                 text=body.text,
                 privacy_level=PrivacyLevel(body.privacy_level),
+                client_location=(
+                    body.location.to_client_location() if body.location else None
+                ),
             )
         except LookupError as error:
             raise HTTPException(status.HTTP_404_NOT_FOUND, detail=str(error)) from error

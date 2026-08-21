@@ -1,8 +1,9 @@
-.PHONY: install lint test schemas types contracts migrate compose-check infra-up infra-down llm-check p5-backend p5-frontend p5-real p5-real-l1 p5-real-l2 run
+.PHONY: install lint test schemas types contracts migrate compose-check infra-up infra-down llm-check p5-backend p5-frontend p5-real p5-real-l1 p5-real-l2 p6-voice-soak p6-voice-m2 run
 
 P5_REPORT ?= /tmp/aria-p5-real-model-report.json
 P5_L1_REPORT ?= /tmp/aria-p5-real-model-l1-report.json
 P5_L2_REPORT ?= /tmp/aria-p5-real-model-l2-report.json
+P6_M2_REPORT ?= /tmp/aria-p6-voice-m2-report.json
 
 install:
 	uv sync --dev
@@ -49,6 +50,12 @@ p5-backend:
 p5-frontend:
 	pnpm --dir web typecheck
 	pnpm --dir web build
+
+p6-voice-m2:
+	python3 server/scripts/p6_voice_m2_report.py --report $(P6_M2_REPORT)
+
+p6-voice-soak:
+	.venv/bin/pytest server/tests/test_voice_websocket.py::test_voice_websocket_m2_soak_20_complete_and_20_interrupts -q
 
 p5-real:
 	uv run python server/scripts/p5_real_model_regression.py --env-file .env.local --config config/hub.example.yaml --report $(P5_REPORT)

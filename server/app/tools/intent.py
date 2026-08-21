@@ -1,0 +1,21 @@
+from __future__ import annotations
+
+from app.config import HubConfig
+
+_WEATHER_TERMS = ("天气", "气温", "温度", "下雨", "降雨", "晴天", "阴天", "台风")
+_NEARBY_TERMS = ("附近", "最近", "周边", "医院", "药店", "餐厅", "充电站")
+_ROUTE_TERMS = ("怎么走", "路线", "导航", "开车去", "步行去", "坐公交")
+
+
+def select_query_tools(text: str, config: HubConfig) -> tuple[str, ...]:
+    if not config.tools.enabled:
+        return ()
+    selected: list[str] = []
+    query = config.tools.query
+    if query.weather_enabled and any(term in text for term in _WEATHER_TERMS):
+        selected.append("get_weather")
+    if query.nearby_enabled and any(term in text for term in _NEARBY_TERMS):
+        selected.append("search_nearby")
+    if query.route_enabled and any(term in text for term in _ROUTE_TERMS):
+        selected.append("plan_route")
+    return tuple(selected)

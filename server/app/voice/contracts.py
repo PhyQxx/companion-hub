@@ -24,7 +24,36 @@ class VadEvent:
 class VoiceActivityDetector(Protocol):
     """喂入 PCM16 单声道帧，输出断句事件。"""
 
+    @property
+    def backend(self) -> str: ...
+
+    @property
+    def speaking(self) -> bool: ...
+
     def feed(self, pcm: bytes) -> VadEvent | None: ...
+
+    def force_end(self) -> VadEvent | None: ...
+
+    def is_voiced(self, pcm: bytes) -> bool: ...
+
+
+class WakeWordDetector(Protocol):
+    """常驻 PCM16 唤醒词检测；命中后由语音会话解除一次待命门。"""
+
+    @property
+    def backend(self) -> str: ...
+
+    def feed(self, pcm: bytes) -> bool: ...
+
+    def reset(self) -> None: ...
+
+
+class WakeWordUnavailable(RuntimeError):
+    """唤醒词依赖或模型运行时不可用。"""
+
+    def __init__(self, reason: str) -> None:
+        self.reason = reason
+        super().__init__(reason)
 
 
 class SpeechRecognizer(Protocol):

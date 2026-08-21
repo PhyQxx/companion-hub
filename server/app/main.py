@@ -250,6 +250,12 @@ def create_app(
     @app.get("/api/v1/meta/runtime", tags=["system"])
     async def runtime_meta() -> dict[str, object]:
         result: dict[str, object] = {}
+        if runtime_config is not None:
+            # 前端据此决定定位授权节奏(每次询问/会话内允许); 不含任何密钥。
+            result["location_policy"] = {
+                "tools_enabled": runtime_config.current.config.tools.enabled,
+                "precise": runtime_config.current.config.tools.query.precise_location_policy,
+            }
         if persona_store is not None:
             persona_snapshot = await persona_store.refresh()
             result["persona"] = {

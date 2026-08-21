@@ -9,7 +9,7 @@ import wave
 from collections.abc import AsyncIterator
 from io import BytesIO
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, cast
 
 import httpx
 import pytest
@@ -20,8 +20,14 @@ from app.voice import (
     FasterWhisperRecognizer,
     MiMoAsrRecognizer,
     MiMoTtsSynthesizer,
+    OpenWakeWordDetector,
+    PcmAmplitudeEnvelope,
+    ResilientVad,
     SentenceBuffer,
+    SileroVad,
     TtsProviderChain,
+    VoiceLatencyMetrics,
+    VoiceLatencySample,
     pcm16_rms,
     wrap_wav,
 )
@@ -35,6 +41,10 @@ def loud_frames(count: int) -> bytes:
 
 def silent_frames(count: int) -> bytes:
     return b"\x00\x00" * (480 * count)
+
+
+def silero_frame(amplitude: int = 0) -> bytes:
+    return int(amplitude).to_bytes(2, "little", signed=True) * 512
 
 
 def test_pcm16_rms_matches_known_constant_amplitude() -> None:
@@ -115,6 +125,153 @@ def test_energy_vad_force_end_for_ptt() -> None:
     event = vad.force_end()
     assert event is not None and event.kind == "utterance_ended"
     assert vad.force_end() is None
+
+
+def test_silero_vad_segments_probability_stream_and_resets_model() -> None:
+    probabilities = iter([0.1, 0.8, 0.9, 0.7, 0.2, 0.1, 0.1])
+    resets = 0
+
+    def probability(_: bytes) -> float:
+        return next(probabilities)
+
+    def reset() -> None:
+        nonlocal resets
+        resets += 1
+
+    vad = SileroVad(
+        start_frames=2,
+        end_frames=3,
+        probability_fn=probability,
+        reset_fn=reset,
+    )
+
+    assert vad.backend == "silero"
+    assert vad.feed(silero_frame()) is None
+    assert vad.feed(silero_frame()) is None
+    started = vad.feed(silero_frame())
+    assert started is not None and started.kind == "utterance_started"
+    assert vad.speaking is True
+    assert vad.feed(silero_frame()) is None
+    assert vad.feed(silero_frame()) is None
+    assert vad.feed(silero_frame()) is None
+    ended = vad.feed(silero_frame())
+    assert ended is not None and ended.kind == "utterance_ended"
+    assert vad.speaking is False
+    assert resets == 1
+
+
+def test_pcm_amplitude_envelope_emits_50ms_normalized_windows() -> None:
+    envelope = PcmAmplitudeEnvelope(16_000)
+    frame = b"\x40\x1f" * 800  # 50ms at 16kHz, RMS=8000
+
+    assert envelope.push(frame[:1000]) == []
+    amplitudes = envelope.push(frame[1000:] + frame)
+
+    assert len(amplitudes) == 2
+    assert amplitudes[0] == pytest.approx(8000 / 32768)
+    assert amplitudes[1] == pytest.approx(8000 / 32768)
+
+
+def test_voice_latency_metrics_reports_sliding_window_percentiles() -> None:
+    metrics = VoiceLatencyMetrics(max_samples=3)
+    metrics.record(VoiceLatencySample(100, 200, 300, 500))
+    metrics.record(VoiceLatencySample(200, 300, 400, 600))
+    metrics.record(VoiceLatencySample(None, 400, 500, 700))
+    metrics.record(VoiceLatencySample(400, 500, None, 800))
+
+    report = metrics.snapshot()
+
+    assert report["count"] == 3
+    assert report["window_size"] == 3
+    assert report["asr_ms"] == {"count": 2, "p50": 400, "p90": 400, "max": 400}
+    assert report["total_ms"] == {"count": 3, "p50": 700, "p90": 800, "max": 800}
+
+    metrics.record_interrupt(120)
+    metrics.clear()
+    cleared = metrics.snapshot()
+    assert cleared["count"] == 0
+    interrupt = cast(dict[str, Any], cleared["interrupt_ms"])
+    assert interrupt["count"] == 0
+
+
+def test_voice_latency_metrics_tracks_m2_acceptance() -> None:
+    metrics = VoiceLatencyMetrics(max_samples=40)
+    for index in range(20):
+        metrics.record(VoiceLatencySample(300, 800, 1500 + index, 2200))
+        metrics.record_interrupt(180 + index)
+
+    report = metrics.snapshot()
+
+    assert report["interrupt_ms"] == {
+        "count": 20,
+        "p50": 190,
+        "p90": 197,
+        "max": 199,
+    }
+    assert report["targets"] == {
+        "completed_turns": 20,
+        "interrupt_samples": 20,
+        "first_audio_p90_ms": 1800,
+        "interrupt_p90_ms": 300,
+    }
+    assert report["acceptance"] == {
+        "completed_turns_ready": True,
+        "interrupt_samples_ready": True,
+        "first_audio_p90_pass": True,
+        "interrupt_p90_pass": True,
+    }
+
+
+def test_silero_barge_in_probe_uses_energy_without_consuming_probability() -> None:
+    calls = 0
+
+    def probability(_: bytes) -> float:
+        nonlocal calls
+        calls += 1
+        return 0.9
+
+    vad = SileroVad(probability_fn=probability)
+
+    assert vad.is_voiced(loud_frames(1)) is True
+    assert vad.is_voiced(silent_frames(1)) is False
+    assert calls == 0
+
+
+def test_resilient_vad_falls_back_to_energy_on_silero_runtime_failure() -> None:
+    def unavailable(_: bytes) -> float:
+        raise RuntimeError("synthetic silero failure")
+
+    vad = ResilientVad(SileroVad(probability_fn=unavailable), EnergyVad())
+
+    started = vad.feed(loud_frames(4))
+
+    assert started is not None and started.kind == "utterance_started"
+    assert vad.backend == "energy"
+
+
+def test_openwakeword_detector_buffers_frames_and_resets_after_detection() -> None:
+    scores = iter([0.1, 0.9])
+    resets = 0
+
+    def predictor(_: bytes) -> float:
+        return next(scores)
+
+    def reset() -> None:
+        nonlocal resets
+        resets += 1
+
+    detector = OpenWakeWordDetector(
+        threshold=0.5,
+        predictor=predictor,
+        reset_fn=reset,
+    )
+    frame = b"\x01\x00" * 1_280
+
+    assert detector.backend == "openwakeword"
+    assert detector.feed(frame[:1000]) is False
+    assert detector.feed(frame[1000:]) is False
+    assert detector.feed(frame) is True
+    assert resets == 1
 
 
 def test_sentence_buffer_splits_on_terminators_and_length_cap() -> None:

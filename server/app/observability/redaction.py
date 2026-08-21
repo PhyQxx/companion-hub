@@ -6,10 +6,16 @@ from typing import Any
 _SENSITIVE_KEYS = frozenset(
     {
         "audio",
+        "arguments",
         "body",
         "content",
+        "coordinates",
+        "destination",
         "image",
+        "key",
+        "location",
         "message",
+        "origin",
         "payload",
         "prompt",
         "secret",

@@ -7,6 +7,12 @@ const state = {
   activeGeneration: null,
   pendingSend: false,
   streamDrafts: new Map(),
+  voiceSocket: null,
+  voiceSocketKey: "",
+  voiceReady: false,
+  voiceSentence: null,
+  voicePlayback: Promise.resolve(),
+  voiceTurn: false,
 };
 const el = (id) => document.getElementById(id);
 
@@ -29,6 +35,185 @@ function updateControls() {
   el("new-conversation").disabled = !authenticated;
   el("send").disabled = !state.activeId || !el("text").value.trim() || state.pendingSend || Boolean(state.activeGeneration);
   el("logout").disabled = !authenticated;
+  el("privacy").disabled = state.pendingSend || Boolean(state.activeGeneration);
+  el("text-reply-voice").disabled = !authenticated || state.pendingSend || Boolean(state.activeGeneration);
+}
+
+function closeVoiceSocket() {
+  state.voiceReady = false;
+  state.voiceSentence = null;
+  state.voiceSocketKey = "";
+  if (state.voiceSocket) state.voiceSocket.close(1000);
+  state.voiceSocket = null;
+}
+
+function ensureVoiceSocket() {
+  if (!state.activeId) return Promise.reject(new Error("请先选择会话"));
+  const key = `${state.activeId}:${el("privacy").value}`;
+  if (state.voiceSocket?.readyState === WebSocket.OPEN && state.voiceReady && state.voiceSocketKey === key) {
+    return Promise.resolve(state.voiceSocket);
+  }
+  closeVoiceSocket();
+  const scheme = location.protocol === "https:" ? "wss" : "ws";
+  const socket = new WebSocket(`${scheme}://${location.host}/ws/voice`);
+  socket.binaryType = "arraybuffer";
+  state.voiceSocket = socket;
+  state.voiceSocketKey = key;
+  setStatus("正在连接语音输出…");
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    socket.addEventListener("open", () => {
+      socket.send(JSON.stringify({ type: "authenticate", access_token: state.token }));
+      socket.send(JSON.stringify({
+        type: "voice.hello",
+        conversation_id: state.activeId,
+        privacy_level: el("privacy").value,
+        format: "pcm_s16le",
+        sample_rate: 16000,
+        channels: 1,
+      }));
+    });
+    socket.addEventListener("message", (event) => {
+      if (typeof event.data === "string") {
+        const frame = JSON.parse(event.data);
+        if (frame.type === "voice.ready" && !settled) {
+          settled = true;
+          state.voiceReady = true;
+          resolve(socket);
+        }
+        handleVoiceEvent(frame);
+      } else if (event.data instanceof ArrayBuffer) {
+        state.voiceSentence?.chunks.push(event.data);
+      } else if (event.data instanceof Blob) {
+        void event.data.arrayBuffer().then((chunk) => state.voiceSentence?.chunks.push(chunk));
+      }
+    });
+    socket.addEventListener("error", () => {
+      if (!settled) {
+        settled = true;
+        reject(new Error("语音连接失败"));
+      }
+    });
+    socket.addEventListener("close", (event) => {
+      if (!settled) {
+        settled = true;
+        reject(new Error(`语音连接已关闭 (${event.code})`));
+      }
+      if (state.voiceSocket === socket) {
+        state.voiceReady = false;
+        state.voiceSocket = null;
+        state.voiceSocketKey = "";
+      }
+    });
+  });
+}
+
+function handleVoiceEvent(frame) {
+  if (frame.type === "voice.ready") {
+    setStatus(frame.tts_configured ? "语音输出已就绪" : "未配置 TTS，回复将仅显示文字", !frame.tts_configured);
+  } else if (frame.type === "voice.transcript") {
+    setStatus("文字已提交，模型生成中…");
+  } else if (frame.type === "turn.accepted") {
+    state.pendingSend = false;
+    state.activeGeneration = frame.generation_id;
+    state.voiceTurn = true;
+    el("cancel").hidden = false;
+    updateControls();
+    void refreshActiveMessages();
+  } else if (frame.type === "reply.delta") {
+    appendDelta(frame.generation_id, frame.delta || "", `conversation:${state.activeId}`);
+  } else if (frame.type === "voice.sentence") {
+    state.voiceSentence = {
+      mime: frame.mime || "audio/pcm;rate=24000",
+      sampleRate: Number(frame.sample_rate || 24000),
+      chunks: [],
+    };
+    setStatus("正在接收并播放语音回复…");
+  } else if (frame.type === "voice.sentence.end") {
+    if (state.voiceSentence) enqueueVoiceSentence(state.voiceSentence);
+    state.voiceSentence = null;
+  } else if (frame.type === "reply.committed") {
+    removeDraft(frame.generation_id);
+    void refreshActiveMessages();
+    finishGeneration("语音回复已完成");
+  } else if (frame.type === "voice.tts_unavailable") {
+    setStatus(`语音合成不可用，已保留文字回复：${frame.reason || "not_configured"}`, true);
+  } else if (frame.type === "voice.interrupted" || frame.type === "turn.cancelled") {
+    removeDraft(frame.generation_id);
+    finishGeneration("语音回复已停止");
+  } else if (frame.type === "turn.failed" || frame.type === "voice.error") {
+    removeDraft(frame.generation_id);
+    finishGeneration(frame.reason_code || frame.reason || "语音回合失败", true);
+  }
+}
+
+async function refreshActiveMessages() {
+  if (!state.activeId) return;
+  try {
+    const messages = await request(`/api/v1/chat/conversations/${state.activeId}/messages`);
+    renderMessages(messages);
+    const conversation = state.conversations.find((item) => item.id === state.activeId);
+    if (conversation && messages.length) {
+      conversation.last_seq = Math.max(conversation.last_seq, messages[messages.length - 1].seq);
+      renderConversations();
+    }
+  } catch (error) {
+    setStatus(error.message, true);
+  }
+}
+
+function enqueueVoiceSentence(sentence) {
+  const bytes = joinAudioChunks(sentence.chunks);
+  const blob = sentence.mime.startsWith("audio/pcm")
+    ? new Blob([pcmToWav(bytes, sentence.sampleRate)], { type: "audio/wav" })
+    : new Blob([bytes], { type: sentence.mime.split(";")[0] });
+  state.voicePlayback = state.voicePlayback
+    .catch(() => undefined)
+    .then(() => playAudioBlob(blob))
+    .catch((error) => setStatus(`语音播放失败：${error.message}`, true));
+}
+
+function joinAudioChunks(chunks) {
+  const total = chunks.reduce((sum, chunk) => sum + chunk.byteLength, 0);
+  const joined = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    joined.set(new Uint8Array(chunk), offset);
+    offset += chunk.byteLength;
+  }
+  return joined;
+}
+
+function pcmToWav(pcm, sampleRate) {
+  const buffer = new ArrayBuffer(44 + pcm.byteLength);
+  const view = new DataView(buffer);
+  const write = (offset, value) => [...value].forEach((char, index) => view.setUint8(offset + index, char.charCodeAt(0)));
+  write(0, "RIFF");
+  view.setUint32(4, 36 + pcm.byteLength, true);
+  write(8, "WAVE");
+  write(12, "fmt ");
+  view.setUint32(16, 16, true);
+  view.setUint16(20, 1, true);
+  view.setUint16(22, 1, true);
+  view.setUint32(24, sampleRate, true);
+  view.setUint32(28, sampleRate * 2, true);
+  view.setUint16(32, 2, true);
+  view.setUint16(34, 16, true);
+  write(36, "data");
+  view.setUint32(40, pcm.byteLength, true);
+  new Uint8Array(buffer, 44).set(pcm);
+  return buffer;
+}
+
+function playAudioBlob(blob) {
+  return new Promise((resolve, reject) => {
+    const url = URL.createObjectURL(blob);
+    const audio = new Audio(url);
+    const cleanup = () => URL.revokeObjectURL(url);
+    audio.addEventListener("ended", () => { cleanup(); resolve(); }, { once: true });
+    audio.addEventListener("error", () => { cleanup(); reject(new Error("浏览器无法解码音频")); }, { once: true });
+    audio.play().catch((error) => { cleanup(); reject(error); });
+  });
 }
 
 async function request(path, options = {}, token = state.token) {
@@ -132,6 +317,7 @@ function clearSession() {
     state.socket = null;
   }
   state.socketReady = false;
+  closeVoiceSocket();
   state.activeGeneration = null;
   state.pendingSend = false;
   el("cancel").hidden = true;
@@ -215,7 +401,7 @@ function appendDelta(generationId, delta, stream) {
   if (!draft) {
     const item = document.createElement("article");
     item.className = "message assistant streaming";
-    item.innerHTML = '<div class="bubble"></div><div class="meta">正在生成…</div>';
+    item.innerHTML = `<div class="bubble"></div><div class="meta">正在生成… · ${escapeHtml(formatMessageTime(new Date()))}</div>`;
     el("messages").querySelector(".empty")?.remove();
     el("messages").appendChild(item);
     draft = { content: "", element: item };
@@ -235,6 +421,7 @@ function removeDraft(generationId) {
 function finishGeneration(text, error = false) {
   state.activeGeneration = null;
   state.pendingSend = false;
+  state.voiceTurn = false;
   el("cancel").hidden = true;
   updateControls();
   setStatus(text, error);
@@ -310,6 +497,7 @@ async function createConversation() {
 }
 
 async function openConversation(id) {
+  if (state.activeId !== id) closeVoiceSocket();
   state.activeId = id;
   updateControls();
   renderConversations();
@@ -335,7 +523,8 @@ function appendMessage(message, autoScroll = true) {
   item.className = `message ${message.role}`;
   item.dataset.seq = message.seq;
   const meta = message.decision_meta;
-  const route = meta ? `${meta.endpoint} · ${meta.model} · ${Math.round(meta.latency_ms)}ms · cfg v${meta.config_version}` : message.privacy_level;
+  const detail = meta ? `${meta.endpoint} · ${meta.model} · ${Math.round(meta.latency_ms)}ms · cfg v${meta.config_version}` : message.privacy_level;
+  const route = `${detail} · ${formatMessageTime(message.created_at)}`;
   item.innerHTML = `<div class="bubble">${escapeHtml(message.content)}</div><div class="meta">${escapeHtml(route)}</div>`;
   root.appendChild(item);
   if (autoScroll) scrollMessagesToBottom("smooth");
@@ -348,6 +537,22 @@ async function send(event) {
   state.pendingSend = true;
   updateControls();
   setStatus("模型生成中…");
+  if (el("text-reply-voice").checked) {
+    try {
+      const voiceSocket = await ensureVoiceSocket();
+      state.voiceTurn = true;
+      voiceSocket.send(JSON.stringify({ type: "text.submit", text }));
+      el("text").value = "";
+      resizeComposer();
+      updateControls();
+    } catch (error) {
+      state.pendingSend = false;
+      state.voiceTurn = false;
+      updateControls();
+      setStatus(error.message, true);
+    }
+    return;
+  }
   if (state.socketReady) {
     state.socket.send(JSON.stringify({
       type: "message.send",
@@ -383,12 +588,29 @@ async function send(event) {
 }
 
 function cancelGeneration() {
+  if (state.voiceTurn && state.voiceSocket?.readyState === WebSocket.OPEN) {
+    state.voiceSocket.send(JSON.stringify({ type: "interrupt" }));
+    return;
+  }
   if (!state.socketReady || !state.activeGeneration) return;
   state.socket.send(JSON.stringify({ type: "turn.cancel", generation_id: state.activeGeneration }));
 }
 
 function escapeHtml(value) {
   return String(value).replace(/[&<>'"]/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", "'": "&#39;", '"': "&quot;" })[char]);
+}
+
+function formatMessageTime(value) {
+  const date = value instanceof Date ? value : new Date(value);
+  if (Number.isNaN(date.getTime())) return "时间未知";
+  return new Intl.DateTimeFormat("zh-CN", {
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: false,
+  }).format(date);
 }
 
 el("setup").addEventListener("click", setup);
@@ -407,9 +629,16 @@ el("text").addEventListener("keydown", (event) => {
   el("composer").requestSubmit();
 });
 el("privacy").addEventListener("change", (event) => {
+  closeVoiceSocket();
   el("privacy-note").textContent = event.target.value === "L2"
     ? "L2 强制仅用本地模型；本地不可用时会明确失败。"
     : "L1 可按配置使用云模型。";
+});
+el("text-reply-voice").checked = localStorage.getItem("ariaDebugTextReplyVoice") === "1";
+el("text-reply-voice").addEventListener("change", (event) => {
+  localStorage.setItem("ariaDebugTextReplyVoice", event.target.checked ? "1" : "0");
+  if (!event.target.checked) closeVoiceSocket();
+  setStatus(event.target.checked ? "已开启：文字消息将播放语音回复" : "已关闭文字回复播报");
 });
 
 resizeComposer();

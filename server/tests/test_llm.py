@@ -1,6 +1,7 @@
 # ruff: noqa: RUF003
 from __future__ import annotations
 
+import asyncio
 import logging
 from collections.abc import Awaitable, Callable
 from types import SimpleNamespace
@@ -403,6 +404,158 @@ async def test_stream_never_splices_fallback_after_visible_delta() -> None:
     assert fallback.requests == []
 
 
+def _stream_router(
+    *,
+    primary: FakeProvider,
+    fallback: FakeProvider,
+    policy: RoutePolicy,
+) -> tuple[LLMRouter, FakeProvider, FakeProvider]:
+    instance = LLMRouter(
+        endpoints={
+            "primary": endpoint(local=False),
+            "fallback": endpoint(local=False),
+            "private": endpoint(local=True, max_privacy="L2"),
+        },
+        routes={
+            LLMRoute.DIALOGUE: policy,
+            LLMRoute.UTILITY: RoutePolicy(primary="fallback"),
+            LLMRoute.PRIVATE: RoutePolicy(primary="private"),
+        },
+        providers={"primary": primary, "fallback": fallback, "private": FakeProvider("private")},
+    )
+    return instance, primary, fallback
+
+
+async def test_stream_survives_generation_longer_than_first_chunk_deadline() -> None:
+    class TrickleStreamProvider(FakeProvider):
+        async def stream(
+            self,
+            request: CompletionRequest,
+            on_delta: Callable[[str], Awaitable[None]],
+        ) -> CompletionResult:
+            self.requests.append(request)
+            chunks = [f"chunk{index} " for index in range(10)]
+            for chunk in chunks:
+                await asyncio.sleep(0.03)
+                await on_delta(chunk)
+            return CompletionResult(
+                text="".join(chunks),
+                provider="openai_compatible",
+                model="test-model",
+                endpoint=self.name,
+                route=request.route,
+                latency_ms=1,
+            )
+
+    trickle = TrickleStreamProvider("primary")
+    # 总时长约 300ms，远超 timeout_ms=100；只要 chunk 间隔小于空闲看门狗，
+    # 流就必须完整生成完毕，不允许被总时长上限掐断。
+    instance, _, _ = _stream_router(
+        primary=trickle,
+        fallback=FakeProvider("fallback"),
+        policy=RoutePolicy(
+            primary="primary",
+            fallbacks=["fallback"],
+            timeout_ms=100,
+            stream_idle_timeout_ms=200,
+        ),
+    )
+    deltas: list[str] = []
+
+    result = await instance.stream(request("L1"), _append_to(deltas))
+
+    assert result.endpoint == "primary"
+    assert deltas == [f"chunk{index} " for index in range(10)]
+
+
+async def test_stream_first_chunk_watchdog_falls_over_before_any_output(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    class SlowStartStreamProvider(FakeProvider):
+        async def stream(
+            self,
+            request: CompletionRequest,
+            on_delta: Callable[[str], Awaitable[None]],
+        ) -> CompletionResult:
+            self.requests.append(request)
+            await asyncio.sleep(0.35)
+            await on_delta("late-delta")
+            return CompletionResult(
+                text="late-delta",
+                provider="openai_compatible",
+                model="test-model",
+                endpoint=self.name,
+                route=request.route,
+                latency_ms=1,
+            )
+
+    slow = SlowStartStreamProvider("primary")
+    fallback = FakeProvider("fallback")
+    instance, _, fallback = _stream_router(
+        primary=slow,
+        fallback=fallback,
+        policy=RoutePolicy(
+            primary="primary",
+            fallbacks=["fallback"],
+            stream_first_chunk_timeout_ms=100,
+        ),
+    )
+    caplog.set_level(logging.WARNING, logger="app.llm.router")
+    deltas: list[str] = []
+
+    result = await instance.stream(request("L1"), _append_to(deltas))
+
+    assert result.endpoint == "fallback"
+    assert deltas == ["fallback-delta"]
+    assert "no first chunk within 100ms" in caplog.text
+
+
+async def test_stream_idle_watchdog_interrupts_stalled_stream_without_fallback(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    class StalledStreamProvider(FakeProvider):
+        async def stream(
+            self,
+            request: CompletionRequest,
+            on_delta: Callable[[str], Awaitable[None]],
+        ) -> CompletionResult:
+            self.requests.append(request)
+            await on_delta("first-delta")
+            await asyncio.sleep(0.35)
+            await on_delta("never-delta")
+            return CompletionResult(
+                text="first-deltanever-delta",
+                provider="openai_compatible",
+                model="test-model",
+                endpoint=self.name,
+                route=request.route,
+                latency_ms=1,
+            )
+
+    stalled = StalledStreamProvider("primary")
+    fallback = FakeProvider("fallback")
+    instance, _, fallback = _stream_router(
+        primary=stalled,
+        fallback=fallback,
+        policy=RoutePolicy(
+            primary="primary",
+            fallbacks=["fallback"],
+            stream_idle_timeout_ms=100,
+        ),
+    )
+    caplog.set_level(logging.WARNING, logger="app.llm.router")
+    deltas: list[str] = []
+
+    with pytest.raises(LLMRouteExhausted) as captured:
+        await instance.stream(request("L1"), _append_to(deltas))
+
+    assert captured.value.reason_code == "stream_interrupted"
+    assert captured.value.failures[-1] == LLMEndpointFailure("primary", 1, "TimeoutError")
+    assert deltas == ["first-delta"]
+    assert fallback.requests == []
+    assert "stream idle over 100ms after first chunk" in caplog.text
+
+
 async def test_trace_records_safe_metadata_only() -> None:
     sink = InMemorySpanSink()
     await router(traces=TraceRecorder(sink)).complete(request("L1"))
@@ -502,7 +655,7 @@ async def test_litellm_adapter_maps_openai_compatible_contract(
     )
     result = await provider.complete(completion_request)
 
-    assert captured["model"] == "openai/test-model"
+    assert captured["model"] == "custom_openai/test-model"
     assert captured["api_base"] == "https://models.example/v1"
     assert ("response_format" in captured) is expects_response_format
     assert result.request_id == "provider-request-id"

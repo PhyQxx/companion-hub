@@ -17,6 +17,7 @@ interface HubModel {
   secret_ref?: string | null;
   secret_value?: string | null;
   supports_json_mode?: boolean;
+  supports_tool_calling?: boolean;
   thinking_mode?: "provider_default" | "enabled" | "disabled";
   timeout_ms?: number;
   max_retries?: number;
@@ -86,6 +87,7 @@ function draftModelToEndpoint(m: DraftModel): HubModel {
     runs_local: m.runs_local,
     max_privacy_level: m.max_privacy_level,
     supports_json_mode: m.supports_json_mode,
+    supports_tool_calling: m.supports_tool_calling,
     thinking_mode: m.thinking_mode,
     timeout_ms: m.timeout_ms,
     max_retries: m.max_retries,
@@ -146,7 +148,29 @@ interface HubConfig {
     video_generation?: string | null;
   };
   voice?: HubVoiceConfig | null;
+  tools?: HubToolsConfig;
   observability: { log_level: string; trace_sample_rate: number; retain_days: number };
+}
+interface HubToolsConfig {
+  enabled: boolean;
+  max_tool_rounds: 1;
+  query: {
+    weather_enabled: boolean;
+    nearby_enabled: boolean;
+    route_enabled: boolean;
+    default_city: string | null;
+    precise_location_policy: "ask_each_time" | "allow_session";
+  };
+  amap: {
+    enabled: boolean;
+    base_url: string;
+    secret_ref?: string | null;
+    secret_value?: string | null;
+    timeout_ms: number;
+    max_retries: number;
+    max_concurrency: number;
+    requests_per_minute: number;
+  };
 }
 interface HubVoiceAsr {
   provider: "mimo" | "faster_whisper";
@@ -185,6 +209,7 @@ interface DraftModel {
   runs_local: boolean;
   max_privacy_level: string;
   supports_json_mode: boolean;
+  supports_tool_calling: boolean;
   thinking_mode: "provider_default" | "enabled" | "disabled";
   timeout_ms: number;
   max_retries: number;
@@ -239,6 +264,7 @@ interface DraftState {
     video_generation: string;
   };
   voice: DraftVoice;
+  tools: HubToolsConfig;
   observability: { log_level: string; trace_sample_rate: number; retain_days: number };
 }
 
@@ -270,6 +296,7 @@ const defaultModel = (): DraftModel => ({
   runs_local: false,
   max_privacy_level: "L1",
   supports_json_mode: false,
+  supports_tool_calling: false,
   thinking_mode: "provider_default",
   timeout_ms: 12000,
   max_retries: 1,
@@ -283,6 +310,28 @@ const defaultRoute = (): DraftRoute => ({ primary: "", fallbacks: [], timeout_ms
 const defaultCapabilityModels = () => ({ vision: "", image_generation: "", video_generation: "" });
 
 const defaultObservability = () => ({ log_level: "INFO", trace_sample_rate: 1.0, retain_days: 14 });
+
+const defaultTools = (): HubToolsConfig => ({
+  enabled: false,
+  max_tool_rounds: 1,
+  query: {
+    weather_enabled: true,
+    nearby_enabled: true,
+    route_enabled: true,
+    default_city: "济南市",
+    precise_location_policy: "ask_each_time",
+  },
+  amap: {
+    enabled: false,
+    base_url: "https://restapi.amap.com",
+    secret_ref: "env:AMAP_WEB_SERVICE_KEY",
+    secret_value: null,
+    timeout_ms: 3500,
+    max_retries: 1,
+    max_concurrency: 2,
+    requests_per_minute: 30,
+  },
+});
 
 const defaultVoiceAsr = (): DraftVoiceAsr => ({
   enabled: false,
@@ -376,6 +425,7 @@ const draft = ref<DraftState>({
   routes: { dialogue: defaultRoute(), utility: defaultRoute(), private: defaultRoute() },
   capability_models: defaultCapabilityModels(),
   voice: defaultVoice(),
+  tools: defaultTools(),
   observability: defaultObservability(),
 });
 
@@ -387,6 +437,7 @@ function hubConfigToDraft(config: HubConfig | undefined | null): DraftState {
       routes: { dialogue: defaultRoute(), utility: defaultRoute(), private: defaultRoute() },
       capability_models: defaultCapabilityModels(),
       voice: defaultVoice(),
+      tools: defaultTools(),
       observability: defaultObservability(),
     };
   }
@@ -407,6 +458,7 @@ function hubConfigToDraft(config: HubConfig | undefined | null): DraftState {
       runs_local: m.runs_local ?? false,
       max_privacy_level: m.max_privacy_level ?? "L1",
       supports_json_mode: m.supports_json_mode ?? false,
+      supports_tool_calling: m.supports_tool_calling ?? false,
       thinking_mode: m.thinking_mode ?? "provider_default",
       timeout_ms: m.timeout_ms ?? 12000,
       max_retries: m.max_retries ?? 1,
@@ -460,6 +512,7 @@ function hubConfigToDraft(config: HubConfig | undefined | null): DraftState {
       video_generation: config.capability_models?.video_generation ?? "",
     },
     voice: { asr: draftAsr, tts: draftTts },
+    tools: config.tools ?? defaultTools(),
     observability: config.observability ?? defaultObservability(),
   };
 }
@@ -476,6 +529,7 @@ function draftToHubConfig(d: DraftState): HubConfig {
       runs_local: m.runs_local,
       max_privacy_level: m.max_privacy_level,
       supports_json_mode: m.supports_json_mode,
+      supports_tool_calling: m.supports_tool_calling,
       thinking_mode: m.thinking_mode,
       timeout_ms: m.timeout_ms,
       max_retries: m.max_retries,
@@ -542,6 +596,7 @@ function draftToHubConfig(d: DraftState): HubConfig {
       video_generation: d.capability_models.video_generation || null,
     },
     voice: { asr: voiceAsr, tts: voiceTts },
+    tools: d.tools,
     observability: d.observability,
   };
 }
@@ -734,6 +789,19 @@ function validateCandidate(config: HubConfig): string | null {
       }
     }
   }
+  const tools = config.tools;
+  if (tools?.enabled) {
+    if (!tools.amap.enabled) return "启用地图与天气工具时必须启用高德 Provider";
+    if (!tools.amap.secret_value && !tools.amap.secret_ref) {
+      return "启用地图与天气工具时必须配置高德 Web 服务 Key";
+    }
+    if (tools.amap.secret_ref && !SECRET_REF_PATTERN.test(tools.amap.secret_ref)) {
+      return "高德 Key 环境变量引用格式应为 env:AMAP_WEB_SERVICE_KEY";
+    }
+    if (!Object.values(models).some((model) => model.enabled && model.supports_tool_calling)) {
+      return "至少需要一个启用的文本模型声明支持 Function Calling";
+    }
+  }
   return null;
 }
 
@@ -871,6 +939,34 @@ onMounted(load);
             <label class="field"><span>Trace 采样率</span><el-input-number v-model="draft.observability.trace_sample_rate" :min="0" :max="1" :step="0.1" controls-position="right" /></label>
             <label class="field"><span>保留天数</span><el-input-number v-model="draft.observability.retain_days" :min="1" :max="365" controls-position="right" /></label>
           </div>
+        </div>
+      </el-tab-pane>
+
+      <el-tab-pane label="地图与天气" name="tools">
+        <div class="global-card">
+          <div class="global-head">
+            <div><h2>查询工具</h2><p>服务端调用高德 Web 服务，Key 不会下发到聊天前端。</p></div>
+            <el-switch v-model="draft.tools.enabled" active-text="启用" />
+          </div>
+          <div class="option-row">
+            <el-checkbox v-model="draft.tools.query.weather_enabled">天气</el-checkbox>
+            <el-checkbox v-model="draft.tools.query.nearby_enabled">附近地点</el-checkbox>
+            <el-checkbox v-model="draft.tools.query.route_enabled">路线规划</el-checkbox>
+          </div>
+          <div class="form-grid three global-fields">
+            <label class="field"><span>默认城市</span><el-input v-model="draft.tools.query.default_city" placeholder="济南市" /></label>
+            <label class="field"><span>精确位置策略</span><el-select v-model="draft.tools.query.precise_location_policy"><el-option label="每次询问" value="ask_each_time" /><el-option label="会话内允许" value="allow_session" /></el-select></label>
+            <label class="field"><span>高德 Provider</span><el-switch v-model="draft.tools.amap.enabled" /></label>
+          </div>
+          <div class="form-grid three global-fields">
+            <label class="field"><span>高德 Base URL</span><el-input v-model="draft.tools.amap.base_url" disabled /></label>
+            <label class="field"><span>Key 环境变量</span><el-input v-model="draft.tools.amap.secret_ref" placeholder="env:AMAP_WEB_SERVICE_KEY" /></label>
+            <label class="field"><span>或直接填写 Key</span><el-input v-model="draft.tools.amap.secret_value" type="password" show-password /></label>
+            <label class="field"><span>超时（ms）</span><el-input-number v-model="draft.tools.amap.timeout_ms" :min="500" :max="30000" /></label>
+            <label class="field"><span>全局并发</span><el-input-number v-model="draft.tools.amap.max_concurrency" :min="1" :max="16" /></label>
+            <label class="field"><span>每分钟请求上限</span><el-input-number v-model="draft.tools.amap.requests_per_minute" :min="1" :max="10000" /></label>
+          </div>
+          <div class="capability-hint">启用前还需在“模型列表”勾选至少一个文本模型的“支持 Function Calling”。精确位置不会写入长期记忆或日志。</div>
         </div>
       </el-tab-pane>
 
@@ -1066,6 +1162,7 @@ onMounted(load);
                   </div>
                   <div class="option-row">
                     <el-checkbox v-model="draft.models[activeModelTab].supports_json_mode">支持 JSON Mode</el-checkbox>
+                    <el-checkbox v-model="draft.models[activeModelTab].supports_tool_calling">支持 Function Calling</el-checkbox>
                     <el-checkbox v-model="draft.models[activeModelTab].runs_local">本地运行</el-checkbox>
                   </div>
                   <div v-if="draft.models[activeModelTab].kind === 'text'" class="form-grid three">

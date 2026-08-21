@@ -200,3 +200,57 @@ def _receive_until(websocket: Any, target_type: str) -> list[dict[str, Any]]:
     while not events or events[-1]["type"] != target_type:
         events.append(websocket.receive_json())
     return events
+
+
+def test_send_frame_accepts_and_validates_location_payload() -> None:
+    from uuid import uuid4
+
+    from pydantic import ValidationError
+
+    from app.api.chat_ws import SendFrame
+
+    frame = SendFrame.model_validate(
+        {
+            "type": "message.send",
+            "conversation_id": str(uuid4()),
+            "text": "今天天气怎么样",
+            "privacy_level": "L1",
+            "location": {"latitude": 36.66, "longitude": 117.02, "accuracy_m": 25},
+        }
+    )
+    assert frame.location is not None
+    assert frame.location.accuracy_m == 25
+    assert frame.location.to_client_location().is_fresh()
+
+    with pytest.raises(ValidationError):
+        SendFrame.model_validate(
+            {
+                "type": "message.send",
+                "conversation_id": str(uuid4()),
+                "text": "hi",
+                "location": {"latitude": 95, "longitude": 117.02},
+            }
+        )
+
+
+def test_chat_connection_caches_location_across_frames() -> None:
+    from unittest.mock import Mock
+
+    from app.api.chat_ws import ChatConnection
+    from app.tools import ClientLocationPayload
+
+    connection = ChatConnection(websocket=Mock(), principal=Mock())
+    assert connection.resolve_location(None) is None
+
+    first = connection.resolve_location(
+        ClientLocationPayload(latitude=36.6, longitude=117.0)
+    )
+    assert first is not None and first.is_fresh()
+    # 后续帧不带 location 时复用连接缓存。
+    assert connection.resolve_location(None) is first
+
+    second = connection.resolve_location(
+        ClientLocationPayload(latitude=36.7, longitude=117.1)
+    )
+    assert second is not first
+    assert connection.resolve_location(None) is second

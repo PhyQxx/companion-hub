@@ -795,11 +795,13 @@ class MemoryStore:
                 )
             )
         }
+        added = False
         for source in sources:
             key = (MemorySourceKind(source.source_kind).value, source.source_id)
             if key in existing:
                 continue
             existing.add(key)
+            added = True
             session.add(
                 MemorySourceRecord(
                     memory_id=memory_id,
@@ -808,6 +810,10 @@ class MemoryStore:
                     excerpt_hash=_excerpt_hash(source.excerpt),
                 )
             )
+        if added:
+            # sessions 使用 autoflush=False。来源引用属于删除/审计正确性的关键数据，
+            # 必须在调用事务内立即落库，不能依赖 context exit 的隐式 commit flush。
+            await session.flush()
 
     @staticmethod
     def _entry(record: MemoryRecord) -> MemoryEntry:

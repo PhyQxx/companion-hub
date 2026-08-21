@@ -34,6 +34,7 @@ function renderModels() {
         <label class="check"><input data-field="enabled" type="checkbox" ${model.enabled ? "checked" : ""}>启用端点</label>
         <label class="check"><input data-field="runs_local" type="checkbox" ${model.runs_local ? "checked" : ""}>本地运行</label>
         <label class="check"><input data-field="supports_json_mode" type="checkbox" ${model.supports_json_mode ? "checked" : ""}>原生 JSON 模式</label>
+        <label class="check"><input data-field="supports_tool_calling" type="checkbox" ${model.supports_tool_calling ? "checked" : ""}>Function Calling</label>
       </div><div class="card-footer"><button class="danger" data-remove-model>删除端点</button></div>
     </article>`).join("");
   root.querySelectorAll("[data-remove-model]").forEach(button => button.addEventListener("click", () => { button.closest("[data-model-card]").remove(); renderRoutes(); }));
@@ -52,11 +53,11 @@ function collectConfig() {
   document.querySelectorAll("[data-model-card]").forEach(card => {
     const get = (name) => card.querySelector(`[data-field=${name}]`);
     const name = get("name").value.trim();
-    models[name] = {enabled:get("enabled").checked, provider:get("provider").value.trim(), model:get("model").value.trim(), supports_json_mode:get("supports_json_mode").checked, base_url:get("base_url").value.trim(), secret_ref:get("secret_ref").value.trim() || null, runs_local:get("runs_local").checked, max_privacy_level:get("max_privacy_level").value.trim(), timeout_ms:Number(get("timeout_ms").value), max_retries:Number(get("max_retries").value), max_context_tokens:Number(get("max_context_tokens").value), input_cost_per_million:Number(get("input_cost_per_million").value), output_cost_per_million:Number(get("output_cost_per_million").value)};
+    models[name] = {enabled:get("enabled").checked, provider:get("provider").value.trim(), model:get("model").value.trim(), supports_json_mode:get("supports_json_mode").checked, supports_tool_calling:get("supports_tool_calling").checked, base_url:get("base_url").value.trim(), secret_ref:get("secret_ref").value.trim() || null, runs_local:get("runs_local").checked, max_privacy_level:get("max_privacy_level").value.trim(), timeout_ms:Number(get("timeout_ms").value), max_retries:Number(get("max_retries").value), max_context_tokens:Number(get("max_context_tokens").value), input_cost_per_million:Number(get("input_cost_per_million").value), output_cost_per_million:Number(get("output_cost_per_million").value)};
   });
   const routes = {};
   ["dialogue", "utility", "private"].forEach(route => { const timeout = document.querySelector(`[data-field=timeout-${route}]`).value; routes[route] = {primary:document.querySelector(`[data-route=${route}]`).value, fallbacks:document.querySelector(`[data-field=fallbacks-${route}]`).value.split(",").map(v => v.trim()).filter(Boolean), timeout_ms:timeout ? Number(timeout) : null}; });
-  return {schema_version:1, models, routes, observability:config.observability};
+  return {schema_version:1, models, routes, capability_models:config.capability_models, voice:config.voice, tools:config.tools, observability:config.observability};
 }
 
 function renderCurrent(current) {
@@ -77,6 +78,6 @@ async function rollback(version) { if (!confirm(`回滚到 v${version}？系统�
 
 $("#auth-form").addEventListener("submit", event => { event.preventDefault(); token = $("#admin-token").value; sessionStorage.setItem("ariaAdminToken", token); load(); });
 $("#reload").addEventListener("click", load); $("#save-draft").addEventListener("click", saveDraft);
-$("#add-model").addEventListener("click", () => { config.models[`new_endpoint_${Date.now()}`] = {enabled:false,provider:"openai_compatible",model:"model-id",supports_json_mode:false,base_url:"https://example.com/v1",secret_ref:"env:MODEL_API_KEY",runs_local:false,max_privacy_level:"L1",timeout_ms:12000,max_retries:0,max_context_tokens:32768,input_cost_per_million:0,output_cost_per_million:0}; renderModels(); renderRoutes(); });
+$("#add-model").addEventListener("click", () => { config.models[`new_endpoint_${Date.now()}`] = {enabled:false,provider:"openai_compatible",model:"model-id",supports_json_mode:false,supports_tool_calling:false,base_url:"https://example.com/v1",secret_ref:"env:MODEL_API_KEY",runs_local:false,max_privacy_level:"L1",timeout_ms:12000,max_retries:0,max_context_tokens:32768,input_cost_per_million:0,output_cost_per_million:0}; renderModels(); renderRoutes(); });
 document.addEventListener("change", event => { if (event.target.matches("[data-field=name],[data-field=enabled],[data-field=runs_local]")) renderRoutes(); });
 if (token) load();

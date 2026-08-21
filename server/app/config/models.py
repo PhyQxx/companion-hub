@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import re
-from typing import Annotated, Literal
+from typing import Annotated, Any, Literal
 
 from pydantic import AnyHttpUrl, Field, model_validator
 
@@ -86,6 +86,48 @@ class VoiceConfig(StrictModel):
     )
 
 
+class QueryToolConfig(StrictModel):
+    weather_enabled: bool = True
+    nearby_enabled: bool = True
+    route_enabled: bool = True
+    default_city: Annotated[str, Field(min_length=1, max_length=100)] | None = None
+    precise_location_policy: Literal["ask_each_time", "allow_session"] = "ask_each_time"
+
+
+class AmapToolConfig(StrictModel):
+    enabled: bool = False
+    base_url: AnyHttpUrl = AnyHttpUrl("https://restapi.amap.com")
+    secret_ref: Annotated[
+        str, Field(pattern=r"^env:[A-Z][A-Z0-9_]{2,127}$")
+    ] | None = None
+    secret_value: Annotated[str, Field(max_length=1024)] | None = None
+    timeout_ms: Annotated[int, Field(ge=500, le=30_000)] = 3_500
+    max_retries: Annotated[int, Field(ge=0, le=2)] = 1
+    max_concurrency: Annotated[int, Field(ge=1, le=16)] = 2
+    requests_per_minute: Annotated[int, Field(ge=1, le=10_000)] = 30
+
+    @model_validator(mode="after")
+    def validate_provider(self) -> AmapToolConfig:
+        if self.enabled and self.secret_ref is None and self.secret_value is None:
+            raise ValueError("enabled amap provider requires secret_ref or secret_value")
+        if self.enabled and str(self.base_url).rstrip("/") != "https://restapi.amap.com":
+            raise ValueError("production amap base_url must use the fixed HTTPS host")
+        return self
+
+
+class ToolsConfig(StrictModel):
+    enabled: bool = False
+    max_tool_rounds: Literal[1] = 1
+    query: QueryToolConfig = Field(default_factory=QueryToolConfig)
+    amap: AmapToolConfig = Field(default_factory=AmapToolConfig)
+
+    @model_validator(mode="after")
+    def validate_provider(self) -> ToolsConfig:
+        if self.enabled and not self.amap.enabled:
+            raise ValueError("enabled query tools require an enabled amap provider")
+        return self
+
+
 class HubConfig(StrictModel):
     schema_version: Literal[1] = 1
     models: Annotated[dict[str, ModelEndpoint], Field(min_length=1, max_length=64)]
@@ -93,13 +135,15 @@ class HubConfig(StrictModel):
     capability_models: CapabilityModelRoutes = Field(default_factory=CapabilityModelRoutes)
     observability: ObservabilityConfig = Field(default_factory=ObservabilityConfig)
     voice: VoiceConfig = Field(default_factory=VoiceConfig)
+    tools: ToolsConfig = Field(default_factory=ToolsConfig)
 
     @model_validator(mode="before")
     @classmethod
-    def _drop_deprecated_fields(cls, data: dict) -> dict:
-        # 兼容已入库的旧配置：废弃的 llm 全局字段不再使用，
+    def _drop_deprecated_fields(cls, data: Any) -> Any:
+        # 兼容已入库的旧配置: 废弃的 llm 全局字段不再使用,
         # 由模型级 max_tokens 完全接管。
-        data.pop("llm", None)
+        if isinstance(data, dict):
+            data.pop("llm", None)
         return data
 
     @model_validator(mode="after")
