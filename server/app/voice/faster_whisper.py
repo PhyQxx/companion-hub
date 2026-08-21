@@ -59,6 +59,15 @@ class FasterWhisperRecognizer:
             )
             raise SpeechRecognitionUnavailable("transcription_failed") from error
 
+    async def warmup(self) -> None:
+        """在开始录音前加载本地模型。
+
+        首次下载仍由管理端环境自检/人工操作触发；这里只把已缓存模型的
+        进程级初始化前移到 voice.hello，避免污染“说完→首音频”指标。
+        """
+
+        await self._ensure_model()
+
     async def _ensure_model(self) -> Any:
         if self._model is not None:
             return self._model

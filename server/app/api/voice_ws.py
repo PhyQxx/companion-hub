@@ -29,6 +29,7 @@ from app.privacy import EgressBlocked
 from app.schemas import PrivacyLevel
 from app.tools import ClientLocation, ClientLocationPayload
 from app.voice import (
+    FasterWhisperRecognizer,
     PcmAmplitudeEnvelope,
     SentenceBuffer,
     SpeechRecognitionUnavailable,
@@ -216,6 +217,18 @@ class VoiceWebSocketManager:
         session.privacy_level = PrivacyLevel(frame.get("privacy_level", "L1"))
         session.resolve_location(frame.get("location"))
         recognizer, tts_chain = await self._voice_source.resolve()
+        asr_warmup_ms: int | None = None
+        asr_unavailable_reason: str | None = None
+        if isinstance(recognizer, FasterWhisperRecognizer):
+            warmup_started = time.perf_counter()
+            try:
+                await recognizer.warmup()
+            except SpeechRecognitionUnavailable as error:
+                logger.warning("local voice asr warmup unavailable reason=%s", error.reason)
+                recognizer = None
+                asr_unavailable_reason = error.reason
+            else:
+                asr_warmup_ms = int((time.perf_counter() - warmup_started) * 1000)
         await self._send(
             session,
             "voice.ready",
@@ -224,6 +237,8 @@ class VoiceWebSocketManager:
                 "asr_configured": recognizer is not None,
                 "asr_runs_local": recognizer.runs_local if recognizer is not None else None,
                 "asr_provider": type(recognizer).__name__ if recognizer is not None else None,
+                "asr_warmup_ms": asr_warmup_ms,
+                "asr_unavailable_reason": asr_unavailable_reason,
                 "tts_configured": tts_chain is not None,
                 "tts_provider_count": len(tts_chain.providers) if tts_chain is not None else 0,
                 "vad_backend": session.vad.backend,

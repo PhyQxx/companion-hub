@@ -101,6 +101,30 @@ async def test_faster_whisper_adapter_lazy_loads_and_joins_segments(
     }
 
 
+@pytest.mark.asyncio
+async def test_faster_whisper_warmup_loads_model_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    loaded: list[tuple[str, str, str]] = []
+
+    class FakeWhisperModel:
+        def __init__(self, model: str, *, device: str, compute_type: str) -> None:
+            loaded.append((model, device, compute_type))
+
+    monkeypatch.setattr(
+        "app.voice.faster_whisper.importlib.import_module",
+        lambda name: SimpleNamespace(WhisperModel=FakeWhisperModel),
+    )
+    recognizer = FasterWhisperRecognizer(
+        model="base", device="cpu", compute_type="int8", language="zh"
+    )
+
+    await recognizer.warmup()
+    await recognizer.warmup()
+
+    assert loaded == [("base", "cpu", "int8")]
+
+
 def test_energy_vad_segments_utterance_boundaries() -> None:
     vad = EnergyVad()
     events = []
