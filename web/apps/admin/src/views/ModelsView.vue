@@ -138,6 +138,22 @@ interface VoiceAsrEnvironmentCheckResult {
   model_load_checked: boolean;
   message: string;
 }
+
+interface AmapConnectionTestStep {
+  name: string;
+  ok: boolean;
+  latency_ms: number;
+  message: string;
+  error_type?: string | null;
+}
+
+interface AmapConnectionTestResult {
+  ok: boolean;
+  steps: AmapConnectionTestStep[];
+  latency_ms: number;
+  message: string;
+}
+
 interface HubConfig {
   schema_version: number;
   models: Record<string, HubModel>;
@@ -280,6 +296,8 @@ const testingConnection = ref(false);
 const connectionTest = ref<ModelConnectionTestResult | null>(null);
 const testingVoiceAsr = ref(false);
 const voiceAsrCheck = ref<VoiceAsrEnvironmentCheckResult | null>(null);
+const testingAmap = ref(false);
+const amapTestResult = ref<AmapConnectionTestResult | null>(null);
 const activeModelTab = ref(0);
 const activeMainTab = ref("routes");
 
@@ -416,6 +434,48 @@ async function checkLocalAsrEnvironment() {
     ElMessage.error(message);
   } finally {
     testingVoiceAsr.value = false;
+  }
+}
+
+async function testAmapConnection() {
+  const amap = draft.value.tools.amap;
+  if (!amap.enabled) {
+    ElMessage.warning("请先启用高德 Provider");
+    return;
+  }
+  if (!amap.secret_value && !amap.secret_ref) {
+    ElMessage.warning("请先填写高德 Key 或 Key 环境变量");
+    return;
+  }
+  testingAmap.value = true;
+  amapTestResult.value = null;
+  try {
+    const result = await api.request<AmapConnectionTestResult>(
+      "/api/v1/admin/config/tools/amap/test",
+      {
+        method: "POST",
+        body: JSON.stringify({
+          base_url: amap.base_url,
+          secret_ref: amap.secret_ref,
+          secret_value: amap.secret_value,
+          timeout_ms: amap.timeout_ms,
+          max_retries: amap.max_retries,
+          max_concurrency: amap.max_concurrency,
+          requests_per_minute: amap.requests_per_minute,
+        }),
+      },
+    );
+    amapTestResult.value = result;
+    if (result.ok) {
+      ElMessage.success(result.message);
+    } else {
+      ElMessage.error(`高德连接测试失败：${result.message}`);
+    }
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "高德连接测试失败";
+    ElMessage.error(message);
+  } finally {
+    testingAmap.value = false;
   }
 }
 
@@ -966,7 +1026,38 @@ onMounted(load);
             <label class="field"><span>全局并发</span><el-input-number v-model="draft.tools.amap.max_concurrency" :min="1" :max="16" /></label>
             <label class="field"><span>每分钟请求上限</span><el-input-number v-model="draft.tools.amap.requests_per_minute" :min="1" :max="10000" /></label>
           </div>
-          <div class="capability-hint">启用前还需在“模型列表”勾选至少一个文本模型的“支持 Function Calling”。精确位置不会写入长期记忆或日志。</div>
+          <div class="capability-hint">启用前还需在"模型列表"勾选至少一个文本模型的"支持 Function Calling"。精确位置不会写入长期记忆或日志。</div>
+          <div class="form-actions" style="margin-top: 16px;">
+            <el-button
+              type="primary"
+              :loading="testingAmap"
+              :disabled="!draft.tools.amap.enabled"
+              @click="testAmapConnection"
+            >
+              测试高德连接
+            </el-button>
+          </div>
+          <div v-if="amapTestResult" class="test-result" style="margin-top: 12px;">
+            <div :class="['test-status', amapTestResult.ok ? 'success' : 'error']">
+              <span class="status-dot" :class="amapTestResult.ok ? 'ok' : 'fail'" />
+              <span>{{ amapTestResult.message }}</span>
+              <span class="latency">{{ amapTestResult.latency_ms.toFixed(0) }}ms</span>
+            </div>
+            <el-table :data="amapTestResult.steps" size="small" style="margin-top: 8px;">
+              <el-table-column prop="name" label="检查项" width="120">
+                <template #default="{ row }">
+                  <span :class="row.ok ? 'step-ok' : 'step-fail'">
+                    <span class="status-dot" :class="row.ok ? 'ok' : 'fail'" />
+                    {{ row.name === 'key_resolve' ? 'Key 解析' : row.name === 'geocode' ? '地理编码' : row.name === 'weather' ? '天气接口' : row.name }}
+                  </span>
+                </template>
+              </el-table-column>
+              <el-table-column prop="message" label="结果" />
+              <el-table-column prop="latency_ms" label="耗时" width="100">
+                <template #default="{ row }">{{ row.latency_ms.toFixed(0) }}ms</template>
+              </el-table-column>
+            </el-table>
+          </div>
         </div>
       </el-tab-pane>
 
@@ -1353,6 +1444,15 @@ onMounted(load);
 .empty-editor p { margin:0 0 6px; font-size:12px; }
 
 .live-status { color:#15935b !important; }
+.status-dot { display:inline-block; width:8px; height:8px; border-radius:50%; margin-right:6px; }
+.status-dot.ok { background:#26b873; }
+.status-dot.fail { background:#e04e4e; }
+.test-status { display:flex; align-items:center; gap:8px; padding:10px 14px; border-radius:8px; font-size:13px; }
+.test-status.success { background:#f3fbf7; color:#15935b; }
+.test-status.error { background:#fff6f6; color:#c0392b; }
+.test-status .latency { margin-left:auto; color:#68748a; font-size:11px; }
+.step-ok { color:#15935b; }
+.step-fail { color:#c0392b; }
 
 @media (max-width:1180px) {
   .summary-grid { grid-template-columns:repeat(2,minmax(0,1fr)); }

@@ -3,6 +3,7 @@ from .contracts import ToolContext, ToolExecution, ToolHandler, ToolResult
 from .executor import ToolExecutor
 from .factory import QueryToolRuntime, build_query_tool_runtime
 from .intent import select_query_tools
+from .ledger import ToolLedger, ToolLedgerEntry
 from .location import ClientLocation, ClientLocationPayload, LocationSource, ResolvedLocation
 from .nearby import NearbyTool, SearchNearbyArgs, nearby_tool_definition
 from .registry import ToolRegistry
@@ -26,6 +27,8 @@ __all__ = [
     "ToolExecution",
     "ToolExecutor",
     "ToolHandler",
+    "ToolLedger",
+    "ToolLedgerEntry",
     "ToolRegistry",
     "ToolResult",
     "WeatherTool",

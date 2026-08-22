@@ -24,6 +24,7 @@ from app.config.store import ConfigSnapshot, hash_config
 from app.llm import EnvSecretProvider, LiteLLMProvider, ModelEndpoint, ModelKind
 from app.observability import apply_observability
 from app.schemas.common import StrictModel
+from app.tools import AmapProvider, AmapProviderError, ToolLedger
 
 _BEARER = HTTPBearer(auto_error=False)
 AdminCredentials = Annotated[HTTPAuthorizationCredentials | None, Depends(_BEARER)]
@@ -106,6 +107,52 @@ class VoiceAsrEnvironmentCheckResult(StrictModel):
     package_version: str | None = None
     model_load_checked: bool = False
     message: str
+
+
+class AmapConnectionTestStep(StrictModel):
+    name: str
+    ok: bool
+    latency_ms: float
+    message: str
+    error_type: str | None = None
+
+
+class AmapConnectionTestRequest(StrictModel):
+    base_url: str = "https://restapi.amap.com"
+    secret_ref: str | None = None
+    secret_value: str | None = None
+    timeout_ms: int = 3_500
+    max_retries: int = 1
+    max_concurrency: int = 2
+    requests_per_minute: int = 30
+
+
+class AmapConnectionTestResult(StrictModel):
+    ok: bool
+    steps: list[AmapConnectionTestStep]
+    latency_ms: float
+    message: str
+
+
+class AmapMetricsResult(StrictModel):
+    total_calls: int
+    success_rate: float | None
+    p50_latency_ms: float | None
+    p90_latency_ms: float | None
+    cache_hit_rate: float | None
+    failures: dict[str, int]
+
+
+class AmapLedgerEntryView(StrictModel):
+    tool_name: str
+    ok: bool
+    provider: str | None
+    latency_ms: float
+    timestamp: datetime
+    reason_code: str | None = None
+    cache_hit: bool = False
+    location_source: str | None = None
+    result_count: int | None = None
 
 
 _SECRET_PATTERNS: tuple[re.Pattern[str], ...] = (
@@ -448,6 +495,191 @@ def create_admin_config_router(
                 else "当前 Hub Python 环境未安装 faster-whisper"
             ),
         )
+
+    @router.post("/tools/amap/test", response_model=AmapConnectionTestResult)
+    async def test_amap_connection(
+        body: AmapConnectionTestRequest,
+    ) -> AmapConnectionTestResult:
+        """验证高德 Key 是否有效、配额是否正常、核心接口能否返回合法数据。"""
+        started = perf_counter()
+        steps: list[AmapConnectionTestStep] = []
+
+        # 1. 解析 Key
+        key_started = perf_counter()
+        api_key: str | None = None
+        try:
+            if body.secret_value is not None:
+                api_key = body.secret_value
+            elif body.secret_ref is not None:
+                api_key = EnvSecretProvider().resolve(body.secret_ref)
+            if not api_key:
+                steps.append(
+                    AmapConnectionTestStep(
+                        name="key_resolve",
+                        ok=False,
+                        latency_ms=(perf_counter() - key_started) * 1_000,
+                        message="未配置高德 Key（secret_value 或 secret_ref 为空）",
+                    )
+                )
+                return AmapConnectionTestResult(
+                    ok=False,
+                    steps=steps,
+                    latency_ms=(perf_counter() - started) * 1_000,
+                    message="Key 未配置",
+                )
+            steps.append(
+                AmapConnectionTestStep(
+                    name="key_resolve",
+                    ok=True,
+                    latency_ms=(perf_counter() - key_started) * 1_000,
+                    message="Key 已解析",
+                )
+            )
+        except Exception as error:
+            steps.append(
+                AmapConnectionTestStep(
+                    name="key_resolve",
+                    ok=False,
+                    latency_ms=(perf_counter() - key_started) * 1_000,
+                    message=str(error),
+                    error_type=type(error).__name__,
+                )
+            )
+            return AmapConnectionTestResult(
+                ok=False,
+                steps=steps,
+                latency_ms=(perf_counter() - started) * 1_000,
+                message=f"Key 解析失败: {error}",
+            )
+
+        provider = AmapProvider(
+            api_key,
+            base_url=str(body.base_url).rstrip("/"),
+            timeout_ms=body.timeout_ms,
+            max_retries=0,
+            max_concurrency=body.max_concurrency,
+            requests_per_minute=body.requests_per_minute,
+        )
+        try:
+            # 2. 地理编码测试
+            geo_started = perf_counter()
+            try:
+                geocode_result = await provider.geocode("济南市")
+                steps.append(
+                    AmapConnectionTestStep(
+                        name="geocode",
+                        ok=True,
+                        latency_ms=(perf_counter() - geo_started) * 1_000,
+                        message=f"地理编码正常，返回 adcode={geocode_result.get('adcode')}",
+                    )
+                )
+            except AmapProviderError as error:
+                steps.append(
+                    AmapConnectionTestStep(
+                        name="geocode",
+                        ok=False,
+                        latency_ms=(perf_counter() - geo_started) * 1_000,
+                        message=error.reason_code,
+                        error_type="AmapProviderError",
+                    )
+                )
+            except Exception as error:
+                steps.append(
+                    AmapConnectionTestStep(
+                        name="geocode",
+                        ok=False,
+                        latency_ms=(perf_counter() - geo_started) * 1_000,
+                        message=str(error),
+                        error_type=type(error).__name__,
+                    )
+                )
+
+            # 3. 天气接口测试（使用济南 adcode 370100）
+            weather_started = perf_counter()
+            try:
+                weather_result = await provider.weather("370100", extensions="base")
+                lives = weather_result.get("lives")
+                if isinstance(lives, list) and lives:
+                    steps.append(
+                        AmapConnectionTestStep(
+                            name="weather",
+                            ok=True,
+                            latency_ms=(perf_counter() - weather_started) * 1_000,
+                            message=f"天气接口正常，返回城市={lives[0].get('city')}",
+                        )
+                    )
+                else:
+                    steps.append(
+                        AmapConnectionTestStep(
+                            name="weather",
+                            ok=False,
+                            latency_ms=(perf_counter() - weather_started) * 1_000,
+                            message="天气接口返回数据异常",
+                        )
+                    )
+            except AmapProviderError as error:
+                steps.append(
+                    AmapConnectionTestStep(
+                        name="weather",
+                        ok=False,
+                        latency_ms=(perf_counter() - weather_started) * 1_000,
+                        message=error.reason_code,
+                        error_type="AmapProviderError",
+                    )
+                )
+            except Exception as error:
+                steps.append(
+                    AmapConnectionTestStep(
+                        name="weather",
+                        ok=False,
+                        latency_ms=(perf_counter() - weather_started) * 1_000,
+                        message=str(error),
+                        error_type=type(error).__name__,
+                    )
+                )
+        finally:
+            await provider.close()
+
+        all_ok = all(step.ok for step in steps)
+        failed = [step.name for step in steps if not step.ok]
+        return AmapConnectionTestResult(
+            ok=all_ok,
+            steps=steps,
+            latency_ms=(perf_counter() - started) * 1_000,
+            message="全部通过" if all_ok else f"失败项: {', '.join(failed)}",
+        )
+
+    @router.get("/tools/amap/metrics", response_model=AmapMetricsResult)
+    async def amap_metrics() -> AmapMetricsResult:
+        """基于最近 200 次工具调用台账聚合延迟报告。"""
+        raw = ToolLedger().metrics()
+        return AmapMetricsResult(
+            total_calls=raw["total_calls"],
+            success_rate=raw["success_rate"],
+            p50_latency_ms=raw["p50_latency_ms"],
+            p90_latency_ms=raw["p90_latency_ms"],
+            cache_hit_rate=raw["cache_hit_rate"],
+            failures=raw["failures"],
+        )
+
+    @router.get("/tools/amap/ledger", response_model=list[AmapLedgerEntryView])
+    async def amap_ledger(limit: int = 50) -> list[AmapLedgerEntryView]:
+        """返回最近工具调用台账(脱敏)。"""
+        entries = ToolLedger().snapshot()
+        return [
+            AmapLedgerEntryView(
+                tool_name=e.tool_name,
+                ok=e.ok,
+                provider=e.provider,
+                latency_ms=e.latency_ms,
+                timestamp=e.timestamp,
+                reason_code=e.reason_code,
+                cache_hit=e.cache_hit,
+                location_source=e.location_source,
+                result_count=e.result_count,
+            )
+            for e in entries[:limit]
+        ]
 
     @router.post(
         "/versions",

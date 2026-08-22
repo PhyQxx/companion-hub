@@ -2,9 +2,7 @@
 
 > 一个部署在自有设备上的 AI 伴侣中枢。它把聊天、长期记忆、历史回溯、模型路由、隐私边界和未来设备能力放在同一个可扩展运行时中。
 
-当前阶段：**M3A · 地图/天气运维收口**（P5 的 14 天真实文字使用期并行，截至 2026-08-21 尚无可计入的每日日志）。P6 Batch A～C 的语音代码、自动化和真浏览器全链已经完成，本地 faster-whisper 暖态 ASR 与 82ms 打断均已实测；但当前组合的理想首音频下限约 3.3s，无法满足 1.8s 指标，因此 M2 延迟转为非阻塞优化项，待流式 ASR 与低延迟语音专用 LLM 方案成熟后再做 20+20 判卷。地图/天气的真实高德调用、精确定位、模糊候选、TTL 缓存和结构化结果卡片已经完成，下一步补 Admin 独立自检与最近 200 次工具台账/延迟报告。
-
-当前完整质量基线（2026-08-21 现场复验）：pytest **245 通过 / 2 跳过**（247 collected）、`ruff check server`、严格 `mypy server/app server/tests`（136 个 source files）、`git diff --check`、Alembic 单 head、`pnpm --dir web typecheck` 与 `pnpm --dir web build` 均通过。运行配置为 v39，对话主路由已回滚 `sensenova_deepseek-v4-flash`，本地 ASR 为 faster-whisper `base/cpu/int8`；Silero/openWakeWord 运行依赖仍未安装，因此 VAD/唤醒保持 Energy VAD + 自动监听/PTT。真实高德 Key 的天气、附近 POI、路线与浏览器 WGS84→GCJ-02 定位已经端到端通过。
+当前已具备文字、记忆、时间线、语音及地图/天气工具能力；下一条主线是多终端设备底座，让手机或 Web 会话可以按授权请求电脑客户端读取屏幕、当前网页或传感器。实时进度、未完成门槛和最新质量基线统一见 [TASKS.md](./TASKS.md)。
 
 质量闸门统一使用 `make p5-backend`（ruff/mypy/pytest/diff-check）、`make p5-frontend`（web typecheck/build）和 `make p5-real`。真实模型矩阵可拆 `make p5-real-l1` 与 `make p5-real-l2`：前者只跑云端允许的 L0/L1 用例，后者只跑强制 `local_private` 的 L2 隔离用例。脚本默认从 `.env.local` 安全加载模型环境变量、使用 `config/hub.example.yaml` 路由，不打印 secret，也不写入项目业务数据库。示例配置的本地 private 基线为 LM Studio（OpenAI-compatible `http://127.0.0.1:1234/v1`，思考开销 `reasoning_overhead_tokens: 2048`、超时 120s）。报告路径可用 `P5_REPORT`、`P5_L1_REPORT`、`P5_L2_REPORT` 覆盖。
 
@@ -31,16 +29,16 @@ Aria 不是单一聊天 UI，而是一个长期运行的本地 Companion Hub：
 - **时间线与历史回溯**：Timeline 索引、相对时间解析、有界检索、Source 下钻、无证据不编造、L2 索引壳隔离；
 - **记忆评估集**：`server/tests/memory_eval/` 确定性回归（正例 20 / 负例 20 / 冲突 / 删除 / 隔离），阈值对齐 Release Criteria；
 - **语音闭环（P6 Batch A）**：`/ws/voice` 双向音频通道、VAD 断句、PTT、MiMo ASR/TTS + edge-tts 故障转移链、句级流式合成、barge-in 打断、L2 拒绝云端出站；语音配置在管理后台「模型与路由 → 语音」可视化管理并保存即生效；
-- **地图与天气 Query Tools（M3A 主链）**：Function Calling、真实高德天气/附近 POI/路线、路网距离复核、浏览器临时精确定位、模糊候选、跨轮次 TTL 缓存、结构化天气/POI/路线卡片、安全导航按钮和 L2/L3 出站闸门；
+- **地图与天气 Query Tools**：Function Calling、真实高德天气/附近 POI/路线、路网距离复核、浏览器临时精确定位、模糊候选、跨轮次 TTL 缓存、结构化结果卡片、Admin 独立自检和最近 200 次脱敏调用台账；
 - **管理后台**：Vue 3 + Element Plus，覆盖模型、路由、语音、Persona、记忆、时间线和基础观测；
 - **正式 Chat 前端**：Vue 3 + Vite；
 - **现实能力边界**：模型只能把已上报的真实在线/授权能力当作可执行动作。
 
 ## 当前正在开发
 
-### M3A 地图/天气运维收口
+### M3A 多终端与主动感知
 
-主查询链已经完成，设计与验收真源见 [docs/35-地图与天气工具设计.md](./docs/35-地图与天气工具设计.md)。当前实现包含真实高德天气、附近 POI、步行/驾车距离复核、路线概要、浏览器临时精确定位、模糊地点候选、跨轮次有界 TTL 缓存和持久化结构化结果卡片。剩余工作是 Admin 高德独立自检，以及最近 200 次脱敏工具调用台账和延迟报告。
+先建设设备注册、配对、撤销、在线心跳和命令通道，再交付桌面客户端与浏览器扩展。目标体验是：用户可从手机、Web 或其他终端对 Aria 说“看一下我的电脑网页”，Hub 根据设备别名与实时能力向已授权电脑发出短时命令，由电脑本地截图或读取当前标签页，再把临时结果返回原会话。随后接入 MQTT 传感器和受 DND、冷却、每日上限约束的主动感知。详细设计见 [docs/34-大模型工具使用与主动感知设计.md](./docs/34-大模型工具使用与主动感知设计.md)。
 
 ### P6 语音化（Batch A～C 已完成，M2 延迟非阻塞优化）
 
@@ -107,6 +105,7 @@ AgentReply → OutputIntent → Output Adapter
 | [20-结构化回复与 Persona](./docs/20-结构化回复与Persona.md) | AgentReply、Persona、现实能力边界 |
 | [30-多主体持久化记忆设计](./docs/30-多主体持久化记忆设计.md) | user / assistant / shared 长期记忆 |
 | [31-记忆时间线与历史回溯设计](./docs/31-记忆时间线与历史回溯设计.md) | Timeline、History Recall、按时间回查 |
+| [34-工具使用与主动感知](./docs/34-大模型工具使用与主动感知设计.md) | 多终端、屏幕/网页、传感器与主动感知 |
 | [35-地图与天气工具设计](./docs/35-地图与天气工具设计.md) | Function Calling、高德天气/POI/路线、隐私与验收 |
 
 当前任务状态看 [TASKS.md](./TASKS.md)，不要从历史验收文档推断当前进度。
@@ -231,13 +230,7 @@ PostgreSQL 默认映射到宿主机 `5433`，可通过 `POSTGRES_PORT` 修改。
 
 ## 当前阶段与下一步
 
-当前执行清单以 [TASKS.md](./TASKS.md) 为准。下一步是：
-
-1. **地图/天气运维收口**：实现 Admin 高德独立自检，以及最近 200 次工具调用台账和延迟报告；
-2. **P5 真实使用期**：从第一条可核验每日日志起连续记录 14 天，期满复跑闸门并定稿 docs/32；
-3. **M2 延迟优化**：评估流式 ASR 与低延迟语音专用 LLM，达到可行延迟后再重置窗口完成 20+20 真机判卷；
-4. **Batch D**：仍以 M2 指标达标为前置，之后再进入 OLV Live2D 最小壳与 Tauri 桌宠评估；
-5. **可选唤醒增强**：需要时再安装并验收 Silero 与 openWakeWord，不阻塞当前主线。
+当前执行顺序、并行门槛和暂缓项只维护在 [TASKS.md](./TASKS.md)，README 不再复制一份容易过期的任务清单。
 
 并行约束：P5 的 14 天真实文字使用从 docs/32 首条有效日志重启计数，期间发现的 P0/P1 文字链路问题优先修复；P5 期满达标后输出闸门报告定稿。
 

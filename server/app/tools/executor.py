@@ -9,6 +9,7 @@ from app.privacy import EgressBlocked, EgressDestination, EgressGuard
 from app.schemas import PrivacyLevel
 
 from .contracts import ToolContext, ToolExecution, ToolResult
+from .ledger import ToolLedger
 from .registry import ToolRegistry
 
 
@@ -46,10 +47,10 @@ class ToolExecutor:
                 call_id=call.id,
                 result=self._failure(handler.name, "tool_arguments_invalid", started),
             )
-        return ToolExecution(
-            call_id=call.id,
-            result=await handler.execute(arguments, context),
-        )
+        result = await handler.execute(arguments, context)
+        if result.provider == "amap":
+            ToolLedger().record(result)
+        return ToolExecution(call_id=call.id, result=result)
 
     @staticmethod
     def _failure(tool_name: str, reason_code: str, started: float) -> ToolResult:

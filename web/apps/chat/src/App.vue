@@ -61,6 +61,7 @@ const voiceAsrConfigured = ref<boolean | null>(null);
 const voiceAsrBlockMessage = ref("");
 const voiceRecording = ref(false);
 const voiceBusy = ref(false);
+const sendPending = ref(false);
 const voiceStatus = ref("语音未连接");
 const voiceTranscript = ref("");
 const voiceViseme = ref(0);
@@ -136,6 +137,8 @@ let reconnectTimer: number | null = null;
 let reconnectAttempts = 0;
 let voiceSocket: VoiceSocket | null = null;
 let voiceSocketKey = "";
+let voiceConnectPromise: Promise<VoiceSocket> | null = null;
+let voiceConnectKey = "";
 let voiceSentence: {
   meta: VoiceSentenceMeta;
   chunks: ArrayBuffer[];
@@ -153,6 +156,7 @@ const canSend = computed(
     !!activeId.value &&
     draft.value.trim().length > 0 &&
     !streaming.value &&
+    !sendPending.value &&
     !voiceBusy.value &&
     !voiceRecording.value,
 );
@@ -170,6 +174,8 @@ async function closeVoice() {
   voiceTtsConfigured.value = null;
   voiceAsrBlockMessage.value = "";
   voiceSocketKey = "";
+  voiceConnectPromise = null;
+  voiceConnectKey = "";
   voiceSentence = null;
   voiceSocket?.close();
   voiceSocket = null;
@@ -182,7 +188,9 @@ async function closeVoice() {
 
 async function ensureVoiceSocket(): Promise<VoiceSocket> {
   if (!activeId.value) throw new Error("请先选择会话");
-  const key = `${activeId.value}:${privacy.value}`;
+  const conversationId = activeId.value;
+  const privacyLevel = privacy.value;
+  const key = `${conversationId}:${privacyLevel}`;
   if (
     voiceSocket &&
     voiceReady.value &&
@@ -190,37 +198,50 @@ async function ensureVoiceSocket(): Promise<VoiceSocket> {
   ) {
     return voiceSocket;
   }
-  await closeVoice();
-  voiceStatus.value = "正在连接语音…";
-  const next = new VoiceSocket(
-    (location.protocol === "https:" ? "wss://" : "ws://") + location.host + "/ws/voice",
-    token.value,
-    {
-      onEvent: handleVoiceEvent,
-      onAudio: handleVoiceAudio,
-      onClose: () => {
-        if (voiceSocket === next) {
-          voiceReady.value = false;
-          voiceBusy.value = false;
-          voiceStatus.value = "语音连接已断开";
-        }
+  if (voiceConnectPromise && voiceConnectKey === key) return voiceConnectPromise;
+  const connecting = (async () => {
+    await closeVoice();
+    voiceStatus.value = "正在连接语音…";
+    const next = new VoiceSocket(
+      (location.protocol === "https:" ? "wss://" : "ws://") + location.host + "/ws/voice",
+      token.value,
+      {
+        onEvent: handleVoiceEvent,
+        onAudio: handleVoiceAudio,
+        onClose: () => {
+          if (voiceSocket === next) {
+            voiceReady.value = false;
+            voiceBusy.value = false;
+            voiceStatus.value = "语音连接已断开";
+          }
+        },
       },
-    },
-  );
-  voiceSocket = next;
-  voiceSocketKey = key;
-  try {
-    // 纯语音回合没有输入帧, hello 时带上新鲜缓存位置(不触发授权弹窗)。
-    await next.connect(activeId.value, privacy.value, freshCachedLocation());
-  } catch (error) {
-    if (voiceSocket === next) {
-      voiceSocket = null;
-      voiceSocketKey = "";
-      voiceReady.value = false;
+    );
+    voiceSocket = next;
+    voiceSocketKey = key;
+    try {
+      // 纯语音回合没有输入帧, hello 时带上新鲜缓存位置(不触发授权弹窗)。
+      await next.connect(conversationId, privacyLevel, freshCachedLocation());
+      return next;
+    } catch (error) {
+      if (voiceSocket === next) {
+        voiceSocket = null;
+        voiceSocketKey = "";
+        voiceReady.value = false;
+      }
+      throw error;
     }
-    throw error;
+  })();
+  voiceConnectPromise = connecting;
+  voiceConnectKey = key;
+  try {
+    return await connecting;
+  } finally {
+    if (voiceConnectPromise === connecting) {
+      voiceConnectPromise = null;
+      voiceConnectKey = "";
+    }
   }
-  return next;
 }
 
 function handleVoiceAudio(chunk: ArrayBuffer) {
@@ -445,10 +466,15 @@ function onPrivacyChanged() {
 
 function onTextReplyVoiceChanged() {
   localStorage.setItem(TEXT_REPLY_VOICE_KEY, textReplyVoice.value ? "1" : "0");
-  if (!textReplyVoice.value && !voiceRecording.value) void closeVoice();
-  voiceStatus.value = textReplyVoice.value
-    ? "已开启：文字消息将播放语音回复"
-    : "已关闭文字回复播报";
+  if (textReplyVoice.value && activeId.value) {
+    voiceStatus.value = "正在连接语音…";
+    void ensureVoiceSocket().catch((error) => {
+      voiceStatus.value = error instanceof Error ? error.message : "语音连接失败";
+    });
+  } else if (!voiceRecording.value) {
+    void closeVoice();
+  }
+  if (!textReplyVoice.value) voiceStatus.value = "已关闭文字回复播报";
 }
 
 function personaVersionOf(message: ChatMessage): number | null {
@@ -621,6 +647,11 @@ async function openConversation(id: string) {
     }
   }
   socket?.sync(id, lastSeqOf(id));
+  if (textReplyVoice.value) {
+    void ensureVoiceSocket().catch((error) => {
+      voiceStatus.value = error instanceof Error ? error.message : "语音连接失败";
+    });
+  }
   await scrollToEnd();
 }
 
@@ -758,9 +789,12 @@ function handleEvent(event: SocketEvent) {
 
 async function send() {
   if (!canSend.value || !activeId.value) return;
-  await loadRuntimeMeta();
-  if (!canSend.value || !activeId.value) return;
   const text = draft.value.trim();
+  sendPending.value = true;
+  draft.value = "";
+  setStatus(matchesLocationIntent(text) && locationEnabled.value && privacy.value !== "L2"
+    ? "正在获取位置并发送…"
+    : "正在发送…");
   const location = await resolveLocationForText(text);
   if (textReplyVoice.value) {
     try {
@@ -768,15 +802,17 @@ async function send() {
       voiceBusy.value = true;
       voiceStatus.value = "文字已提交，正在生成语音回复…";
       current.submitText(text, location);
-      draft.value = "";
     } catch (error) {
       voiceBusy.value = false;
+      if (!draft.value) draft.value = text;
       setStatus(error instanceof Error ? error.message : "语音连接失败", true);
+    } finally {
+      sendPending.value = false;
     }
     return;
   }
   socket?.sendMessage(activeId.value, text, privacy.value, location);
-  draft.value = "";
+  sendPending.value = false;
 }
 
 function cancelStreaming() {

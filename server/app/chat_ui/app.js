@@ -9,6 +9,8 @@ const state = {
   streamDrafts: new Map(),
   voiceSocket: null,
   voiceSocketKey: "",
+  voiceConnectPromise: null,
+  voiceConnectKey: "",
   voiceReady: false,
   voiceSentence: null,
   voicePlayback: Promise.resolve(),
@@ -43,16 +45,21 @@ function closeVoiceSocket() {
   state.voiceReady = false;
   state.voiceSentence = null;
   state.voiceSocketKey = "";
+  state.voiceConnectPromise = null;
+  state.voiceConnectKey = "";
   if (state.voiceSocket) state.voiceSocket.close(1000);
   state.voiceSocket = null;
 }
 
 function ensureVoiceSocket() {
   if (!state.activeId) return Promise.reject(new Error("请先选择会话"));
-  const key = `${state.activeId}:${el("privacy").value}`;
+  const conversationId = state.activeId;
+  const privacyLevel = el("privacy").value;
+  const key = `${conversationId}:${privacyLevel}`;
   if (state.voiceSocket?.readyState === WebSocket.OPEN && state.voiceReady && state.voiceSocketKey === key) {
     return Promise.resolve(state.voiceSocket);
   }
+  if (state.voiceConnectPromise && state.voiceConnectKey === key) return state.voiceConnectPromise;
   closeVoiceSocket();
   const scheme = location.protocol === "https:" ? "wss" : "ws";
   const socket = new WebSocket(`${scheme}://${location.host}/ws/voice`);
@@ -60,14 +67,14 @@ function ensureVoiceSocket() {
   state.voiceSocket = socket;
   state.voiceSocketKey = key;
   setStatus("正在连接语音输出…");
-  return new Promise((resolve, reject) => {
+  const connecting = new Promise((resolve, reject) => {
     let settled = false;
     socket.addEventListener("open", () => {
       socket.send(JSON.stringify({ type: "authenticate", access_token: state.token }));
       socket.send(JSON.stringify({
         type: "voice.hello",
-        conversation_id: state.activeId,
-        privacy_level: el("privacy").value,
+        conversation_id: conversationId,
+        privacy_level: privacyLevel,
         format: "pcm_s16le",
         sample_rate: 16000,
         channels: 1,
@@ -105,6 +112,14 @@ function ensureVoiceSocket() {
         state.voiceSocketKey = "";
       }
     });
+  });
+  state.voiceConnectPromise = connecting;
+  state.voiceConnectKey = key;
+  return connecting.finally(() => {
+    if (state.voiceConnectPromise === connecting) {
+      state.voiceConnectPromise = null;
+      state.voiceConnectKey = "";
+    }
   });
 }
 
@@ -503,6 +518,9 @@ async function openConversation(id) {
   renderConversations();
   try {
     renderMessages(await request(`/api/v1/chat/conversations/${id}/messages`));
+    if (el("text-reply-voice").checked) {
+      void ensureVoiceSocket().catch((error) => setStatus(error.message, true));
+    }
   } catch (error) {
     setStatus(error.message, true);
   }
@@ -535,19 +553,24 @@ async function send(event) {
   const text = el("text").value.trim();
   if (!state.activeId || !text || state.pendingSend || state.activeGeneration) return;
   state.pendingSend = true;
+  el("text").value = "";
+  resizeComposer();
   updateControls();
-  setStatus("模型生成中…");
+  setStatus("正在发送…");
   if (el("text-reply-voice").checked) {
     try {
       const voiceSocket = await ensureVoiceSocket();
       state.voiceTurn = true;
       voiceSocket.send(JSON.stringify({ type: "text.submit", text }));
-      el("text").value = "";
-      resizeComposer();
+      setStatus("模型生成中…");
       updateControls();
     } catch (error) {
       state.pendingSend = false;
       state.voiceTurn = false;
+      if (!el("text").value) {
+        el("text").value = text;
+        resizeComposer();
+      }
       updateControls();
       setStatus(error.message, true);
     }
@@ -560,8 +583,7 @@ async function send(event) {
       text,
       privacy_level: el("privacy").value,
     }));
-    el("text").value = "";
-    resizeComposer();
+    setStatus("模型生成中…");
     updateControls();
     return;
   }
@@ -570,8 +592,6 @@ async function send(event) {
       method: "POST",
       body: JSON.stringify({ text, privacy_level: el("privacy").value }),
     });
-    el("text").value = "";
-    resizeComposer();
     appendMessage(turn.user_message);
     appendMessage(turn.assistant_message);
     const conversation = state.conversations.find((item) => item.id === state.activeId);
@@ -579,6 +599,10 @@ async function send(event) {
     renderConversations();
     setStatus("回复已保存");
   } catch (error) {
+    if (!el("text").value) {
+      el("text").value = text;
+      resizeComposer();
+    }
     setStatus(error.message, true);
     await openConversation(state.activeId);
   } finally {
@@ -637,8 +661,13 @@ el("privacy").addEventListener("change", (event) => {
 el("text-reply-voice").checked = localStorage.getItem("ariaDebugTextReplyVoice") === "1";
 el("text-reply-voice").addEventListener("change", (event) => {
   localStorage.setItem("ariaDebugTextReplyVoice", event.target.checked ? "1" : "0");
-  if (!event.target.checked) closeVoiceSocket();
-  setStatus(event.target.checked ? "已开启：文字消息将播放语音回复" : "已关闭文字回复播报");
+  if (event.target.checked && state.activeId) {
+    setStatus("正在连接语音输出…");
+    void ensureVoiceSocket().catch((error) => setStatus(error.message, true));
+  } else if (!event.target.checked) {
+    closeVoiceSocket();
+    setStatus("已关闭文字回复播报");
+  }
 });
 
 resizeComposer();
