@@ -1,6 +1,6 @@
 # Aria 当前任务
 
-> 最后更新：2026-08-21
+> 最后更新：2026-08-23
 > 详细设计入口：[docs/00-文档索引与架构总览.md](./docs/00-文档索引与架构总览.md)
 
 本文件只维护当前执行队列、未完成门槛和最新质量基线。历史交付细节留在对应阶段文档，不在这里重复。
@@ -13,16 +13,16 @@
 | P5 文字稳定性闸门 | 使用期未开始 | 自动化通过；14 天从首条有效日志重新起算，见 `docs/32` |
 | P6 Batch A～C 语音 | 主链完成 | 真浏览器 ASR/LLM/TTS/viseme/打断已打通；延迟继续优化 |
 | M3A 地图/天气第一批 | 已完成 | 查询、定位、卡片、Admin 自检、200 条台账与延迟报告已落地，见 `docs/35` |
-| M3A 多终端与感知 | 下一主线 | 建立设备客户端、远程能力、屏幕/网页读取和 MQTT 传感器闭环 |
+| M3A 多终端与感知 | 进行中 | Device Registry 与 Command Channel 后端已落地；下一步实现设备页和电脑屏幕/网页读取 |
 | P6 Batch D Live2D/桌宠 | 等待前置 | M2 延迟达标后再启动 |
 
 ## 2. 当前执行队列
 
 ### A. 多终端设备底座
 
-- [ ] Device Registry：设备配对、命名、所有权、撤销、在线状态和最后心跳。
-- [ ] Device Command Channel：客户端主动连接 Hub，支持签名命令、TTL、幂等键、取消和结果回执。
-- [ ] Capability Registry：终端声明 `screen.capture`、`browser.inspect`、`sensor.read` 等能力；模型只看到在线且已授权的能力。
+- [x] Device Registry 后端：一次性配对码、每设备独立凭据、命名/别名、所有权、撤销、在线状态、心跳与 capability 授权白名单。
+- [x] Device Command Channel 后端：客户端主动连接 `/ws/devices`，支持 HMAC 签名命令、TTL、设备级幂等键、取消、ACK、结果回执与超时状态。
+- [x] Capability Registry 后端：终端心跳声明 `screen.capture`、`browser.inspect`、`sensor.read` 等能力；模型只看到在线声明与管理员授权的交集。
 - [ ] 目标设备解析：“我的电脑”等别名唯一时自动选择，多个候选时要求用户确认。
 - [ ] Admin 设备页：在线状态、能力、授权策略、最近命令与一键撤销。
 - [ ] 局域网/VPN 安全接入：每设备独立凭据，不把 Hub 或客户端裸露到公网。
@@ -54,6 +54,8 @@
 
 ## 3. 最近完成
 
+- [x] Device Command Channel 第一批：`0013_device_command`、鉴权长连接、HMAC-SHA256 命令签名、脱敏命令台账、离线失败、TTL/超时、幂等冲突、取消与 ACK/结果回执已接入。
+- [x] Device Registry 第一批：`0012_device_registry`、一次性配对、凭据哈希、心跳、撤销、乐观 revision 与授权能力交集已接入；在线有效能力已进入聊天现实能力边界。
 - [x] 地图/天气工具：真实高德天气、附近 POI、路线、浏览器临时定位、模糊候选、TTL 缓存和结构化卡片。
 - [x] 地图运维：独立自检、`ToolLedger(maxlen=200)`、成功率/P50/P90/缓存命中率与失败聚合、Admin 展示。
 - [x] 语音 Batch A～C：本地 faster-whisper、MiMo/edge TTS、流式分句、viseme、打断、延迟滑窗与真浏览器全链。
@@ -62,11 +64,10 @@
 
 ## 4. 最新质量基线
 
-- 2026-08-21 当前工作树：pytest **256 通过 / 2 跳过**，Chat/Admin/Shared typecheck 与 production build 通过；
-- 完整 `make p5-backend` 待并行新增的 `test_amap_admin.py` 修正 2 个 Ruff 和 2 个 mypy 问题后复验；
-- 全工作树 `git diff --check` 还报告 Admin Vue 新增代码的 1 处行尾空格；本次整理的 Markdown 自身已通过 diff-check；
+- 2026-08-23 当前工作树：pytest **262 通过 / 2 跳过**，Ruff、全量 mypy、Alembic 单 head、`git diff --check`、Chat/Admin/Shared typecheck 与 production build 全部通过；
+- CI 的 mypy 范围已与本地发布闸门对齐为 `server/app server/tests`；
 - 运行配置：v39；本地 ASR 为 faster-whisper `base/cpu/int8`；
-- 并行功能收口后必须重新运行 `make p5-backend && make p5-frontend`，全绿后再把本节改为发布基线。
+- PostgreSQL/pgvector 两项集成测试在本地无 `ARIA_TEST_DATABASE_URL` 时跳过，推送后由 CI PostgreSQL 服务执行。
 
 ## 5. 暂缓
 

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from pathlib import Path
 
 import httpx
@@ -10,7 +10,7 @@ from httpx import ASGITransport, AsyncClient
 from app.config import DatabaseConfigStore
 from app.db import Base, Database, create_database
 from app.main import create_app
-from app.tools import ToolLedger, ToolResult
+from app.tools import AmapProvider, ToolLedger, ToolResult
 
 
 @pytest.fixture
@@ -407,12 +407,13 @@ class TestAmapAdminApi:
         assert metrics["success_rate"] is None
 
 
-def _mock_provider(api_key: str, transport) -> object:
+def _mock_provider(
+    api_key: str,
+    transport: Callable[[httpx.Request], httpx.Response],
+) -> AmapProvider:
     """构造一个使用给定 transport 的 AmapProvider, 用于 monkeypatch。"""
     client = httpx.AsyncClient(
         transport=httpx.MockTransport(transport),
         base_url="https://restapi.amap.com",
     )
-    from app.tools import AmapProvider
-
     return AmapProvider(api_key, client=client)

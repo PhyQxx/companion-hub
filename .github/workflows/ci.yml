@@ -36,10 +36,12 @@ jobs:
         with:
           node-version: "20"
           cache: pnpm
-          cache-dependency-path: contracts/pnpm-lock.yaml
+          cache-dependency-path: |
+            contracts/pnpm-lock.yaml
+            web/pnpm-lock.yaml
       - run: uv sync --dev --locked
       - run: uv run ruff check server
-      - run: uv run mypy server/app
+      - run: uv run mypy server/app server/tests
       - run: uv run pytest
       - run: uv run alembic upgrade head --sql > /tmp/aria-migration.sql
       - run: POSTGRES_PASSWORD=ci-postgres MQTT_PASSWORD=ci-mqtt docker compose config --quiet
@@ -47,6 +49,9 @@ jobs:
       - run: pnpm --dir contracts install --frozen-lockfile
       - run: pnpm --dir contracts run generate
       - run: pnpm --dir contracts run check
+      - run: pnpm --dir web install --frozen-lockfile
+      - run: pnpm --dir web typecheck
+      - run: pnpm --dir web build
       - run: node --check server/app/admin/models.js
       - run: node --check server/app/admin/personas.js
       - run: node --check server/app/admin/module.js

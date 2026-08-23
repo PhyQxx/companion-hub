@@ -6,12 +6,21 @@ from .admin_timeline import create_admin_timeline_router
 from .auth import ChatSessionGuard, create_auth_router
 from .chat import create_chat_router
 from .chat_ws import ChatWebSocketManager, create_chat_websocket_router
+from .device_commands import (
+    DeviceCommandGateway,
+    create_device_command_routers,
+    sign_device_frame,
+    verify_device_signature,
+)
+from .devices import DeviceCredentialGuard, create_device_routers
 from .model_capabilities import create_model_capability_router
 from .voice_ws import VoiceWebSocketManager, create_voice_websocket_router
 
 __all__ = [
     "ChatSessionGuard",
     "ChatWebSocketManager",
+    "DeviceCommandGateway",
+    "DeviceCredentialGuard",
     "VoiceWebSocketManager",
     "create_admin_config_router",
     "create_admin_memory_router",
@@ -21,6 +30,10 @@ __all__ = [
     "create_chat_router",
     "create_chat_websocket_router",
     "create_deletion_ledger_router",
+    "create_device_command_routers",
+    "create_device_routers",
     "create_model_capability_router",
     "create_voice_websocket_router",
+    "sign_device_frame",
+    "verify_device_signature",
 ]

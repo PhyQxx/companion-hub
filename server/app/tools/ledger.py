@@ -4,7 +4,7 @@ from __future__ import annotations
 from collections import deque
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from typing import ClassVar, Literal
+from typing import ClassVar, Literal, TypedDict
 
 from .contracts import ToolResult
 
@@ -22,6 +22,15 @@ class ToolLedgerEntry:
     cache_hit: bool = False
     location_source: Literal["explicit", "ephemeral", "default_city"] | None = None
     result_count: int | None = None
+
+
+class ToolMetrics(TypedDict):
+    total_calls: int
+    success_rate: float | None
+    p50_latency_ms: float | None
+    p90_latency_ms: float | None
+    cache_hit_rate: float | None
+    failures: dict[str, int]
 
 
 class ToolLedger:
@@ -73,7 +82,7 @@ class ToolLedger:
         """返回当前台账的快照（ newest first ）。"""
         return list(reversed(self._entries))
 
-    def metrics(self) -> dict[str, object]:
+    def metrics(self) -> ToolMetrics:
         """基于当前台账聚合延迟报告。"""
         entries = list(self._entries)
         total = len(entries)

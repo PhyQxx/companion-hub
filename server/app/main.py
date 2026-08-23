@@ -22,6 +22,8 @@ from app.api import (
     create_chat_router,
     create_chat_websocket_router,
     create_deletion_ledger_router,
+    create_device_command_routers,
+    create_device_routers,
     create_model_capability_router,
     create_voice_websocket_router,
 )
@@ -31,6 +33,7 @@ from app.bus import DispatcherWorker, EventPublisher, LocalEventPublisher
 from app.chat import ChatService
 from app.config import ConfigStore, ConfigWatcher, DatabaseConfigStore
 from app.db import Database, create_database
+from app.devices import DeviceCommandStore, DeviceRegistry
 from app.memory import LlmMemoryExtractor, MemoryExtractor, MemoryStore
 from app.model_capabilities import CapabilityModelService
 from app.observability import apply_observability, configure_logging
@@ -86,6 +89,10 @@ def create_app(
     persona_store = PersonaStore(runtime_database) if runtime_database is not None else None
     memory_store = MemoryStore(runtime_database) if runtime_database is not None else None
     timeline_store = TimelineStore(runtime_database) if runtime_database is not None else None
+    device_registry = DeviceRegistry(runtime_database) if runtime_database is not None else None
+    device_command_store = (
+        DeviceCommandStore(runtime_database) if runtime_database is not None else None
+    )
     history_recall = (
         HistoryRecallService(
             timeline_store,
@@ -141,6 +148,8 @@ def create_app(
     app.state.persona_store = persona_store
     app.state.memory_store = memory_store
     app.state.timeline_store = timeline_store
+    app.state.device_registry = device_registry
+    app.state.device_command_store = device_command_store
     app.state.history_recall_service = history_recall
     app.state.capability_model_service = capability_models
 
@@ -354,12 +363,31 @@ def create_app(
                 memory_extractor=memory_extractor,
                 timeline_store=timeline_store,
                 history_recall_service=history_recall,
+                capability_provider=device_registry,
             )
             app.state.auth_service = auth_service
             app.state.chat_service = runtime_chat_service
             app.include_router(
                 create_auth_router(auth_service, admin_token=runtime_admin_token)
             )
+            if device_registry is not None:
+                admin_devices_router, devices_router = create_device_routers(
+                    device_registry,
+                    admin_token=runtime_admin_token,
+                )
+                app.include_router(admin_devices_router)
+                app.include_router(devices_router)
+                if device_command_store is not None:
+                    command_admin_router, device_ws_router, device_command_gateway = (
+                        create_device_command_routers(
+                            device_registry,
+                            device_command_store,
+                            admin_token=runtime_admin_token,
+                        )
+                    )
+                    app.state.device_command_gateway = device_command_gateway
+                    app.include_router(command_admin_router)
+                    app.include_router(device_ws_router)
             app.include_router(create_chat_router(runtime_chat_service, auth_service))
             if capability_models is not None:
                 app.include_router(
