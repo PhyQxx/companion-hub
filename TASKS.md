@@ -13,7 +13,7 @@
 | P5 文字稳定性闸门 | 使用期未开始 | 自动化通过；14 天从首条有效日志重新起算，见 `docs/32` |
 | P6 Batch A～C 语音 | 主链完成 | 真浏览器 ASR/LLM/TTS/viseme/打断已打通；延迟继续优化 |
 | M3A 地图/天气第一批 | 已完成 | 查询、定位、卡片、Admin 自检、200 条台账与延迟报告已落地，见 `docs/35` |
-| M3A 多终端与感知 | 进行中 | Device Registry、Command Channel 与 Admin 设备页已落地；下一步实现 Desktop Client 和电脑屏幕/网页读取 |
+| M3A 多终端与感知 | 进行中 | Device Registry、Command Channel、Admin 设备页与 Desktop 安全连接壳已落地；下一步实现受控屏幕读取 |
 | P6 Batch D Live2D/桌宠 | 等待前置 | M2 延迟达标后再启动 |
 
 ## 2. 当前执行队列
@@ -29,7 +29,8 @@
 
 ### B. 电脑屏幕与网页理解
 
-- [ ] Tauri Desktop Client 最小版：开机启动、托盘状态、配对、长连接和 macOS 屏幕录制授权。
+- [x] Tauri Desktop Client 安全连接壳：开机启动、托盘、系统凭据库、配对、签名长连接、心跳/重连和 `device.ping`。
+- [ ] macOS 屏幕录制授权、隐私暂停与临时截图销毁闭环。
 - [ ] `capture_screen(device_id, target)`：截取活动窗口/选定显示器，图片只在当前回合临时存在。
 - [ ] 浏览器扩展：提供 `browser.current_tab.capture` 与 `browser.current_tab.read`，优先返回页面结构化文本和当前标签页截图。
 - [ ] 隐私策略：默认 L2、本地视觉优先；云视觉必须显式临时授权；锁屏、隐私暂停或客户端离线时拒绝。
@@ -54,6 +55,7 @@
 
 ## 3. 最近完成
 
+- [x] Desktop Client 安全连接壳：Tauri 2、OS keyring、配对、托盘/开机启动、签名验签、心跳/重连、TTL/取消/幂等和 `device.ping` 已接入；原生真机验收等待本机 Rust/Xcode 工具链。
 - [x] Admin 设备工作区：设备统计/筛选、配对码、能力交集、revision 冲突保护、测试命令、命令状态与撤销交互已接入 Vue 后台。
 - [x] Device Command Channel 第一批：`0013_device_command`、鉴权长连接、HMAC-SHA256 命令签名、脱敏命令台账、离线失败、TTL/超时、幂等冲突、取消与 ACK/结果回执已接入。
 - [x] Device Registry 第一批：`0012_device_registry`、一次性配对、凭据哈希、心跳、撤销、乐观 revision 与授权能力交集已接入；在线有效能力已进入聊天现实能力边界。
@@ -65,7 +67,7 @@
 
 ## 4. 最新质量基线
 
-- 2026-08-23 当前工作树：pytest **262 通过 / 2 跳过**，Ruff、全量 mypy、Alembic 单 head、`git diff --check`、Chat/Admin/Shared typecheck 与 production build 全部通过；
+- 2026-08-23 当前工作树：pytest **262 通过 / 2 跳过**，Desktop 协议测试 **4 通过**，Ruff、全量 mypy、Alembic 单 head、`git diff --check`、Chat/Admin/Shared/Desktop typecheck 与 production build 全部通过；
 - CI 的 mypy 范围已与本地发布闸门对齐为 `server/app server/tests`；
 - 运行配置：v39；本地 ASR 为 faster-whisper `base/cpu/int8`；
 - PostgreSQL/pgvector 两项集成测试在本地无 `ARIA_TEST_DATABASE_URL` 时跳过，推送后由 CI PostgreSQL 服务执行。

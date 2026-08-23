@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from uuid import UUID
@@ -97,7 +98,7 @@ def test_signed_command_websocket_ack_result_cancel_and_idempotency(
 
             execute = websocket.receive_json()
             assert execute["type"] == "command.execute"
-            assert execute["args"]["destination"] == "private path"
+            assert json.loads(execute["args_json"])["destination"] == "private path"
             assert verify_device_signature(access_token, execute)
 
             websocket.send_json({"type": "command.ack", "command_id": command_id})

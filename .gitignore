@@ -15,5 +15,6 @@ dist/
 build/
 *.egg-info/
 node_modules/
+desktop/src-tauri/target/
 .pnpm-store/
 docs/history-session/

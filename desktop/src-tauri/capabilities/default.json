@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "Capabilities required by the Aria Desktop main window",
+  "windows": ["main"],
+  "permissions": ["core:default", "autostart:default"]
+}

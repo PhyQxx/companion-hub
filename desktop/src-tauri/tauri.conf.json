@@ -1,0 +1,35 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Aria Desktop",
+  "version": "0.1.0",
+  "identifier": "com.aria.companion.desktop",
+  "build": {
+    "beforeDevCommand": "pnpm dev",
+    "devUrl": "http://localhost:1420",
+    "beforeBuildCommand": "pnpm build",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "windows": [
+      {
+        "label": "main",
+        "title": "Aria Desktop",
+        "width": 780,
+        "height": 820,
+        "minWidth": 620,
+        "minHeight": 720,
+        "resizable": true,
+        "center": true
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self'; connect-src 'self' ipc: http://ipc.localhost ws: wss:; img-src 'self' asset: http://asset.localhost data:; style-src 'self' 'unsafe-inline'; script-src 'self'"
+    }
+  },
+  "bundle": {
+    "active": false,
+    "targets": "all",
+    "category": "Utility",
+    "shortDescription": "Secure Aria companion device client"
+  }
+}

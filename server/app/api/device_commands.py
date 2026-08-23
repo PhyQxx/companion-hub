@@ -144,7 +144,14 @@ class DeviceCommandGateway:
             "type": "command.execute",
             "command_id": str(issued.command.id),
             "command": command,
-            "args": args,
+            # Sign stable serialized args so Python/JavaScript number formatting
+            # differences cannot invalidate an otherwise legitimate frame.
+            "args_json": json.dumps(
+                args,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            ),
             "idempotency_key": idempotency_key,
             "issued_at": issued.command.issued_at.isoformat(),
             "expires_at": issued.command.expires_at.isoformat(),

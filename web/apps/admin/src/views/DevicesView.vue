@@ -47,6 +47,7 @@ const api = inject("adminApi") as AdminApi;
 const emit = defineEmits<{ status: [text: string, error?: boolean] }>();
 
 const knownCapabilities = [
+  "device.ping",
   "screen.capture",
   "browser.inspect",
   "browser.current_tab.read",
@@ -87,7 +88,7 @@ const issuing = ref<DeviceItem | null>(null);
 const pairForm = reactive({
   ownerUserId: "",
   ttlSeconds: 600,
-  grants: ["screen.capture"] as string[],
+  grants: ["device.ping"] as string[],
 });
 const editForm = reactive({ name: "", alias: "", grants: [] as string[] });
 const issueForm = reactive({
