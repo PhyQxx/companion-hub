@@ -67,6 +67,19 @@ def test_device_upload_is_bound_to_command_and_consumed_once(tmp_path: Path) -> 
     app.include_router(device)
 
     with TestClient(app) as client:
+        unauthenticated = client.post(
+            f"/api/v1/devices/commands/{command_id}/asset",
+            headers={"Content-Type": "image/png"},
+            content=PNG,
+        )
+        invalid_media = client.post(
+            f"/api/v1/devices/commands/{command_id}/asset",
+            headers={
+                "Authorization": f"Bearer {access_token}",
+                "Content-Type": "image/png",
+            },
+            content=b"not-a-png",
+        )
         response = client.post(
             f"/api/v1/devices/commands/{command_id}/asset",
             headers={
@@ -76,6 +89,8 @@ def test_device_upload_is_bound_to_command_and_consumed_once(tmp_path: Path) -> 
             content=PNG,
         )
 
+    assert unauthenticated.status_code == 401
+    assert invalid_media.status_code == 422
     assert response.status_code == 201
     payload = response.json()
     asset = asyncio.run(

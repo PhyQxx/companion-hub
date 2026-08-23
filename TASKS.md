@@ -31,7 +31,7 @@
 
 - [x] Tauri Desktop Client 安全连接壳：开机启动、托盘、系统凭据库、配对、签名长连接、心跳/重连和 `device.ping`。
 - [x] 截图临时资产通道：设备鉴权上传、命令/owner 绑定、PNG/JPEG 魔数与 8 MiB 上限、2 分钟 TTL、读取即销毁，数据库仅保留摘要。
-- [ ] macOS 屏幕录制授权、隐私暂停与临时截图销毁闭环。
+- [ ] macOS 屏幕录制授权、隐私暂停与临时截图销毁闭环：实现已落地，待 Rust/Xcode 环境补跑原生编译与真机 TCC 验收后勾选。
 - [ ] `capture_screen(device_id, target)`：截取活动窗口/选定显示器，图片只在当前回合临时存在。
 - [ ] 浏览器扩展：提供 `browser.current_tab.capture` 与 `browser.current_tab.read`，优先返回页面结构化文本和当前标签页截图。
 - [ ] 隐私策略：默认 L2、本地视觉优先；云视觉必须显式临时授权；锁屏、隐私暂停或客户端离线时拒绝。
@@ -56,6 +56,7 @@
 
 ## 3. 最近完成
 
+- [x] Desktop `screen.capture` 实现：仅在 macOS TCC 已授权且隐私暂停关闭时声明能力，单次截取主显示器、鉴权上传，RAII 清理本机临时文件；原生验收仍待工具链。
 - [x] Ephemeral Device Asset Store：截图不进入命令 JSON 或数据库，上传内容只在有界进程内存中短暂存在并 consume-on-read。
 - [x] Device Target Resolver：按 owner 隔离，支持精确目标、通用桌面目标、capability/在线复核、歧义候选与禁止静默 fallback。
 - [x] Desktop Client 安全连接壳：Tauri 2、OS keyring、配对、托盘/开机启动、签名验签、心跳/重连、TTL/取消/幂等和 `device.ping` 已接入；原生真机验收等待本机 Rust/Xcode 工具链。

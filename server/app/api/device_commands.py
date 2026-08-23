@@ -431,7 +431,7 @@ def create_device_command_routers(
                 data=bytes(body),
             )
         except EphemeralDeviceAssetError as error:
-            raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(error)) from error
+            raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(error)) from error
         return DeviceAssetResponse(
             asset_id=asset.id,
             command_id=asset.command_id,

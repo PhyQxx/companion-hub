@@ -1,5 +1,7 @@
 use keyring::Entry;
 use serde::{Deserialize, Serialize};
+use std::path::PathBuf;
+use std::process::Command;
 use tauri::{
     menu::{Menu, MenuItem},
     tray::TrayIconBuilder,
@@ -8,6 +10,7 @@ use tauri::{
 
 const KEYRING_SERVICE: &str = "com.aria.companion.desktop";
 const KEYRING_ACCOUNT: &str = "device-access-token";
+const KEYRING_HUB_ACCOUNT: &str = "device-hub-url";
 const CLIENT_CAPABILITIES: [&str; 1] = ["device.ping"];
 
 #[derive(Serialize)]
@@ -47,8 +50,37 @@ struct ApiErrorBody {
     detail: Option<serde_json::Value>,
 }
 
+#[derive(Serialize)]
+struct ScreenPermissionStatus {
+    supported: bool,
+    granted: bool,
+}
+
+#[derive(Deserialize, Serialize)]
+struct DeviceAssetUpload {
+    asset_id: String,
+    command_id: String,
+    media_type: String,
+    bytes: usize,
+    sha256: String,
+    expires_at: String,
+}
+
+struct TemporaryCapture(PathBuf);
+
+impl Drop for TemporaryCapture {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.0);
+    }
+}
+
 fn keyring_entry() -> Result<Entry, String> {
     Entry::new(KEYRING_SERVICE, KEYRING_ACCOUNT)
+        .map_err(|error| format!("无法打开系统凭据库：{error}"))
+}
+
+fn hub_keyring_entry() -> Result<Entry, String> {
+    Entry::new(KEYRING_SERVICE, KEYRING_HUB_ACCOUNT)
         .map_err(|error| format!("无法打开系统凭据库：{error}"))
 }
 
@@ -97,6 +129,10 @@ async fn pair_device(
     keyring_entry()?
         .set_password(&paired.access_token)
         .map_err(|error| format!("设备已配对，但写入系统凭据库失败：{error}"))?;
+    if let Err(error) = hub_keyring_entry()?.set_password(&normalized_hub) {
+        let _ = keyring_entry()?.delete_credential();
+        return Err(format!("设备已配对，但写入 Hub 绑定失败：{error}"));
+    }
     Ok(PairResult {
         device_id: paired.device.id,
         owner_user_id: paired.device.owner_user_id,
@@ -117,9 +153,106 @@ fn load_device_credential() -> Result<Option<String>, String> {
 
 #[tauri::command]
 fn forget_device_credential() -> Result<(), String> {
-    match keyring_entry()?.delete_credential() {
-        Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
-        Err(error) => Err(format!("清除系统凭据失败：{error}")),
+    for entry in [keyring_entry()?, hub_keyring_entry()?] {
+        match entry.delete_credential() {
+            Ok(()) | Err(keyring::Error::NoEntry) => {}
+            Err(error) => return Err(format!("清除系统凭据失败：{error}")),
+        }
+    }
+    Ok(())
+}
+
+#[tauri::command]
+fn screen_capture_permission(request: bool) -> ScreenPermissionStatus {
+    screen_permission_status(request)
+}
+
+#[tauri::command]
+async fn capture_and_upload(
+    command_id: String,
+    target: String,
+) -> Result<DeviceAssetUpload, String> {
+    if target != "main_display" {
+        return Err("当前版本只支持 main_display".to_string());
+    }
+    if !screen_permission_status(false).granted {
+        return Err("尚未获得屏幕录制权限".to_string());
+    }
+    let normalized_hub = hub_keyring_entry()?
+        .get_password()
+        .map_err(|error| format!("读取 Hub 绑定失败：{error}"))?;
+    let parsed = reqwest::Url::parse(&normalized_hub)
+        .map_err(|_| "Hub 地址不是有效 URL".to_string())?;
+    if parsed.scheme() != "http" && parsed.scheme() != "https" {
+        return Err("Hub 地址只允许 http:// 或 https://".to_string());
+    }
+    let capture = TemporaryCapture(std::env::temp_dir().join(format!(
+        "aria-screen-{}.png",
+        uuid::Uuid::new_v4()
+    )));
+    let capture_path = capture.0.clone();
+    let output = tauri::async_runtime::spawn_blocking(move || {
+        Command::new("/usr/sbin/screencapture")
+            .args(["-x", "-m", "-tpng"])
+            .arg(capture_path)
+            .output()
+    })
+    .await
+    .map_err(|error| format!("截图任务失败：{error}"))?
+    .map_err(|error| format!("无法启动系统截图工具：{error}"))?;
+    if !output.status.success() {
+        return Err("系统截图失败；请检查屏幕录制权限".to_string());
+    }
+    let bytes = std::fs::read(&capture.0).map_err(|error| format!("读取截图失败：{error}"))?;
+    if bytes.len() > 8 * 1024 * 1024 {
+        return Err("截图超过 8 MiB 上限".to_string());
+    }
+    let access_token = load_device_credential()?
+        .ok_or_else(|| "系统凭据库中没有设备凭据".to_string())?;
+    let endpoint = format!("{normalized_hub}/api/v1/devices/commands/{command_id}/asset");
+    let response = reqwest::Client::new()
+        .post(endpoint)
+        .timeout(std::time::Duration::from_secs(20))
+        .bearer_auth(access_token)
+        .header(reqwest::header::CONTENT_TYPE, "image/png")
+        .body(bytes)
+        .send()
+        .await
+        .map_err(|error| format!("上传截图失败：{error}"))?;
+    if !response.status().is_success() {
+        return Err(format!("Hub 拒绝截图上传：{}", response.status()));
+    }
+    response
+        .json::<DeviceAssetUpload>()
+        .await
+        .map_err(|error| format!("Hub 截图响应无效：{error}"))
+}
+
+#[cfg(target_os = "macos")]
+fn screen_permission_status(request: bool) -> ScreenPermissionStatus {
+    #[link(name = "CoreGraphics", kind = "framework")]
+    extern "C" {
+        fn CGPreflightScreenCaptureAccess() -> bool;
+        fn CGRequestScreenCaptureAccess() -> bool;
+    }
+    let granted = unsafe {
+        if request {
+            CGRequestScreenCaptureAccess()
+        } else {
+            CGPreflightScreenCaptureAccess()
+        }
+    };
+    ScreenPermissionStatus {
+        supported: true,
+        granted,
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+fn screen_permission_status(_request: bool) -> ScreenPermissionStatus {
+    ScreenPermissionStatus {
+        supported: false,
+        granted: false,
     }
 }
 
@@ -159,7 +292,9 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             pair_device,
             load_device_credential,
-            forget_device_credential
+            forget_device_credential,
+            screen_capture_permission,
+            capture_and_upload
         ])
         .run(tauri::generate_context!())
         .expect("error while running Aria Desktop");

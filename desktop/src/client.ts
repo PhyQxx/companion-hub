@@ -7,7 +7,7 @@ import {
   websocketUrl,
 } from "./protocol";
 
-export const DESKTOP_CAPABILITIES = ["device.ping"] as const;
+export const DESKTOP_BASE_CAPABILITIES = ["device.ping"] as const;
 
 export interface PairResult {
   device_id: string;
@@ -18,6 +18,20 @@ export interface PairResult {
 }
 
 export interface StoredClientConfig extends PairResult {}
+
+export interface ScreenPermissionStatus {
+  supported: boolean;
+  granted: boolean;
+}
+
+interface DeviceAssetUpload {
+  asset_id: string;
+  command_id: string;
+  media_type: string;
+  bytes: number;
+  sha256: string;
+  expires_at: string;
+}
 
 export type ConnectionState = "unpaired" | "connecting" | "online" | "offline" | "error";
 
@@ -38,6 +52,7 @@ export class DeviceConnection {
   constructor(
     private config: StoredClientConfig,
     private accessToken: string,
+    private capabilities: readonly string[],
     private callbacks: ClientCallbacks,
   ) {}
 
@@ -52,7 +67,7 @@ export class DeviceConnection {
         JSON.stringify({
           type: "device.authenticate",
           access_token: this.accessToken,
-          capabilities: DESKTOP_CAPABILITIES,
+          capabilities: this.capabilities,
         }),
       );
     });
@@ -111,12 +126,24 @@ export class DeviceConnection {
       return;
     }
     this.send({ type: "command.ack", command_id: frame.command_id });
+    let args: Record<string, unknown>;
     try {
-      parseCommandArgs(frame);
+      args = parseCommandArgs(frame);
     } catch {
       this.sendResult(frame.command_id, "failed", "invalid_command_args", {});
       return;
     }
+    try {
+      await this.runCommand(frame, args);
+    } catch {
+      this.sendResult(frame.command_id, "failed", "command_execution_failed", {});
+    }
+  }
+
+  private async runCommand(
+    frame: ReturnType<typeof asExecute>,
+    args: Record<string, unknown>,
+  ): Promise<void> {
     if (this.completedKeys.has(frame.idempotency_key)) {
       this.sendResult(frame.command_id, "succeeded", null, { duplicate: true });
       return;
@@ -125,22 +152,40 @@ export class DeviceConnection {
       this.sendResult(frame.command_id, "failed", "command_cancelled", {});
       return;
     }
-    if (frame.command !== "device.ping") {
+    const started = performance.now();
+    let resultMeta: Record<string, unknown>;
+    if (frame.command === "device.ping") {
+      resultMeta = {
+        latency_ms: Math.round(performance.now() - started),
+        client_version: "0.1.0",
+        platform: navigator.platform,
+      };
+    } else if (frame.command === "screen.capture") {
+      if (!this.capabilities.includes("screen.capture")) {
+        this.sendResult(frame.command_id, "failed", "screen_capture_unavailable", {});
+        return;
+      }
+      const target = typeof args.target === "string" ? args.target : "main_display";
+      const uploaded = await captureAndUpload(
+        frame.command_id,
+        target,
+      );
+      if (this.cancelledCommands.has(frame.command_id)) {
+        this.sendResult(frame.command_id, "failed", "command_cancelled", {});
+        return;
+      }
+      resultMeta = { ...uploaded, latency_ms: Math.round(performance.now() - started) };
+    } else {
       this.sendResult(frame.command_id, "failed", "unsupported_command", {});
       return;
     }
-    const started = performance.now();
     this.completedKeys.add(frame.idempotency_key);
     if (this.completedKeys.size > 200) {
       const oldest = this.completedKeys.values().next().value;
       if (oldest) this.completedKeys.delete(oldest);
     }
-    this.sendResult(frame.command_id, "succeeded", null, {
-      latency_ms: Math.round(performance.now() - started),
-      client_version: "0.1.0",
-      platform: navigator.platform,
-    });
-    this.callbacks.onEvent(`device.ping ${frame.command_id.slice(0, 8)} 已完成`);
+    this.sendResult(frame.command_id, "succeeded", null, resultMeta);
+    this.callbacks.onEvent(`${frame.command} ${frame.command_id.slice(0, 8)} 已完成`);
   }
 
   private sendResult(
@@ -165,7 +210,7 @@ export class DeviceConnection {
   private startHeartbeat(): void {
     this.stopHeartbeat();
     this.heartbeat = window.setInterval(() => {
-      this.send({ type: "device.heartbeat", capabilities: DESKTOP_CAPABILITIES });
+      this.send({ type: "device.heartbeat", capabilities: this.capabilities });
     }, 30_000);
   }
 
@@ -217,4 +262,15 @@ export async function loadAccessToken(): Promise<string | null> {
 
 export async function forgetAccessToken(): Promise<void> {
   await invoke("forget_device_credential");
+}
+
+export function screenCapturePermission(request = false): Promise<ScreenPermissionStatus> {
+  return invoke<ScreenPermissionStatus>("screen_capture_permission", { request });
+}
+
+function captureAndUpload(
+  commandId: string,
+  target: string,
+): Promise<DeviceAssetUpload> {
+  return invoke<DeviceAssetUpload>("capture_and_upload", { commandId, target });
 }
