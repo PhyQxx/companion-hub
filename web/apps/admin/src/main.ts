@@ -13,8 +13,9 @@ const router = createRouter({
     { path: "/personas", component: () => import("./views/PersonasView.vue") },
     { path: "/memory", component: () => import("./views/MemoryView.vue") },
     { path: "/timeline", component: () => import("./views/TimelineView.vue") },
+    { path: "/devices", component: () => import("./views/DevicesView.vue") },
     {
-      path: "/:module(devices|logs|privacy|settings)",
+      path: "/:module(logs|privacy|settings)",
       component: () => import("./views/PlaceholderView.vue"),
       props: true,
     },

@@ -13,7 +13,7 @@
 | P5 文字稳定性闸门 | 使用期未开始 | 自动化通过；14 天从首条有效日志重新起算，见 `docs/32` |
 | P6 Batch A～C 语音 | 主链完成 | 真浏览器 ASR/LLM/TTS/viseme/打断已打通；延迟继续优化 |
 | M3A 地图/天气第一批 | 已完成 | 查询、定位、卡片、Admin 自检、200 条台账与延迟报告已落地，见 `docs/35` |
-| M3A 多终端与感知 | 进行中 | Device Registry 与 Command Channel 后端已落地；下一步实现设备页和电脑屏幕/网页读取 |
+| M3A 多终端与感知 | 进行中 | Device Registry、Command Channel 与 Admin 设备页已落地；下一步实现 Desktop Client 和电脑屏幕/网页读取 |
 | P6 Batch D Live2D/桌宠 | 等待前置 | M2 延迟达标后再启动 |
 
 ## 2. 当前执行队列
@@ -24,7 +24,7 @@
 - [x] Device Command Channel 后端：客户端主动连接 `/ws/devices`，支持 HMAC 签名命令、TTL、设备级幂等键、取消、ACK、结果回执与超时状态。
 - [x] Capability Registry 后端：终端心跳声明 `screen.capture`、`browser.inspect`、`sensor.read` 等能力；模型只看到在线声明与管理员授权的交集。
 - [ ] 目标设备解析：“我的电脑”等别名唯一时自动选择，多个候选时要求用户确认。
-- [ ] Admin 设备页：在线状态、能力、授权策略、最近命令与一键撤销。
+- [x] Admin 设备页：一次性配对、在线状态、能力授权、测试命令、最近命令台账与一键撤销。
 - [ ] 局域网/VPN 安全接入：每设备独立凭据，不把 Hub 或客户端裸露到公网。
 
 ### B. 电脑屏幕与网页理解
@@ -54,6 +54,7 @@
 
 ## 3. 最近完成
 
+- [x] Admin 设备工作区：设备统计/筛选、配对码、能力交集、revision 冲突保护、测试命令、命令状态与撤销交互已接入 Vue 后台。
 - [x] Device Command Channel 第一批：`0013_device_command`、鉴权长连接、HMAC-SHA256 命令签名、脱敏命令台账、离线失败、TTL/超时、幂等冲突、取消与 ACK/结果回执已接入。
 - [x] Device Registry 第一批：`0012_device_registry`、一次性配对、凭据哈希、心跳、撤销、乐观 revision 与授权能力交集已接入；在线有效能力已进入聊天现实能力边界。
 - [x] 地图/天气工具：真实高德天气、附近 POI、路线、浏览器临时定位、模糊候选、TTL 缓存和结构化卡片。

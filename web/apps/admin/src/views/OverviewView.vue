@@ -12,6 +12,7 @@ const personas = ref<{ version: number; persona: { name?: string } } | null>(nul
 const memories = ref<number | null>(null);
 const ledger = ref<unknown[] | null>(null);
 const voiceLatency = ref<VoiceLatencySummary | null>(null);
+const devices = ref<Array<{ online: boolean; revoked_at: string | null }> | null>(null);
 
 function latencyText(value: number | null) {
   return value === null ? "—" : `${value} ms`;
@@ -35,6 +36,9 @@ onMounted(async () => {
       await api.request<unknown[]>("/api/v1/admin/memories?status=active&limit=200")
     ).length;
     ledger.value = await api.request<unknown[]>("/api/v1/admin/deletion-ledger?limit=200");
+    devices.value = await api.request<Array<{ online: boolean; revoked_at: string | null }>>(
+      "/api/v1/admin/devices",
+    );
     await refreshVoiceLatency();
   } catch (error) {
     emit("status", error instanceof Error ? error.message : "加载失败", true);
@@ -49,6 +53,7 @@ onMounted(async () => {
       <el-card shadow="never"><span>当前人格</span><strong>{{ personas?.persona?.name ?? "—" }}</strong><small>v{{ personas?.version ?? "—" }}</small></el-card>
       <el-card shadow="never"><span>活跃记忆</span><strong>{{ memories ?? "—" }}</strong><small>参与检索</small></el-card>
       <el-card shadow="never"><span>删除台账</span><strong>{{ ledger?.length ?? "—" }}</strong><small>硬删除记录</small></el-card>
+      <el-card shadow="never"><span>在线设备</span><strong>{{ devices?.filter(item => item.online && !item.revoked_at).length ?? "—" }}</strong><small>活跃 {{ devices?.filter(item => !item.revoked_at).length ?? "—" }} 台</small></el-card>
     </div>
     <el-card shadow="never" class="voice-latency-card">
       <template #header>
@@ -86,6 +91,7 @@ onMounted(async () => {
       <el-button link type="primary" @click="router.push('/personas')">编辑人格 →</el-button>
       <el-button link type="primary" @click="router.push('/memory')">记忆库治理 →</el-button>
       <el-button link type="primary" @click="router.push('/timeline')">历史时间线 →</el-button>
+      <el-button link type="primary" @click="router.push('/devices')">设备与现实能力 →</el-button>
     </div>
   </section>
 </template>

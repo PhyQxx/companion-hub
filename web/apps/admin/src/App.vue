@@ -42,6 +42,7 @@ const heading = computed(() => {
   if (path === "/personas") return "角色与表达";
   if (path === "/memory") return "记忆库";
   if (path === "/timeline") return "历史时间线";
+  if (path === "/devices") return "设备与能力";
   return moduleLabels[String(route.params.module ?? "")] ?? "管理后台";
 });
 
