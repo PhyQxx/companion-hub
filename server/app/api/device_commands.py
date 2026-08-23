@@ -10,10 +10,20 @@ from datetime import UTC, datetime
 from typing import Annotated, Any, Literal
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, WebSocket, WebSocketDisconnect, status
+from fastapi import (
+    APIRouter,
+    Depends,
+    Header,
+    HTTPException,
+    Request,
+    WebSocket,
+    WebSocketDisconnect,
+    status,
+)
 from pydantic import Field, JsonValue, ValidationError
 
 from app.devices import (
+    MAX_DEVICE_ASSET_BYTES,
     CommandSnapshot,
     DeviceCommandConflict,
     DeviceCommandNotFound,
@@ -21,6 +31,8 @@ from app.devices import (
     DeviceCredentialInvalid,
     DevicePrincipal,
     DeviceRegistry,
+    EphemeralDeviceAssetError,
+    EphemeralDeviceAssetStore,
 )
 from app.schemas.common import NamespacedName, StrictModel
 
@@ -75,6 +87,15 @@ class CommandResponse(StrictModel):
     result_meta: dict[str, JsonValue] | None
 
 
+class DeviceAssetResponse(StrictModel):
+    asset_id: UUID
+    command_id: UUID
+    media_type: str
+    bytes: int
+    sha256: str
+    expires_at: datetime
+
+
 @dataclass(slots=True)
 class DeviceCommandConnection:
     websocket: WebSocket
@@ -90,9 +111,16 @@ class DeviceCommandConnection:
 
 
 class DeviceCommandGateway:
-    def __init__(self, registry: DeviceRegistry, store: DeviceCommandStore) -> None:
+    def __init__(
+        self,
+        registry: DeviceRegistry,
+        store: DeviceCommandStore,
+        *,
+        assets: EphemeralDeviceAssetStore | None = None,
+    ) -> None:
         self._registry = registry
         self._store = store
+        self.assets = assets or EphemeralDeviceAssetStore()
         self._connections: dict[UUID, DeviceCommandConnection] = {}
         self._timeout_tasks: dict[UUID, asyncio.Task[None]] = {}
 
@@ -348,6 +376,71 @@ def create_device_command_routers(
         finally:
             gateway.disconnect(connection)
 
+    @websocket_router.post(
+        "/api/v1/devices/commands/{command_id}/asset",
+        response_model=DeviceAssetResponse,
+        status_code=status.HTTP_201_CREATED,
+    )
+    async def upload_command_asset(
+        command_id: UUID,
+        request: Request,
+        authorization: Annotated[str | None, Header()] = None,
+    ) -> DeviceAssetResponse:
+        access_token = _bearer_token(authorization)
+        try:
+            principal = await registry.authenticate(access_token)
+            command = await store.get(command_id)
+        except (DeviceCredentialInvalid, DeviceCommandNotFound) as error:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, detail="command not found") from error
+        if command.device_id != principal.device_id:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, detail="command not found")
+        if command.command_name != "screen.capture" or command.status not in {
+            "sent",
+            "acknowledged",
+        }:
+            raise HTTPException(
+                status.HTTP_409_CONFLICT,
+                detail="command does not accept a screen asset",
+            )
+        media_type = request.headers.get("content-type", "").split(";", 1)[0].strip()
+        declared_length = request.headers.get("content-length")
+        if declared_length is not None:
+            try:
+                length = int(declared_length)
+            except ValueError as error:
+                raise HTTPException(
+                    status.HTTP_400_BAD_REQUEST, detail="invalid content length"
+                ) from error
+            if length < 0:
+                raise HTTPException(
+                    status.HTTP_400_BAD_REQUEST, detail="invalid content length"
+                )
+            if length > MAX_DEVICE_ASSET_BYTES:
+                raise HTTPException(status.HTTP_413_CONTENT_TOO_LARGE, detail="asset too large")
+        body = bytearray()
+        async for chunk in request.stream():
+            body.extend(chunk)
+            if len(body) > MAX_DEVICE_ASSET_BYTES:
+                raise HTTPException(status.HTTP_413_CONTENT_TOO_LARGE, detail="asset too large")
+        try:
+            asset = await gateway.assets.put(
+                owner_user_id=principal.owner_user_id,
+                device_id=principal.device_id,
+                command_id=command_id,
+                media_type=media_type,
+                data=bytes(body),
+            )
+        except EphemeralDeviceAssetError as error:
+            raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(error)) from error
+        return DeviceAssetResponse(
+            asset_id=asset.id,
+            command_id=asset.command_id,
+            media_type=asset.media_type,
+            bytes=len(asset.data),
+            sha256=asset.sha256,
+            expires_at=asset.expires_at,
+        )
+
     return admin, websocket_router, gateway
 
 
@@ -416,6 +509,13 @@ def sign_device_frame(access_token: str, payload: dict[str, Any]) -> str:
         separators=(",", ":"),
     )
     return hmac.new(access_token.encode(), canonical.encode(), hashlib.sha256).hexdigest()
+
+
+def _bearer_token(authorization: str | None) -> str:
+    scheme, separator, token = (authorization or "").partition(" ")
+    if separator != " " or scheme.casefold() != "bearer" or not token.strip():
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, detail="device credential required")
+    return token.strip()
 
 
 def verify_device_signature(access_token: str, payload: dict[str, Any]) -> bool:
