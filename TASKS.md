@@ -23,7 +23,7 @@
 - [x] Device Registry 后端：一次性配对码、每设备独立凭据、命名/别名、所有权、撤销、在线状态、心跳与 capability 授权白名单。
 - [x] Device Command Channel 后端：客户端主动连接 `/ws/devices`，支持 HMAC 签名命令、TTL、设备级幂等键、取消、ACK、结果回执与超时状态。
 - [x] Capability Registry 后端：终端心跳声明 `screen.capture`、`browser.inspect`、`sensor.read` 等能力；模型只看到在线声明与管理员授权的交集。
-- [ ] 目标设备解析：“我的电脑”等别名唯一时自动选择，多个候选时要求用户确认。
+- [x] 目标设备解析：UUID/别名/名称精确匹配；通用“我的电脑”仅在唯一在线且有能力时自动选择，歧义时返回候选要求确认，离线时不改选。
 - [x] Admin 设备页：一次性配对、在线状态、能力授权、测试命令、最近命令台账与一键撤销。
 - [ ] 局域网/VPN 安全接入：每设备独立凭据，不把 Hub 或客户端裸露到公网。
 
@@ -55,6 +55,7 @@
 
 ## 3. 最近完成
 
+- [x] Device Target Resolver：按 owner 隔离，支持精确目标、通用桌面目标、capability/在线复核、歧义候选与禁止静默 fallback。
 - [x] Desktop Client 安全连接壳：Tauri 2、OS keyring、配对、托盘/开机启动、签名验签、心跳/重连、TTL/取消/幂等和 `device.ping` 已接入；原生真机验收等待本机 Rust/Xcode 工具链。
 - [x] Admin 设备工作区：设备统计/筛选、配对码、能力交集、revision 冲突保护、测试命令、命令状态与撤销交互已接入 Vue 后台。
 - [x] Device Command Channel 第一批：`0013_device_command`、鉴权长连接、HMAC-SHA256 命令签名、脱敏命令台账、离线失败、TTL/超时、幂等冲突、取消与 ACK/结果回执已接入。
@@ -67,7 +68,7 @@
 
 ## 4. 最新质量基线
 
-- 2026-08-23 当前工作树：pytest **262 通过 / 2 跳过**，Desktop 协议测试 **4 通过**，Ruff、全量 mypy、Alembic 单 head、`git diff --check`、Chat/Admin/Shared/Desktop typecheck 与 production build 全部通过；
+- 2026-08-23 当前工作树：pytest **267 通过 / 2 跳过**，Desktop 协议测试 **4 通过**，Ruff、全量 mypy、Alembic 单 head、`git diff --check`、Chat/Admin/Shared/Desktop typecheck 与 production build 全部通过；
 - CI 的 mypy 范围已与本地发布闸门对齐为 `server/app server/tests`；
 - 运行配置：v39；本地 ASR 为 faster-whisper `base/cpu/int8`；
 - PostgreSQL/pgvector 两项集成测试在本地无 `ARIA_TEST_DATABASE_URL` 时跳过，推送后由 CI PostgreSQL 服务执行。

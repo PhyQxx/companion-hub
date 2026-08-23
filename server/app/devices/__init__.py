@@ -7,6 +7,15 @@ from .commands import (
     DeviceCommandStore,
     IssuedCommand,
 )
+from .resolver import (
+    GENERIC_DESKTOP_TARGETS,
+    DeviceTargetAmbiguous,
+    DeviceTargetCandidate,
+    DeviceTargetNotFound,
+    DeviceTargetResolutionError,
+    DeviceTargetResolver,
+    DeviceTargetUnavailable,
+)
 from .service import (
     DEVICE_ONLINE_WINDOW,
     DeviceAliasConflict,
@@ -24,6 +33,7 @@ from .service import (
 
 __all__ = [
     "DEVICE_ONLINE_WINDOW",
+    "GENERIC_DESKTOP_TARGETS",
     "TERMINAL_COMMAND_STATUSES",
     "CommandSnapshot",
     "DeviceAliasConflict",
@@ -38,6 +48,12 @@ __all__ = [
     "DeviceRegistryError",
     "DeviceRevisionConflict",
     "DeviceSnapshot",
+    "DeviceTargetAmbiguous",
+    "DeviceTargetCandidate",
+    "DeviceTargetNotFound",
+    "DeviceTargetResolutionError",
+    "DeviceTargetResolver",
+    "DeviceTargetUnavailable",
     "IssuedCommand",
     "PairedDevice",
     "PairingCodeInvalid",
