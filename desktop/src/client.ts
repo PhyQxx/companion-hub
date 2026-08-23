@@ -33,6 +33,31 @@ interface DeviceAssetUpload {
   expires_at: string;
 }
 
+export interface ScreenCaptureRequest {
+  target: "main_display" | "display";
+  displayIndex: number | null;
+}
+
+export function parseScreenCaptureRequest(
+  args: Record<string, unknown>,
+): ScreenCaptureRequest | null {
+  const target = args.target ?? "main_display";
+  const displayIndex = args.display_index;
+  if (target === "main_display") {
+    return displayIndex === undefined ? { target, displayIndex: null } : null;
+  }
+  if (
+    target === "display" &&
+    typeof displayIndex === "number" &&
+    Number.isInteger(displayIndex) &&
+    displayIndex >= 1 &&
+    displayIndex <= 32
+  ) {
+    return { target, displayIndex };
+  }
+  return null;
+}
+
 export type ConnectionState = "unpaired" | "connecting" | "online" | "offline" | "error";
 
 export interface ClientCallbacks {
@@ -165,10 +190,15 @@ export class DeviceConnection {
         this.sendResult(frame.command_id, "failed", "screen_capture_unavailable", {});
         return;
       }
-      const target = typeof args.target === "string" ? args.target : "main_display";
+      const request = parseScreenCaptureRequest(args);
+      if (request === null) {
+        this.sendResult(frame.command_id, "failed", "invalid_command_args", {});
+        return;
+      }
       const uploaded = await captureAndUpload(
         frame.command_id,
-        target,
+        request.target,
+        request.displayIndex,
       );
       if (this.cancelledCommands.has(frame.command_id)) {
         this.sendResult(frame.command_id, "failed", "command_cancelled", {});
@@ -271,6 +301,11 @@ export function screenCapturePermission(request = false): Promise<ScreenPermissi
 function captureAndUpload(
   commandId: string,
   target: string,
+  displayIndex: number | null,
 ): Promise<DeviceAssetUpload> {
-  return invoke<DeviceAssetUpload>("capture_and_upload", { commandId, target });
+  return invoke<DeviceAssetUpload>("capture_and_upload", {
+    commandId,
+    target,
+    displayIndex,
+  });
 }

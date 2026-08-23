@@ -13,7 +13,7 @@
 | P5 文字稳定性闸门 | 使用期未开始 | 自动化通过；14 天从首条有效日志重新起算，见 `docs/32` |
 | P6 Batch A～C 语音 | 主链完成 | 真浏览器 ASR/LLM/TTS/viseme/打断已打通；延迟继续优化 |
 | M3A 地图/天气第一批 | 已完成 | 查询、定位、卡片、Admin 自检、200 条台账与延迟报告已落地，见 `docs/35` |
-| M3A 多终端与感知 | 进行中 | Device Registry、Command Channel、Admin 设备页与 Desktop 安全连接壳已落地；下一步实现受控屏幕读取 |
+| M3A 多终端与感知 | 进行中 | Device Registry、Command Channel、Admin 设备页、Desktop 安全连接壳与主/指定显示器读取已落地；下一步实现活动窗口与 Browser Bridge |
 | P6 Batch D Live2D/桌宠 | 等待前置 | M2 延迟达标后再启动 |
 
 ## 2. 当前执行队列
@@ -33,7 +33,7 @@
 - [x] 截图临时资产通道：设备鉴权上传、命令/owner 绑定、PNG/JPEG 魔数与 8 MiB 上限、2 分钟 TTL、读取即销毁，数据库仅保留摘要。
 - [ ] macOS 屏幕录制授权、隐私暂停与临时截图销毁闭环：实现已落地，待 Rust/Xcode 环境补跑原生编译与真机 TCC 验收后勾选。
 - [x] `capture_screen` 主显示器闭环：目标解析、签名命令、终态等待、临时图片 consume-on-read、本地视觉分析和文字结果回注；仅在 L2 + 本地工具模型 + 本地视觉可用时暴露。
-- [ ] `capture_screen` 目标扩展：活动窗口、指定显示器与系统内容选择器。
+- [ ] `capture_screen` 目标扩展：指定显示器代码已完成；活动窗口与系统内容选择器待实现，原生真机验收后勾选。
 - [ ] 浏览器扩展：提供 `browser.current_tab.capture` 与 `browser.current_tab.read`，优先返回页面结构化文本和当前标签页截图。
 - [ ] 隐私策略：默认 L2、本地视觉优先；云视觉必须显式临时授权；锁屏、隐私暂停或客户端离线时拒绝。
 - [ ] 跨终端验收：从手机或 Web 对话发起“看一下我的电脑网页”，电脑客户端执行，结果返回原会话。
@@ -58,7 +58,8 @@
 ## 3. 最近完成
 
 - [x] Hub Screen Capture Tool：命令终态事件唤醒、设备歧义候选、本地 OpenAI-compatible 视觉 data URL、原图单次消费及 ChatService 三重可用性门控已接入。
-- [x] Desktop `screen.capture` 实现：仅在 macOS TCC 已授权且隐私暂停关闭时声明能力，单次截取主显示器、鉴权上传，RAII 清理本机临时文件；原生验收仍待工具链。
+- [x] 指定显示器截图：Hub / Desktop 双端限制目标与 1～32 显示器编号，映射 macOS `screencapture -D<n>`；默认仍为主显示器。
+- [x] Desktop `screen.capture` 实现：仅在 macOS TCC 已授权且隐私暂停关闭时声明能力，单次截取主显示器或指定编号显示器、鉴权上传，RAII 清理本机临时文件；原生验收仍待工具链。
 - [x] Ephemeral Device Asset Store：截图不进入命令 JSON 或数据库，上传内容只在有界进程内存中短暂存在并 consume-on-read。
 - [x] Device Target Resolver：按 owner 隔离，支持精确目标、通用桌面目标、capability/在线复核、歧义候选与禁止静默 fallback。
 - [x] Desktop Client 安全连接壳：Tauri 2、OS keyring、配对、托盘/开机启动、签名验签、心跳/重连、TTL/取消/幂等和 `device.ping` 已接入；原生真机验收等待本机 Rust/Xcode 工具链。
@@ -73,7 +74,7 @@
 
 ## 4. 最新质量基线
 
-- 2026-08-23 当前工作树：pytest **275 通过 / 2 跳过**，Desktop 协议测试 **4 通过**，Ruff、全量 mypy、Alembic 单 head、`git diff --check`、Chat/Admin/Shared/Desktop typecheck 与 production build 全部通过；
+- 2026-08-23 当前工作树：pytest **277 通过 / 2 跳过**，Desktop 协议测试 **5 通过**，Ruff、全量 mypy、Alembic 单 head、`git diff --check`、Chat/Admin/Shared/Desktop typecheck 与 production build 全部通过；
 - CI 的 mypy 范围已与本地发布闸门对齐为 `server/app server/tests`；
 - 运行配置：v39；本地 ASR 为 faster-whisper `base/cpu/int8`；
 - PostgreSQL/pgvector 两项集成测试在本地无 `ARIA_TEST_DATABASE_URL` 时跳过，推送后由 CI PostgreSQL 服务执行。

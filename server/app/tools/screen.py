@@ -7,7 +7,7 @@ from time import perf_counter
 from typing import Annotated, Literal, Protocol, cast
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field, JsonValue
+from pydantic import BaseModel, ConfigDict, Field, JsonValue, model_validator
 
 from app.devices import (
     CommandSnapshot,
@@ -32,10 +32,19 @@ class CaptureScreenArgs(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     device: Annotated[str, Field(min_length=1, max_length=160)] | None = None
-    target: Literal["main_display"] = "main_display"
+    target: Literal["main_display", "display"] = "main_display"
+    display_index: Annotated[int, Field(ge=1, le=32)] | None = None
     question: Annotated[str, Field(min_length=1, max_length=1_000)] = (
         "描述屏幕上与用户问题相关的可见内容；不要猜测屏幕外信息。"
     )
+
+    @model_validator(mode="after")
+    def validate_display_target(self) -> CaptureScreenArgs:
+        if self.target == "display" and self.display_index is None:
+            raise ValueError("display_index is required for display target")
+        if self.target == "main_display" and self.display_index is not None:
+            raise ValueError("display_index is only valid for display target")
+        return self
 
 
 @dataclass(frozen=True, slots=True)
@@ -112,7 +121,7 @@ class CapabilityScreenAnalyzer:
 class CaptureScreenTool:
     name = "capture_screen"
     description = (
-        "对已授权且在线的用户桌面设备执行一次主显示器截图，并使用本地视觉模型"
+        "对已授权且在线的用户桌面设备执行一次主显示器或指定编号显示器截图，并使用本地视觉模型"
         "回答当前屏幕问题。device 可填设备 UUID、名称或别名；省略时仅在唯一候选时执行。"
     )
     arguments_model: type[BaseModel] = CaptureScreenArgs
@@ -165,10 +174,13 @@ class CaptureScreenTool:
         except DeviceTargetNotFound:
             return self._failure("device_target_not_found", started)
         try:
+            command_args: dict[str, JsonValue] = {"target": args.target}
+            if args.display_index is not None:
+                command_args["display_index"] = args.display_index
             command = await self._gateway.issue(
                 device_id=device.id,
                 command="screen.capture",
-                args={"target": args.target},
+                args=command_args,
                 idempotency_key=f"screen-{context.turn_id}-{device.id}",
                 ttl_seconds=30,
             )
@@ -214,6 +226,7 @@ class CaptureScreenTool:
             data={
                 "device": device.alias or device.name,
                 "target": args.target,
+                "display_index": args.display_index,
                 "analysis": analysis.text,
                 "captured_at": asset.created_at.isoformat(),
             },

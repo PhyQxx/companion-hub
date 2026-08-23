@@ -1,10 +1,27 @@
 import { webcrypto } from "node:crypto";
 import { describe, expect, it } from "vitest";
+import { parseScreenCaptureRequest } from "./client";
 import { canonicalFrame, signFrame, verifyFrame, websocketUrl } from "./protocol";
 
 Object.defineProperty(globalThis, "crypto", { value: webcrypto });
 
 describe("device command protocol", () => {
+  it("accepts only bounded explicit display capture targets", () => {
+    expect(parseScreenCaptureRequest({})).toEqual({
+      target: "main_display",
+      displayIndex: null,
+    });
+    expect(
+      parseScreenCaptureRequest({ target: "display", display_index: 2 }),
+    ).toEqual({ target: "display", displayIndex: 2 });
+    expect(parseScreenCaptureRequest({ target: "display", display_index: 0 })).toBeNull();
+    expect(parseScreenCaptureRequest({ target: "display", display_index: 2.5 })).toBeNull();
+    expect(parseScreenCaptureRequest({ target: "active_window" })).toBeNull();
+    expect(
+      parseScreenCaptureRequest({ target: "main_display", display_index: 1 }),
+    ).toBeNull();
+  });
+
   it("matches Python sort_keys canonical JSON ordering", () => {
     expect(
       canonicalFrame({

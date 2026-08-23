@@ -171,10 +171,13 @@ fn screen_capture_permission(request: bool) -> ScreenPermissionStatus {
 async fn capture_and_upload(
     command_id: String,
     target: String,
+    display_index: Option<u8>,
 ) -> Result<DeviceAssetUpload, String> {
-    if target != "main_display" {
-        return Err("当前版本只支持 main_display".to_string());
-    }
+    let display_arg = match (target.as_str(), display_index) {
+        ("main_display", None) => "-m".to_string(),
+        ("display", Some(index @ 1..=32)) => format!("-D{index}"),
+        _ => return Err("截图目标参数无效".to_string()),
+    };
     if !screen_permission_status(false).granted {
         return Err("尚未获得屏幕录制权限".to_string());
     }
@@ -193,7 +196,7 @@ async fn capture_and_upload(
     let capture_path = capture.0.clone();
     let output = tauri::async_runtime::spawn_blocking(move || {
         Command::new("/usr/sbin/screencapture")
-            .args(["-x", "-m", "-tpng"])
+            .args(["-x", display_arg.as_str(), "-tpng"])
             .arg(capture_path)
             .output()
     })

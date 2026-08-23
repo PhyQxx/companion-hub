@@ -1,6 +1,6 @@
 # Aria Desktop Client
 
-Tauri 2 受控设备客户端。除低风险 `device.ping` 外，macOS 在用户授予系统屏幕录制权限且未开启隐私暂停时可声明 `screen.capture`。
+Tauri 2 受控设备客户端。除低风险 `device.ping` 外，macOS 在用户授予系统屏幕录制权限且未开启隐私暂停时可声明 `screen.capture`；截图支持主显示器与显式编号的显示器。
 
 ## 已实现
 

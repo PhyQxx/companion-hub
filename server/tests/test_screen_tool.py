@@ -5,6 +5,7 @@ from datetime import UTC, datetime, timedelta
 from uuid import UUID
 
 import pytest
+from pydantic import ValidationError
 
 from app.devices import (
     CommandSnapshot,
@@ -52,8 +53,10 @@ class FakeGateway:
         self.device_id = device_id
         self.asset_id: UUID | None = None
         self.command_id: UUID | None = None
+        self.issued_args: dict[str, object] | None = None
 
-    async def issue(self, **_: object) -> CommandSnapshot:
+    async def issue(self, **kwargs: object) -> CommandSnapshot:
+        self.issued_args = kwargs["args"]  # type: ignore[assignment]
         now = datetime.now(UTC)
         command_id = uuid7()
         asset = await self.assets.put(
@@ -131,6 +134,7 @@ async def test_capture_screen_analyzes_and_consumes_ephemeral_image() -> None:
 
     assert execution.result.ok is True
     assert execution.result.data["analysis"] == "屏幕显示 Aria 管理后台设备页"
+    assert gateway.issued_args == {"target": "main_display"}
     assert analyzer.seen == PNG
     assert gateway.asset_id is not None and gateway.command_id is not None
     with pytest.raises(EphemeralDeviceAssetNotFound):
@@ -139,6 +143,37 @@ async def test_capture_screen_analyzes_and_consumes_ephemeral_image() -> None:
             owner_user_id=owner_id,
             command_id=gateway.command_id,
         )
+
+
+async def test_capture_screen_passes_bounded_display_index() -> None:
+    owner_id = uuid7()
+    device_id = uuid7()
+    gateway = FakeGateway(owner_id=owner_id, device_id=device_id)
+    tool = CaptureScreenTool(
+        FakeResolver(_device(owner_id, device_id)),
+        gateway,
+        FakeAnalyzer(),
+    )
+
+    result = await tool.execute(
+        CaptureScreenArgs(target="display", display_index=2),
+        ToolContext(privacy_level="L2", user_id=owner_id, turn_id=uuid7()),
+    )
+
+    assert result.ok is True
+    assert result.data["display_index"] == 2
+    assert gateway.issued_args == {"target": "display", "display_index": 2}
+
+
+def test_capture_screen_rejects_invalid_display_targets() -> None:
+    invalid_arguments = (
+        {"target": "display"},
+        {"target": "display", "display_index": 0},
+        {"target": "main_display", "display_index": 1},
+    )
+    for arguments in invalid_arguments:
+        with pytest.raises(ValidationError):
+            CaptureScreenArgs.model_validate(arguments)
 
 
 async def test_capture_screen_returns_candidates_for_ambiguous_target() -> None:
