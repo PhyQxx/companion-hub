@@ -30,9 +30,11 @@ class ToolExecutor:
             self._egress.authorize(
                 context.privacy_level,
                 EgressDestination(
-                    name="query_tools",
-                    runs_local=False,
-                    max_privacy_level=PrivacyLevel.L1,
+                    name=handler.name,
+                    runs_local=bool(getattr(handler, "runs_local", False)),
+                    max_privacy_level=PrivacyLevel(
+                        getattr(handler, "max_privacy_level", PrivacyLevel.L1)
+                    ),
                 ),
             )
         except EgressBlocked:

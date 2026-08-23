@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from typing import Any, Literal, Protocol
+from uuid import UUID
 
 from pydantic import BaseModel, Field
 
@@ -13,6 +14,8 @@ from .location import ClientLocation
 
 class ToolContext(StrictModel):
     privacy_level: PrivacyLevel
+    user_id: UUID | None = None
+    turn_id: UUID | None = None
     default_city: str | None = None
     # 连接级临时位置(TTL 15 分钟):仅内存传递,禁止写入日志或持久化记录。
     ephemeral_location: ClientLocation | None = None

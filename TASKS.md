@@ -32,7 +32,8 @@
 - [x] Tauri Desktop Client 安全连接壳：开机启动、托盘、系统凭据库、配对、签名长连接、心跳/重连和 `device.ping`。
 - [x] 截图临时资产通道：设备鉴权上传、命令/owner 绑定、PNG/JPEG 魔数与 8 MiB 上限、2 分钟 TTL、读取即销毁，数据库仅保留摘要。
 - [ ] macOS 屏幕录制授权、隐私暂停与临时截图销毁闭环：实现已落地，待 Rust/Xcode 环境补跑原生编译与真机 TCC 验收后勾选。
-- [ ] `capture_screen(device_id, target)`：截取活动窗口/选定显示器，图片只在当前回合临时存在。
+- [x] `capture_screen` 主显示器闭环：目标解析、签名命令、终态等待、临时图片 consume-on-read、本地视觉分析和文字结果回注；仅在 L2 + 本地工具模型 + 本地视觉可用时暴露。
+- [ ] `capture_screen` 目标扩展：活动窗口、指定显示器与系统内容选择器。
 - [ ] 浏览器扩展：提供 `browser.current_tab.capture` 与 `browser.current_tab.read`，优先返回页面结构化文本和当前标签页截图。
 - [ ] 隐私策略：默认 L2、本地视觉优先；云视觉必须显式临时授权；锁屏、隐私暂停或客户端离线时拒绝。
 - [ ] 跨终端验收：从手机或 Web 对话发起“看一下我的电脑网页”，电脑客户端执行，结果返回原会话。
@@ -56,6 +57,7 @@
 
 ## 3. 最近完成
 
+- [x] Hub Screen Capture Tool：命令终态事件唤醒、设备歧义候选、本地 OpenAI-compatible 视觉 data URL、原图单次消费及 ChatService 三重可用性门控已接入。
 - [x] Desktop `screen.capture` 实现：仅在 macOS TCC 已授权且隐私暂停关闭时声明能力，单次截取主显示器、鉴权上传，RAII 清理本机临时文件；原生验收仍待工具链。
 - [x] Ephemeral Device Asset Store：截图不进入命令 JSON 或数据库，上传内容只在有界进程内存中短暂存在并 consume-on-read。
 - [x] Device Target Resolver：按 owner 隔离，支持精确目标、通用桌面目标、capability/在线复核、歧义候选与禁止静默 fallback。
@@ -71,7 +73,7 @@
 
 ## 4. 最新质量基线
 
-- 2026-08-23 当前工作树：pytest **269 通过 / 2 跳过**，Desktop 协议测试 **4 通过**，Ruff、全量 mypy、Alembic 单 head、`git diff --check`、Chat/Admin/Shared/Desktop typecheck 与 production build 全部通过；
+- 2026-08-23 当前工作树：pytest **275 通过 / 2 跳过**，Desktop 协议测试 **4 通过**，Ruff、全量 mypy、Alembic 单 head、`git diff --check`、Chat/Admin/Shared/Desktop typecheck 与 production build 全部通过；
 - CI 的 mypy 范围已与本地发布闸门对齐为 `server/app server/tests`；
 - 运行配置：v39；本地 ASR 为 faster-whisper `base/cpu/int8`；
 - PostgreSQL/pgvector 两项集成测试在本地无 `ARIA_TEST_DATABASE_URL` 时跳过，推送后由 CI PostgreSQL 服务执行。

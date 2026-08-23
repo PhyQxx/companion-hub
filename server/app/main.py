@@ -33,12 +33,13 @@ from app.bus import DispatcherWorker, EventPublisher, LocalEventPublisher
 from app.chat import ChatService
 from app.config import ConfigStore, ConfigWatcher, DatabaseConfigStore
 from app.db import Database, create_database
-from app.devices import DeviceCommandStore, DeviceRegistry
+from app.devices import DeviceCommandStore, DeviceRegistry, DeviceTargetResolver
 from app.memory import LlmMemoryExtractor, MemoryExtractor, MemoryStore
 from app.model_capabilities import CapabilityModelService
 from app.observability import apply_observability, configure_logging
 from app.persona import PersonaStore
 from app.timeline import HistoryRecallService, TimelineStore
+from app.tools.screen import CapabilityScreenAnalyzer, CaptureScreenTool
 from app.voice import ConfigVoiceSource
 
 
@@ -355,21 +356,7 @@ def create_app(
             )
         if runtime_database is not None:
             auth_service = AuthService(runtime_database)
-            runtime_chat_service = ChatService(
-                runtime_database,
-                runtime_config,
-                persona_store=persona_store,
-                memory_store=memory_store,
-                memory_extractor=memory_extractor,
-                timeline_store=timeline_store,
-                history_recall_service=history_recall,
-                capability_provider=device_registry,
-            )
-            app.state.auth_service = auth_service
-            app.state.chat_service = runtime_chat_service
-            app.include_router(
-                create_auth_router(auth_service, admin_token=runtime_admin_token)
-            )
+            device_tool = None
             if device_registry is not None:
                 admin_devices_router, devices_router = create_device_routers(
                     device_registry,
@@ -388,6 +375,28 @@ def create_app(
                     app.state.device_command_gateway = device_command_gateway
                     app.include_router(command_admin_router)
                     app.include_router(device_ws_router)
+                    if capability_models is not None:
+                        device_tool = CaptureScreenTool(
+                            DeviceTargetResolver(device_registry),
+                            device_command_gateway,
+                            CapabilityScreenAnalyzer(capability_models),
+                        )
+            runtime_chat_service = ChatService(
+                runtime_database,
+                runtime_config,
+                persona_store=persona_store,
+                memory_store=memory_store,
+                memory_extractor=memory_extractor,
+                timeline_store=timeline_store,
+                history_recall_service=history_recall,
+                capability_provider=device_registry,
+                device_tool=device_tool,
+            )
+            app.state.auth_service = auth_service
+            app.state.chat_service = runtime_chat_service
+            app.include_router(
+                create_auth_router(auth_service, admin_token=runtime_admin_token)
+            )
             app.include_router(create_chat_router(runtime_chat_service, auth_service))
             if capability_models is not None:
                 app.include_router(

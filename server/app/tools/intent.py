@@ -1,10 +1,22 @@
 from __future__ import annotations
 
+from collections.abc import Iterable
+
 from app.config import HubConfig
 
 _WEATHER_TERMS = ("天气", "气温", "温度", "下雨", "降雨", "晴天", "阴天", "台风")
 _NEARBY_TERMS = ("附近", "最近", "周边", "医院", "药店", "餐厅", "充电站")
 _ROUTE_TERMS = ("怎么走", "路线", "导航", "开车去", "步行去", "坐公交")
+_SCREEN_TERMS = (
+    "看一下电脑",
+    "看下电脑",
+    "看看电脑",
+    "我的电脑",
+    "电脑屏幕",
+    "当前屏幕",
+    "桌面上",
+    "屏幕上",
+)
 
 
 def select_query_tools(text: str, config: HubConfig) -> tuple[str, ...]:
@@ -19,3 +31,10 @@ def select_query_tools(text: str, config: HubConfig) -> tuple[str, ...]:
     if query.route_enabled and any(term in text for term in _ROUTE_TERMS):
         selected.append("plan_route")
     return tuple(selected)
+
+
+def select_device_tools(text: str, capability_ids: Iterable[str]) -> tuple[str, ...]:
+    has_screen = any(value.endswith(":screen.capture") for value in capability_ids)
+    if has_screen and any(term in text for term in _SCREEN_TERMS):
+        return ("capture_screen",)
+    return ()

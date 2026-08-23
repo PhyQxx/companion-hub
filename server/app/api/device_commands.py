@@ -24,6 +24,7 @@ from pydantic import Field, JsonValue, ValidationError
 
 from app.devices import (
     MAX_DEVICE_ASSET_BYTES,
+    TERMINAL_COMMAND_STATUSES,
     CommandSnapshot,
     DeviceCommandConflict,
     DeviceCommandNotFound,
@@ -123,6 +124,7 @@ class DeviceCommandGateway:
         self.assets = assets or EphemeralDeviceAssetStore()
         self._connections: dict[UUID, DeviceCommandConnection] = {}
         self._timeout_tasks: dict[UUID, asyncio.Task[None]] = {}
+        self._completion_events: dict[UUID, asyncio.Event] = {}
 
     def connection_for(self, device_id: UUID) -> DeviceCommandConnection | None:
         return self._connections.get(device_id)
@@ -159,14 +161,18 @@ class DeviceCommandGateway:
             return issued.command
         device = await self._registry.get_device(device_id)
         if command not in device.effective_capabilities:
-            return await self._store.mark_delivery_failed(
+            result = await self._store.mark_delivery_failed(
                 issued.command.id, reason_code="capability_not_authorized"
             )
+            self._notify_terminal(result.id)
+            return result
         connection = self._connections.get(device_id)
         if connection is None:
-            return await self._store.mark_delivery_failed(
+            result = await self._store.mark_delivery_failed(
                 issued.command.id, reason_code="device_offline"
             )
+            self._notify_terminal(result.id)
+            return result
         payload = {
             "proto_version": 1,
             "type": "command.execute",
@@ -189,9 +195,11 @@ class DeviceCommandGateway:
             result = await self._store.mark_sent(issued.command.id)
         except Exception:
             self.disconnect(connection)
-            return await self._store.mark_delivery_failed(
+            result = await self._store.mark_delivery_failed(
                 issued.command.id, reason_code="device_disconnected"
             )
+            self._notify_terminal(result.id)
+            return result
         self._schedule_timeout(result)
         return result
 
@@ -221,11 +229,13 @@ class DeviceCommandGateway:
             result_meta=dict(result_meta) if result_meta is not None else None,
         )
         self._cancel_timeout(command_id)
+        self._notify_terminal(command_id)
         return result
 
     async def cancel(self, command_id: UUID) -> CommandSnapshot:
         result = await self._store.cancel(command_id)
         self._cancel_timeout(command_id)
+        self._notify_terminal(command_id)
         connection = self._connections.get(result.device_id)
         if (
             connection is not None
@@ -242,6 +252,29 @@ class DeviceCommandGateway:
                     }
                 )
         return result
+
+    async def wait_for_terminal(
+        self,
+        command_id: UUID,
+        *,
+        timeout_seconds: float | None = None,
+    ) -> CommandSnapshot:
+        current = await self._store.get(command_id)
+        if current.status in TERMINAL_COMMAND_STATUSES:
+            return current
+        event = self._completion_events.setdefault(command_id, asyncio.Event())
+        current = await self._store.get(command_id)
+        if current.status in TERMINAL_COMMAND_STATUSES:
+            event.set()
+        timeout = timeout_seconds
+        if timeout is None:
+            timeout = max(0.1, (current.expires_at - datetime.now(UTC)).total_seconds() + 1)
+        try:
+            await asyncio.wait_for(event.wait(), timeout=timeout)
+        finally:
+            if self._completion_events.get(command_id) is event:
+                self._completion_events.pop(command_id, None)
+        return await self._store.get(command_id)
 
     async def heartbeat(
         self, principal: DevicePrincipal, capabilities: tuple[str, ...]
@@ -260,12 +293,19 @@ class DeviceCommandGateway:
     async def _expire_after(self, command_id: UUID, expires_at: datetime) -> None:
         delay = max(0.0, (expires_at - datetime.now(UTC)).total_seconds())
         await asyncio.sleep(delay)
-        await self._store.mark_timeout(command_id)
+        result = await self._store.mark_timeout(command_id)
+        if result.status in TERMINAL_COMMAND_STATUSES:
+            self._notify_terminal(command_id)
 
     def _cancel_timeout(self, command_id: UUID) -> None:
         task = self._timeout_tasks.pop(command_id, None)
         if task is not None:
             task.cancel()
+
+    def _notify_terminal(self, command_id: UUID) -> None:
+        event = self._completion_events.get(command_id)
+        if event is not None:
+            event.set()
 
 
 def create_device_command_routers(

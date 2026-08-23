@@ -28,6 +28,7 @@ from app.main import create_app
 from app.persona import PersonaConfig, PersonaStore
 from app.schemas import PrivacyLevel
 from app.tools import ToolExecution, ToolResult
+from app.tools.screen import CaptureScreenTool
 
 
 def config_yaml(model: str = "dialogue-v1") -> str:
@@ -117,6 +118,18 @@ class FakeCapabilityProvider:
                 capability_id="device.tv.living_room.power",
                 label="客厅电视",
                 description="可以打开或关闭客厅电视",
+            )
+        ]
+
+
+class FakeScreenCapabilityProvider:
+    async def available_actions(self, user_id: UUID) -> list[RuntimeActionCapability]:
+        del user_id
+        return [
+            RuntimeActionCapability(
+                capability_id=f"{uuid7()}:screen.capture",
+                label="我的电脑 · screen.capture",
+                description="在线桌面已授权单次屏幕读取",
             )
         ]
 
@@ -372,6 +385,43 @@ async def test_chat_injects_only_reported_runtime_capabilities(
     assert "不得把角色设定中的场景当作真实能力" in system_prompt
     meta = result.assistant_message.decision_meta or {}
     assert meta["runtime_capabilities"] == ["device.tv.living_room.power"]
+
+
+async def test_l2_screen_tool_requires_device_local_vision_and_tool_model(
+    database: Database,
+    store: DatabaseConfigStore,
+) -> None:
+    candidate = store.current.config.model_dump(mode="python")
+    candidate["models"]["local"]["supports_tool_calling"] = True
+    candidate["models"]["local_vision"] = {
+        "kind": "vision",
+        "provider": "openai_compatible",
+        "model": "local-vision",
+        "base_url": "http://127.0.0.1:1234/v1",
+        "runs_local": True,
+        "max_privacy_level": "L2",
+    }
+    candidate["capability_models"] = {"vision": "local_vision"}
+    draft = await store.create_draft(HubConfig.model_validate(candidate), actor="test")
+    await store.publish(draft.version, actor="test")
+    service = ChatService(
+        database,
+        store,
+        capability_provider=FakeScreenCapabilityProvider(),
+        device_tool=CaptureScreenTool.__new__(CaptureScreenTool),
+    )
+    user = await create_user(database)
+    conversation = await service.create_conversation(user_id=user.id, title="screen")
+
+    pending = await service.start_turn(
+        conversation.id,
+        user_id=user.id,
+        text="看一下我的电脑屏幕上是什么",
+        privacy_level=PrivacyLevel.L2,
+    )
+
+    assert pending.tool_names == ("capture_screen",)
+    assert [tool.name for tool in pending.request.tools] == ["capture_screen"]
 
 
 async def test_weather_tool_round_hides_preamble_and_records_redacted_metadata(

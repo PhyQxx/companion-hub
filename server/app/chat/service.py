@@ -50,10 +50,14 @@ from app.tools import (
     ClientLocation,
     ToolContext,
     ToolExecution,
+    ToolExecutor,
+    ToolHandler,
+    ToolRegistry,
     ToolResult,
     build_query_tool_runtime,
     nearby_tool_definition,
     route_tool_definition,
+    select_device_tools,
     select_query_tools,
     weather_tool_definition,
 )
@@ -69,6 +73,31 @@ from .reply import ControlStreamFilter, parse_agent_reply, structured_reply_inst
 MAX_CONTEXT_MESSAGES = 20
 
 logger = logging.getLogger(__name__)
+
+
+def _screen_tool_ready(config: HubConfig) -> bool:
+    endpoint_name = config.capability_models.vision
+    if endpoint_name is None:
+        return False
+    endpoint = config.models.get(endpoint_name)
+    vision_ready = bool(
+        endpoint is not None
+        and endpoint.enabled
+        and endpoint.kind == "vision"
+        and endpoint.runs_local
+        and PrivacyLevel(endpoint.max_privacy_level) is PrivacyLevel.L2
+    )
+    private_route = config.routes[LLMRoute.PRIVATE]
+    private_candidates = (private_route.primary, *private_route.fallbacks)
+    tool_model_ready = any(
+        (candidate := config.models.get(name)) is not None
+        and candidate.enabled
+        and candidate.runs_local
+        and candidate.supports_tool_calling
+        and PrivacyLevel(candidate.max_privacy_level) is PrivacyLevel.L2
+        for name in private_candidates
+    )
+    return vision_ready and tool_model_ready
 
 
 def render_time_context(now: datetime, timezone_name: str) -> str:
@@ -166,6 +195,7 @@ class ChatService:
         timeline_store: TimelineStore | None = None,
         history_recall_service: HistoryRecallService | None = None,
         capability_provider: RuntimeCapabilityProvider | None = None,
+        device_tool: ToolHandler | None = None,
     ) -> None:
         self._database = database
         self._config_store = config_store
@@ -176,6 +206,7 @@ class ChatService:
             HistoryRecallService(timeline_store) if timeline_store is not None else None
         )
         self._capability_provider = capability_provider
+        self._device_tool = device_tool
         self._memory_consistency_guard = MemoryConsistencyGuard()
         self._memory_retriever = MemoryRetriever(memory_store) if memory_store else None
         self._memory_ingester = (
@@ -409,17 +440,32 @@ class ChatService:
             except Exception:
                 # 历史索引是增强路径，故障不能让普通聊天不可用。
                 logger.warning("history recall failed for turn %s", turn_id, exc_info=True)
-        tool_names = (
+        query_tool_names = (
             select_query_tools(text, snapshot.config)
             if privacy_level in {PrivacyLevel.L0, PrivacyLevel.L1}
             else ()
         )
+        device_tool_names = (
+            select_device_tools(
+                text,
+                (item.capability_id for item in runtime_capabilities),
+            )
+            if (
+                privacy_level is PrivacyLevel.L2
+                and self._device_tool is not None
+                and _screen_tool_ready(snapshot.config)
+            )
+            else ()
+        )
+        tool_names = (*query_tool_names, *device_tool_names)
         definition_builders = {
             "get_weather": weather_tool_definition,
             "search_nearby": nearby_tool_definition,
             "plan_route": route_tool_definition,
         }
-        tool_definitions = [definition_builders[name]() for name in tool_names]
+        tool_definitions = [definition_builders[name]() for name in query_tool_names]
+        if "capture_screen" in device_tool_names and self._device_tool is not None:
+            tool_definitions.append(self._device_tool.definition())
         request = CompletionRequest(
             trace_id=turn_id,
             messages=[
@@ -590,16 +636,41 @@ class ChatService:
                 ),
             )
         call = calls[0]
+        context = ToolContext(
+            privacy_level=pending.request.privacy_level,
+            user_id=pending.user_id,
+            turn_id=pending.turn_id,
+            default_city=pending.config.tools.query.default_city,
+            ephemeral_location=pending.client_location,
+        )
+        if call.function.name == "capture_screen" and self._device_tool is not None:
+            try:
+                return await ToolExecutor(ToolRegistry([self._device_tool])).execute(
+                    call,
+                    context,
+                )
+            except Exception:
+                logger.warning(
+                    "device tool runtime failed turn_id=%s tool=%s",
+                    pending.turn_id,
+                    call.function.name,
+                    exc_info=True,
+                )
+                return ToolExecution(
+                    call_id=call.id,
+                    result=ToolResult(
+                        ok=False,
+                        tool_name=call.function.name,
+                        reason_code="device_tool_unavailable",
+                        latency_ms=0,
+                    ),
+                )
         runtime = None
         try:
             runtime = build_query_tool_runtime(pending.config, EnvSecretProvider())
             return await runtime.executor.execute(
                 call,
-                ToolContext(
-                    privacy_level=pending.request.privacy_level,
-                    default_city=pending.config.tools.query.default_city,
-                    ephemeral_location=pending.client_location,
-                ),
+                context,
             )
         except Exception:
             logger.warning(

@@ -118,6 +118,58 @@ async def test_vision_uses_glm46v_and_multimodal_chat_shape(tmp_path: Path) -> N
     assert payload["thinking"] == {"type": "enabled"}
 
 
+async def test_local_openai_vision_accepts_l2_data_url_without_secret(
+    tmp_path: Path,
+) -> None:
+    calls: list[tuple[dict[str, str], dict[str, object] | None]] = []
+
+    def requester(
+        method: str,
+        url: str,
+        headers: dict[str, str],
+        payload: dict[str, object] | None,
+        timeout: float,
+    ) -> object:
+        del method, url, timeout
+        calls.append((headers, payload))
+        return {"choices": [{"message": {"content": "本地屏幕分析"}}]}
+
+    local_vision = """  vision:
+    kind: vision
+    provider: openai_compatible
+    model: local-vision
+    base_url: http://127.0.0.1:1234/v1
+    runs_local: true
+    max_privacy_level: L2
+"""
+    cloud_vision = """  vision:
+    kind: vision
+    provider: zhipu_native
+    model: glm-4.6v-flash
+    base_url: https://open.bigmodel.cn/api/paas/v4
+    secret_ref: env:ZAI_API_KEY
+    runs_local: false
+    max_privacy_level: L1
+"""
+    path = tmp_path / "local-vision.yaml"
+    path.write_text(capability_yaml().replace(cloud_vision, local_vision), encoding="utf-8")
+    store = ConfigStore(path)
+    await store.load()
+    service = CapabilityModelService(store, request_json=requester)
+
+    result = await service.analyze_vision(
+        prompt="描述屏幕",
+        image_urls=("data:image/png;base64,iVBORw0KGgo=",),
+        privacy_level=PrivacyLevel.L2,
+        thinking=False,
+    )
+
+    assert result.text == "本地屏幕分析"
+    headers, payload = calls[0]
+    assert headers == {}
+    assert payload is not None and "thinking" not in payload
+
+
 async def test_image_generation_uses_cogview3_flash(tmp_path: Path) -> None:
     payloads: list[dict[str, object]] = []
 

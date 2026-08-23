@@ -149,16 +149,21 @@ class CapabilityModelService:
             )
         content.append({"type": "text", "text": prompt})
 
+        request_body: dict[str, object] = {
+            "model": endpoint.model,
+            "messages": [{"role": "user", "content": content}],
+            "max_tokens": max_tokens,
+        }
+        if endpoint.provider == "zhipu_native":
+            request_body["thinking"] = {
+                "type": "enabled" if thinking else "disabled"
+            }
+
         started = perf_counter()
         payload = await self._post(
             endpoint,
             "/chat/completions",
-            {
-                "model": endpoint.model,
-                "messages": [{"role": "user", "content": content}],
-                "thinking": {"type": "enabled" if thinking else "disabled"},
-                "max_tokens": max_tokens,
-            },
+            request_body,
         )
         if not isinstance(payload, dict):
             raise CapabilityModelError("provider_invalid_response")
@@ -319,7 +324,7 @@ class CapabilityModelService:
         endpoint = config.models[endpoint_name]
         if ModelKind(endpoint.kind) is not kind:
             raise CapabilityModelError("capability_model_kind_mismatch")
-        if endpoint.provider != "zhipu_native":
+        if endpoint.provider not in {"openai_compatible", "zhipu_native"}:
             raise CapabilityModelError("unsupported_capability_provider")
         return endpoint_name, endpoint
 
@@ -342,6 +347,8 @@ class CapabilityModelService:
         secret = endpoint.secret_value
         if secret is None and endpoint.secret_ref is not None:
             secret = self._secrets.resolve(endpoint.secret_ref)
+        if not secret and endpoint.runs_local:
+            return {}
         if not secret:
             raise CapabilityModelError("model_secret_unavailable")
         return {"Authorization": f"Bearer {secret}"}

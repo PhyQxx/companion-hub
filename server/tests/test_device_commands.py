@@ -12,12 +12,14 @@ from fastapi.testclient import TestClient
 from starlette.websockets import WebSocketDisconnect
 
 from app.api import (
+    DeviceCommandGateway,
     create_device_command_routers,
     verify_device_signature,
 )
 from app.auth import AuthService
 from app.db import Base, DeviceCommandRecord, create_database
 from app.devices import DeviceCommandStore, DeviceRegistry
+from app.ids import uuid7
 
 
 def test_signed_command_websocket_ack_result_cancel_and_idempotency(
@@ -257,4 +259,52 @@ async def test_sent_command_expires_as_timeout(tmp_path: Path) -> None:
     assert timed_out.status == "timed_out"
     assert timed_out.reason_code == "command_timeout"
     assert timed_out.completed_at is not None
+    await database.close()
+
+
+async def test_gateway_wait_for_terminal_is_woken_by_result(tmp_path: Path) -> None:
+    database = create_database(f"sqlite+aiosqlite:///{tmp_path / 'wait.db'}")
+    async with database.engine.begin() as connection:
+        await connection.run_sync(Base.metadata.create_all)
+    await AuthService(database).setup(
+        display_name="Owner",
+        password="correct horse battery staple",
+    )
+    registry = DeviceRegistry(database)
+    pairing = await registry.create_pairing_code(
+        owner_user_id=None,
+        granted_capabilities=("screen.capture",),
+    )
+    paired = await registry.pair(
+        pairing_code=pairing.code,
+        name="Wait client",
+        alias=None,
+        client_type="desktop",
+        capabilities=("screen.capture",),
+    )
+    store = DeviceCommandStore(database)
+    issued = await store.create(
+        device_id=paired.device.id,
+        command_name="screen.capture",
+        args={"target": "main_display"},
+        idempotency_key="wait-command-0001",
+        ttl_seconds=30,
+    )
+    await store.mark_sent(issued.command.id)
+    gateway = DeviceCommandGateway(registry, store)
+
+    waiter = asyncio.create_task(
+        gateway.wait_for_terminal(issued.command.id, timeout_seconds=1)
+    )
+    await asyncio.sleep(0)
+    await gateway.complete(
+        paired.device.id,
+        issued.command.id,
+        outcome="succeeded",
+        reason_code=None,
+        result_meta={"asset_id": str(uuid7())},
+    )
+
+    result = await waiter
+    assert result.status == "succeeded"
     await database.close()
