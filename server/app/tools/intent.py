@@ -17,6 +17,17 @@ _SCREEN_TERMS = (
     "桌面上",
     "屏幕上",
 )
+_WEBPAGE_TERMS = (
+    "电脑网页",
+    "当前网页",
+    "这个网页",
+    "当前页面",
+    "这个页面",
+    "浏览器",
+    "标签页",
+    "网站上",
+    "网页上",
+)
 
 
 def select_query_tools(text: str, config: HubConfig) -> tuple[str, ...]:
@@ -34,7 +45,15 @@ def select_query_tools(text: str, config: HubConfig) -> tuple[str, ...]:
 
 
 def select_device_tools(text: str, capability_ids: Iterable[str]) -> tuple[str, ...]:
-    has_screen = any(value.endswith(":screen.capture") for value in capability_ids)
+    values = tuple(capability_ids)
+    has_browser = any(
+        value.endswith(":browser.current_tab.read")
+        or value.endswith(":browser.current_tab.capture")
+        for value in values
+    )
+    if has_browser and any(term in text for term in _WEBPAGE_TERMS):
+        return ("inspect_webpage",)
+    has_screen = any(value.endswith(":screen.capture") for value in values)
     if has_screen and any(term in text for term in _SCREEN_TERMS):
         return ("capture_screen",)
     return ()

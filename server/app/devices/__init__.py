@@ -1,5 +1,6 @@
 from .assets import (
     DEVICE_ASSET_TTL,
+    MAX_BROWSER_DOCUMENT_BYTES,
     MAX_DEVICE_ASSET_BYTES,
     EphemeralDeviceAsset,
     EphemeralDeviceAssetError,
@@ -43,6 +44,7 @@ __all__ = [
     "DEVICE_ASSET_TTL",
     "DEVICE_ONLINE_WINDOW",
     "GENERIC_DESKTOP_TARGETS",
+    "MAX_BROWSER_DOCUMENT_BYTES",
     "MAX_DEVICE_ASSET_BYTES",
     "TERMINAL_COMMAND_STATUSES",
     "CommandSnapshot",

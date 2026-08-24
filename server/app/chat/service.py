@@ -4,7 +4,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-from collections.abc import Awaitable, Callable, Coroutine
+from collections.abc import Awaitable, Callable, Coroutine, Iterable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Protocol
@@ -196,6 +196,7 @@ class ChatService:
         history_recall_service: HistoryRecallService | None = None,
         capability_provider: RuntimeCapabilityProvider | None = None,
         device_tool: ToolHandler | None = None,
+        device_tools: Iterable[ToolHandler] = (),
     ) -> None:
         self._database = database
         self._config_store = config_store
@@ -206,7 +207,10 @@ class ChatService:
             HistoryRecallService(timeline_store) if timeline_store is not None else None
         )
         self._capability_provider = capability_provider
-        self._device_tool = device_tool
+        handlers = list(device_tools)
+        if device_tool is not None:
+            handlers.append(device_tool)
+        self._device_tools = ToolRegistry(handlers)
         self._memory_consistency_guard = MemoryConsistencyGuard()
         self._memory_retriever = MemoryRetriever(memory_store) if memory_store else None
         self._memory_ingester = (
@@ -452,7 +456,7 @@ class ChatService:
             )
             if (
                 privacy_level is PrivacyLevel.L2
-                and self._device_tool is not None
+                and self._device_tools.definitions()
                 and _screen_tool_ready(snapshot.config)
             )
             else ()
@@ -464,8 +468,7 @@ class ChatService:
             "plan_route": route_tool_definition,
         }
         tool_definitions = [definition_builders[name]() for name in query_tool_names]
-        if "capture_screen" in device_tool_names and self._device_tool is not None:
-            tool_definitions.append(self._device_tool.definition())
+        tool_definitions.extend(self._device_tools.definitions(device_tool_names))
         request = CompletionRequest(
             trace_id=turn_id,
             messages=[
@@ -643,9 +646,9 @@ class ChatService:
             default_city=pending.config.tools.query.default_city,
             ephemeral_location=pending.client_location,
         )
-        if call.function.name == "capture_screen" and self._device_tool is not None:
+        if self._device_tools.get(call.function.name) is not None:
             try:
-                return await ToolExecutor(ToolRegistry([self._device_tool])).execute(
+                return await ToolExecutor(self._device_tools).execute(
                     call,
                     context,
                 )
@@ -1276,4 +1279,6 @@ def _tool_label(tool_name: str) -> str:
         "get_weather": "正在查询天气…",
         "search_nearby": "正在查找附近地点…",
         "plan_route": "正在规划路线…",
+        "capture_screen": "正在读取电脑屏幕…",
+        "inspect_webpage": "正在读取当前网页…",
     }.get(tool_name, "正在使用外部工具…")

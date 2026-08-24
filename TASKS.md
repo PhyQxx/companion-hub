@@ -1,6 +1,6 @@
 # Aria 当前任务
 
-> 最后更新：2026-08-23
+> 最后更新：2026-08-24
 > 详细设计入口：[docs/00-文档索引与架构总览.md](./docs/00-文档索引与架构总览.md)
 
 本文件只维护当前执行队列、未完成门槛和最新质量基线。历史交付细节留在对应阶段文档，不在这里重复。
@@ -13,7 +13,7 @@
 | P5 文字稳定性闸门 | 使用期未开始 | 自动化通过；14 天从首条有效日志重新起算，见 `docs/32` |
 | P6 Batch A～C 语音 | 主链完成 | 真浏览器 ASR/LLM/TTS/viseme/打断已打通；延迟继续优化 |
 | M3A 地图/天气第一批 | 已完成 | 查询、定位、卡片、Admin 自检、200 条台账与延迟报告已落地，见 `docs/35` |
-| M3A 多终端与感知 | 进行中 | Device Registry、Command Channel、Admin 设备页、Desktop 安全连接壳与主/指定显示器读取已落地；下一步实现活动窗口与 Browser Bridge |
+| M3A 多终端与感知 | 进行中 | Desktop 主/指定显示器与 Browser Bridge 当前页读取代码闭环已落地；下一步真浏览器跨终端验收与活动窗口 |
 | P6 Batch D Live2D/桌宠 | 等待前置 | M2 延迟达标后再启动 |
 
 ## 2. 当前执行队列
@@ -22,7 +22,7 @@
 
 - [x] Device Registry 后端：一次性配对码、每设备独立凭据、命名/别名、所有权、撤销、在线状态、心跳与 capability 授权白名单。
 - [x] Device Command Channel 后端：客户端主动连接 `/ws/devices`，支持 HMAC 签名命令、TTL、设备级幂等键、取消、ACK、结果回执与超时状态。
-- [x] Capability Registry 后端：终端心跳声明 `screen.capture`、`browser.inspect`、`sensor.read` 等能力；模型只看到在线声明与管理员授权的交集。
+- [x] Capability Registry 后端：终端心跳声明 `screen.capture`、`browser.current_tab.read/capture`、`sensor.read` 等能力；模型只看到在线声明与管理员授权的交集。
 - [x] 目标设备解析：UUID/别名/名称精确匹配；通用“我的电脑”仅在唯一在线且有能力时自动选择，歧义时返回候选要求确认，离线时不改选。
 - [x] Admin 设备页：一次性配对、在线状态、能力授权、测试命令、最近命令台账与一键撤销。
 - [ ] 局域网/VPN 安全接入：每设备独立凭据，不把 Hub 或客户端裸露到公网。
@@ -34,7 +34,7 @@
 - [ ] macOS 屏幕录制授权、隐私暂停与临时截图销毁闭环：实现已落地，待 Rust/Xcode 环境补跑原生编译与真机 TCC 验收后勾选。
 - [x] `capture_screen` 主显示器闭环：目标解析、签名命令、终态等待、临时图片 consume-on-read、本地视觉分析和文字结果回注；仅在 L2 + 本地工具模型 + 本地视觉可用时暴露。
 - [ ] `capture_screen` 目标扩展：指定显示器代码已完成；活动窗口与系统内容选择器待实现，原生真机验收后勾选。
-- [ ] 浏览器扩展：提供 `browser.current_tab.capture` 与 `browser.current_tab.read`，优先返回页面结构化文本和当前标签页截图。
+- [x] 浏览器扩展代码闭环：Manifest V3 配对/签名长连接、`browser.current_tab.read/capture`、受限 JSON/图片临时上传与 Hub `inspect_webpage` 已接入；待真 Chrome 加载和跨终端验收。
 - [ ] 隐私策略：默认 L2、本地视觉优先；云视觉必须显式临时授权；锁屏、隐私暂停或客户端离线时拒绝。
 - [ ] 跨终端验收：从手机或 Web 对话发起“看一下我的电脑网页”，电脑客户端执行，结果返回原会话。
 
@@ -57,6 +57,7 @@
 
 ## 3. 最近完成
 
+- [x] Browser Bridge 第一批：Chrome 116+ MV3 扩展、显式网页权限、受信存储、20 秒心跳、命令白名单、当前页可见正文/截图与本地分析回注已完成。
 - [x] Hub Screen Capture Tool：命令终态事件唤醒、设备歧义候选、本地 OpenAI-compatible 视觉 data URL、原图单次消费及 ChatService 三重可用性门控已接入。
 - [x] 指定显示器截图：Hub / Desktop 双端限制目标与 1～32 显示器编号，映射 macOS `screencapture -D<n>`；默认仍为主显示器。
 - [x] Desktop `screen.capture` 实现：仅在 macOS TCC 已授权且隐私暂停关闭时声明能力，单次截取主显示器或指定编号显示器、鉴权上传，RAII 清理本机临时文件；原生验收仍待工具链。
@@ -74,7 +75,7 @@
 
 ## 4. 最新质量基线
 
-- 2026-08-23 当前工作树：pytest **277 通过 / 2 跳过**，Desktop 协议测试 **5 通过**，Ruff、全量 mypy、Alembic 单 head、`git diff --check`、Chat/Admin/Shared/Desktop typecheck 与 production build 全部通过；
+- 2026-08-24 当前工作树：pytest **282 通过 / 2 跳过**，Desktop 协议测试 **5 通过**、Browser Bridge 协议测试 **3 通过**，Ruff、全量 mypy、Alembic 单 head、`git diff --check`、Chat/Admin/Shared/Desktop/Browser typecheck 与 production build 全部通过；
 - CI 的 mypy 范围已与本地发布闸门对齐为 `server/app server/tests`；
 - 运行配置：v39；本地 ASR 为 faster-whisper `base/cpu/int8`；
 - PostgreSQL/pgvector 两项集成测试在本地无 `ARIA_TEST_DATABASE_URL` 时跳过，推送后由 CI PostgreSQL 服务执行。

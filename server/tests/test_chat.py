@@ -28,6 +28,7 @@ from app.main import create_app
 from app.persona import PersonaConfig, PersonaStore
 from app.schemas import PrivacyLevel
 from app.tools import ToolExecution, ToolResult
+from app.tools.browser import InspectWebpageTool
 from app.tools.screen import CaptureScreenTool
 
 
@@ -130,6 +131,18 @@ class FakeScreenCapabilityProvider:
                 capability_id=f"{uuid7()}:screen.capture",
                 label="我的电脑 · screen.capture",
                 description="在线桌面已授权单次屏幕读取",
+            )
+        ]
+
+
+class FakeBrowserCapabilityProvider:
+    async def available_actions(self, user_id: UUID) -> list[RuntimeActionCapability]:
+        del user_id
+        return [
+            RuntimeActionCapability(
+                capability_id=f"{uuid7()}:browser.current_tab.read",
+                label="我的浏览器 · browser.current_tab.read",
+                description="在线浏览器已授权当前标签页读取",
             )
         ]
 
@@ -422,6 +435,43 @@ async def test_l2_screen_tool_requires_device_local_vision_and_tool_model(
 
     assert pending.tool_names == ("capture_screen",)
     assert [tool.name for tool in pending.request.tools] == ["capture_screen"]
+
+
+async def test_l2_browser_tool_is_exposed_for_current_webpage_intent(
+    database: Database,
+    store: DatabaseConfigStore,
+) -> None:
+    candidate = store.current.config.model_dump(mode="python")
+    candidate["models"]["local"]["supports_tool_calling"] = True
+    candidate["models"]["local_vision"] = {
+        "kind": "vision",
+        "provider": "openai_compatible",
+        "model": "local-vision",
+        "base_url": "http://127.0.0.1:1234/v1",
+        "runs_local": True,
+        "max_privacy_level": "L2",
+    }
+    candidate["capability_models"] = {"vision": "local_vision"}
+    draft = await store.create_draft(HubConfig.model_validate(candidate), actor="test")
+    await store.publish(draft.version, actor="test")
+    service = ChatService(
+        database,
+        store,
+        capability_provider=FakeBrowserCapabilityProvider(),
+        device_tools=(InspectWebpageTool.__new__(InspectWebpageTool),),
+    )
+    user = await create_user(database)
+    conversation = await service.create_conversation(user_id=user.id, title="browser")
+
+    pending = await service.start_turn(
+        conversation.id,
+        user_id=user.id,
+        text="看一下我的电脑网页",
+        privacy_level=PrivacyLevel.L2,
+    )
+
+    assert pending.tool_names == ("inspect_webpage",)
+    assert [tool.name for tool in pending.request.tools] == ["inspect_webpage"]
 
 
 async def test_weather_tool_round_hides_preamble_and_records_redacted_metadata(

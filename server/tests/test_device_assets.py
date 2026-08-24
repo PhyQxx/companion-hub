@@ -28,7 +28,7 @@ def test_device_upload_is_bound_to_command_and_consumed_once(tmp_path: Path) -> 
     registry = DeviceRegistry(database)
     store = DeviceCommandStore(database)
 
-    async def setup() -> tuple[str, UUID, UUID]:
+    async def setup() -> tuple[str, UUID, UUID, UUID]:
         async with database.engine.begin() as connection:
             await connection.run_sync(Base.metadata.create_all)
         await AuthService(database).setup(
@@ -37,14 +37,14 @@ def test_device_upload_is_bound_to_command_and_consumed_once(tmp_path: Path) -> 
         )
         pairing = await registry.create_pairing_code(
             owner_user_id=None,
-            granted_capabilities=("screen.capture",),
+            granted_capabilities=("screen.capture", "browser.current_tab.read"),
         )
         paired = await registry.pair(
             pairing_code=pairing.code,
             name="MacBook Pro",
             alias="我的电脑",
             client_type="desktop",
-            capabilities=("screen.capture",),
+            capabilities=("screen.capture", "browser.current_tab.read"),
         )
         issued = await store.create(
             device_id=paired.device.id,
@@ -54,9 +54,22 @@ def test_device_upload_is_bound_to_command_and_consumed_once(tmp_path: Path) -> 
             ttl_seconds=30,
         )
         await store.mark_sent(issued.command.id)
-        return paired.access_token, paired.device.owner_user_id, issued.command.id
+        browser = await store.create(
+            device_id=paired.device.id,
+            command_name="browser.current_tab.read",
+            args={},
+            idempotency_key="browser-asset-upload-test-0001",
+            ttl_seconds=30,
+        )
+        await store.mark_sent(browser.command.id)
+        return (
+            paired.access_token,
+            paired.device.owner_user_id,
+            issued.command.id,
+            browser.command.id,
+        )
 
-    access_token, owner_user_id, command_id = asyncio.run(setup())
+    access_token, owner_user_id, command_id, browser_command_id = asyncio.run(setup())
     app = FastAPI()
     admin, device, gateway = create_device_command_routers(
         registry,
@@ -80,6 +93,14 @@ def test_device_upload_is_bound_to_command_and_consumed_once(tmp_path: Path) -> 
             },
             content=b"not-a-png",
         )
+        wrong_command_media = client.post(
+            f"/api/v1/devices/commands/{command_id}/asset",
+            headers={
+                "Authorization": f"Bearer {access_token}",
+                "Content-Type": "application/json",
+            },
+            content=b'{"title":"not allowed for screen capture"}',
+        )
         response = client.post(
             f"/api/v1/devices/commands/{command_id}/asset",
             headers={
@@ -88,10 +109,20 @@ def test_device_upload_is_bound_to_command_and_consumed_once(tmp_path: Path) -> 
             },
             content=PNG,
         )
+        browser_response = client.post(
+            f"/api/v1/devices/commands/{browser_command_id}/asset",
+            headers={
+                "Authorization": f"Bearer {access_token}",
+                "Content-Type": "application/json",
+            },
+            content=b'{"title":"Docs","origin":"https://example.com","text":"hello"}',
+        )
 
     assert unauthenticated.status_code == 401
     assert invalid_media.status_code == 422
+    assert wrong_command_media.status_code == 422
     assert response.status_code == 201
+    assert browser_response.status_code == 201
     payload = response.json()
     asset = asyncio.run(
         gateway.assets.consume(
@@ -110,6 +141,15 @@ def test_device_upload_is_bound_to_command_and_consumed_once(tmp_path: Path) -> 
                 command_id=command_id,
             )
         )
+    browser_payload = browser_response.json()
+    browser_asset = asyncio.run(
+        gateway.assets.consume(
+            UUID(browser_payload["asset_id"]),
+            owner_user_id=owner_user_id,
+            command_id=browser_command_id,
+        )
+    )
+    assert browser_asset.media_type == "application/json"
     asyncio.run(database.close())
 
 
@@ -141,4 +181,30 @@ async def test_ephemeral_asset_validates_media_and_expiry() -> None:
             owner_user_id=owner_id,
             command_id=command_id,
             now=now + timedelta(minutes=3),
+        )
+
+
+async def test_ephemeral_asset_accepts_bounded_browser_document() -> None:
+    assets = EphemeralDeviceAssetStore()
+    owner_id = UUID("018f5f61-2a65-7a21-a835-1a2b3c4d5e6f")
+    device_id = UUID("018f5f61-2a65-7a21-a835-1a2b3c4d5e70")
+    command_id = UUID("018f5f61-2a65-7a21-a835-1a2b3c4d5e71")
+    document = b'{"title":"Docs","origin":"https://example.com","text":"hello"}'
+
+    asset = await assets.put(
+        owner_user_id=owner_id,
+        device_id=device_id,
+        command_id=command_id,
+        media_type="application/json",
+        data=document,
+    )
+
+    assert asset.data == document
+    with pytest.raises(EphemeralDeviceAssetError, match="JSON object"):
+        await assets.put(
+            owner_user_id=owner_id,
+            device_id=device_id,
+            command_id=UUID("018f5f61-2a65-7a21-a835-1a2b3c4d5e72"),
+            media_type="application/json",
+            data=b"[]",
         )

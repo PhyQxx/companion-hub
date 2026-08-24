@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import json
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from uuid import UUID
@@ -10,6 +11,7 @@ from app.ids import uuid7
 
 DEVICE_ASSET_TTL = timedelta(minutes=2)
 MAX_DEVICE_ASSET_BYTES = 8 * 1024 * 1024
+MAX_BROWSER_DOCUMENT_BYTES = 512 * 1024
 MAX_DEVICE_ASSETS = 32
 
 
@@ -119,5 +121,17 @@ def _validate_asset(media_type: str, data: bytes) -> None:
         "image/png": (b"\x89PNG\r\n\x1a\n",),
     }
     prefixes = signatures.get(media_type)
+    if prefixes is not None and data.startswith(prefixes):
+        return
+    if media_type == "application/json":
+        if len(data) > MAX_BROWSER_DOCUMENT_BYTES:
+            raise EphemeralDeviceAssetError("browser document exceeds size limit")
+        try:
+            value = json.loads(data)
+        except (UnicodeDecodeError, json.JSONDecodeError) as error:
+            raise EphemeralDeviceAssetError("invalid browser document JSON") from error
+        if not isinstance(value, dict):
+            raise EphemeralDeviceAssetError("browser document must be a JSON object")
+        return
     if prefixes is None or not data.startswith(prefixes):
         raise EphemeralDeviceAssetError("unsupported or invalid device asset")

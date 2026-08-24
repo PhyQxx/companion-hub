@@ -434,15 +434,26 @@ def create_device_command_routers(
             raise HTTPException(status.HTTP_404_NOT_FOUND, detail="command not found") from error
         if command.device_id != principal.device_id:
             raise HTTPException(status.HTTP_404_NOT_FOUND, detail="command not found")
-        if command.command_name != "screen.capture" or command.status not in {
+        accepted_media = {
+            "screen.capture": {"image/png", "image/jpeg"},
+            "browser.current_tab.capture": {"image/png", "image/jpeg"},
+            "browser.current_tab.read": {"application/json"},
+        }
+        allowed_media = accepted_media.get(command.command_name)
+        if allowed_media is None or command.status not in {
             "sent",
             "acknowledged",
         }:
             raise HTTPException(
                 status.HTTP_409_CONFLICT,
-                detail="command does not accept a screen asset",
+                detail="command does not accept an asset",
             )
         media_type = request.headers.get("content-type", "").split(";", 1)[0].strip()
+        if media_type not in allowed_media:
+            raise HTTPException(
+                status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail="media type is not valid for command",
+            )
         declared_length = request.headers.get("content-length")
         if declared_length is not None:
             try:

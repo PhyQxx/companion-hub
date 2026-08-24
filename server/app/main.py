@@ -39,6 +39,8 @@ from app.model_capabilities import CapabilityModelService
 from app.observability import apply_observability, configure_logging
 from app.persona import PersonaStore
 from app.timeline import HistoryRecallService, TimelineStore
+from app.tools import ToolHandler
+from app.tools.browser import InspectWebpageTool
 from app.tools.screen import CapabilityScreenAnalyzer, CaptureScreenTool
 from app.voice import ConfigVoiceSource
 
@@ -356,7 +358,7 @@ def create_app(
             )
         if runtime_database is not None:
             auth_service = AuthService(runtime_database)
-            device_tool = None
+            device_tools: list[ToolHandler] = []
             if device_registry is not None:
                 admin_devices_router, devices_router = create_device_routers(
                     device_registry,
@@ -376,11 +378,18 @@ def create_app(
                     app.include_router(command_admin_router)
                     app.include_router(device_ws_router)
                     if capability_models is not None:
-                        device_tool = CaptureScreenTool(
-                            DeviceTargetResolver(device_registry),
+                        target_resolver = DeviceTargetResolver(device_registry)
+                        screen_analyzer = CapabilityScreenAnalyzer(capability_models)
+                        device_tools.append(CaptureScreenTool(
+                            target_resolver,
                             device_command_gateway,
-                            CapabilityScreenAnalyzer(capability_models),
-                        )
+                            screen_analyzer,
+                        ))
+                        device_tools.append(InspectWebpageTool(
+                            target_resolver,
+                            device_command_gateway,
+                            screen_analyzer,
+                        ))
             runtime_chat_service = ChatService(
                 runtime_database,
                 runtime_config,
@@ -390,7 +399,7 @@ def create_app(
                 timeline_store=timeline_store,
                 history_recall_service=history_recall,
                 capability_provider=device_registry,
-                device_tool=device_tool,
+                device_tools=device_tools,
             )
             app.state.auth_service = auth_service
             app.state.chat_service = runtime_chat_service
