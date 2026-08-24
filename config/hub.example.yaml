@@ -51,6 +51,8 @@ models:
     provider: openai_compatible
     model: qwen3.6-35b-a3b-uncensored
     supports_json_mode: false
+    # 2026-08-24 已用 LM Studio OpenAI-compatible tools 请求实测返回 tool_calls。
+    supports_tool_calling: true
     # Qwen3.6 思考输出与正文共享预算，实测推理约 1400+ token；
     # 叠加开销后请求侧 512 的正文预算才能拿到可见 message.content。
     reasoning_overhead_tokens: 2048

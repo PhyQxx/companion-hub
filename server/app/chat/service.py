@@ -75,21 +75,10 @@ MAX_CONTEXT_MESSAGES = 20
 logger = logging.getLogger(__name__)
 
 
-def _screen_tool_ready(config: HubConfig) -> bool:
-    endpoint_name = config.capability_models.vision
-    if endpoint_name is None:
-        return False
-    endpoint = config.models.get(endpoint_name)
-    vision_ready = bool(
-        endpoint is not None
-        and endpoint.enabled
-        and endpoint.kind == "vision"
-        and endpoint.runs_local
-        and PrivacyLevel(endpoint.max_privacy_level) is PrivacyLevel.L2
-    )
+def _local_tool_model_ready(config: HubConfig) -> bool:
     private_route = config.routes[LLMRoute.PRIVATE]
     private_candidates = (private_route.primary, *private_route.fallbacks)
-    tool_model_ready = any(
+    return any(
         (candidate := config.models.get(name)) is not None
         and candidate.enabled
         and candidate.runs_local
@@ -97,7 +86,28 @@ def _screen_tool_ready(config: HubConfig) -> bool:
         and PrivacyLevel(candidate.max_privacy_level) is PrivacyLevel.L2
         for name in private_candidates
     )
-    return vision_ready and tool_model_ready
+
+
+def _local_vision_ready(config: HubConfig) -> bool:
+    endpoint_name = config.capability_models.vision
+    if endpoint_name is None:
+        return False
+    endpoint = config.models.get(endpoint_name)
+    return bool(
+        endpoint is not None
+        and endpoint.enabled
+        and endpoint.kind == "vision"
+        and endpoint.runs_local
+        and PrivacyLevel(endpoint.max_privacy_level) is PrivacyLevel.L2
+    )
+
+
+def _device_tool_ready(name: str, config: HubConfig) -> bool:
+    if not _local_tool_model_ready(config):
+        return False
+    if name == "capture_screen":
+        return _local_vision_ready(config)
+    return True
 
 
 def render_time_context(now: datetime, timezone_name: str) -> str:
@@ -449,17 +459,18 @@ class ChatService:
             if privacy_level in {PrivacyLevel.L0, PrivacyLevel.L1}
             else ()
         )
-        device_tool_names = (
+        selected_device_tools = (
             select_device_tools(
                 text,
                 (item.capability_id for item in runtime_capabilities),
             )
-            if (
-                privacy_level is PrivacyLevel.L2
-                and self._device_tools.definitions()
-                and _screen_tool_ready(snapshot.config)
-            )
+            if privacy_level is PrivacyLevel.L2 and self._device_tools.definitions()
             else ()
+        )
+        device_tool_names = tuple(
+            name
+            for name in selected_device_tools
+            if _device_tool_ready(name, snapshot.config)
         )
         tool_names = (*query_tool_names, *device_tool_names)
         definition_builders = {

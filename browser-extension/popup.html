@@ -10,7 +10,7 @@
       h1 { margin: 0 0 4px; font-size: 18px; } p { margin: 0 0 14px; color: #60708c; }
       label { display: grid; gap: 5px; margin: 10px 0; font-weight: 600; }
       input { padding: 9px 10px; border: 1px solid #ccd4e3; border-radius: 8px; font: inherit; }
-      .actions { display: flex; gap: 8px; margin-top: 14px; }
+      .actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 14px; }
       button { border: 0; border-radius: 8px; padding: 9px 13px; font: inherit; font-weight: 700; cursor: pointer; }
       #pair { color: white; background: #4967e8; } #forget { background: #e8ecf4; color: #33405a; }
       #status { margin-top: 14px; padding: 9px 10px; border-radius: 8px; background: #e8ecf4; color: #33405a; }
@@ -24,10 +24,10 @@
       <label>Hub 地址<input id="hub-url" type="url" placeholder="http://127.0.0.1:8000" required /></label>
       <label>配对码<input id="pairing-code" type="password" autocomplete="off" required /></label>
       <label>设备别名<input id="alias" maxlength="80" placeholder="我的浏览器" /></label>
-      <div class="actions"><button id="pair" type="submit">授权并配对</button><button id="forget" type="button">解除配对</button></div>
+      <div class="actions"><button id="grant" type="button">1. 授予网页权限</button><button id="pair" type="submit">2. 配对</button><button id="forget" type="button">解除配对</button></div>
     </form>
     <div id="status">正在读取状态…</div>
-    <small>配对时浏览器会请求网页访问权限；浏览器内部页面、扩展页和商店页始终不可读取。</small>
+    <small>首次请先授予网页权限，再重新打开弹窗完成配对；浏览器内部页面、扩展页和商店页始终不可读取。</small>
     <script type="module" src="/src/popup.ts"></script>
   </body>
 </html>

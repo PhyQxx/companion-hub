@@ -27,6 +27,7 @@ let socket: WebSocket | null = null;
 let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
 let heartbeatTimer: ReturnType<typeof setInterval> | null = null;
 let reconnectAttempt = 0;
+let connectGeneration = 0;
 const cancelledCommands = new Set<string>();
 
 void chrome.storage.local.setAccessLevel({ accessLevel: "TRUSTED_CONTEXTS" });
@@ -50,8 +51,10 @@ async function storedConfig(): Promise<StoredBridgeConfig | null> {
 }
 
 async function connect(): Promise<void> {
+  const generation = ++connectGeneration;
   clearConnection();
   const config = await storedConfig();
+  if (generation !== connectGeneration) return;
   if (config === null) {
     await setStatus("unpaired", "尚未配对");
     return;
@@ -68,7 +71,8 @@ async function connect(): Promise<void> {
   });
   current.addEventListener("message", (event) => void handleFrame(current, config, String(event.data)));
   current.addEventListener("close", (event) => {
-    if (socket === current) socket = null;
+    if (socket !== current) return;
+    socket = null;
     stopHeartbeat();
     void setStatus("offline", `连接已断开（${event.code}）`);
     scheduleReconnect();
@@ -237,8 +241,9 @@ function clearConnection(): void {
   if (reconnectTimer !== null) clearTimeout(reconnectTimer);
   reconnectTimer = null;
   stopHeartbeat();
-  socket?.close(1000, "reconnecting");
+  const current = socket;
   socket = null;
+  current?.close(1000, "reconnecting");
 }
 
 async function setStatus(state: string, detail: string): Promise<void> {

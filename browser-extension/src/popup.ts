@@ -9,6 +9,7 @@ const form = document.querySelector<HTMLFormElement>("#pair-form")!;
 const hubInput = document.querySelector<HTMLInputElement>("#hub-url")!;
 const codeInput = document.querySelector<HTMLInputElement>("#pairing-code")!;
 const aliasInput = document.querySelector<HTMLInputElement>("#alias")!;
+const grantButton = document.querySelector<HTMLButtonElement>("#grant")!;
 const forgetButton = document.querySelector<HTMLButtonElement>("#forget")!;
 const status = document.querySelector<HTMLElement>("#status")!;
 
@@ -20,12 +21,22 @@ form.addEventListener("submit", (event) => {
   void pair();
 });
 forgetButton.addEventListener("click", () => void forget());
+grantButton.addEventListener("click", () => void grantAccess());
+
+async function grantAccess(): Promise<void> {
+  const granted = await chrome.permissions.request({ origins: ["<all_urls>"] });
+  setStatus(
+    granted
+      ? "网页权限已授予；请重新打开弹窗并完成配对"
+      : "未授予网页权限，无法读取当前标签页",
+  );
+}
 
 async function pair(): Promise<void> {
   try {
     const hubUrl = normalizeHubUrl(hubInput.value);
-    const granted = await chrome.permissions.request({ origins: ["<all_urls>"] });
-    if (!granted) throw new Error("需要网页访问权限才能读取当前标签页");
+    const granted = await chrome.permissions.contains({ origins: ["<all_urls>"] });
+    if (!granted) throw new Error("请先点击“1. 授予网页权限”");
     setStatus("正在配对…");
     const response = await fetch(`${hubUrl}/api/v1/devices/pair`, {
       method: "POST",
@@ -49,7 +60,6 @@ async function pair(): Promise<void> {
       },
     });
     codeInput.value = "";
-    await chrome.runtime.sendMessage({ type: "bridge.reconnect" });
   } catch (error) {
     setStatus(error instanceof Error ? error.message : "配对失败");
   }
@@ -57,7 +67,6 @@ async function pair(): Promise<void> {
 
 async function forget(): Promise<void> {
   await chrome.storage.local.remove(["bridgeConfig", "bridgeStatus"]);
-  await chrome.runtime.sendMessage({ type: "bridge.reconnect" });
   setStatus("本机配对信息已清除；如需立即失效，请同时在 Hub 撤销设备");
 }
 
@@ -67,6 +76,9 @@ async function refresh(): Promise<void> {
   const bridgeStatus = stored.bridgeStatus as { detail?: string } | undefined;
   if (config?.hubUrl) hubInput.value = config.hubUrl;
   if (config?.alias) aliasInput.value = config.alias;
+  const hasPermission = await chrome.permissions.contains({ origins: ["<all_urls>"] });
+  grantButton.textContent = hasPermission ? "✓ 网页权限已授予" : "1. 授予网页权限";
+  grantButton.disabled = hasPermission;
   setStatus(bridgeStatus?.detail ?? (config ? "已配对，等待连接" : "尚未配对"));
 }
 

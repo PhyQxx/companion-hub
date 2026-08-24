@@ -13,4 +13,4 @@ pnpm test
 pnpm build
 ```
 
-在 `chrome://extensions` 开启开发者模式，选择“加载已解压的扩展程序”，目录为 `browser-extension/dist`。Hub Admin 创建配对码时需授权上述两项 capability。
+在 `chrome://extensions` 开启开发者模式，选择“加载已解压的扩展程序”，目录为 `browser-extension/dist`。首次打开扩展先授予网页权限，再重新打开弹窗填写 Hub 与配对码。Hub Admin 创建配对码时需授权上述两项 capability。

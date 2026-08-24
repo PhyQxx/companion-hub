@@ -13,7 +13,7 @@
 | P5 文字稳定性闸门 | 使用期未开始 | 自动化通过；14 天从首条有效日志重新起算，见 `docs/32` |
 | P6 Batch A～C 语音 | 主链完成 | 真浏览器 ASR/LLM/TTS/viseme/打断已打通；延迟继续优化 |
 | M3A 地图/天气第一批 | 已完成 | 查询、定位、卡片、Admin 自检、200 条台账与延迟报告已落地，见 `docs/35` |
-| M3A 多终端与感知 | 进行中 | Desktop 主/指定显示器与 Browser Bridge 当前页读取代码闭环已落地；下一步真浏览器跨终端验收与活动窗口 |
+| M3A 多终端与感知 | 进行中 | Browser Bridge 已通过真 Chrome 读页/截图验收；下一步聊天跨终端验收、Desktop 原生验收与活动窗口 |
 | P6 Batch D Live2D/桌宠 | 等待前置 | M2 延迟达标后再启动 |
 
 ## 2. 当前执行队列
@@ -34,7 +34,7 @@
 - [ ] macOS 屏幕录制授权、隐私暂停与临时截图销毁闭环：实现已落地，待 Rust/Xcode 环境补跑原生编译与真机 TCC 验收后勾选。
 - [x] `capture_screen` 主显示器闭环：目标解析、签名命令、终态等待、临时图片 consume-on-read、本地视觉分析和文字结果回注；仅在 L2 + 本地工具模型 + 本地视觉可用时暴露。
 - [ ] `capture_screen` 目标扩展：指定显示器代码已完成；活动窗口与系统内容选择器待实现，原生真机验收后勾选。
-- [x] 浏览器扩展代码闭环：Manifest V3 配对/签名长连接、`browser.current_tab.read/capture`、受限 JSON/图片临时上传与 Hub `inspect_webpage` 已接入；待真 Chrome 加载和跨终端验收。
+- [x] 浏览器扩展真机闭环：Chrome MV3 配对/签名长连接、`browser.current_tab.read/capture`、受限 JSON/图片临时上传与 Hub `inspect_webpage` 已接入；真 Chrome 已验证单一稳定连接、正文读取和当前页截图。
 - [ ] 隐私策略：默认 L2、本地视觉优先；云视觉必须显式临时授权；锁屏、隐私暂停或客户端离线时拒绝。
 - [ ] 跨终端验收：从手机或 Web 对话发起“看一下我的电脑网页”，电脑客户端执行，结果返回原会话。
 
@@ -57,6 +57,8 @@
 
 ## 3. 最近完成
 
+- [x] Browser Bridge 真 Chrome 验收：扩展完成配对并稳定保持单一 WebSocket；当前页 `read` 在约 45ms 内返回 188 B JSON，`capture` 在约 0.56s 内返回 2.74 MiB PNG；同时修复权限弹窗打断配对与旧连接 close 回调触发的重连风暴。
+- [x] 网页工具门控解耦：`inspect_webpage` 的结构化正文读取只要求 L2 本地工具模型；`capture_screen` 与网页截图分析仍要求 L2 本地视觉模型。LM Studio 的 `qwen3.6-35b-a3b-uncensored` 已实测返回标准 `tool_calls`。
 - [x] Browser Bridge 第一批：Chrome 116+ MV3 扩展、显式网页权限、受信存储、20 秒心跳、命令白名单、当前页可见正文/截图与本地分析回注已完成。
 - [x] Hub Screen Capture Tool：命令终态事件唤醒、设备歧义候选、本地 OpenAI-compatible 视觉 data URL、原图单次消费及 ChatService 三重可用性门控已接入。
 - [x] 指定显示器截图：Hub / Desktop 双端限制目标与 1～32 显示器编号，映射 macOS `screencapture -D<n>`；默认仍为主显示器。
@@ -77,7 +79,7 @@
 
 - 2026-08-24 当前工作树：pytest **282 通过 / 2 跳过**，Desktop 协议测试 **5 通过**、Browser Bridge 协议测试 **3 通过**，Ruff、全量 mypy、Alembic 单 head、`git diff --check`、Chat/Admin/Shared/Desktop/Browser typecheck 与 production build 全部通过；
 - CI 的 mypy 范围已与本地发布闸门对齐为 `server/app server/tests`；
-- 运行配置：v39；本地 ASR 为 faster-whisper `base/cpu/int8`；
+- 运行配置：v40；本地 `local_private` 工具调用已通过真实探测并启用，本地 ASR 为 faster-whisper `base/cpu/int8`；
 - PostgreSQL/pgvector 两项集成测试在本地无 `ARIA_TEST_DATABASE_URL` 时跳过，推送后由 CI PostgreSQL 服务执行。
 
 ## 5. 暂缓

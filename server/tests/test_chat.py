@@ -443,15 +443,6 @@ async def test_l2_browser_tool_is_exposed_for_current_webpage_intent(
 ) -> None:
     candidate = store.current.config.model_dump(mode="python")
     candidate["models"]["local"]["supports_tool_calling"] = True
-    candidate["models"]["local_vision"] = {
-        "kind": "vision",
-        "provider": "openai_compatible",
-        "model": "local-vision",
-        "base_url": "http://127.0.0.1:1234/v1",
-        "runs_local": True,
-        "max_privacy_level": "L2",
-    }
-    candidate["capability_models"] = {"vision": "local_vision"}
     draft = await store.create_draft(HubConfig.model_validate(candidate), actor="test")
     await store.publish(draft.version, actor="test")
     service = ChatService(
