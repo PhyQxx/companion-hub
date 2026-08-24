@@ -782,7 +782,10 @@ function handleEvent(event: SocketEvent) {
   if (conversation) conversation.last_seq = Math.max(conversation.last_seq, message.seq);
   if (event.type === "reply.committed" || event.type === "message.committed") {
     if (streaming.value?.generationId === event.generation_id) streaming.value = null;
-    if (event.type === "reply.committed") void loadRuntimeMeta();
+    if (event.type === "reply.committed") {
+      setStatus("已连接");
+      void loadRuntimeMeta();
+    }
   }
   if (conversationId === activeId.value) void scrollToEnd();
 }

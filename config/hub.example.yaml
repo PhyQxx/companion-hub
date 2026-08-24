@@ -134,7 +134,8 @@ routes:
   private:
     primary: local_private
     fallbacks: []
-    timeout_ms: 30000
+    # 本地思考模型首轮工具选择与工具结果回注均可能超过 30 秒。
+    timeout_ms: 120000
 
 # 地图/天气工具默认关闭。启用前先设置 AMAP_WEB_SERVICE_KEY，并将至少一个
 # dialogue 模型端点的 supports_tool_calling 设为 true 后通过真实能力探测。

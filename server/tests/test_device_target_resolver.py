@@ -42,6 +42,7 @@ async def _pair(
     *,
     name: str,
     alias: str | None,
+    client_type: str = "desktop",
     capabilities: tuple[str, ...] = ("screen.capture",),
 ) -> PairedDevice:
     pairing = await registry.create_pairing_code(
@@ -52,7 +53,7 @@ async def _pair(
         pairing_code=pairing.code,
         name=name,
         alias=alias,
-        client_type="desktop",
+        client_type=client_type,
         capabilities=capabilities,
     )
 
@@ -94,6 +95,28 @@ async def test_generic_target_selects_only_available_desktop(database: Database)
     )
 
     assert resolved.id == available.device.id
+
+
+async def test_generic_target_selects_browser_for_browser_capability(
+    database: Database,
+) -> None:
+    registry = await _registry(database)
+    await _pair(registry, name="Work Mac", alias="工作电脑")
+    browser = await _pair(
+        registry,
+        name="Chrome",
+        alias="我的浏览器",
+        client_type="browser",
+        capabilities=("browser.current_tab.read",),
+    )
+
+    resolved = await DeviceTargetResolver(registry).resolve(
+        owner_user_id=browser.device.owner_user_id,
+        target="我的电脑",
+        capability="browser.current_tab.read",
+    )
+
+    assert resolved.id == browser.device.id
 
 
 async def test_generic_target_requires_confirmation_for_multiple_devices(

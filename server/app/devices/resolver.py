@@ -73,9 +73,14 @@ class DeviceTargetResolver:
         if normalized and normalized not in GENERIC_DESKTOP_TARGETS:
             raise DeviceTargetNotFound("device target was not found")
 
-        desktop_devices = [device for device in devices if device.client_type == "desktop"]
+        target_client_type = (
+            "browser" if capability.startswith("browser.") else "desktop"
+        )
+        candidate_devices = [
+            device for device in devices if device.client_type == target_client_type
+        ]
         return self._select_available(
-            desktop_devices,
+            candidate_devices,
             capability=capability,
             explicit=False,
         )
