@@ -16,5 +16,6 @@ build/
 *.egg-info/
 node_modules/
 desktop/src-tauri/target/
+desktop/src-tauri/gen/
 .pnpm-store/
 docs/history-session/

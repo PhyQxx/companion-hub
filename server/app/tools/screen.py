@@ -115,13 +115,13 @@ class CapabilityScreenAnalyzer:
             thinking=False,
             max_tokens=2_048,
         )
-        return ScreenAnalysis(text=result.text, provider="local_vision")
+        return ScreenAnalysis(text=result.text, provider=result.model)
 
 
 class CaptureScreenTool:
     name = "capture_screen"
     description = (
-        "对已授权且在线的用户桌面设备执行一次主显示器或指定编号显示器截图，并使用本地视觉模型"
+        "对已授权且在线的用户桌面设备执行一次主显示器或指定编号显示器截图，并使用已配置的视觉模型"
         "回答当前屏幕问题。device 可填设备 UUID、名称或别名；省略时仅在唯一候选时执行。"
     )
     arguments_model: type[BaseModel] = CaptureScreenArgs
@@ -144,8 +144,8 @@ class CaptureScreenTool:
     async def execute(self, arguments: BaseModel, context: ToolContext) -> ToolResult:
         started = perf_counter()
         args = cast(CaptureScreenArgs, arguments)
-        if PrivacyLevel(context.privacy_level) is not PrivacyLevel.L2:
-            return self._failure("screen_capture_requires_l2", started)
+        if PrivacyLevel(context.privacy_level) not in {PrivacyLevel.L1, PrivacyLevel.L2}:
+            return self._failure("screen_capture_requires_l1", started)
         if context.user_id is None or context.turn_id is None:
             return self._failure("tool_context_missing", started)
         try:

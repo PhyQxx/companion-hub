@@ -9,7 +9,11 @@ from app.config import ConfigStore, DatabaseConfigStore
 from app.db import Base, create_database
 from app.llm import EnvSecretProvider
 from app.main import create_app
-from app.model_capabilities import CapabilityModelService, JsonRequester
+from app.model_capabilities import (
+    CapabilityModelError,
+    CapabilityModelService,
+    JsonRequester,
+)
 from app.privacy import EgressBlocked
 from app.schemas import PrivacyLevel
 
@@ -41,6 +45,7 @@ models:
     secret_ref: env:ZAI_API_KEY
     runs_local: false
     max_privacy_level: L1
+    max_tokens: 1024
   image:
     kind: image_generation
     provider: zhipu_native
@@ -116,6 +121,7 @@ async def test_vision_uses_glm46v_and_multimodal_chat_shape(tmp_path: Path) -> N
     assert payload is not None
     assert payload["model"] == "glm-4.6v-flash"
     assert payload["thinking"] == {"type": "enabled"}
+    assert payload["max_tokens"] == 1024
 
 
 async def test_local_openai_vision_accepts_l2_data_url_without_secret(
@@ -269,6 +275,53 @@ async def test_cloud_capability_models_reject_l2_before_http(tmp_path: Path) -> 
             privacy_level=PrivacyLevel.L2,
         )
     assert called is False
+
+
+async def test_capability_model_retries_transient_provider_overload(tmp_path: Path) -> None:
+    attempts = 0
+
+    def requester(
+        method: str,
+        url: str,
+        headers: dict[str, str],
+        payload: dict[str, object] | None,
+        timeout: float,
+    ) -> object:
+        del method, url, headers, payload, timeout
+        nonlocal attempts
+        attempts += 1
+        if attempts < 3:
+            raise CapabilityModelError(
+                "provider_http_error",
+                detail="HTTP 429: provider busy",
+            )
+        return {"choices": [{"message": {"content": "重试成功"}}]}
+
+    path = tmp_path / "retry.yaml"
+    path.write_text(
+        capability_yaml().replace(
+            "    max_tokens: 1024\n  image:",
+            "    max_tokens: 1024\n    max_retries: 2\n  image:",
+            1,
+        ),
+        encoding="utf-8",
+    )
+    store = ConfigStore(path)
+    await store.load()
+    service = CapabilityModelService(
+        store,
+        secrets=EnvSecretProvider({"ZAI_API_KEY": "test-key"}),
+        request_json=requester,
+    )
+
+    result = await service.analyze_vision(
+        prompt="描述图片",
+        image_urls=("https://example.com/test.png",),
+        privacy_level=PrivacyLevel.L1,
+    )
+
+    assert result.text == "重试成功"
+    assert attempts == 3
 
 
 async def test_configured_app_openapi_includes_capability_routes(tmp_path: Path) -> None:

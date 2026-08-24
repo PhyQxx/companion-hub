@@ -152,7 +152,7 @@ class CapabilityModelService:
         request_body: dict[str, object] = {
             "model": endpoint.model,
             "messages": [{"role": "user", "content": content}],
-            "max_tokens": max_tokens,
+            "max_tokens": min(max_tokens, endpoint.max_tokens or max_tokens),
         }
         if endpoint.provider == "zhipu_native":
             request_body["thinking"] = {
@@ -362,21 +362,46 @@ class CapabilityModelService:
         suffix: str,
         body: dict[str, object],
     ) -> object:
-        return await asyncio.to_thread(
-            self._request_json,
+        return await self._request_with_retries(
+            endpoint,
             "POST",
-            self._url(endpoint, suffix),
-            self._headers(endpoint),
+            suffix,
             body,
-            max(endpoint.timeout_ms / 1_000, 0.1),
         )
 
     async def _get(self, endpoint: ModelEndpoint, suffix: str) -> object:
-        return await asyncio.to_thread(
-            self._request_json,
-            "GET",
-            self._url(endpoint, suffix),
-            self._headers(endpoint),
-            None,
-            max(endpoint.timeout_ms / 1_000, 0.1),
-        )
+        return await self._request_with_retries(endpoint, "GET", suffix, None)
+
+    async def _request_with_retries(
+        self,
+        endpoint: ModelEndpoint,
+        method: str,
+        suffix: str,
+        body: dict[str, object] | None,
+    ) -> object:
+        for attempt in range(endpoint.max_retries + 1):
+            try:
+                return await asyncio.to_thread(
+                    self._request_json,
+                    method,
+                    self._url(endpoint, suffix),
+                    self._headers(endpoint),
+                    body,
+                    max(endpoint.timeout_ms / 1_000, 0.1),
+                )
+            except CapabilityModelError as error:
+                if attempt >= endpoint.max_retries or not _retryable_provider_error(error):
+                    raise
+                await asyncio.sleep(min(0.25 * (2**attempt), 2.0))
+        raise AssertionError("capability model retry loop exhausted")
+
+
+def _retryable_provider_error(error: CapabilityModelError) -> bool:
+    if error.reason_code != "provider_http_error" or error.detail is None:
+        return False
+    status_text = error.detail.removeprefix("HTTP ").split(":", 1)[0]
+    try:
+        status_code = int(status_text)
+    except ValueError:
+        return False
+    return status_code == 429 or 500 <= status_code < 600

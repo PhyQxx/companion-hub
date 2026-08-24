@@ -88,26 +88,59 @@ def _local_tool_model_ready(config: HubConfig) -> bool:
     )
 
 
-def _local_vision_ready(config: HubConfig) -> bool:
+def _dialogue_tool_model_ready(config: HubConfig) -> bool:
+    dialogue_route = config.routes[LLMRoute.DIALOGUE]
+    dialogue_candidates = (dialogue_route.primary, *dialogue_route.fallbacks)
+    return any(
+        (candidate := config.models.get(name)) is not None
+        and candidate.enabled
+        and candidate.supports_tool_calling
+        and PrivacyLevel(candidate.max_privacy_level) in {PrivacyLevel.L1, PrivacyLevel.L2}
+        for name in dialogue_candidates
+    )
+
+
+def _vision_ready(config: HubConfig, privacy_level: PrivacyLevel) -> bool:
     endpoint_name = config.capability_models.vision
     if endpoint_name is None:
         return False
     endpoint = config.models.get(endpoint_name)
-    return bool(
+    ready = bool(
         endpoint is not None
         and endpoint.enabled
         and endpoint.kind == "vision"
-        and endpoint.runs_local
-        and PrivacyLevel(endpoint.max_privacy_level) is PrivacyLevel.L2
     )
-
-
-def _device_tool_ready(name: str, config: HubConfig) -> bool:
-    if not _local_tool_model_ready(config):
+    if not ready or endpoint is None:
         return False
-    if name == "capture_screen":
-        return _local_vision_ready(config)
-    return True
+    if privacy_level is PrivacyLevel.L2:
+        return bool(
+            endpoint.runs_local
+            and PrivacyLevel(endpoint.max_privacy_level) is PrivacyLevel.L2
+        )
+    return PrivacyLevel(endpoint.max_privacy_level) in {
+        PrivacyLevel.L1,
+        PrivacyLevel.L2,
+    }
+
+
+def _device_tool_ready(
+    name: str,
+    config: HubConfig,
+    privacy_level: PrivacyLevel,
+) -> bool:
+    if privacy_level is PrivacyLevel.L1:
+        return bool(
+            name == "capture_screen"
+            and _dialogue_tool_model_ready(config)
+            and _vision_ready(config, privacy_level)
+        )
+    if privacy_level is PrivacyLevel.L2:
+        if not _local_tool_model_ready(config):
+            return False
+        if name == "capture_screen":
+            return _vision_ready(config, privacy_level)
+        return True
+    return False
 
 
 def render_time_context(now: datetime, timezone_name: str) -> str:
@@ -464,13 +497,14 @@ class ChatService:
                 text,
                 (item.capability_id for item in runtime_capabilities),
             )
-            if privacy_level is PrivacyLevel.L2 and self._device_tools.definitions()
+            if privacy_level in {PrivacyLevel.L1, PrivacyLevel.L2}
+            and self._device_tools.definitions()
             else ()
         )
         device_tool_names = tuple(
             name
             for name in selected_device_tools
-            if _device_tool_ready(name, snapshot.config)
+            if _device_tool_ready(name, snapshot.config, privacy_level)
         )
         tool_names = (*query_tool_names, *device_tool_names)
         definition_builders = {

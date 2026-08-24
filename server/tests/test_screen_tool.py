@@ -198,7 +198,7 @@ async def test_capture_screen_returns_candidates_for_ambiguous_target() -> None:
     assert isinstance(candidates, list) and len(candidates) == 2
 
 
-async def test_capture_screen_refuses_non_l2_context_before_device_access() -> None:
+async def test_capture_screen_accepts_l1_context() -> None:
     owner_id = uuid7()
     device_id = uuid7()
     tool = CaptureScreenTool(
@@ -212,4 +212,22 @@ async def test_capture_screen_refuses_non_l2_context_before_device_access() -> N
         ToolContext(privacy_level="L1", user_id=owner_id, turn_id=uuid7()),
     )
 
-    assert result.reason_code == "screen_capture_requires_l2"
+    assert result.ok
+    assert result.data["analysis"] == "屏幕显示 Aria 管理后台设备页"
+
+
+async def test_capture_screen_refuses_l0_context_before_device_access() -> None:
+    owner_id = uuid7()
+    device_id = uuid7()
+    tool = CaptureScreenTool(
+        FakeResolver(_device(owner_id, device_id)),
+        FakeGateway(owner_id=owner_id, device_id=device_id),
+        FakeAnalyzer(),
+    )
+
+    result = await tool.execute(
+        CaptureScreenArgs(),
+        ToolContext(privacy_level="L0", user_id=owner_id, turn_id=uuid7()),
+    )
+
+    assert result.reason_code == "screen_capture_requires_l1"

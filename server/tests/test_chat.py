@@ -400,6 +400,44 @@ async def test_chat_injects_only_reported_runtime_capabilities(
     assert meta["runtime_capabilities"] == ["device.tv.living_room.power"]
 
 
+async def test_l1_screen_tool_accepts_dialogue_tool_model_and_cloud_vision(
+    database: Database,
+    store: DatabaseConfigStore,
+) -> None:
+    candidate = store.current.config.model_dump(mode="python")
+    candidate["models"]["cloud"]["supports_tool_calling"] = True
+    candidate["models"]["cloud_vision"] = {
+        "kind": "vision",
+        "provider": "openai_compatible",
+        "model": "cloud-vision",
+        "base_url": "https://vision.example/v1",
+        "secret_ref": "env:MODEL_API_KEY",
+        "runs_local": False,
+        "max_privacy_level": "L1",
+    }
+    candidate["capability_models"] = {"vision": "cloud_vision"}
+    draft = await store.create_draft(HubConfig.model_validate(candidate), actor="test")
+    await store.publish(draft.version, actor="test")
+    service = ChatService(
+        database,
+        store,
+        capability_provider=FakeScreenCapabilityProvider(),
+        device_tool=CaptureScreenTool.__new__(CaptureScreenTool),
+    )
+    user = await create_user(database)
+    conversation = await service.create_conversation(user_id=user.id, title="screen-l1")
+
+    pending = await service.start_turn(
+        conversation.id,
+        user_id=user.id,
+        text="看一下我的电脑屏幕上是什么",
+        privacy_level=PrivacyLevel.L1,
+    )
+
+    assert pending.tool_names == ("capture_screen",)
+    assert [tool.name for tool in pending.request.tools] == ["capture_screen"]
+
+
 async def test_l2_screen_tool_requires_device_local_vision_and_tool_model(
     database: Database,
     store: DatabaseConfigStore,
@@ -463,6 +501,34 @@ async def test_l2_browser_tool_is_exposed_for_current_webpage_intent(
 
     assert pending.tool_names == ("inspect_webpage",)
     assert [tool.name for tool in pending.request.tools] == ["inspect_webpage"]
+
+
+async def test_l1_browser_tool_remains_unexposed(
+    database: Database,
+    store: DatabaseConfigStore,
+) -> None:
+    candidate = store.current.config.model_dump(mode="python")
+    candidate["models"]["cloud"]["supports_tool_calling"] = True
+    draft = await store.create_draft(HubConfig.model_validate(candidate), actor="test")
+    await store.publish(draft.version, actor="test")
+    service = ChatService(
+        database,
+        store,
+        capability_provider=FakeBrowserCapabilityProvider(),
+        device_tools=(InspectWebpageTool.__new__(InspectWebpageTool),),
+    )
+    user = await create_user(database)
+    conversation = await service.create_conversation(user_id=user.id, title="browser-l1")
+
+    pending = await service.start_turn(
+        conversation.id,
+        user_id=user.id,
+        text="看一下我的电脑网页",
+        privacy_level=PrivacyLevel.L1,
+    )
+
+    assert pending.tool_names == ()
+    assert pending.request.tools == []
 
 
 async def test_weather_tool_round_hides_preamble_and_records_redacted_metadata(

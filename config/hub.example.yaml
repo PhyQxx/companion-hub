@@ -85,13 +85,14 @@ models:
   zhipu_vision_free:
     kind: vision
     provider: zhipu_native
-    model: glm-4.6v-flash
+    model: glm-4v-flash
     base_url: https://open.bigmodel.cn/api/paas/v4
     secret_ref: env:ZAI_API_KEY
     runs_local: false
     max_privacy_level: L1
     timeout_ms: 60000
     max_retries: 1
+    max_tokens: 1024
     max_context_tokens: 131072
 
   zhipu_image_free:

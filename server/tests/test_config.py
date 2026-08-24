@@ -147,8 +147,9 @@ def test_example_config_selects_latest_free_glm_models_by_capability() -> None:
 
     assert config.models["zhipu_text_free"].model == "glm-4.7-flash"
     assert config.models["zhipu_text_free"].kind == "text"
-    assert config.models["zhipu_vision_free"].model == "glm-4.6v-flash"
+    assert config.models["zhipu_vision_free"].model == "glm-4v-flash"
     assert config.models["zhipu_vision_free"].kind == "vision"
+    assert config.models["zhipu_vision_free"].max_tokens == 1024
     assert config.models["zhipu_image_free"].model == "cogview-3-flash"
     assert config.models["zhipu_image_free"].kind == "image_generation"
     assert config.models["zhipu_video_free"].model == "cogvideox-flash"

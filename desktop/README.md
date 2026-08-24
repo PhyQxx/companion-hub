@@ -25,7 +25,7 @@ pnpm --dir desktop install
 pnpm --dir desktop tauri dev
 ```
 
-当前机器若没有 Rust/Xcode，只能完成 TypeScript 协议测试与 WebView 生产构建；原生 `cargo check` 和真机托盘/钥匙串验收需在工具链齐备的 macOS 环境补跑。
+2026-08-24 已在 Apple Silicon macOS 上使用 Rust 1.98 与 Command Line Tools 完成 debug `.app` 原生编译、系统钥匙串、配对、TCC 授权及真实主显示器截图上传验收。
 
 ## 配对
 

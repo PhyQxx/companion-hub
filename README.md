@@ -2,7 +2,7 @@
 
 > 一个部署在自有设备上的 AI 伴侣中枢。它把聊天、长期记忆、历史回溯、模型路由、隐私边界和未来设备能力放在同一个可扩展运行时中。
 
-当前已具备文字、记忆、时间线、语音及地图/天气工具能力；多终端 Device Registry、Device Command Channel、Admin 设备工作区、Desktop Client、主/指定显示器读取与 Browser Bridge 当前页读取也已落地，Browser Bridge 已通过真 Chrome 设备命令和真实 Web 聊天工具全链验收。下一条主线是完成 macOS 原生验收和活动窗口读取。实时进度、未完成门槛和最新质量基线统一见 [TASKS.md](./TASKS.md)。
+当前已具备文字、记忆、时间线、语音及地图/天气工具能力；多终端 Device Registry、Device Command Channel、Admin 设备工作区、Desktop Client、主/指定显示器读取与 Browser Bridge 当前页读取也已落地。Browser Bridge 已通过真 Chrome 和真实 Web 聊天工具全链验收，macOS Desktop 也已通过原生编译、配对、TCC 授权与真实截图命令验收。下一条主线是活动窗口和系统内容选择器。实时进度、未完成门槛和最新质量基线统一见 [TASKS.md](./TASKS.md)。
 
 质量闸门统一使用 `make p5-backend`（ruff/mypy/pytest/diff-check）、`make p5-frontend`（web typecheck/build）、`make desktop-check`（Desktop 协议测试/build）、`make browser-check`（Browser Bridge 协议测试/build）和 `make p5-real`。真实模型矩阵可拆 `make p5-real-l1` 与 `make p5-real-l2`：前者只跑云端允许的 L0/L1 用例，后者只跑强制 `local_private` 的 L2 隔离用例。脚本默认从 `.env.local` 安全加载模型环境变量、使用 `config/hub.example.yaml` 路由，不打印 secret，也不写入项目业务数据库。示例配置的本地 private 基线为 LM Studio（OpenAI-compatible `http://127.0.0.1:1234/v1`，思考开销 `reasoning_overhead_tokens: 2048`、超时 120s）。报告路径可用 `P5_REPORT`、`P5_L1_REPORT`、`P5_L2_REPORT` 覆盖。
 
