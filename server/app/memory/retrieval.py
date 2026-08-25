@@ -4,9 +4,11 @@
 策略版本 hybrid-quota-v1 会随 decision_meta 一起落库，任何打分或
 过滤规则的修改都必须 bump 版本号，保证历史回合可追溯当时的检索行为。
 """
+
 from __future__ import annotations
 
 import math
+import re
 from collections import Counter
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
@@ -20,7 +22,7 @@ from .embeddings import cosine_similarity, lexical_cosine, text_tokens
 from .models import MemoryEntry, MemoryStatus, MemorySubjectKind, MemoryType
 from .store import MemoryStore, RetrievalCandidate
 
-RETRIEVAL_POLICY_VERSION = "hybrid-subject-v3"
+RETRIEVAL_POLICY_VERSION = "hybrid-subject-v4"
 
 DEFAULT_SUBJECT_SCOPES: tuple[tuple[MemorySubjectKind, str], ...] = (
     (MemorySubjectKind.USER, "user:self"),
@@ -72,6 +74,7 @@ class RetrievalPolicy:
     recency_tau_days: float = 30.0
     grounded_lexical_threshold: float = 0.15
     grounded_vector_threshold: float = 0.55
+    inventory_k: int = 20
 
 
 @final
@@ -108,6 +111,28 @@ class MemoryRetriever:
             valid_at=moment,
             limit=self._policy.candidate_limit,
         )
+        inventory_subject = _infer_inventory_subject(query)
+        if inventory_subject is not None:
+            inventory_hits = tuple(
+                MemoryHit(
+                    memory=item.entry,
+                    vector_score=0.0,
+                    lexical_score=0.0,
+                    final_score=item.entry.importance,
+                    reasons=("subject_inventory",),
+                )
+                for item in candidates
+                if item.entry.subject_kind == inventory_subject.value
+            )[: self._policy.inventory_k]
+            await self._store.record_access([hit.memory.id for hit in inventory_hits])
+            return RetrievalResult(
+                hits=inventory_hits,
+                policy_version=RETRIEVAL_POLICY_VERSION,
+                candidate_count=len(candidates),
+                vector_recalled=0,
+                lexical_recalled=0,
+                subject_hint=inventory_subject.value,
+            )
         provider = self._store.embedding_provider
         query_vector = (await provider.embed([query]))[0]
         query_tokens = text_tokens(query)
@@ -284,6 +309,7 @@ class MemoryRetriever:
             hit
             for hit in result.hits
             if "exact_fact" in hit.reasons
+            or "subject_inventory" in hit.reasons
             or hit.lexical_score >= self._policy.grounded_lexical_threshold
             or hit.vector_score >= self._policy.grounded_vector_threshold
         )
@@ -314,6 +340,11 @@ class MemoryRetriever:
             "【长期记忆】以下内容来自可追溯的长期记忆。优先遵守 active 的稳定事实；"
             "不要把不同主体混淆。不确定时可以明确说不确定，不要编造。"
         ]
+        if any("subject_inventory" in hit.reasons for hit in selected_hits):
+            blocks.append(
+                "用户正在要求盘点记忆。请逐条如实概括下列记录；只要下方存在记录，"
+                "就不得声称记忆为空，也不要承诺所有对话都会自动成为长期记忆。"
+            )
         for subject_kind, label in labels.items():
             lines = grouped.get(subject_kind) or []
             if lines:
@@ -330,6 +361,9 @@ def _infer_subject_hint(query: str) -> MemorySubjectKind | None:
     normalized = query.strip().lower()
     if any(token in normalized for token in ("我们", "咱们", "咱俩", "我们俩")):
         return MemorySubjectKind.SHARED
+    # “你的记忆里关于我的……”中的“你的”修饰“记忆”，真正被询问的主体是用户。
+    if any(token in normalized for token in ("关于我", "记得我", "我的工作", "我的职业")):
+        return MemorySubjectKind.USER
     if any(token in normalized for token in ("你的", "你自己", "你叫什么", "你多高", "你多重")):
         return MemorySubjectKind.ASSISTANT
     if any(token in normalized for token in ("我的", "我自己", "我叫", "我是不是", "我喜欢")):
@@ -347,17 +381,43 @@ def _infer_fact_keys(query: str) -> tuple[str, ...]:
         ("profile.nickname", ("昵称", "小名")),
         ("profile.name", ("名字", "姓名", "叫什么")),
         ("profile.city", ("住在", "哪座城市", "哪个城市", "在哪生活")),
-        ("profile.job", ("职业", "做什么工作", "工作是什么", "干什么的")),
+        (
+            "profile.job",
+            ("职业", "工作", "做什么工作", "工作是什么", "干什么的"),
+        ),
         ("profile.pet", ("养的猫", "猫叫什么", "养的狗", "狗叫什么", "宠物")),
         ("routine.sport", ("运动", "锻炼", "健身")),
         ("preference.food", ("饮食偏好", "喜欢吃", "爱吃", "不吃")),
         ("preference.drink", ("饮料偏好", "喜欢喝", "爱喝")),
     )
     return tuple(
-        fact_key
-        for fact_key, tokens in patterns
-        if any(token in normalized for token in tokens)
+        fact_key for fact_key, tokens in patterns if any(token in normalized for token in tokens)
     )
+
+
+def _infer_inventory_subject(query: str) -> MemorySubjectKind | None:
+    """识别按主体盘点记忆的请求；这类问题不能依赖语义相似度逐条碰运气。"""
+
+    normalized = re.sub(r"\s+", "", query.strip().lower())
+    inventory_markers = (
+        "有哪些",
+        "有什么",
+        "记得哪些",
+        "都记得",
+        "列出",
+        "记忆里关于",
+        "关于我的记忆",
+        "关于你的记忆",
+    )
+    if not any(marker in normalized for marker in inventory_markers):
+        return None
+    if any(token in normalized for token in ("我们", "咱们", "咱俩", "我们俩")):
+        return MemorySubjectKind.SHARED
+    if any(token in normalized for token in ("关于我", "我的记忆", "记得我")):
+        return MemorySubjectKind.USER
+    if any(token in normalized for token in ("关于你", "你自己的记忆")):
+        return MemorySubjectKind.ASSISTANT
+    return None
 
 
 def _rank(

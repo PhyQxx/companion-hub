@@ -6,6 +6,7 @@
 - LlmMemoryExtractor（llm-utility-v1）：utility 路由 + json_mode 的结构化
   提取，L2 场景带强制脱敏提示词；任何模型故障自动回退规则提取器。
 """
+
 from __future__ import annotations
 
 import json
@@ -46,6 +47,11 @@ _PREFERENCE_PATTERNS = (
     re.compile(r"我(不喜欢|不爱|讨厌|不想)"),
 )
 _SEMANTIC_PATTERN = re.compile(r"我(是|姓|叫|住在|家在|从事|工作是|在.{1,12}(工作|上学|生活))")
+_USER_JOB_FACT = re.compile(
+    r"(工作(?:是|为)|职业(?:是|为)|从事|从业者|"
+    r"(?:是|担任)[^，。！？!?\n；;]{0,24}"
+    r"(?:工程师|程序员|产品负责人|产品经理|设计师|教师|医生))"
+)
 _PERSONA_DIRECTED = re.compile(r"[你妳]")
 _UNCERTAIN_SELF = re.compile(r"(也许|可能|大概|或许|如果|假如|好像|差不多|左右|不确定)")
 _MEASUREMENTS_PATTERN = re.compile(
@@ -72,9 +78,7 @@ _WEIGHT_VALUE_PATTERN = re.compile(
     r"(\d{2,3}(?:\.\d+)?)\s*(?:kg|公斤|千克)",
     re.IGNORECASE,
 )
-_BIRTHDAY_PATTERN = re.compile(
-    r"(?:我的|你的)?生日(?:是|为|[:：])\s*([^，。！？!?\n；;]{2,24})"
-)
+_BIRTHDAY_PATTERN = re.compile(r"(?:我的|你的)?生日(?:是|为|[:：])\s*([^，。！？!?\n；;]{2,24})")
 _SELF_NAME_PATTERN = re.compile(r"(?:我叫|我的名字是)\s*([^，。！？!?\n；;]{1,24})")
 _USER_SET_NAME_PATTERN = re.compile(
     r"(?:记住[，,:：\s]*)?(?:你叫|你的名字是)\s*([^，。！？!?\n；;]{1,24})"
@@ -175,9 +179,7 @@ def extract_assistant_fact_assertions(text: str) -> list[tuple[str, str]]:
         sentence = raw_sentence.strip()
         if not sentence or _UNCERTAIN_SELF.search(sentence):
             continue
-        for _, fact_key, content in _assistant_facts_from_sentence(
-            sentence, user_directed=False
-        ):
+        for _, fact_key, content in _assistant_facts_from_sentence(sentence, user_directed=False):
             if fact_key is not None:
                 assertions.append((fact_key, content))
     return assertions
@@ -191,7 +193,7 @@ def extraction_instruction(privacy_level: PrivacyLevel) -> str:
         '"content":"……","importance":0.6,"confidence":0.8}]}\n'
         "要求：content 用第三人称“用户……”的中文描述，不超过 80 字；"
         "只提取稳定事实、偏好、承诺或重要事件；寒暄和与用户无关的内容不要提取；"
-        "没有值得记忆的内容时输出 {\"candidates\":[]}。"
+        '没有值得记忆的内容时输出 {"candidates":[]}。'
     )
     if privacy_level is PrivacyLevel.L2:
         instruction += (
@@ -260,6 +262,7 @@ class LlmMemoryExtractor:
             MemoryCandidate(
                 type=item.type,
                 content=item.content,
+                fact_key=_infer_user_fact_key(item.content),
                 privacy_level=privacy_level,
                 sources=[
                     MemorySourceRef(
@@ -314,6 +317,7 @@ class RuleBasedExtractor:
                 MemoryCandidate(
                     type=memory_type,
                     content=_third_person(clause),
+                    fact_key=_infer_user_fact_key(clause),
                     privacy_level=PrivacyLevel.L1,
                     sources=[
                         MemorySourceRef(
@@ -368,6 +372,12 @@ def _third_person(sentence: str) -> str:
     if sentence.startswith("我"):
         return f"用户{sentence[1:]}"
     return sentence
+
+
+def _infer_user_fact_key(content: str) -> str | None:
+    """为稳定用户事实补确定性槽位，避免 LLM 分类波动破坏精确召回。"""
+
+    return "profile.job" if _USER_JOB_FACT.search(content) else None
 
 
 def _default_importance(memory_type: MemoryType) -> float:
@@ -481,9 +491,7 @@ def _assistant_facts_from_sentence(
     measurements = _MEASUREMENTS_PATTERN.search(sentence)
     if measurements:
         value = "-".join(measurements.groups())
-        results.append(
-            (MemoryType.SEMANTIC, "profile.measurements", f"助手三围为 {value} 厘米")
-        )
+        results.append((MemoryType.SEMANTIC, "profile.measurements", f"助手三围为 {value} 厘米"))
 
     height = _HEIGHT_PATTERN.search(sentence) or _HEIGHT_VALUE_PATTERN.search(sentence)
     if height:
@@ -514,9 +522,7 @@ def _assistant_facts_from_sentence(
         nickname = _NICKNAME_PATTERN.search(sentence)
         if nickname:
             value = nickname.group(1).strip()
-            results.append(
-                (MemoryType.SEMANTIC, "profile.nickname", f"助手昵称为 {value}")
-            )
+            results.append((MemoryType.SEMANTIC, "profile.nickname", f"助手昵称为 {value}"))
 
         preference = _SELF_PREFERENCE_PATTERN.search(sentence)
         if preference:
@@ -529,9 +535,7 @@ def _assistant_facts_from_sentence(
                 token in value for token in ("甜点", "蛋糕", "糕", "菜", "食物")
             ):
                 fact_key = "preference.food"
-            elif verb == "喝" or any(
-                token in value for token in ("茶", "咖啡", "饮料", "果汁")
-            ):
+            elif verb == "喝" or any(token in value for token in ("茶", "咖啡", "饮料", "果汁")):
                 fact_key = "preference.drink"
             results.append((MemoryType.PREFERENCE, fact_key, f"助手喜欢{value}"))
     return results
@@ -564,8 +568,7 @@ def _dedupe_and_suppress_echo(
             continue
         seen.add(key)
         if subject == MemorySubjectKind.ASSISTANT.value and any(
-            _normalize_memory_text(memory.content) == key[-1]
-            for memory in retrieved_assistant
+            _normalize_memory_text(memory.content) == key[-1] for memory in retrieved_assistant
         ):
             continue
         results.append(candidate)

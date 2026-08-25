@@ -127,7 +127,7 @@ async def test_grounded_memory_hits_require_actual_relevance(
     def result(hit: MemoryHit) -> RetrievalResult:
         return RetrievalResult(
             hits=(hit,),
-            policy_version="hybrid-subject-v3",
+            policy_version="hybrid-subject-v4",
             candidate_count=1,
             vector_recalled=1,
             lexical_recalled=1,
@@ -168,9 +168,7 @@ async def test_grounded_memory_hits_require_actual_relevance(
     assert retriever.grounded_hits(result(exact)) == (exact,)
 
 
-async def test_store_add_get_list_and_sources(
-    store: MemoryStore, user: AppUserRecord
-) -> None:
+async def test_store_add_get_list_and_sources(store: MemoryStore, user: AppUserRecord) -> None:
     message_id = uuid4()
     created = await store.add(
         MemoryCandidate(
@@ -217,9 +215,7 @@ async def test_store_add_get_list_and_sources(
         await store.get(created.id, user_id=uuid4())
 
 
-async def test_store_filters_memory_subject_scope(
-    store: MemoryStore, user: AppUserRecord
-) -> None:
+async def test_store_filters_memory_subject_scope(store: MemoryStore, user: AppUserRecord) -> None:
     user_memory = await store.add(candidate("用户不吃香菜"), user_id=user.id)
     assistant_memory = await store.add(
         candidate(
@@ -269,7 +265,7 @@ async def test_retrieval_ranks_relevant_memory_and_records_access(
         "帮我点菜，我能吃香菜吗", user_id=user.id, privacy_level=PrivacyLevel.L1, now=NOW
     )
 
-    assert result.policy_version == "hybrid-subject-v3"
+    assert result.policy_version == "hybrid-subject-v4"
     assert result.hits
     assert result.hits[0].memory.id == target.id
     assert "香菜" in MemoryRetriever.render_context(result)
@@ -340,6 +336,67 @@ async def test_retrieval_prioritizes_assistant_exact_fact(
     assert "91-63-88" in context
 
 
+async def test_retrieval_exactly_recalls_user_job(store: MemoryStore, user: AppUserRecord) -> None:
+    job = await store.add(
+        candidate(
+            "用户是IT行业从业者，担任ELN产品负责人",
+            fact_key="profile.job",
+        ),
+        user_id=user.id,
+    )
+    await store.add(candidate("用户喜欢黑咖啡"), user_id=user.id)
+
+    retriever = MemoryRetriever(store)
+    result = await retriever.retrieve(
+        "你还记得我的工作吗",
+        user_id=user.id,
+        privacy_level=PrivacyLevel.L1,
+        now=NOW,
+    )
+
+    assert result.subject_hint == "user"
+    assert result.fact_hint == "profile.job"
+    assert result.hits[0].memory.id == job.id
+    assert "exact_fact" in result.hits[0].reasons
+    assert retriever.grounded_hits(result)[0].memory.id == job.id
+
+
+async def test_retrieval_lists_memories_for_requested_subject(
+    store: MemoryStore, user: AppUserRecord
+) -> None:
+    expected = {
+        (await store.add(candidate("用户叫浩宇"), user_id=user.id)).id,
+        (await store.add(candidate("用户喜欢黑咖啡"), user_id=user.id)).id,
+        (await store.add(candidate("用户在济南生活"), user_id=user.id)).id,
+    }
+    await store.add(
+        candidate(
+            "助手身高为 165 厘米",
+            subject_kind=MemorySubjectKind.ASSISTANT,
+            subject_key="assistant:primary",
+            fact_key="profile.height",
+            origin_kind=MemoryOriginKind.ASSISTANT_STATEMENT,
+        ),
+        user_id=user.id,
+    )
+
+    retriever = MemoryRetriever(store)
+    result = await retriever.retrieve(
+        "在你的记忆里关于我的有哪些",
+        user_id=user.id,
+        privacy_level=PrivacyLevel.L1,
+        now=NOW,
+    )
+
+    assert result.subject_hint == "user"
+    assert {hit.memory.id for hit in result.hits} == expected
+    assert all(hit.reasons == ("subject_inventory",) for hit in result.hits)
+    assert retriever.grounded_hits(result) == result.hits
+    context = MemoryRetriever.render_context(result)
+    assert "[关于用户]" in context
+    assert "[关于你自己]" not in context
+
+
 async def test_retrieval_exactly_recalls_multiple_requested_assistant_profile_slots(
     store: MemoryStore, user: AppUserRecord
 ) -> None:
@@ -382,9 +439,7 @@ async def test_retrieval_exactly_recalls_multiple_requested_assistant_profile_sl
     )
 
 
-async def test_retrieval_privacy_gating(
-    store: MemoryStore, user: AppUserRecord
-) -> None:
+async def test_retrieval_privacy_gating(store: MemoryStore, user: AppUserRecord) -> None:
     await store.add(candidate("用户不吃香菜"), user_id=user.id)
     await store.add(
         candidate("用户发生过一次亲密对话", privacy_level=PrivacyLevel.L2), user_id=user.id
@@ -400,9 +455,7 @@ async def test_retrieval_privacy_gating(
     assert any(hit.memory.privacy_level == "L2" for hit in private.hits)
 
 
-async def test_retrieval_enforces_type_quota(
-    store: MemoryStore, user: AppUserRecord
-) -> None:
+async def test_retrieval_enforces_type_quota(store: MemoryStore, user: AppUserRecord) -> None:
     for index in range(5):
         await store.add(
             candidate(f"用户不吃香菜的第{index}条相关备注", type=MemoryType.SEMANTIC),
@@ -427,9 +480,7 @@ async def test_consolidation_supports_conflicts_and_creates(
         type=MemoryType.PREFERENCE,
         content="用户不吃香菜",
         privacy_level=PrivacyLevel.L1,
-        sources=[
-            MemorySourceRef(source_kind=MemorySourceKind.MESSAGE, source_id=str(message_id))
-        ],
+        sources=[MemorySourceRef(source_kind=MemorySourceKind.MESSAGE, source_id=str(message_id))],
         importance=0.6,
     )
 
@@ -441,11 +492,7 @@ async def test_consolidation_supports_conflicts_and_creates(
         type=MemoryType.PREFERENCE,
         content="用户不吃香菜",
         privacy_level=PrivacyLevel.L1,
-        sources=[
-            MemorySourceRef(
-                source_kind=MemorySourceKind.MESSAGE, source_id=str(uuid4())
-            )
-        ],
+        sources=[MemorySourceRef(source_kind=MemorySourceKind.MESSAGE, source_id=str(uuid4()))],
         importance=0.6,
     )
     supported = await ingester.ingest(repeat, user_id=user.id)
@@ -512,16 +559,10 @@ async def test_fact_key_conflict_is_deterministic_and_subject_scoped(
     assert user_height.memory.conflict_with is None
 
 
-async def test_conflict_resolution_adopt_and_keep(
-    store: MemoryStore, user: AppUserRecord
-) -> None:
+async def test_conflict_resolution_adopt_and_keep(store: MemoryStore, user: AppUserRecord) -> None:
     ingester = MemoryIngester(store)
     original = (await ingester.ingest(candidate("用户不吃香菜"), user_id=user.id)).memory
-    conflict = (
-        await ingester.ingest(
-            candidate("用户其实喜欢吃香菜"), user_id=user.id
-        )
-    ).memory
+    conflict = (await ingester.ingest(candidate("用户其实喜欢吃香菜"), user_id=user.id)).memory
 
     adopted = await store.resolve_conflict(conflict.id, adopt=True, actor="admin")
     stale = await store.get(original.id)
@@ -530,9 +571,7 @@ async def test_conflict_resolution_adopt_and_keep(
     assert stale.status == "superseded"
     assert stale.superseded_by == adopted.id
 
-    keep_case = (
-        await ingester.ingest(candidate("用户不吃芹菜"), user_id=user.id)
-    )
+    keep_case = await ingester.ingest(candidate("用户不吃芹菜"), user_id=user.id)
     assert keep_case.decision is ConsolidateDecision.CREATED
     second_conflict = (
         await ingester.ingest(candidate("用户不吃香菜和芹菜"), user_id=user.id)
@@ -544,9 +583,7 @@ async def test_conflict_resolution_adopt_and_keep(
         await store.resolve_conflict(adopted.id, adopt=True, actor="admin")
 
 
-async def test_edit_supersedes_and_keeps_lineage(
-    store: MemoryStore, user: AppUserRecord
-) -> None:
+async def test_edit_supersedes_and_keeps_lineage(store: MemoryStore, user: AppUserRecord) -> None:
     message_id = uuid4()
     original = await store.add(
         MemoryCandidate(
@@ -631,6 +668,19 @@ async def test_rule_extractor_classifies_and_privacy_skips(store: MemoryStore) -
     assert outcomes == []
 
 
+async def test_rule_extractor_assigns_job_fact_slot() -> None:
+    result = await RuleBasedExtractor().extract(
+        "我在IT行业工作，是ELN产品负责人。",
+        message_id=uuid4(),
+        privacy_level=PrivacyLevel.L1,
+        occurred_at=NOW,
+    )
+
+    assert len(result) == 1
+    assert result[0].content == "用户在IT行业工作，是ELN产品负责人"
+    assert result[0].fact_key == "profile.job"
+
+
 async def test_turn_extractor_creates_assistant_and_shared_candidates() -> None:
     extractor = TurnMemoryExtractor()
     user_message_id = uuid4()
@@ -681,9 +731,7 @@ async def test_turn_extractor_keeps_multiple_profile_facts_from_one_sentence() -
     assert by_fact["profile.measurements"] == "助手三围为 82-60-86 厘米"
 
     assertions = dict(
-        extract_assistant_fact_assertions(
-            "我身高160厘米，体重48公斤，三围82-60-86。"
-        )
+        extract_assistant_fact_assertions("我身高160厘米，体重48公斤，三围82-60-86。")
     )
     assert assertions == {
         "profile.height": "助手身高为 160 厘米",
@@ -720,9 +768,7 @@ async def test_turn_extractor_suppresses_retrieved_assistant_echo(
 
 async def test_l3_memory_is_rejected(store: MemoryStore, user: AppUserRecord) -> None:
     with pytest.raises(ValueError, match="L3"):
-        await store.add(
-            candidate("原始遥测", privacy_level=PrivacyLevel.L3), user_id=user.id
-        )
+        await store.add(candidate("原始遥测", privacy_level=PrivacyLevel.L3), user_id=user.id)
 
 
 async def test_chat_turn_builds_memory_loop(
@@ -766,7 +812,7 @@ async def test_chat_turn_builds_memory_loop(
     assert "【长期记忆】" in system_prompt
     assert "用户不吃香菜" in system_prompt
     memory_meta = meta_section(second.assistant_message.decision_meta, "memory")
-    assert memory_meta["policy_version"] == "hybrid-subject-v3"
+    assert memory_meta["policy_version"] == "hybrid-subject-v4"
     assert memory_meta["hits"][0]["id"] == memories[0].id
     assert memory_meta["hits"][0]["subject"] == "user"
     assert memory_meta["hits"][0]["subject_key"] == "user:self"
@@ -822,9 +868,10 @@ async def test_admin_memory_api_manages_lifecycle(
     )
     headers = {"Authorization": "Bearer test-admin-token"}
 
-    async with app.router.lifespan_context(app), AsyncClient(
-        transport=ASGITransport(app=app), base_url="http://test"
-    ) as client:
+    async with (
+        app.router.lifespan_context(app),
+        AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client,
+    ):
         unauthorized = await client.get("/api/v1/admin/memories")
         created = await client.post(
             "/api/v1/admin/memories",
@@ -903,9 +950,7 @@ async def test_admin_memory_api_manages_lifecycle(
     assert assistant_created.json()["subject_key"] == "assistant:primary"
     assert assistant_created.json()["fact_key"] == "profile.measurements"
     assert assistant_created.json()["origin_kind"] == "manual"
-    assert [item["id"] for item in assistant_listing.json()] == [
-        assistant_created.json()["id"]
-    ]
+    assert [item["id"] for item in assistant_listing.json()] == [assistant_created.json()["id"]]
     assert any(item["content"] == "用户在杭州工作" for item in listing.json())
     assert detail.json()["sources"][0]["source_kind"] == "manual"
     assert edited.json()["content"] == "用户在上海工作"
@@ -913,7 +958,7 @@ async def test_admin_memory_api_manages_lifecycle(
     assert edited.json()["subject"] == "user"
     assert edited.json()["subject_key"] == "user:self"
     assert detail.json()["lineage"] or True
-    assert queried.json()["policy_version"] == "hybrid-subject-v3"
+    assert queried.json()["policy_version"] == "hybrid-subject-v4"
     assert queried.json()["hits"]
     assert l3_rejected.status_code == 422
     assert archived.json()["status"] == "archived"
@@ -997,13 +1042,12 @@ async def test_admin_delete_and_ledger_api(
     headers = {"Authorization": "Bearer test-admin-token"}
     store = MemoryStore(database)
     first = await store.add(candidate("用户在杭州工作"), user_id=user.id)
-    second = await store.edit(
-        first.id, content="用户在上海工作", actor="admin", reason="纠正"
-    )
+    second = await store.edit(first.id, content="用户在上海工作", actor="admin", reason="纠正")
 
-    async with app.router.lifespan_context(app), AsyncClient(
-        transport=ASGITransport(app=app), base_url="http://test"
-    ) as client:
+    async with (
+        app.router.lifespan_context(app),
+        AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client,
+    ):
         page = await client.get("/admin/memory")
         unauthorized = await client.get("/api/v1/admin/deletion-ledger")
         deleted = await client.delete(
@@ -1077,6 +1121,25 @@ class StreamingConsistencyRouter(ScriptedRouter):
             usage=ModelUsage(),
             latency_ms=3.0,
         )
+
+
+async def test_llm_extractor_assigns_job_fact_slot() -> None:
+    backend = ScriptedRouter(
+        [
+            '{"candidates":[{"type":"preference","content":"用户是IT行业从业者，担任ELN产品负责人","importance":0.8,"confidence":0.9}]}'
+        ]
+    )
+
+    result = await LlmMemoryExtractor().extract(
+        "我在IT行业工作，是ELN产品负责人。",
+        message_id=uuid4(),
+        privacy_level=PrivacyLevel.L1,
+        occurred_at=NOW,
+        backend=backend,
+    )
+
+    assert len(result) == 1
+    assert result[0].fact_key == "profile.job"
 
 
 async def _chat_service(
@@ -1295,9 +1358,7 @@ async def test_llm_extractor_stores_desensitized_l2_memory(
             '{"candidates":[{"type":"emotional","content":"用户与Aria进行了一次长时间温暖的对话，情绪放松","importance":0.6,"confidence":0.8}]}',
         ]
     )
-    service = await _chat_service(
-        database, tmp_path, router, extractor=LlmMemoryExtractor()
-    )
+    service = await _chat_service(database, tmp_path, router, extractor=LlmMemoryExtractor())
     conversation = await service.create_conversation(user_id=user.id, title="l2")
 
     await service.send_message(
@@ -1318,9 +1379,7 @@ async def test_llm_extractor_stores_desensitized_l2_memory(
 
     store = MemoryStore(database)
     memories = await store.list_memories(user_id=user.id, status=MemoryStatus.ACTIVE)
-    assert [item.content for item in memories] == [
-        "用户与Aria进行了一次长时间温暖的对话，情绪放松"
-    ]
+    assert [item.content for item in memories] == ["用户与Aria进行了一次长时间温暖的对话，情绪放松"]
     assert memories[0].privacy_level == "L2"
     assert memories[0].extractor_version == "llm-utility-v1"
 
@@ -1338,9 +1397,7 @@ async def test_llm_extractor_falls_back_to_rules_on_bad_output(
     database: Database, user: AppUserRecord, tmp_path: Path
 ) -> None:
     router = ScriptedRouter(["好的。", "模型抽风了，这不是 JSON"])
-    service = await _chat_service(
-        database, tmp_path, router, extractor=LlmMemoryExtractor()
-    )
+    service = await _chat_service(database, tmp_path, router, extractor=LlmMemoryExtractor())
     conversation = await service.create_conversation(user_id=user.id, title="fallback")
 
     await service.send_message(
@@ -1362,9 +1419,7 @@ async def test_llm_extractor_with_empty_candidates_stores_nothing(
     database: Database, user: AppUserRecord, tmp_path: Path
 ) -> None:
     router = ScriptedRouter(["好的。", '{"candidates":[]}'])
-    service = await _chat_service(
-        database, tmp_path, router, extractor=LlmMemoryExtractor()
-    )
+    service = await _chat_service(database, tmp_path, router, extractor=LlmMemoryExtractor())
     conversation = await service.create_conversation(user_id=user.id, title="empty")
 
     turn = await service.send_message(
@@ -1516,15 +1571,14 @@ async def test_admin_replay_endpoint_reports_and_is_idempotent(
     store = MemoryStore(database)
     created = await store.add(candidate("用户在杭州工作"), user_id=user.id)
 
-    async with app.router.lifespan_context(app), AsyncClient(
-        transport=ASGITransport(app=app), base_url="http://test"
-    ) as client:
+    async with (
+        app.router.lifespan_context(app),
+        AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client,
+    ):
         unauthorized = await client.post(
             "/api/v1/admin/deletion-ledger/replay", json={"dry_run": True}
         )
-        deleted = await client.delete(
-            f"/api/v1/admin/memories/{created.id}", headers=headers
-        )
+        deleted = await client.delete(f"/api/v1/admin/memories/{created.id}", headers=headers)
         dry = await client.post(
             "/api/v1/admin/deletion-ledger/replay",
             headers=headers,
