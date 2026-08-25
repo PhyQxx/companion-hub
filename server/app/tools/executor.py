@@ -50,7 +50,7 @@ class ToolExecutor:
                 result=self._failure(handler.name, "tool_arguments_invalid", started),
             )
         result = await handler.execute(arguments, context)
-        if result.provider == "amap":
+        if result.provider in {"amap", "home_assistant"}:
             ToolLedger().record(result)
         return ToolExecution(call_id=call.id, result=result)
 

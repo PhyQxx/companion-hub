@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 from collections.abc import Awaitable, Callable, Coroutine, Iterable
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -105,17 +106,12 @@ def _vision_ready(config: HubConfig, privacy_level: PrivacyLevel) -> bool:
     if endpoint_name is None:
         return False
     endpoint = config.models.get(endpoint_name)
-    ready = bool(
-        endpoint is not None
-        and endpoint.enabled
-        and endpoint.kind == "vision"
-    )
+    ready = bool(endpoint is not None and endpoint.enabled and endpoint.kind == "vision")
     if not ready or endpoint is None:
         return False
     if privacy_level is PrivacyLevel.L2:
         return bool(
-            endpoint.runs_local
-            and PrivacyLevel(endpoint.max_privacy_level) is PrivacyLevel.L2
+            endpoint.runs_local and PrivacyLevel(endpoint.max_privacy_level) is PrivacyLevel.L2
         )
     return PrivacyLevel(endpoint.max_privacy_level) in {
         PrivacyLevel.L1,
@@ -128,6 +124,14 @@ def _device_tool_ready(
     config: HubConfig,
     privacy_level: PrivacyLevel,
 ) -> bool:
+    if name in {"home_get_state", "home_get_history", "home_control"}:
+        if not config.integrations.home_assistant.enabled:
+            return False
+        if privacy_level in {PrivacyLevel.L0, PrivacyLevel.L1}:
+            return _dialogue_tool_model_ready(config)
+        if privacy_level is PrivacyLevel.L2:
+            return _local_tool_model_ready(config)
+        return False
     if privacy_level is PrivacyLevel.L1:
         return bool(
             name == "capture_screen"
@@ -257,16 +261,12 @@ class ChatService:
         self._memory_consistency_guard = MemoryConsistencyGuard()
         self._memory_retriever = MemoryRetriever(memory_store) if memory_store else None
         self._memory_ingester = (
-            MemoryIngester(memory_store, extractor=memory_extractor)
-            if memory_store
-            else None
+            MemoryIngester(memory_store, extractor=memory_extractor) if memory_store else None
         )
         # 后台记忆任务的强引用集合：既防止任务被 GC，也支持停机前等待收尾
         self._background_tasks: set[asyncio.Task[None]] = set()
         secrets = EnvSecretProvider()
-        self._router_builder = router_builder or (
-            lambda config: build_router(config, secrets)
-        )
+        self._router_builder = router_builder or (lambda config: build_router(config, secrets))
 
     async def create_conversation(
         self,
@@ -292,9 +292,7 @@ class ChatService:
             session.add(record)
         return self._conversation_view(record)
 
-    async def list_conversations(
-        self, *, user_id: UUID, limit: int = 50
-    ) -> list[ConversationView]:
+    async def list_conversations(self, *, user_id: UUID, limit: int = 50) -> list[ConversationView]:
         query = (
             select(ConversationRecord)
             .where(ConversationRecord.user_id == user_id)
@@ -342,10 +340,19 @@ class ChatService:
         await self._transition(pending.turn_id, {"accepted"}, "thinking")
         try:
             backend = self._router_builder(pending.config)
-            result = await backend.complete(pending.request)
             tool_executions: tuple[ToolExecution, ...] = ()
             consistency_request = pending.request
-            if result.tool_calls:
+            deterministic_call = _deterministic_home_read_call(pending)
+            if deterministic_call is not None:
+                execution = await self._execute_tool_call(pending, [deterministic_call])
+                tool_executions = (execution,)
+                consistency_request = self._tool_result_request(
+                    pending.request, deterministic_call, execution
+                )
+                result = await backend.complete(consistency_request)
+            else:
+                result = await backend.complete(pending.request)
+            if deterministic_call is None and result.tool_calls:
                 execution = await self._execute_tool_call(pending, result.tool_calls)
                 tool_executions = (execution,)
                 consistency_request = self._tool_followup_request(
@@ -369,6 +376,68 @@ class ChatService:
         except BaseException:
             await self._fail_if_active(pending.turn_id)
             raise
+
+    async def create_proactive_message(
+        self,
+        text: str,
+        *,
+        entity_id: str,
+        rule_id: str,
+        trigger_kind: str,
+        privacy_level: PrivacyLevel = PrivacyLevel.L1,
+    ) -> tuple[UUID, MessageView] | None:
+        """Persist a deterministic HA suggestion in the latest active conversation."""
+        if privacy_level not in {PrivacyLevel.L0, PrivacyLevel.L1}:
+            return None
+        now = datetime.now(UTC)
+        async with self._database.sessions.begin() as session:
+            row = (
+                await session.execute(
+                    select(ConversationRecord, AppUserRecord)
+                    .join(AppUserRecord, AppUserRecord.id == ConversationRecord.user_id)
+                    .where(
+                        ConversationRecord.status == "active",
+                        AppUserRecord.status == "active",
+                    )
+                    .order_by(ConversationRecord.last_active_at.desc())
+                    .limit(1)
+                    .with_for_update()
+                )
+            ).one_or_none()
+            if row is None:
+                return None
+            conversation, user = row
+            conversation.last_seq += 1
+            conversation.last_active_at = now
+            turn_id = uuid7()
+            record = MessageRecord(
+                id=uuid7(),
+                conversation_id=conversation.id,
+                turn_id=turn_id,
+                seq=conversation.last_seq,
+                role="assistant",
+                content=text,
+                privacy_level=privacy_level.value,
+                decision_meta={
+                    "kind": "home_assistant_proactive",
+                    "entity_id": entity_id,
+                    "rule_id": rule_id,
+                    "trigger_kind": trigger_kind,
+                    "agent_reply": {
+                        "schema_version": 1,
+                        "schema_ref": "aria.agent-reply/1",
+                        "text": text,
+                        "tts_text": text,
+                        "emotion": "concerned",
+                        "expressions": [],
+                        "actions": [],
+                        "parse_status": "structured",
+                    },
+                },
+                created_at=now,
+            )
+            session.add(record)
+        return user.id, self._message_view(record)
 
     async def start_turn(
         self,
@@ -479,10 +548,7 @@ class ChatService:
                     now=now,
                     timezone_name=user_timezone,
                 )
-                if not (
-                    history_recall.mode is RecallMode.NONE
-                    and grounded_memory_hits
-                ):
+                if not (history_recall.mode is RecallMode.NONE and grounded_memory_hits):
                     history_block = HistoryRecallService.render_context(history_recall)
             except Exception:
                 # 历史索引是增强路径，故障不能让普通聊天不可用。
@@ -497,7 +563,7 @@ class ChatService:
                 text,
                 (item.capability_id for item in runtime_capabilities),
             )
-            if privacy_level in {PrivacyLevel.L1, PrivacyLevel.L2}
+            if privacy_level in {PrivacyLevel.L0, PrivacyLevel.L1, PrivacyLevel.L2}
             and self._device_tools.definitions()
             else ()
         )
@@ -519,9 +585,7 @@ class ChatService:
             messages=[
                 LLMMessage(
                     role="system",
-                    content=persona.render_system_prompt(
-                        profile_overrides=profile_overrides
-                    )
+                    content=persona.render_system_prompt(profile_overrides=profile_overrides)
                     + structured_reply_instruction(persona)
                     + f"\n\n{time_block}"
                     + f"\n\n{reality_block}"
@@ -596,7 +660,33 @@ class ChatService:
             backend = self._router_builder(pending.config)
             consistency_request = pending.request
             tool_executions: tuple[ToolExecution, ...] = ()
-            if pending.request.tools:
+            deterministic_call = _deterministic_home_read_call(pending)
+            if deterministic_call is not None:
+                if on_tool_event is not None:
+                    await on_tool_event(
+                        {
+                            "type": "tool.started",
+                            "tool": deterministic_call.function.name,
+                            "label": _tool_label(deterministic_call.function.name),
+                        }
+                    )
+                execution = await self._execute_tool_call(pending, [deterministic_call])
+                if on_tool_event is not None:
+                    await on_tool_event(
+                        {
+                            "type": "tool.finished",
+                            "tool": execution.result.tool_name,
+                            "ok": execution.result.ok,
+                            "latency_ms": round(execution.result.latency_ms, 1),
+                            "reason_code": execution.result.reason_code,
+                        }
+                    )
+                tool_executions = (execution,)
+                consistency_request = self._tool_result_request(
+                    pending.request, deterministic_call, execution
+                )
+                result = await backend.stream(consistency_request, filtered_delta)
+            elif pending.request.tools:
                 initial_chunks: list[str] = []
 
                 async def buffer_delta(delta: str) -> None:
@@ -688,6 +778,7 @@ class ChatService:
             privacy_level=pending.request.privacy_level,
             user_id=pending.user_id,
             turn_id=pending.turn_id,
+            user_text=pending.user_message.content,
             default_city=pending.config.tools.query.default_city,
             ephemeral_location=pending.client_location,
         )
@@ -747,13 +838,17 @@ class ChatService:
         execution: ToolExecution,
     ) -> CompletionRequest:
         selected_call = next(
-            (
-                call
-                for call in first_result.tool_calls
-                if call.id == execution.call_id
-            ),
+            (call for call in first_result.tool_calls if call.id == execution.call_id),
             first_result.tool_calls[0],
         )
+        return ChatService._tool_result_request(request, selected_call, execution)
+
+    @staticmethod
+    def _tool_result_request(
+        request: CompletionRequest,
+        selected_call: ToolCall,
+        execution: ToolExecution,
+    ) -> CompletionRequest:
         messages = [
             *request.messages,
             LLMMessage(role="assistant", content="", tool_calls=[selected_call]),
@@ -824,9 +919,7 @@ class ChatService:
             )
         return [self._message_view(record) for record in records]
 
-    async def delete_conversation(
-        self, conversation_id: UUID, *, user_id: UUID
-    ) -> DeletionReceipt:
+    async def delete_conversation(self, conversation_id: UUID, *, user_id: UUID) -> DeletionReceipt:
         """硬删除会话：连同回合、消息与沉淀记忆一起清除。
 
         先按消息来源清除记忆链，整个动作以 message/<会话ID> 实体记入
@@ -839,9 +932,7 @@ class ChatService:
             message_ids = [
                 str(row)
                 for row in await session.scalars(
-                    select(MessageRecord.id).where(
-                        MessageRecord.conversation_id == conversation_id
-                    )
+                    select(MessageRecord.id).where(MessageRecord.conversation_id == conversation_id)
                 )
             ]
         receipt = DeletionReceipt(ledger_id=0, entity_id=str(conversation_id), deleted_ids=())
@@ -872,9 +963,7 @@ class ChatService:
                 )
             )
             await session.execute(
-                delete(MessageRecord).where(
-                    MessageRecord.conversation_id == conversation_id
-                )
+                delete(MessageRecord).where(MessageRecord.conversation_id == conversation_id)
             )
             await session.delete(conversation)
         return receipt
@@ -884,9 +973,7 @@ class ChatService:
         async with self._database.sessions.begin() as session:
             await session.execute(
                 update(InteractionTurnRecord)
-                .where(
-                    InteractionTurnRecord.state.in_({"accepted", "thinking", "streaming"})
-                )
+                .where(InteractionTurnRecord.state.in_({"accepted", "thinking", "streaming"}))
                 .values(
                     state="cancelled",
                     state_version=InteractionTurnRecord.state_version + 1,
@@ -979,10 +1066,7 @@ class ChatService:
             }
         if pending.history_recall is not None:
             recall_mode = pending.history_recall.mode.value
-            if (
-                pending.history_recall.mode is RecallMode.NONE
-                and grounded_memory_hits
-            ):
+            if pending.history_recall.mode is RecallMode.NONE and grounded_memory_hits:
                 recall_mode = RecallMode.MEMORY.value
             decision_meta["recall"] = {
                 "mode": recall_mode,
@@ -1100,17 +1184,11 @@ class ChatService:
             )
         except Exception:
             # 档案查询失败只损失覆盖能力，回退 Persona 基线即可
-            logger.warning(
-                "assistant profile lookup failed for turn %s", turn_id, exc_info=True
-            )
+            logger.warning("assistant profile lookup failed for turn %s", turn_id, exc_info=True)
             return {}
         # 隐私闸门：档案覆盖会随系统提示进入每次模型调用，
         # L2 助手事实只能进入强制本地的 L2 上下文，绝不随 L0/L1 云端出站
-        allowed_levels = (
-            {"L0", "L1", "L2"}
-            if privacy_level is PrivacyLevel.L2
-            else {"L0", "L1"}
-        )
+        allowed_levels = {"L0", "L1", "L2"} if privacy_level is PrivacyLevel.L2 else {"L0", "L1"}
         return {
             slot.fact_key: slot.content
             for slot in slots
@@ -1161,9 +1239,7 @@ class ChatService:
                 "memory consolidation failed for turn %s", pending.turn_id, exc_info=True
             )
 
-    async def _transition(
-        self, turn_id: UUID, from_states: set[str], target: str
-    ) -> None:
+    async def _transition(self, turn_id: UUID, from_states: set[str], target: str) -> None:
         async with self._database.sessions.begin() as session:
             turn = await session.scalar(
                 select(InteractionTurnRecord)
@@ -1246,8 +1322,74 @@ def _aware(value: datetime) -> datetime:
     return value if value.tzinfo is not None else value.replace(tzinfo=UTC)
 
 
+_HOME_READ_FOLLOWUP_TERMS = (
+    "然后呢",
+    "查到了吗",
+    "查到没",
+    "有查到吗",
+    "结果呢",
+    "怎么样了",
+)
+
+
+def _deterministic_home_read_call(pending: PendingTurn) -> ToolCall | None:
+    """Resolve unambiguous HA reads server-side instead of trusting model tool syntax."""
+    capability_ids = tuple(item.capability_id for item in pending.runtime_capabilities)
+    source_text = pending.user_message.content
+    selected = select_device_tools(source_text, capability_ids)
+    tool_name = selected[0] if selected else None
+    if tool_name not in {"home_get_state", "home_get_history"} and any(
+        term in source_text for term in _HOME_READ_FOLLOWUP_TERMS
+    ):
+        # A terse “查到了吗” should finish the immediately preceding device
+        # lookup, even when the previous model failed to emit a real function call.
+        for message in reversed(pending.request.messages[:-1]):
+            if message.role != "user":
+                continue
+            previous = select_device_tools(message.content, capability_ids)
+            if previous and previous[0] in {"home_get_state", "home_get_history"}:
+                tool_name = previous[0]
+                source_text = message.content
+                break
+    if tool_name not in {"home_get_state", "home_get_history"}:
+        return None
+
+    suffix = ":state.read" if tool_name == "home_get_state" else ":history.read"
+    matches: dict[str, str] = {}
+    for capability in pending.runtime_capabilities:
+        if not capability.capability_id.endswith(suffix):
+            continue
+        entity_id = capability.capability_id.removeprefix("home_assistant:").removesuffix(suffix)
+        label = (
+            capability.label.removesuffix("历史")
+            if tool_name == "home_get_history"
+            else capability.label
+        )
+        if label in source_text or entity_id in source_text:
+            matches[entity_id] = label
+    if len(matches) != 1:
+        return None
+    target = next(iter(matches.values()))
+    arguments: dict[str, object]
+    if tool_name == "home_get_state":
+        arguments = {"targets": [target]}
+    else:
+        hour_match = re.search(r"(\d{1,3})\s*小时", source_text)
+        hours = min(int(hour_match.group(1)), 168) if hour_match else 24
+        arguments = {
+            "target": target,
+            "hours": max(hours, 1),
+            "limit": 50,
+            "include_logbook": True,
+        }
+    return ToolCall(
+        id=f"server-{uuid7()}",
+        function={"name": tool_name, "arguments": arguments},
+    )
+
+
 def _tool_result_count(result: ToolResult) -> int:
-    for key in ("results", "forecast", "routes"):
+    for key in ("results", "forecast", "routes", "entities", "states", "logbook"):
         value = result.data.get(key)
         if isinstance(value, list):
             return len(value)
@@ -1295,8 +1437,13 @@ def _tool_presentation(result: ToolResult) -> dict[str, object] | None:
                 {
                     key: item.get(key)
                     for key in (
-                        "name", "address", "category", "distance_m", "duration_s",
-                        "distance_basis", "navigation_uri",
+                        "name",
+                        "address",
+                        "category",
+                        "distance_m",
+                        "duration_s",
+                        "distance_basis",
+                        "navigation_uri",
                     )
                 }
                 for item in (results if isinstance(results, list) else [])[:3]
@@ -1326,4 +1473,7 @@ def _tool_label(tool_name: str) -> str:
         "plan_route": "正在规划路线…",
         "capture_screen": "正在读取电脑屏幕…",
         "inspect_webpage": "正在读取当前网页…",
+        "home_get_state": "正在读取设备状态…",
+        "home_get_history": "正在读取设备历史…",
+        "home_control": "正在执行设备控制…",
     }.get(tool_name, "正在使用外部工具…")

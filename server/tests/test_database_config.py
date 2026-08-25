@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import AsyncIterator
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
@@ -9,6 +10,7 @@ from sqlalchemy import func, select
 
 from app.config import DatabaseConfigStore, HubConfig
 from app.db import Base, ConfigPointerRecord, ConfigVersionRecord, Database, create_database
+from app.home_assistant import HomeAssistantState
 from app.main import create_app
 
 
@@ -244,6 +246,72 @@ async def test_admin_model_connection_uses_lm_studio_native_model_list(
     assert body["model_loaded"] is True
     assert [item["key"] for item in body["models"]] == ["local-model", "other-model"]
     assert captured["url"] == "http://127.0.0.1:1234/api/v1/models"
+
+
+async def test_admin_home_assistant_connection_returns_entity_inventory(
+    database: Database,
+    bootstrap: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def fake_fetch_states(_: object) -> tuple[HomeAssistantState, ...]:
+        now = datetime.now(UTC)
+        return (
+            HomeAssistantState(
+                entity_id="light.kitchen",
+                state="on",
+                attributes={"friendly_name": "厨房灯", "device_class": "light"},
+                last_changed=now,
+                last_updated=now,
+            ),
+        )
+
+    async def fake_close(_: object) -> None:
+        return None
+
+    monkeypatch.setattr(
+        "app.api.admin_config.HomeAssistantClient.fetch_states", fake_fetch_states
+    )
+    monkeypatch.setattr("app.api.admin_config.HomeAssistantClient.close", fake_close)
+    store = DatabaseConfigStore(database, bootstrap)
+    app = create_app(
+        database,
+        config_store=store,
+        watch_config=False,
+        admin_token="test-admin-token",
+    )
+    headers = {"Authorization": "Bearer test-admin-token"}
+
+    async with app.router.lifespan_context(app), AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        response = await client.post(
+            "/api/v1/admin/config/integrations/home-assistant/test",
+            headers=headers,
+            json={
+                "config": {
+                    "enabled": False,
+                    "instance_id": "home-main",
+                    "base_url": "https://ha.example.test",
+                    "secret_value": "admin-token",
+                    "entities": [],
+                }
+            },
+        )
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["ok"] is True
+    assert body["message"].endswith("1 个实体")
+    assert body["entities"] == [
+        {
+            "entity_id": "light.kitchen",
+            "friendly_name": "厨房灯",
+            "domain": "light",
+            "state": "on",
+            "device_class": "light",
+            "unit_of_measurement": None,
+        }
+    ]
 
 
 async def test_admin_voice_asr_environment_check_reports_optional_dependency(

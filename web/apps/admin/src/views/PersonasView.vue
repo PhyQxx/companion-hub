@@ -1,7 +1,8 @@
 <script setup lang="ts">
-import { inject, onMounted, reactive, ref } from "vue";
+import { computed, inject, onMounted, reactive, ref } from "vue";
 import { AdminApi } from "@aria/shared";
 import { ElMessageBox } from "element-plus";
+import { useRoute } from "vue-router";
 
 interface PersonaConfig {
   schema_version: number;
@@ -28,6 +29,8 @@ interface VersionRow {
 // Persona 管理：人格定义表单 + 版本历史（草稿/发布/回滚）。
 // 表单与后端 PersonaConfig 字段一一对应；表情映射是 JSON 编辑。
 const api = inject("adminApi") as AdminApi;
+const route = useRoute();
+const activeTab = computed(() => String(route.query.tab ?? "profile"));
 const emit = defineEmits<{ status: [text: string, error?: boolean] }>();
 
 const current = ref<{ version: number; published_at: string; persona: PersonaConfig } | null>(null);
@@ -188,25 +191,25 @@ onMounted(load);
       <article><span>默认情绪</span><strong>{{ emotionLabels[form.default_emotion] ?? form.default_emotion }}</strong></article>
     </div>
 
-    <div class="panel">
+    <div v-if="activeTab !== 'versions'" class="panel">
       <h2>人格定义</h2>
       <p class="hint">保存只产生草稿，发布后才会用于新对话轮次。</p>
       <div class="fields">
-        <label>名称<el-input v-model="form.name" maxlength="80" show-word-limit /></label>
-        <label>默认情绪
+        <label v-if="activeTab === 'profile'">名称<el-input v-model="form.name" maxlength="80" show-word-limit /></label>
+        <label v-if="activeTab === 'motion'">默认情绪
           <el-select v-model="form.default_emotion">
             <el-option v-for="emotion in ['neutral', 'happy', 'sad', 'angry', 'surprised', 'thinking', 'concerned']" :key="emotion" :label="emotionLabels[emotion] ?? emotion" :value="emotion" />
           </el-select>
         </label>
-        <label class="wide">身份定位<el-input v-model="form.identity" type="textarea" :rows="3" /></label>
-        <label class="wide">核心提示词<el-input v-model="form.system_prompt" type="textarea" :rows="6" /></label>
-        <label>表达风格<el-input v-model="form.speaking_style" type="textarea" :rows="3" /></label>
-        <label>与用户的关系<el-input v-model="form.relationship" type="textarea" :rows="3" /></label>
-        <label class="wide">行为边界（每行一条）<el-input v-model="boundariesText" type="textarea" :rows="4" /></label>
-        <label>声音配置标识<el-input v-model="form.voice_profile" placeholder="可选" /></label>
-        <label class="wide">情绪 → 表情映射（JSON）<el-input v-model="expressionMapText" type="textarea" :rows="4" spellcheck="false" /></label>
+        <label v-if="activeTab === 'profile'" class="wide">身份定位<el-input v-model="form.identity" type="textarea" :rows="3" /></label>
+        <label v-if="activeTab === 'style'" class="wide">核心提示词<el-input v-model="form.system_prompt" type="textarea" :rows="6" /></label>
+        <label v-if="activeTab === 'style'">表达风格<el-input v-model="form.speaking_style" type="textarea" :rows="3" /></label>
+        <label v-if="activeTab === 'profile'">与用户的关系<el-input v-model="form.relationship" type="textarea" :rows="3" /></label>
+        <label v-if="activeTab === 'boundaries'" class="wide">行为边界（每行一条）<el-input v-model="boundariesText" type="textarea" :rows="8" /></label>
+        <label v-if="activeTab === 'style' || activeTab === 'motion'">声音配置标识<el-input v-model="form.voice_profile" placeholder="可选" /></label>
+        <label v-if="activeTab === 'motion'" class="wide">情绪 → 表情映射（JSON）<el-input v-model="expressionMapText" type="textarea" :rows="8" spellcheck="false" /></label>
       </div>
-      <div class="profile-section">
+      <div v-if="activeTab === 'profile'" class="profile-section">
         <h3>档案基线</h3>
         <p class="hint">身高、生日等稳定属性的默认值；对话中用户明确告知的新值会自动覆盖这里（进记忆库）。</p>
         <div class="profile-grid">
@@ -216,7 +219,7 @@ onMounted(load);
       <div class="row"><el-button type="primary" @click="saveDraft">校验并保存草稿</el-button></div>
     </div>
 
-    <div class="panel">
+    <div v-if="activeTab === 'versions'" class="panel">
       <h2>版本历史</h2>
       <el-table :data="versions" style="width:100%">
         <el-table-column label="版本" width="120">

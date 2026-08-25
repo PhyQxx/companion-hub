@@ -1,4 +1,4 @@
-.PHONY: install lint test schemas types contracts migrate compose-check infra-up infra-down llm-check llm-first-token-bench p5-backend p5-frontend desktop-check browser-check p5-real p5-real-l1 p5-real-l2 p6-voice-soak p6-voice-m2 run
+.PHONY: install lint test schemas types contracts migrate compose-check infra-up infra-down llm-check llm-first-token-bench p5-backend p5-frontend desktop-check browser-check ha-check p5-real p5-real-l1 p5-real-l2 p6-voice-soak p6-voice-m2 run
 
 P5_REPORT ?= /tmp/aria-p5-real-model-report.json
 P5_L1_REPORT ?= /tmp/aria-p5-real-model-l1-report.json
@@ -63,6 +63,12 @@ browser-check:
 	pnpm --dir browser-extension install --frozen-lockfile
 	pnpm --dir browser-extension test
 	pnpm --dir browser-extension build
+
+ha-check:
+	uv run ruff check server/app/home_assistant server/tests/test_home_assistant.py
+	uv run mypy server/app/home_assistant server/tests/test_home_assistant.py
+	uv run pytest server/tests/test_home_assistant.py server/tests/test_config.py server/tests/test_tools.py server/tests/test_chat_capabilities.py server/tests/test_browser_tool.py
+	git diff --check
 
 p6-voice-m2:
 	python3 server/scripts/p6_voice_m2_report.py --report $(P6_M2_REPORT)

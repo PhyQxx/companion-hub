@@ -56,6 +56,13 @@ struct ScreenPermissionStatus {
     granted: bool,
 }
 
+#[derive(Serialize)]
+struct ScreenCaptureEnvironment {
+    supported: bool,
+    granted: bool,
+    locked: bool,
+}
+
 #[derive(Deserialize, Serialize)]
 struct DeviceAssetUpload {
     asset_id: String,
@@ -168,6 +175,16 @@ fn screen_capture_permission(request: bool) -> ScreenPermissionStatus {
 }
 
 #[tauri::command]
+fn screen_capture_environment() -> ScreenCaptureEnvironment {
+    let permission = screen_permission_status(false);
+    ScreenCaptureEnvironment {
+        supported: permission.supported,
+        granted: permission.granted,
+        locked: screen_is_locked(),
+    }
+}
+
+#[tauri::command]
 async fn capture_and_upload(
     command_id: String,
     target: String,
@@ -180,6 +197,9 @@ async fn capture_and_upload(
     };
     if !screen_permission_status(false).granted {
         return Err("尚未获得屏幕录制权限".to_string());
+    }
+    if screen_is_locked() {
+        return Err("设备已锁屏，拒绝截图".to_string());
     }
     let normalized_hub = hub_keyring_entry()?
         .get_password()
@@ -251,12 +271,57 @@ fn screen_permission_status(request: bool) -> ScreenPermissionStatus {
     }
 }
 
+#[cfg(target_os = "macos")]
+fn screen_is_locked() -> bool {
+    use std::ffi::{c_char, c_void, CString};
+
+    #[link(name = "ApplicationServices", kind = "framework")]
+    extern "C" {
+        fn CGSessionCopyCurrentDictionary() -> *const c_void;
+    }
+    #[link(name = "CoreFoundation", kind = "framework")]
+    extern "C" {
+        fn CFStringCreateWithCString(
+            allocator: *const c_void,
+            value: *const c_char,
+            encoding: u32,
+        ) -> *const c_void;
+        fn CFDictionaryGetValue(dictionary: *const c_void, key: *const c_void) -> *const c_void;
+        fn CFBooleanGetValue(value: *const c_void) -> bool;
+        fn CFRelease(value: *const c_void);
+    }
+
+    const UTF8_ENCODING: u32 = 0x0800_0100;
+    unsafe {
+        let dictionary = CGSessionCopyCurrentDictionary();
+        if dictionary.is_null() {
+            return true;
+        }
+        let key_name = CString::new("CGSSessionScreenIsLocked").expect("static key is valid");
+        let key = CFStringCreateWithCString(std::ptr::null(), key_name.as_ptr(), UTF8_ENCODING);
+        if key.is_null() {
+            CFRelease(dictionary);
+            return true;
+        }
+        let value = CFDictionaryGetValue(dictionary, key);
+        let locked = !value.is_null() && CFBooleanGetValue(value);
+        CFRelease(key);
+        CFRelease(dictionary);
+        locked
+    }
+}
+
 #[cfg(not(target_os = "macos"))]
 fn screen_permission_status(_request: bool) -> ScreenPermissionStatus {
     ScreenPermissionStatus {
         supported: false,
         granted: false,
     }
+}
+
+#[cfg(not(target_os = "macos"))]
+fn screen_is_locked() -> bool {
+    true
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -297,6 +362,7 @@ pub fn run() {
             load_device_credential,
             forget_device_credential,
             screen_capture_permission,
+            screen_capture_environment,
             capture_and_upload
         ])
         .run(tauri::generate_context!())

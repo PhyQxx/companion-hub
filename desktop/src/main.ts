@@ -5,8 +5,13 @@ import {
   forgetAccessToken,
   loadAccessToken,
   pairDevice,
+  createScreenCaptureGrant,
+  consumeScreenCaptureGrant,
+  screenCaptureEnvironment,
+  screenCaptureGrantActive,
   screenCapturePermission,
   type ConnectionState,
+  type ScreenCaptureGrant,
   type StoredClientConfig,
 } from "./client";
 import "./style.css";
@@ -30,7 +35,7 @@ app.innerHTML = `
     </form>
     <section class="panel status-panel">
       <div class="panel-head"><div><h2>运行状态</h2><p id="identity">尚未保存设备身份</p></div><button id="toggle-connection" type="button">连接</button></div>
-      <dl><dt>声明能力</dt><dd><code id="capabilities">device.ping</code></dd><dt>屏幕录制</dt><dd><button id="screen-permission" type="button">检查权限</button> <small id="screen-permission-state">尚未检查</small></dd><dt>隐私暂停</dt><dd><label class="switch"><input id="privacy-pause" type="checkbox" /><span></span></label></dd><dt>开机启动</dt><dd><label class="switch"><input id="autostart" type="checkbox" /><span></span></label></dd><dt>凭据位置</dt><dd>系统安全凭据库（不写入 localStorage）</dd></dl>
+      <dl><dt>声明能力</dt><dd><code id="capabilities">device.ping</code></dd><dt>屏幕录制</dt><dd><button id="screen-permission" type="button">检查权限</button> <small id="screen-permission-state">尚未检查</small></dd><dt>会话状态</dt><dd><small id="screen-lock-state">正在检查锁屏状态</small></dd><dt>临时授权</dt><dd><button id="grant-screen-capture" type="button">允许下一次截图</button> <small id="screen-grant-state">未授权</small></dd><dt>隐私暂停</dt><dd><label class="switch"><input id="privacy-pause" type="checkbox" /><span></span></label></dd><dt>开机启动</dt><dd><label class="switch"><input id="autostart" type="checkbox" /><span></span></label></dd><dt>凭据位置</dt><dd>系统安全凭据库（不写入 localStorage）</dd></dl>
     </section>
     <section class="panel log-panel"><div class="panel-head"><div><h2>最近事件</h2><p>只记录协议状态，不记录令牌或命令参数。</p></div><button id="clear-log" type="button">清空</button></div><ol id="events"></ol></section>
   </section>
@@ -50,22 +55,70 @@ const autostart = document.querySelector<HTMLInputElement>("#autostart")!;
 const privacyPause = document.querySelector<HTMLInputElement>("#privacy-pause")!;
 const permissionButton = document.querySelector<HTMLButtonElement>("#screen-permission")!;
 const permissionState = document.querySelector<HTMLElement>("#screen-permission-state")!;
+const lockState = document.querySelector<HTMLElement>("#screen-lock-state")!;
+const grantButton = document.querySelector<HTMLButtonElement>("#grant-screen-capture")!;
+const grantState = document.querySelector<HTMLElement>("#screen-grant-state")!;
 const capabilitiesLabel = document.querySelector<HTMLElement>("#capabilities")!;
 
 let config = loadConfig();
 let connection: DeviceConnection | null = null;
 let currentState: ConnectionState = config ? "offline" : "unpaired";
 let permissionGranted = false;
+let screenLocked = true;
+let screenGrant: ScreenCaptureGrant | null = null;
 privacyPause.checked = localStorage.getItem(PRIVACY_PAUSE_KEY) === "true";
 
 function activeCapabilities(): string[] {
-  return permissionGranted && !privacyPause.checked
+  return permissionGranted && !screenLocked && !privacyPause.checked && screenCaptureGrantActive(screenGrant)
     ? [...DESKTOP_BASE_CAPABILITIES, "screen.capture"]
     : [...DESKTOP_BASE_CAPABILITIES];
 }
 
 function renderCapabilities() {
-  capabilitiesLabel.textContent = activeCapabilities().join("、");
+  const capabilities = activeCapabilities();
+  capabilitiesLabel.textContent = capabilities.join("、");
+  connection?.setCapabilities(capabilities);
+  grantButton.disabled = !permissionGranted || screenLocked || privacyPause.checked;
+  grantState.textContent = screenCaptureGrantActive(screenGrant)
+    ? `已授权下一次 · ${Math.max(1, Math.ceil((screenGrant!.expiresAt - Date.now()) / 60_000))} 分钟内有效`
+    : "未授权";
+}
+
+function authorizeScreenCapture(): "allowed" | "screen_locked" | "screen_capture_not_granted" {
+  if (screenLocked) return "screen_locked";
+  if (!screenCaptureGrantActive(screenGrant)) return "screen_capture_not_granted";
+  screenGrant = consumeScreenCaptureGrant(screenGrant);
+  renderCapabilities();
+  addEvent("下一次截图临时授权已消费");
+  return "allowed";
+}
+
+async function refreshScreenEnvironment() {
+  try {
+    const environment = await screenCaptureEnvironment();
+    permissionGranted = environment.granted;
+    permissionState.textContent = environment.supported
+      ? environment.granted
+        ? "已授权"
+        : "未授权"
+      : "当前平台暂不支持";
+    const wasLocked = screenLocked;
+    screenLocked = environment.locked;
+    lockState.textContent = environment.supported
+      ? screenLocked
+        ? "已锁屏 · 截图已拒绝"
+        : "未锁屏"
+      : "当前平台暂不支持";
+    if (screenLocked && !wasLocked) {
+      screenGrant = null;
+      addEvent("检测到锁屏，临时截图授权已撤销");
+    }
+    renderCapabilities();
+  } catch {
+    screenLocked = true;
+    lockState.textContent = "状态检查失败 · 按锁屏处理";
+    renderCapabilities();
+  }
 }
 
 function loadConfig(): StoredClientConfig | null {
@@ -120,6 +173,7 @@ async function startConnection() {
   connection = new DeviceConnection(config, token, activeCapabilities(), {
     onState: setState,
     onEvent: addEvent,
+    authorizeScreenCapture,
   });
   connection.connect();
 }
@@ -202,18 +256,18 @@ permissionButton.addEventListener("click", async () => {
   }
 });
 
+grantButton.addEventListener("click", () => {
+  screenGrant = createScreenCaptureGrant();
+  renderCapabilities();
+  addEvent("已授权 5 分钟内的下一次截图；授权不会持久化");
+});
+
 document.querySelector("#clear-log")!.addEventListener("click", () => (events.innerHTML = ""));
 
 renderIdentity();
 renderCapabilities();
 void isEnabled().then((enabled) => (autostart.checked = enabled));
-void screenCapturePermission().then((status) => {
-  permissionGranted = status.granted;
-  permissionState.textContent = status.supported
-    ? status.granted
-      ? "已授权"
-      : "未授权"
-    : "当前平台暂不支持";
-  renderCapabilities();
+void refreshScreenEnvironment().then(() => {
   if (config && !privacyPause.checked) void startConnection();
 });
+window.setInterval(() => void refreshScreenEnvironment(), 5_000);

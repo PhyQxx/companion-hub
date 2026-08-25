@@ -7,6 +7,7 @@ import importlib.metadata
 import importlib.util
 import json
 import re
+from collections.abc import Awaitable, Callable
 from datetime import datetime
 from time import perf_counter
 from typing import Annotated
@@ -19,8 +20,9 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import Field
 
 from app.config import DatabaseConfigStore, DatabaseConfigVersion, HubConfig
-from app.config.models import VoiceAsrConfig
+from app.config.models import HomeAssistantConfig, VoiceAsrConfig
 from app.config.store import ConfigSnapshot, hash_config
+from app.home_assistant import HomeAssistantClient, HomeAssistantError
 from app.llm import EnvSecretProvider, LiteLLMProvider, ModelEndpoint, ModelKind
 from app.observability import apply_observability
 from app.schemas.common import StrictModel
@@ -40,9 +42,7 @@ class AdminTokenGuard:
                 status.HTTP_503_SERVICE_UNAVAILABLE,
                 detail="admin API is disabled until ARIA_ADMIN_TOKEN is configured",
             )
-        if credentials is None or not hmac.compare_digest(
-            credentials.credentials, self._token
-        ):
+        if credentials is None or not hmac.compare_digest(credentials.credentials, self._token):
             raise HTTPException(status.HTTP_401_UNAUTHORIZED, detail="invalid admin credential")
 
 
@@ -153,6 +153,32 @@ class AmapLedgerEntryView(StrictModel):
     cache_hit: bool = False
     location_source: str | None = None
     result_count: int | None = None
+
+
+class HomeAssistantConnectionTestRequest(StrictModel):
+    config: HomeAssistantConfig
+
+
+class HomeAssistantEntityView(StrictModel):
+    entity_id: str
+    friendly_name: str
+    domain: str
+    state: str
+    device_class: str | None = None
+    unit_of_measurement: str | None = None
+
+
+class HomeAssistantConnectionTestResult(StrictModel):
+    ok: bool
+    latency_ms: float
+    message: str
+    error_type: str | None = None
+    entities: list[HomeAssistantEntityView] = Field(default_factory=list)
+
+
+class HomeAssistantProactiveTestResult(StrictModel):
+    ok: bool
+    message: str
 
 
 _SECRET_PATTERNS: tuple[re.Pattern[str], ...] = (
@@ -275,6 +301,8 @@ def create_admin_config_router(
     store: DatabaseConfigStore,
     *,
     admin_token: str | None,
+    on_publish: Callable[[], Awaitable[None]] | None = None,
+    on_proactive_test: Callable[[], Awaitable[bool]] | None = None,
 ) -> APIRouter:
     router = APIRouter(
         prefix="/api/v1/admin/config",
@@ -299,6 +327,8 @@ def create_admin_config_router(
         except ValueError as error:
             raise HTTPException(status.HTTP_409_CONFLICT, detail=str(error)) from error
         apply_observability(snapshot.config)
+        if on_publish is not None:
+            await on_publish()
         return _current_view(snapshot)
 
     @router.get("/versions", response_model=list[ConfigVersionView])
@@ -649,6 +679,91 @@ def create_admin_config_router(
             message="全部通过" if all_ok else f"失败项: {', '.join(failed)}",
         )
 
+    @router.post(
+        "/integrations/home-assistant/test",
+        response_model=HomeAssistantConnectionTestResult,
+    )
+    async def test_home_assistant_connection(
+        body: HomeAssistantConnectionTestRequest,
+    ) -> HomeAssistantConnectionTestResult:
+        """Validate HA credentials and return a safe entity inventory for allowlisting."""
+        config = body.config
+        started = perf_counter()
+        if config.base_url is None:
+            return HomeAssistantConnectionTestResult(
+                ok=False,
+                latency_ms=0,
+                message="请先填写 Home Assistant 地址",
+                error_type="ha_config_invalid",
+            )
+        try:
+            token = config.secret_value
+            if token is None and config.secret_ref is not None:
+                token = EnvSecretProvider().resolve(config.secret_ref)
+            if not token:
+                raise HomeAssistantError("ha_secret_unavailable")
+            client = HomeAssistantClient(
+                str(config.base_url).rstrip("/"),
+                token,
+                verify_tls=config.verify_tls,
+                connect_timeout_ms=config.connect_timeout_ms,
+                request_timeout_ms=config.request_timeout_ms,
+            )
+            try:
+                states = await client.fetch_states()
+            finally:
+                await client.close()
+        except Exception as error:
+            reason = (
+                error.reason_code if isinstance(error, HomeAssistantError) else type(error).__name__
+            )
+            return HomeAssistantConnectionTestResult(
+                ok=False,
+                latency_ms=(perf_counter() - started) * 1_000,
+                message=f"连接失败：{reason}",
+                error_type=reason,
+            )
+        entities = [
+            HomeAssistantEntityView(
+                entity_id=state.entity_id,
+                friendly_name=str(state.attributes.get("friendly_name") or state.entity_id),
+                domain=state.entity_id.split(".", 1)[0],
+                state=state.state,
+                device_class=(
+                    str(state.attributes["device_class"])
+                    if state.attributes.get("device_class") is not None
+                    else None
+                ),
+                unit_of_measurement=(
+                    str(state.attributes["unit_of_measurement"])
+                    if state.attributes.get("unit_of_measurement") is not None
+                    else None
+                ),
+            )
+            for state in sorted(states, key=lambda item: item.entity_id)
+        ]
+        return HomeAssistantConnectionTestResult(
+            ok=True,
+            latency_ms=(perf_counter() - started) * 1_000,
+            message=f"连接成功，发现 {len(entities)} 个实体",
+            entities=entities,
+        )
+
+    @router.post(
+        "/integrations/home-assistant/proactive/test",
+        response_model=HomeAssistantProactiveTestResult,
+    )
+    async def test_home_assistant_proactive() -> HomeAssistantProactiveTestResult:
+        if on_proactive_test is None:
+            return HomeAssistantProactiveTestResult(ok=False, message="主动感知服务尚未启动")
+        delivered = await on_proactive_test()
+        return HomeAssistantProactiveTestResult(
+            ok=delivered,
+            message=(
+                "测试提醒已发送到最近使用的聊天" if delivered else "没有可接收测试提醒的活动聊天"
+            ),
+        )
+
     @router.get("/tools/amap/metrics", response_model=AmapMetricsResult)
     async def amap_metrics() -> AmapMetricsResult:
         """基于最近 200 次工具调用台账聚合延迟报告。"""
@@ -666,6 +781,28 @@ def create_admin_config_router(
     async def amap_ledger(limit: int = 50) -> list[AmapLedgerEntryView]:
         """返回最近工具调用台账(脱敏)。"""
         entries = ToolLedger().snapshot()
+        return [
+            AmapLedgerEntryView(
+                tool_name=e.tool_name,
+                ok=e.ok,
+                provider=e.provider,
+                latency_ms=e.latency_ms,
+                timestamp=e.timestamp,
+                reason_code=e.reason_code,
+                cache_hit=e.cache_hit,
+                location_source=e.location_source,
+                result_count=e.result_count,
+            )
+            for e in entries[:limit]
+        ]
+
+    @router.get(
+        "/integrations/home-assistant/ledger",
+        response_model=list[AmapLedgerEntryView],
+    )
+    async def home_assistant_ledger(limit: int = 50) -> list[AmapLedgerEntryView]:
+        """返回最近 Home Assistant 查询与控制调用的脱敏台账。"""
+        entries = ToolLedger().snapshot(provider="home_assistant")
         return [
             AmapLedgerEntryView(
                 tool_name=e.tool_name,
@@ -699,6 +836,8 @@ def create_admin_config_router(
         except ValueError as error:
             raise HTTPException(status.HTTP_409_CONFLICT, detail=str(error)) from error
         apply_observability(snapshot.config)
+        if on_publish is not None:
+            await on_publish()
         return _current_view(snapshot)
 
     @router.post("/versions/{version}/rollback", response_model=CurrentConfigView)
@@ -710,6 +849,8 @@ def create_admin_config_router(
         except ValueError as error:
             raise HTTPException(status.HTTP_409_CONFLICT, detail=str(error)) from error
         apply_observability(snapshot.config)
+        if on_publish is not None:
+            await on_publish()
         return _current_view(snapshot)
 
     return router

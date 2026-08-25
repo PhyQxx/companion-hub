@@ -87,11 +87,11 @@ onMounted(async () => {
       </div>
     </el-card>
     <div class="links">
-      <el-button link type="primary" @click="router.push('/models')">管理模型与路由 →</el-button>
-      <el-button link type="primary" @click="router.push('/personas')">编辑人格 →</el-button>
-      <el-button link type="primary" @click="router.push('/memory')">记忆库治理 →</el-button>
-      <el-button link type="primary" @click="router.push('/timeline')">历史时间线 →</el-button>
-      <el-button link type="primary" @click="router.push('/devices')">设备与现实能力 →</el-button>
+      <el-button link type="primary" @click="router.push({ path: '/models', query: { tab: 'services' } })">管理模型与路由 →</el-button>
+      <el-button link type="primary" @click="router.push({ path: '/personas', query: { tab: 'profile' } })">编辑人格 →</el-button>
+      <el-button link type="primary" @click="router.push({ path: '/memory', query: { tab: 'library' } })">记忆库治理 →</el-button>
+      <el-button link type="primary" @click="router.push({ path: '/memory', query: { tab: 'timeline' } })">历史时间线 →</el-button>
+      <el-button link type="primary" @click="router.push({ path: '/devices', query: { tab: 'registry' } })">设备与现实能力 →</el-button>
     </div>
   </section>
 </template>

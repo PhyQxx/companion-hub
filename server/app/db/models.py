@@ -343,9 +343,7 @@ class ConversationRecord(Base):
     title: Mapped[str | None] = mapped_column(String(240))
     status: Mapped[str] = mapped_column(String(16), nullable=False, server_default="active")
     last_seq: Mapped[int] = mapped_column(BigInteger, nullable=False, server_default="0")
-    last_turn_seq: Mapped[int] = mapped_column(
-        BigInteger, nullable=False, server_default="0"
-    )
+    last_turn_seq: Mapped[int] = mapped_column(BigInteger, nullable=False, server_default="0")
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
@@ -357,9 +355,7 @@ class ConversationRecord(Base):
 class MessageRecord(Base):
     __tablename__ = "message"
     __table_args__ = (
-        CheckConstraint(
-            "role IN ('user','assistant','system','tool')", name="ck_message_role"
-        ),
+        CheckConstraint("role IN ('user','assistant','system','tool')", name="ck_message_role"),
         CheckConstraint("privacy_level IN ('L0','L1','L2')", name="ck_message_privacy"),
         UniqueConstraint("conversation_id", "seq", name="uq_message_conversation_seq"),
         Index("ix_message_conversation_seq", "conversation_id", "seq"),
@@ -376,6 +372,27 @@ class MessageRecord(Base):
     privacy_level: Mapped[str] = mapped_column(String(2), nullable=False)
     generation_id: Mapped[UUID | None] = mapped_column(Uuid(as_uuid=True))
     decision_meta: Mapped[dict[str, Any] | None] = mapped_column(JSON)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+
+class HomeAssistantProactiveLogRecord(Base):
+    __tablename__ = "home_assistant_proactive_log"
+    __table_args__ = (
+        Index("ix_ha_proactive_rule_created", "entity_id", "rule_id", "created_at"),
+        Index("ix_ha_proactive_user_created", "user_id", "created_at"),
+    )
+
+    id: Mapped[int] = mapped_column(BIGINT_PK, primary_key=True, autoincrement=True)
+    user_id: Mapped[UUID | None] = mapped_column(Uuid(as_uuid=True))
+    conversation_id: Mapped[UUID | None] = mapped_column(Uuid(as_uuid=True))
+    entity_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    rule_id: Mapped[str] = mapped_column(String(80), nullable=False)
+    trigger_kind: Mapped[str] = mapped_column(String(40), nullable=False)
+    passed_gate: Mapped[bool] = mapped_column(nullable=False, default=False, server_default=false())
+    reason_code: Mapped[str | None] = mapped_column(String(160))
+    message: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )

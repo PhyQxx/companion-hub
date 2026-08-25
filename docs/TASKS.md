@@ -1,7 +1,7 @@
 # Aria 当前任务
 
-> 最后更新：2026-08-24
-> 详细设计入口：[docs/00-文档索引与架构总览.md](./docs/00-文档索引与架构总览.md)
+> 最后更新：2026-08-25
+> 详细设计入口：[00-文档索引与架构总览.md](./00-文档索引与架构总览.md)
 
 本文件只维护当前执行队列、未完成门槛和最新质量基线。历史交付细节留在对应阶段文档，不在这里重复。
 
@@ -14,6 +14,8 @@
 | P6 Batch A～C 语音 | 主链完成 | 真浏览器 ASR/LLM/TTS/viseme/打断已打通；延迟继续优化 |
 | M3A 地图/天气第一批 | 已完成 | 查询、定位、卡片、Admin 自检、200 条台账与延迟报告已落地，见 `docs/35` |
 | M3A 多终端与感知 | 进行中 | Browser Bridge 与 macOS Desktop 已通过真机验收；下一步活动窗口与系统内容选择器 |
+| M3B 认知调度闭环 | 待开始 | 在 M3A 语义事件之上建立 World State、Attention、CognitiveDecision、行动校验与反馈学习 |
+| Admin 信息架构重整 | 进行中 | 领域分组、URL 可恢复二级 Tab 与既有页面映射已落地；待真实浏览器验收 |
 | P6 Batch D Live2D/桌宠 | 等待前置 | M2 延迟达标后再启动 |
 
 ## 2. 当前执行队列
@@ -35,28 +37,52 @@
 - [x] `capture_screen` 主显示器闭环：目标解析、签名命令、终态等待、临时图片 consume-on-read、视觉分析和文字结果回注；L1 使用支持工具调用的 dialogue 路由与当前 GLM 视觉，L2 仍强制本地工具模型与本地视觉。
 - [ ] `capture_screen` 目标扩展：主/指定显示器已完成原生真机验收；活动窗口与系统内容选择器待实现。
 - [x] 浏览器扩展真机闭环：Chrome MV3 配对/签名长连接、`browser.current_tab.read/capture`、受限 JSON/图片临时上传与 Hub `inspect_webpage` 已接入；真 Chrome 已验证单一稳定连接、正文读取和当前页截图。
-- [ ] 隐私策略：当前按用户决定先允许 L1 屏幕截图交给 GLM 视觉；L2 仍强制本地视觉，浏览器读取仍保持 L2；锁屏自动拒绝和细粒度临时授权待补。
+- [ ] 隐私策略：当前按用户决定先允许 L1 屏幕截图交给 GLM 视觉；L2 仍强制本地视觉，浏览器读取仍保持 L2。Desktop 已实现锁屏自动拒绝和“5 分钟内仅下一次截图”的内存态临时授权，待 macOS 真机锁屏/解锁验收后勾选。
 - [x] Web 对话跨终端验收：L2 会话发起“看一下我的电脑网页”，Hub 调用本地 Qwen 的 `inspect_webpage`，Browser Bridge 读取当前页并把结果返回原会话。
 
 ### C. 传感器与主动感知
 
+- [x] Home Assistant HA-0/HA-2：状态同步、实体/字段白名单、`home_get_state`、`home_get_history`、`home_control`、动作白名单、空调确认门禁、脱敏工具台账和后台可视化配置已接入。
+- [x] Home Assistant 真实实例联调：`https://ha.pnkx.top:8` 已完成 token 鉴权、11 个实体白名单、历史/Logbook 读取与健康验收；真实写动作仍需用户指定设备后现场验收。
 - [ ] MQTT 设备接入：每设备凭据、topic ACL、schema/value/rate 校验和在线状态。
 - [ ] 第一硬件闭环：ESP32 + LD2410 存在雷达。
 - [ ] 原始遥测进入 `EphemeralSignal`，按通道去抖并设置过期时间；L3 原始值不落库、不进日志、不进模型。
 - [ ] `read_sensors` 工具读取最新有效状态，支持“现在有人吗”“室温多少”等被动查询。
 - [ ] Perception 规则把稳定状态转换为 `presence.changed`、`user_arrived_home` 等语义事件。
-- [ ] ProactiveEngine 执行 DND、冷却、每日上限、忽略降频和输出终端仲裁。
+- [x] Home Assistant 规则式主动引擎：持续时间判定、安静时段、冷却、每日上限、固定模板、审计台账和 WebSocket 主动投递已落地。
+- [ ] 通用 Proactive Policy：DND、忽略降频、跨来源合并、输出终端仲裁与过期不补发。
 - [ ] 完成单存在传感器 7 天验收：免打扰零违规，重复/误触发可解释。
 
-### D. 并行门槛与优化
+### D. M3B 认知调度闭环
+
+- [ ] 定义 `SemanticEvent`、`WorldState`、`CognitiveDecision` 和 `ActionResult` 契约；决策只保存证据 ID、原因码、信心度、策略/模型版本，不持久化自由文本“内心活动”。
+- [ ] World State Builder：按事件有界组装当前环境、最近交互、真实在线能力、相关 Memory/Timeline、DND 和近期主动次数，不向模型倾倒全量原始输入。
+- [ ] Attention Engine：使用确定性规则完成去抖、新奇度、紧急度、目标相关度、重复惩罚和打扰成本评分；低分静默，达阈值才调用模型。
+- [ ] CognitiveCycle：被动消息与主动事件进入同一认知管线，结构化输出 `ignore / record / inform / ask / suggest / act / escalate`。
+- [ ] Goal/Commitment Store：区分用户明确目标、共享承诺和系统维护目标，支持状态、期限、来源、取消与失效，禁止模型无证据自行创建用户目标。
+- [ ] Action Engine：在现有工具与 Home Assistant 确认门禁之上增加风险分级、幂等执行、结果回读和 `unknown_outcome` 处理；第一版仅开放 `ignore / inform / ask / suggest`。
+- [ ] Feedback/Reflection：记录接受、忽略、稍后、禁止等反馈，用于降频和生成可溯源的偏好记忆候选；不允许反思任务直接改写 Persona 或安全策略。
+- [ ] 建立最小验收集：“用户回家”“灯长时间开启”“水浸告警”三个闭环，覆盖应静默、应询问、紧急升级、重复降频和无证据禁止行动。
+
+### E. 并行门槛与优化
 
 - [ ] P5：从首条可核验每日日志开始连续 14 天真实文字使用；期满复跑闸门并定稿 `docs/32`。
 - [ ] M2：评估流式 ASR 与低延迟语音专用 LLM，达到可行下限后重置窗口完成 20 个完整回合 + 20 个打断判卷。
 - [ ] 本地语音质量：校准“小艾/只回答”等音近词；需要时安装并验收 Silero 与 openWakeWord。
 - [ ] P6 Batch D：仅在 M2 首音频 P90 ≤1.8s、打断 P90 ≤300ms 后进入 OLV Live2D 最小壳与 Tauri 桌宠。
 
+### F. Admin 信息架构重整
+
+- [x] 一级导航按“概览 / 伴侣核心 / 能力接入 / 运维治理”分组，合并记忆与时间线入口，并保留旧 `/timeline` 兼容跳转。
+- [x] 二级 Tab 进入 URL query，可刷新恢复；已有总览、模型、Persona、记忆、时间线、删除台账、设备列表和命令台账复用真实页面。
+- [x] 尚无查询接口的 Tab 使用明确的“待接入真实数据”状态页，不展示伪造指标；Admin typecheck 与 production build 通过。
+- [ ] 真实浏览器验收：登录后逐项检查一级模块、二级 Tab、旧 `/timeline` 跳转、刷新恢复和窄屏导航；发现的 P0/P1 交互问题当批修复。
+- [ ] 验收后按 `docs/05` 的实施顺序接真实数据；不为填满导航而抢跑 M3B 的 Trace、隐私审计、备份恢复和成本能力。
+
 ## 3. 最近完成
 
+- [x] Desktop 屏幕安全闸门代码闭环：macOS 原生会话锁定状态进入 capability 声明与截图执行前双重检查；临时授权仅保存在进程内存、5 分钟过期且只消费一次，锁屏立即撤销；Desktop 协议测试增至 6 通过，TypeScript/Vite build 与原生 `cargo check` 通过。
+- [x] Admin 信息架构骨架：集中式模块/Tab 定义、分组侧栏、URL 可恢复 Tab、工作区路由和 planned 状态页已接入；当前改动已通过 diff-check、Admin typecheck 与 production build，真实浏览器验收仍在执行队列。
 - [x] L1 macOS 屏幕全链验收：真实 Web 会话触发 `capture_screen`，Desktop Client 上传截图，GLM Vision 识别当前聊天界面并生成准确最终回复；运行视觉由拥堵的 `glm-4.6v-flash` 切换为已实测的 `glm-4v-flash`，并增加 429/5xx 重试与 endpoint 输出上限。
 - [x] L1 屏幕工具门控：`capture_screen` 可在 L1 使用支持工具调用的 dialogue 候选与已配置 GLM 视觉；L0 仍拒绝，L2 仍要求本地工具/视觉，`inspect_webpage` 未随之放宽；补充 L1/L0 与浏览器边界回归测试。
 - [x] macOS Desktop 真机验收：安装 Rust 1.98、补齐 Tauri 应用图标，完成 debug `.app` 原生编译、一次性配对、系统钥匙串、屏幕录制 TCC 授权与 `screen.capture(main_display)` 实机命令；命令约 279ms 完成并上传 1.55 MB PNG 临时资产。
@@ -81,7 +107,10 @@
 
 ## 4. 最新质量基线
 
-- 2026-08-24 当前工作树：pytest **287 通过 / 2 跳过**，Desktop 协议测试 **5 通过**、Browser Bridge 协议测试 **3 通过**，Ruff、全量 mypy、Alembic 单 head、`git diff --check`、Chat/Admin/Shared/Desktop/Browser typecheck 与 production build 全部通过；macOS Desktop debug `.app` 原生编译、TCC 截图与 L1 GLM 视觉全链验收通过；
+- 2026-08-24 已提交主线基线：pytest **287 通过 / 2 跳过**，Desktop 协议测试 **5 通过**、Browser Bridge 协议测试 **3 通过**，Ruff、全量 mypy、Alembic 单 head、Chat/Shared/Desktop/Browser typecheck 与 production build 全部通过；macOS Desktop debug `.app` 原生编译、TCC 截图与 L1 GLM 视觉全链验收通过；
+- 2026-08-24 当前 Desktop 安全闸门改动：协议测试 **6 通过**、Desktop typecheck/build、原生 `cargo check` 与 `git diff --check` 通过；本机 Rust stable 缺少 `rustfmt` 组件，未运行 `cargo fmt --check`；
+- 2026-08-24 当前未提交 Admin 重整：`git diff --check`、Admin typecheck 和 Admin production build 通过；全仓闸门无需在仅前端在制改动阶段重复冒充为当前验证结果，浏览器验收后再复跑并刷新本节；
+- 2026-08-24 当前 Home Assistant HA-0/HA-1 改动：全量 mypy 通过，pytest **293 通过 / 2 跳过**；`home_get_state`、默认拒绝、L3 工具隔离和 HA 错误脱敏回归已覆盖，真实实例鉴权等待专用 token；
 - CI 的 mypy 范围已与本地发布闸门对齐为 `server/app server/tests`；
 - 运行配置：v43；L1 视觉为已实测的 `glm-4v-flash`，本地 `local_private` 工具调用已通过真实探测并启用，端点与 private 路由超时均为 120 秒，本地 ASR 为 faster-whisper `base/cpu/int8`；
 - PostgreSQL/pgvector 两项集成测试在本地无 `ARIA_TEST_DATABASE_URL` 时跳过，推送后由 CI PostgreSQL 服务执行。

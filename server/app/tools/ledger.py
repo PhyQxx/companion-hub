@@ -65,6 +65,16 @@ class ToolLedger:
             elif "steps" in data:
                 steps = data.get("steps")
                 result_count = len(steps) if isinstance(steps, list) else None
+            # Home Assistant: current state/history/logbook rows
+            elif "entities" in data:
+                entities = data.get("entities")
+                result_count = len(entities) if isinstance(entities, list) else None
+            elif "states" in data or "logbook" in data:
+                states = data.get("states")
+                logbook = data.get("logbook")
+                result_count = (
+                    len(states) if isinstance(states, list) else 0
+                ) + (len(logbook) if isinstance(logbook, list) else 0)
 
         entry = ToolLedgerEntry(
             tool_name=result.tool_name,
@@ -78,9 +88,12 @@ class ToolLedger:
         )
         self._entries.append(entry)
 
-    def snapshot(self) -> list[ToolLedgerEntry]:
+    def snapshot(self, *, provider: str | None = None) -> list[ToolLedgerEntry]:
         """返回当前台账的快照（ newest first ）。"""
-        return list(reversed(self._entries))
+        entries = reversed(self._entries)
+        if provider is None:
+            return list(entries)
+        return [entry for entry in entries if entry.provider == provider]
 
     def metrics(self) -> ToolMetrics:
         """基于当前台账聚合延迟报告。"""

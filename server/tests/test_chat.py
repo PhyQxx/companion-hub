@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from collections.abc import AsyncIterator, Awaitable, Callable
+from datetime import UTC, datetime
 from pathlib import Path
 from uuid import UUID
 
@@ -15,6 +16,7 @@ from app.auth import AuthService
 from app.chat import ChatService, RuntimeActionCapability
 from app.config import DatabaseConfigStore, HubConfig
 from app.db import AppUserRecord, Base, Database, MessageRecord, create_database
+from app.home_assistant import HomeAssistantState, HomeGetStateTool
 from app.ids import uuid7
 from app.llm import (
     CompletionRequest,
@@ -147,6 +149,38 @@ class FakeBrowserCapabilityProvider:
         ]
 
 
+class FakeHomeCapabilityProvider:
+    async def available_actions(self, user_id: UUID) -> list[RuntimeActionCapability]:
+        del user_id
+        return [
+            RuntimeActionCapability(
+                capability_id=("home_assistant:light.bedroom:state.read"),
+                label="主卧灯",
+                description="可以读取这个已授权 Home Assistant 实体的当前状态",
+            )
+        ]
+
+
+class FakeHomeStateProvider:
+    def __init__(self) -> None:
+        from app.config import HomeAssistantEntityConfig
+
+        self.policy = HomeAssistantEntityConfig(
+            entity_id="light.bedroom",
+            display_name="主卧灯",
+            read_allowed=True,
+        )
+
+    def resolve(self, target: str):  # type: ignore[no-untyped-def]
+        assert target == "主卧灯"
+        return self.policy
+
+    def get_state(self, entity_id: str) -> HomeAssistantState:
+        assert entity_id == "light.bedroom"
+        now = datetime(2026, 8, 25, 1, 0, tzinfo=UTC)
+        return HomeAssistantState(entity_id, "on", {}, now, now)
+
+
 class FakeToolRouter:
     def __init__(self) -> None:
         self.requests: list[CompletionRequest] = []
@@ -241,9 +275,7 @@ async def test_chat_persists_turn_and_uses_recent_context(
         router_builder=lambda config: FakeRouter(config.models["cloud"].model, requests),
     )
     user = await create_user(database)
-    conversation = await service.create_conversation(
-        user_id=user.id, title="Context test"
-    )
+    conversation = await service.create_conversation(user_id=user.id, title="Context test")
 
     first = await service.send_message(
         conversation.id, user_id=user.id, text="hello", privacy_level=PrivacyLevel.L1
@@ -292,6 +324,30 @@ async def test_chat_persists_turn_and_uses_recent_context(
     assert second.user_message.turn_id == second.assistant_message.turn_id
 
 
+async def test_proactive_message_is_persisted_in_latest_active_conversation(
+    database: Database, store: DatabaseConfigStore
+) -> None:
+    service = ChatService(database, store)
+    user = await create_user(database)
+    conversation = await service.create_conversation(user_id=user.id, title="Home")
+
+    result = await service.create_proactive_message(
+        "主卧灯已经持续开启较长时间，需要的话可以告诉我关闭它。",
+        entity_id="light.bedroom",
+        rule_id="light_on_30m",
+        trigger_kind="light_on_too_long",
+    )
+
+    assert result is not None
+    target_user_id, message = result
+    assert target_user_id == user.id
+    assert message.conversation_id == conversation.id
+    assert message.role == "assistant"
+    assert message.seq == 1
+    assert message.decision_meta is not None
+    assert message.decision_meta["kind"] == "home_assistant_proactive"
+
+
 async def test_start_turn_supports_smaller_context_window_for_voice(
     database: Database, store: DatabaseConfigStore
 ) -> None:
@@ -302,9 +358,7 @@ async def test_start_turn_supports_smaller_context_window_for_voice(
         router_builder=lambda config: FakeRouter(config.models["cloud"].model, requests),
     )
     user = await create_user(database)
-    conversation = await service.create_conversation(
-        user_id=user.id, title="Voice trim test"
-    )
+    conversation = await service.create_conversation(user_id=user.id, title="Voice trim test")
     for index in range(3):
         await service.send_message(
             conversation.id,
@@ -531,6 +585,125 @@ async def test_l1_browser_tool_remains_unexposed(
     assert pending.request.tools == []
 
 
+async def test_home_state_read_is_preexecuted_when_model_emits_no_tool_call(
+    database: Database,
+    store: DatabaseConfigStore,
+) -> None:
+    candidate = store.current.config.model_dump(mode="python")
+    candidate["models"]["cloud"]["supports_tool_calling"] = True
+    candidate["integrations"] = {
+        "home_assistant": {
+            "enabled": True,
+            "base_url": "https://ha.example.test",
+            "secret_value": "test-token",
+            "entities": [
+                {
+                    "entity_id": "light.bedroom",
+                    "display_name": "主卧灯",
+                    "read_allowed": True,
+                }
+            ],
+        }
+    }
+    draft = await store.create_draft(HubConfig.model_validate(candidate), actor="test")
+    await store.publish(draft.version, actor="test")
+    requests: list[CompletionRequest] = []
+    service = ChatService(
+        database,
+        store,
+        router_builder=lambda config: FakeRouter(config.models["cloud"].model, requests),
+        capability_provider=FakeHomeCapabilityProvider(),
+        device_tools=(HomeGetStateTool(FakeHomeStateProvider()),),
+    )
+    user = await create_user(database)
+    conversation = await service.create_conversation(user_id=user.id, title="ha read")
+    pending = await service.start_turn(
+        conversation.id,
+        user_id=user.id,
+        text="主卧灯现在开着呢吗",
+        privacy_level=PrivacyLevel.L1,
+    )
+    deltas: list[str] = []
+    events: list[dict[str, object]] = []
+
+    async def capture_event(event: dict[str, object]) -> None:
+        events.append(event)
+
+    result = await service.run_stream(
+        pending,
+        _append_chat_delta(deltas),
+        capture_event,
+    )
+
+    assert len(requests) == 1
+    assert requests[0].tools == []
+    assert requests[0].messages[-1].role == "tool"
+    assert '"state":"on"' in requests[0].messages[-1].content
+    assert [event["type"] for event in events] == ["tool.started", "tool.finished"]
+    assert events[1]["ok"] is True
+    meta = result.assistant_message.decision_meta or {}
+    calls = meta["tool_calls"]
+    assert isinstance(calls, list) and isinstance(calls[0], dict)
+    assert calls[0]["tool_name"] == "home_get_state"
+
+
+async def test_terse_followup_retries_previous_home_state_read_deterministically(
+    database: Database,
+    store: DatabaseConfigStore,
+) -> None:
+    candidate = store.current.config.model_dump(mode="python")
+    candidate["models"]["cloud"]["supports_tool_calling"] = True
+    candidate["integrations"] = {
+        "home_assistant": {
+            "enabled": True,
+            "base_url": "https://ha.example.test",
+            "secret_value": "test-token",
+            "entities": [
+                {
+                    "entity_id": "light.bedroom",
+                    "display_name": "主卧灯",
+                    "read_allowed": True,
+                }
+            ],
+        }
+    }
+    draft = await store.create_draft(HubConfig.model_validate(candidate), actor="test")
+    await store.publish(draft.version, actor="test")
+    requests: list[CompletionRequest] = []
+    builder = lambda config: FakeRouter(config.models["cloud"].model, requests)  # noqa: E731
+    user = await create_user(database)
+    conversation_service = ChatService(database, store, router_builder=builder)
+    conversation = await conversation_service.create_conversation(user_id=user.id, title="ha retry")
+    await conversation_service.send_message(
+        conversation.id,
+        user_id=user.id,
+        text="主卧灯现在开着呢吗",
+        privacy_level=PrivacyLevel.L1,
+    )
+    service = ChatService(
+        database,
+        store,
+        router_builder=builder,
+        capability_provider=FakeHomeCapabilityProvider(),
+        device_tools=(HomeGetStateTool(FakeHomeStateProvider()),),
+    )
+
+    result = await service.send_message(
+        conversation.id,
+        user_id=user.id,
+        text="查到了吗",
+        privacy_level=PrivacyLevel.L1,
+    )
+
+    followup_request = requests[-1]
+    assert followup_request.messages[-1].role == "tool"
+    assert '"state":"on"' in followup_request.messages[-1].content
+    meta = result.assistant_message.decision_meta or {}
+    calls = meta["tool_calls"]
+    assert isinstance(calls, list) and isinstance(calls[0], dict)
+    assert calls[0]["tool_name"] == "home_get_state"
+
+
 async def test_weather_tool_round_hides_preamble_and_records_redacted_metadata(
     database: Database,
     store: DatabaseConfigStore,
@@ -622,9 +795,7 @@ async def test_published_database_config_is_used_on_next_turn(
 
     service = ChatService(database, store, router_builder=builder)
     user = await create_user(database)
-    conversation = await service.create_conversation(
-        user_id=user.id, title=None
-    )
+    conversation = await service.create_conversation(user_id=user.id, title=None)
     await service.send_message(
         conversation.id, user_id=user.id, text="before", privacy_level=PrivacyLevel.L1
     )
@@ -733,9 +904,7 @@ async def test_runtime_meta_and_rest_chat_share_published_persona_version(
         )
         headers = {"Authorization": f"Bearer {auth_session.access_token}"}
 
-        async with AsyncClient(
-            transport=ASGITransport(app=app), base_url="http://test"
-        ) as client:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
             runtime = await client.get("/api/v1/meta/runtime")
             conversation = await client.post(
                 "/api/v1/chat/conversations",
@@ -781,9 +950,7 @@ async def test_model_failure_keeps_user_message_for_retry(
 ) -> None:
     service = ChatService(database, store, router_builder=lambda config: FailingRouter())
     user = await create_user(database)
-    conversation = await service.create_conversation(
-        user_id=user.id, title=None
-    )
+    conversation = await service.create_conversation(user_id=user.id, title=None)
 
     with pytest.raises(LLMRouteExhausted, match="all_model_routes_failed"):
         await service.send_message(
@@ -836,9 +1003,7 @@ async def test_chat_api_auth_validation_and_stable_failure(
     app.include_router(create_chat_router(service, auth_service))
     headers = {"Authorization": f"Bearer {auth_session.access_token}"}
 
-    async with AsyncClient(
-        transport=ASGITransport(app=app), base_url="http://test"
-    ) as client:
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         unauthorized = await client.get("/api/v1/chat/conversations")
         admin_unauthorized = await client.get(
             "/api/v1/chat/conversations",

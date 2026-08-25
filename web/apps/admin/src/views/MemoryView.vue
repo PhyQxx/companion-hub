@@ -1,6 +1,8 @@
 <script setup lang="ts">
 import { computed, inject, onMounted, reactive, ref } from "vue";
 import { AdminApi } from "@aria/shared";
+
+const props = withDefaults(defineProps<{ mode?: string }>(), { mode: "library" });
 import { ElMessageBox } from "element-plus";
 
 interface MemoryItem {
@@ -329,7 +331,7 @@ onMounted(load);
       <article><span>删除台账</span><strong>{{ stats.deleted }}</strong></article>
     </div>
 
-    <div class="panel">
+    <div v-if="props.mode === 'library'" class="panel">
       <h2>检索调试</h2>
       <div class="query-row">
         <el-input v-model="queryForm.text" placeholder="例如：帮我点菜，我能吃香菜吗" @keyup.enter="runQuery" />
@@ -354,7 +356,7 @@ onMounted(load);
       </div>
     </div>
 
-    <div class="panel">
+    <div v-if="props.mode === 'library'" class="panel">
       <div class="panel-head">
         <h2>记忆列表</h2>
         <el-button type="primary" @click="adding = true">手动添加</el-button>
@@ -386,7 +388,7 @@ onMounted(load);
       </el-table>
     </div>
 
-    <div class="panel">
+    <div v-if="props.mode === 'deletion'" class="panel">
       <div class="panel-head">
         <h2>删除台账</h2>
         <div class="row">

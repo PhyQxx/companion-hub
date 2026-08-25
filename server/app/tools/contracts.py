@@ -16,6 +16,8 @@ class ToolContext(StrictModel):
     privacy_level: PrivacyLevel
     user_id: UUID | None = None
     turn_id: UUID | None = None
+    # 原始当前用户消息, 仅供服务端执行策略判断; 工具不得把它写入结果或日志。
+    user_text: str | None = None
     default_city: str | None = None
     # 连接级临时位置(TTL 15 分钟):仅内存传递,禁止写入日志或持久化记录。
     ephemeral_location: ClientLocation | None = None

@@ -1,6 +1,7 @@
 from app.schemas.reply import AgentAction, AgentReply
 
 from .capabilities import (
+    CompositeRuntimeCapabilityProvider,
     RuntimeActionCapability,
     RuntimeCapabilityProvider,
     render_reality_grounding,
@@ -26,6 +27,7 @@ __all__ = [
     "ChatService",
     "ChatTurn",
     "CompletionBackend",
+    "CompositeRuntimeCapabilityProvider",
     "ControlStreamFilter",
     "ConversationView",
     "MemoryConsistencyGuard",

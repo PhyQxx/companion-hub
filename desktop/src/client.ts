@@ -24,6 +24,36 @@ export interface ScreenPermissionStatus {
   granted: boolean;
 }
 
+export interface ScreenCaptureEnvironment extends ScreenPermissionStatus {
+  locked: boolean;
+}
+
+export interface ScreenCaptureGrant {
+  expiresAt: number;
+  remainingUses: number;
+}
+
+export function createScreenCaptureGrant(now = Date.now()): ScreenCaptureGrant {
+  return { expiresAt: now + 5 * 60_000, remainingUses: 1 };
+}
+
+export function screenCaptureGrantActive(
+  grant: ScreenCaptureGrant | null,
+  now = Date.now(),
+): boolean {
+  return grant !== null && grant.remainingUses > 0 && grant.expiresAt > now;
+}
+
+export function consumeScreenCaptureGrant(
+  grant: ScreenCaptureGrant | null,
+  now = Date.now(),
+): ScreenCaptureGrant | null {
+  if (grant === null || !screenCaptureGrantActive(grant, now)) return null;
+  return grant.remainingUses > 1
+    ? { ...grant, remainingUses: grant.remainingUses - 1 }
+    : null;
+}
+
 interface DeviceAssetUpload {
   asset_id: string;
   command_id: string;
@@ -63,6 +93,7 @@ export type ConnectionState = "unpaired" | "connecting" | "online" | "offline" |
 export interface ClientCallbacks {
   onState: (state: ConnectionState, detail: string) => void;
   onEvent: (message: string) => void;
+  authorizeScreenCapture: () => "allowed" | "screen_locked" | "screen_capture_not_granted";
 }
 
 export class DeviceConnection {
@@ -77,9 +108,14 @@ export class DeviceConnection {
   constructor(
     private config: StoredClientConfig,
     private accessToken: string,
-    private capabilities: readonly string[],
+    private capabilities: string[],
     private callbacks: ClientCallbacks,
   ) {}
+
+  setCapabilities(capabilities: string[]): void {
+    this.capabilities = capabilities;
+    this.send({ type: "device.heartbeat", capabilities: this.capabilities });
+  }
 
   connect(): void {
     this.manuallyStopped = false;
@@ -195,6 +231,11 @@ export class DeviceConnection {
         this.sendResult(frame.command_id, "failed", "invalid_command_args", {});
         return;
       }
+      const authorization = this.callbacks.authorizeScreenCapture();
+      if (authorization !== "allowed") {
+        this.sendResult(frame.command_id, "failed", authorization, {});
+        return;
+      }
       const uploaded = await captureAndUpload(
         frame.command_id,
         request.target,
@@ -296,6 +337,10 @@ export async function forgetAccessToken(): Promise<void> {
 
 export function screenCapturePermission(request = false): Promise<ScreenPermissionStatus> {
   return invoke<ScreenPermissionStatus>("screen_capture_permission", { request });
+}
+
+export function screenCaptureEnvironment(): Promise<ScreenCaptureEnvironment> {
+  return invoke<ScreenCaptureEnvironment>("screen_capture_environment");
 }
 
 function captureAndUpload(

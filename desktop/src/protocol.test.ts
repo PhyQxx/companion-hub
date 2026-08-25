@@ -1,6 +1,11 @@
 import { webcrypto } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import { parseScreenCaptureRequest } from "./client";
+import {
+  consumeScreenCaptureGrant,
+  createScreenCaptureGrant,
+  parseScreenCaptureRequest,
+  screenCaptureGrantActive,
+} from "./client";
 import { canonicalFrame, signFrame, verifyFrame, websocketUrl } from "./protocol";
 
 Object.defineProperty(globalThis, "crypto", { value: webcrypto });
@@ -72,5 +77,14 @@ describe("device command protocol", () => {
     expect(websocketUrl("http://127.0.0.1:8000")).toBe(
       "ws://127.0.0.1:8000/ws/devices",
     );
+  });
+
+  it("grants exactly one screen capture for at most five minutes", () => {
+    const now = new Date("2026-08-24T12:00:00Z").getTime();
+    const grant = createScreenCaptureGrant(now);
+    expect(screenCaptureGrantActive(grant, now + 299_999)).toBe(true);
+    expect(screenCaptureGrantActive(grant, now + 300_000)).toBe(false);
+    expect(consumeScreenCaptureGrant(grant, now + 1)).toBeNull();
+    expect(consumeScreenCaptureGrant(grant, now + 300_000)).toBeNull();
   });
 });

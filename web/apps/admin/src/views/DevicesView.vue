@@ -3,6 +3,8 @@ import { computed, inject, onMounted, reactive, ref } from "vue";
 import { ElMessage, ElMessageBox } from "element-plus";
 import { AdminApi } from "@aria/shared";
 
+const props = withDefaults(defineProps<{ mode?: string }>(), { mode: "registry" });
+
 interface DeviceItem {
   id: string;
   owner_user_id: string;
@@ -336,7 +338,7 @@ onMounted(refresh);
       <article><span>最近命令</span><strong>{{ commands.length }}</strong><small>最多显示 100 条</small></article>
     </div>
 
-    <div class="panel device-panel">
+    <div v-if="props.mode === 'registry'" class="panel device-panel">
       <div class="panel-head">
         <div><h2>设备注册表</h2><p>名称、在线状态、能力快照和授权策略。</p></div>
         <el-switch v-model="includeRevoked" active-text="显示已撤销" />
@@ -379,7 +381,7 @@ onMounted(refresh);
       </el-table>
     </div>
 
-    <div class="panel command-panel">
+    <div v-if="props.mode === 'commands'" class="panel command-panel">
       <div class="panel-head">
         <div><h2>命令台账</h2><p>{{ selectedDeviceName }} · 参数与结果均为脱敏摘要。</p></div>
         <el-select v-model="selectedDeviceId" placeholder="全部设备" clearable @change="loadCommands">

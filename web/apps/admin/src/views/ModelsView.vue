@@ -1,7 +1,8 @@
 <script setup lang="ts">
-import { computed, inject, onMounted, ref } from "vue";
+import { computed, inject, onMounted, ref, watch } from "vue";
 import { AdminApi } from "@aria/shared";
 import { ElMessage } from "element-plus";
+import { useRoute } from "vue-router";
 
 type ModelKind = "text" | "vision" | "image_generation" | "video_generation";
 
@@ -154,6 +155,52 @@ interface AmapConnectionTestResult {
   message: string;
 }
 
+interface HomeAssistantEntityConfig {
+  entity_id: string;
+  display_name: string;
+  aliases: string[];
+  read_allowed: boolean;
+  history_allowed: boolean;
+  history_max_hours: number;
+  allowed_actions: Array<"turn_on" | "turn_off" | "toggle" | "set_temperature">;
+  confirmation_required_actions: Array<"turn_on" | "turn_off" | "toggle" | "set_temperature">;
+  privacy_level: "L0" | "L1" | "L2" | "L3";
+  allowed_attributes: string[];
+}
+
+interface HomeAssistantConfig {
+  enabled: boolean;
+  instance_id: string;
+  base_url: string | null;
+  secret_ref?: string | null;
+  secret_value?: string | null;
+  verify_tls: boolean;
+  allow_insecure_local_http: boolean;
+  connect_timeout_ms: number;
+  request_timeout_ms: number;
+  reconnect_min_seconds: number;
+  reconnect_max_seconds: number;
+  state_cache_ttl_seconds: number;
+  entities: HomeAssistantEntityConfig[];
+}
+
+interface HomeAssistantDiscoveredEntity {
+  entity_id: string;
+  friendly_name: string;
+  domain: string;
+  state: string;
+  device_class?: string | null;
+  unit_of_measurement?: string | null;
+}
+
+interface HomeAssistantConnectionTestResult {
+  ok: boolean;
+  latency_ms: number;
+  message: string;
+  error_type?: string | null;
+  entities: HomeAssistantDiscoveredEntity[];
+}
+
 interface HubConfig {
   schema_version: number;
   models: Record<string, HubModel>;
@@ -165,6 +212,7 @@ interface HubConfig {
   };
   voice?: HubVoiceConfig | null;
   tools?: HubToolsConfig;
+  integrations?: { home_assistant: HomeAssistantConfig };
   observability: { log_level: string; trace_sample_rate: number; retain_days: number };
 }
 interface HubToolsConfig {
@@ -281,6 +329,9 @@ interface DraftState {
   };
   voice: DraftVoice;
   tools: HubToolsConfig;
+  integrations: {
+    home_assistant: HomeAssistantConfig & { secret_mode: "value" | "ref" | "none" };
+  };
   observability: { log_level: string; trace_sample_rate: number; retain_days: number };
 }
 
@@ -298,8 +349,21 @@ const testingVoiceAsr = ref(false);
 const voiceAsrCheck = ref<VoiceAsrEnvironmentCheckResult | null>(null);
 const testingAmap = ref(false);
 const amapTestResult = ref<AmapConnectionTestResult | null>(null);
+const testingHomeAssistant = ref(false);
+const homeAssistantTestResult = ref<HomeAssistantConnectionTestResult | null>(null);
+const homeAssistantSearch = ref("");
+const selectedDiscoveredEntityIds = ref<string[]>([]);
 const activeModelTab = ref(0);
 const activeMainTab = ref("routes");
+const route = useRoute();
+watch(
+  () => route.query.tab,
+  (tab) => {
+    const mapping: Record<string, string> = { services: "models", routing: "routes", tools: "tools", voice: "voice", home_assistant: "home_assistant" };
+    activeMainTab.value = mapping[String(tab ?? "services")] ?? "models";
+  },
+  { immediate: true },
+);
 
 const defaultModel = (): DraftModel => ({
   key: "",
@@ -349,6 +413,23 @@ const defaultTools = (): HubToolsConfig => ({
     max_concurrency: 2,
     requests_per_minute: 30,
   },
+});
+
+const defaultHomeAssistant = (): DraftState["integrations"]["home_assistant"] => ({
+  enabled: false,
+  instance_id: "home-main",
+  base_url: "https://ha.pnkx.top:8",
+  secret_mode: "value",
+  secret_ref: null,
+  secret_value: null,
+  verify_tls: true,
+  allow_insecure_local_http: false,
+  connect_timeout_ms: 5000,
+  request_timeout_ms: 8000,
+  reconnect_min_seconds: 1,
+  reconnect_max_seconds: 30,
+  state_cache_ttl_seconds: 300,
+  entities: [],
 });
 
 const defaultVoiceAsr = (): DraftVoiceAsr => ({
@@ -479,6 +560,86 @@ async function testAmapConnection() {
   }
 }
 
+async function testHomeAssistantConnection() {
+  const config = draftToHubConfig(draft.value).integrations?.home_assistant;
+  if (!config?.base_url) {
+    ElMessage.warning("请先填写 Home Assistant 地址");
+    return;
+  }
+  if (!config.secret_value && !config.secret_ref) {
+    ElMessage.warning("请先填写长期访问令牌");
+    return;
+  }
+  testingHomeAssistant.value = true;
+  homeAssistantTestResult.value = null;
+  selectedDiscoveredEntityIds.value = [];
+  try {
+    const result = await api.request<HomeAssistantConnectionTestResult>(
+      "/api/v1/admin/config/integrations/home-assistant/test",
+      { method: "POST", body: JSON.stringify({ config }) },
+    );
+    homeAssistantTestResult.value = result;
+    if (result.ok) ElMessage.success(result.message);
+    else ElMessage.error(result.message);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Home Assistant 连接测试失败";
+    ElMessage.error(message);
+  } finally {
+    testingHomeAssistant.value = false;
+  }
+}
+
+const filteredHomeAssistantEntities = computed(() => {
+  const keyword = homeAssistantSearch.value.trim().toLocaleLowerCase();
+  const rows = homeAssistantTestResult.value?.entities ?? [];
+  if (!keyword) return rows;
+  return rows.filter((item) =>
+    [item.entity_id, item.friendly_name, item.domain, item.device_class ?? ""]
+      .some((value) => value.toLocaleLowerCase().includes(keyword)),
+  );
+});
+
+function addSelectedHomeAssistantEntities() {
+  const rows = homeAssistantTestResult.value?.entities ?? [];
+  const selected = new Set(selectedDiscoveredEntityIds.value);
+  const policies = draft.value.integrations.home_assistant.entities;
+  const existing = new Set(policies.map((item) => item.entity_id));
+  for (const item of rows) {
+    if (!selected.has(item.entity_id) || existing.has(item.entity_id)) continue;
+    policies.push({
+      entity_id: item.entity_id,
+      display_name: item.friendly_name,
+      aliases: [],
+      read_allowed: true,
+      history_allowed: false,
+      history_max_hours: 24,
+      allowed_actions: [],
+      confirmation_required_actions: [],
+      privacy_level: "L1",
+      allowed_attributes: ["friendly_name", "device_class", "unit_of_measurement"],
+    });
+  }
+  selectedDiscoveredEntityIds.value = [];
+}
+
+function removeHomeAssistantEntity(index: number) {
+  draft.value.integrations.home_assistant.entities.splice(index, 1);
+}
+
+const homeAssistantActionLabels: Record<string, string> = {
+  turn_on: "打开",
+  turn_off: "关闭",
+  toggle: "切换",
+  set_temperature: "设置温度",
+};
+
+function homeAssistantActions(entityId: string): string[] {
+  const domain = entityId.split(".", 1)[0];
+  if (domain === "light" || domain === "switch") return ["turn_on", "turn_off", "toggle"];
+  if (domain === "climate") return ["turn_on", "turn_off", "set_temperature"];
+  return [];
+}
+
 const draft = ref<DraftState>({
   schema_version: 1,
   models: [],
@@ -486,6 +647,7 @@ const draft = ref<DraftState>({
   capability_models: defaultCapabilityModels(),
   voice: defaultVoice(),
   tools: defaultTools(),
+  integrations: { home_assistant: defaultHomeAssistant() },
   observability: defaultObservability(),
 });
 
@@ -498,6 +660,7 @@ function hubConfigToDraft(config: HubConfig | undefined | null): DraftState {
       capability_models: defaultCapabilityModels(),
       voice: defaultVoice(),
       tools: defaultTools(),
+      integrations: { home_assistant: defaultHomeAssistant() },
       observability: defaultObservability(),
     };
   }
@@ -562,6 +725,14 @@ function hubConfigToDraft(config: HubConfig | undefined | null): DraftState {
     secret_value: p.secret_value ?? "",
     secret_ref: p.secret_ref ?? "env:MIMO_API_KEY",
   }));
+  const homeAssistant = config.integrations?.home_assistant;
+  const draftHomeAssistant = homeAssistant
+    ? {
+        ...homeAssistant,
+        base_url: homeAssistant.base_url ?? "",
+        secret_mode: homeAssistant.secret_value ? "value" as const : homeAssistant.secret_ref ? "ref" as const : "none" as const,
+      }
+    : defaultHomeAssistant();
   return {
     schema_version: config.schema_version ?? 1,
     models,
@@ -573,6 +744,7 @@ function hubConfigToDraft(config: HubConfig | undefined | null): DraftState {
     },
     voice: { asr: draftAsr, tts: draftTts },
     tools: config.tools ?? defaultTools(),
+    integrations: { home_assistant: draftHomeAssistant },
     observability: config.observability ?? defaultObservability(),
   };
 }
@@ -646,6 +818,18 @@ function draftToHubConfig(d: DraftState): HubConfig {
     enabled: p.enabled,
     ...(p.provider === "mimo" ? assembleSecret(p) : { secret_ref: null, secret_value: null }),
   }));
+  const { secret_mode: _homeAssistantSecretMode, ...homeAssistantBase } = d.integrations.home_assistant;
+  const homeAssistant: HomeAssistantConfig = {
+    ...homeAssistantBase,
+    base_url: homeAssistantBase.base_url || null,
+    entities: homeAssistantBase.entities.map((entity) => ({
+      ...entity,
+      confirmation_required_actions: entity.confirmation_required_actions.filter((action) =>
+        entity.allowed_actions.includes(action),
+      ),
+    })),
+    ...assembleSecret(d.integrations.home_assistant),
+  };
   return {
     schema_version: d.schema_version,
     models,
@@ -657,14 +841,15 @@ function draftToHubConfig(d: DraftState): HubConfig {
     },
     voice: { asr: voiceAsr, tts: voiceTts },
     tools: d.tools,
+    integrations: { home_assistant: homeAssistant },
     observability: d.observability,
   };
 }
 
 interface SecretCarrier {
   secret_mode: "value" | "ref" | "none";
-  secret_value: string;
-  secret_ref: string;
+  secret_value?: string | null;
+  secret_ref?: string | null;
 }
 
 function assembleSecret(carrier: SecretCarrier): { secret_ref: string | null; secret_value: string | null } {
@@ -862,6 +1047,30 @@ function validateCandidate(config: HubConfig): string | null {
       return "至少需要一个启用的文本模型声明支持 Function Calling";
     }
   }
+  const homeAssistant = config.integrations?.home_assistant;
+  if (homeAssistant?.enabled) {
+    if (!/^https?:\/\//.test((homeAssistant.base_url ?? "").trim())) {
+      return "Home Assistant 地址需以 http:// 或 https:// 开头";
+    }
+    if (!homeAssistant.secret_value && !homeAssistant.secret_ref) {
+      return "启用 Home Assistant 前必须填写长期访问令牌";
+    }
+    if (homeAssistant.secret_ref && !SECRET_REF_PATTERN.test(homeAssistant.secret_ref)) {
+      return "Home Assistant 令牌环境变量引用格式应为 env:ARIA_HA_TOKEN";
+    }
+    if (!homeAssistant.entities.some((item) => item.read_allowed)) {
+      return "启用 Home Assistant 前至少授权一个可读实体";
+    }
+    for (const entity of homeAssistant.entities) {
+      const validActions = homeAssistantActions(entity.entity_id);
+      const invalidAction = entity.allowed_actions.find((action) => !validActions.includes(action));
+      if (invalidAction) return `实体「${entity.display_name}」不支持动作 ${invalidAction}`;
+      const invalidConfirmation = entity.confirmation_required_actions.find(
+        (action) => !entity.allowed_actions.includes(action),
+      );
+      if (invalidConfirmation) return `实体「${entity.display_name}」的确认动作尚未允许`;
+    }
+  }
   return null;
 }
 
@@ -937,19 +1146,15 @@ onMounted(load);
 
 <template>
   <section v-if="current" class="models-page">
-    <div class="page-intro">
-      <div>
-        <h1>模型与路由</h1>
-        <p>管理 AI 模型配置与路由策略</p>
-      </div>
-      <div class="intro-meta">
-        <div><span>配置哈希</span><code>{{ current.content_hash.slice(0, 12) }}</code></div>
-        <div><span>状态</span><strong class="live-status">● 已生效</strong></div>
+    <Teleport to="#module-tab-actions">
+      <div class="tabs-actions">
+        <div class="tab-meta"><span>配置哈希</span><code>{{ current.content_hash.slice(0, 12) }}</code></div>
+        <div class="tab-meta"><span>状态</span><strong class="live-status">● 已生效</strong></div>
         <el-button plain @click="syncDraftJson(); editMode = editMode === 'json' ? 'visual' : 'json'">{{ editMode === 'json' ? '返回可视化' : '配置 JSON' }}</el-button>
         <el-button @click="load">重置全部修改</el-button>
         <el-button type="primary" :loading="busy" @click="saveConfig">保存并生效</el-button>
       </div>
-    </div>
+    </Teleport>
 
     <div class="summary-grid">
       <article><span class="summary-icon">▱</span><div><small>启用模型</small><strong>{{ enabledModelCount }} 个</strong></div><b>运行中</b></article>
@@ -959,12 +1164,16 @@ onMounted(load);
     </div>
 
     <div v-if="editMode === 'json'" class="global-card json-card">
-      <div class="global-head"><div><h2>完整配置 JSON</h2><p>这里编辑的是模型、路由和日志在内的整份配置。</p></div><el-tag type="warning" effect="plain">高级模式</el-tag></div>
+      <div class="global-head">
+        <div><h2>完整配置 JSON</h2><p>这里编辑的是模型、路由和日志在内的整份配置。</p></div>
+        <el-tag type="warning" effect="plain">高级模式</el-tag>
+      </div>
       <div class="json-editor"><el-input v-model="draftJson" type="textarea" :rows="20" resize="vertical" spellcheck="false" @input="syncFromDraftJson" /></div>
     </div>
 
-    <el-tabs v-else v-model="activeMainTab" class="main-tabs">
-      <el-tab-pane label="路由与能力" name="routes">
+    <div v-else class="tabs-with-actions">
+      <el-tabs v-model="activeMainTab" class="main-tabs main-tabs--navigation-hidden">
+        <el-tab-pane label="路由与能力" name="routes" class="scroll-pane">
         <div class="global-card">
           <div class="global-head"><div><h2>全局路由策略</h2><p>作用于整个 Hub，不属于某一个模型。决定不同任务优先调用哪个模型以及失败后的备用链。</p></div><el-tag effect="plain">全局配置</el-tag></div>
           <div class="route-list">
@@ -1002,7 +1211,7 @@ onMounted(load);
         </div>
       </el-tab-pane>
 
-      <el-tab-pane label="地图与天气" name="tools">
+      <el-tab-pane label="工具服务" name="tools" class="scroll-pane">
         <div class="global-card">
           <div class="global-head">
             <div><h2>查询工具</h2><p>服务端调用高德 Web 服务，Key 不会下发到聊天前端。</p></div>
@@ -1061,7 +1270,7 @@ onMounted(load);
         </div>
       </el-tab-pane>
 
-      <el-tab-pane label="语音" name="voice">
+      <el-tab-pane label="语音服务" name="voice" class="scroll-pane">
         <div class="global-card">
           <div class="global-head">
             <div>
@@ -1189,7 +1398,42 @@ onMounted(load);
         </div>
       </el-tab-pane>
 
-      <el-tab-pane label="模型列表" name="models">
+      <el-tab-pane label="Home Assistant" name="home_assistant" class="scroll-pane">
+        <div class="global-card">
+          <div class="global-head">
+            <div>
+              <h2>Home Assistant 连接</h2>
+              <p>所有设置保存在配置中心。长期访问令牌仅在服务端使用，不会下发到聊天端。</p>
+            </div>
+            <el-switch v-model="draft.integrations.home_assistant.enabled" active-text="启用" />
+          </div>
+          <div class="form-grid three global-fields">
+            <label class="field"><span>实例标识</span><el-input v-model="draft.integrations.home_assistant.instance_id" placeholder="home-main" /></label>
+            <label class="field"><span>Home Assistant 地址</span><el-input v-model="draft.integrations.home_assistant.base_url" placeholder="https://ha.example.com" /></label>
+            <label class="field"><span>令牌保存方式</span><el-select v-model="draft.integrations.home_assistant.secret_mode"><el-option label="后台直接保存" value="value" /><el-option label="环境变量引用" value="ref" /><el-option label="暂不配置" value="none" /></el-select></label>
+            <label v-if="draft.integrations.home_assistant.secret_mode === 'value'" class="field"><span>长期访问令牌</span><el-input v-model="draft.integrations.home_assistant.secret_value" type="password" show-password placeholder="粘贴 Home Assistant 长期访问令牌" /></label>
+            <label v-else-if="draft.integrations.home_assistant.secret_mode === 'ref'" class="field"><span>环境变量引用</span><el-input v-model="draft.integrations.home_assistant.secret_ref" placeholder="env:ARIA_HA_TOKEN" /></label>
+            <label class="field"><span>TLS 证书校验</span><el-switch v-model="draft.integrations.home_assistant.verify_tls" /></label>
+            <label class="field"><span>允许本地 HTTP</span><el-switch v-model="draft.integrations.home_assistant.allow_insecure_local_http" /></label>
+          </div>
+          <div class="form-grid three global-fields">
+            <label class="field"><span>连接超时（ms）</span><el-input-number v-model="draft.integrations.home_assistant.connect_timeout_ms" :min="500" :max="30000" /></label>
+            <label class="field"><span>请求超时（ms）</span><el-input-number v-model="draft.integrations.home_assistant.request_timeout_ms" :min="500" :max="30000" /></label>
+            <label class="field"><span>状态缓存有效期（秒）</span><el-input-number v-model="draft.integrations.home_assistant.state_cache_ttl_seconds" :min="5" :max="86400" /></label>
+            <label class="field"><span>重连最短等待（秒）</span><el-input-number v-model="draft.integrations.home_assistant.reconnect_min_seconds" :min="0.1" :max="30" :step="0.5" /></label>
+            <label class="field"><span>重连最长等待（秒）</span><el-input-number v-model="draft.integrations.home_assistant.reconnect_max_seconds" :min="1" :max="300" /></label>
+          </div>
+          <div class="form-actions">
+            <el-button type="primary" plain :loading="testingHomeAssistant" @click="testHomeAssistantConnection">测试连接并读取实体</el-button>
+          </div>
+          <div v-if="homeAssistantTestResult" class="connection-result" :class="homeAssistantTestResult.ok ? 'success' : 'error'">
+            <div class="connection-result-head"><strong>{{ homeAssistantTestResult.message }}</strong><span>{{ Math.round(homeAssistantTestResult.latency_ms) }} ms</span></div>
+            <div v-if="homeAssistantTestResult.error_type" class="connection-result-meta"><span>错误：{{ homeAssistantTestResult.error_type }}</span></div>
+          </div>
+        </div>
+      </el-tab-pane>
+
+      <el-tab-pane label="模型服务" name="models" class="model-services-pane">
         <div class="workspace-card">
           <aside class="models-column">
             <div class="column-head">
@@ -1333,19 +1577,20 @@ onMounted(load);
           <div v-else class="empty-editor"><el-empty description="还没有模型"><el-button type="primary" @click="addModel">添加模型</el-button></el-empty></div>
         </div>
       </el-tab-pane>
-    </el-tabs>
+      </el-tabs>
+    </div>
   </section>
 </template>
 
 <style scoped>
-.models-page { --ink:#172033; --sub:#68748a; --border:#e3e8f2; --surface:#fff; --soft:#f7f9fd; --brand:#4f6df5; --brand-soft:#eef2ff; --green:#26b873; color:var(--ink); background:#f6f8fc; min-height:0; height:100%; padding:28px 30px 0; display:flex; flex-direction:column; gap:18px; overflow:hidden; }
-.page-intro { display:flex; align-items:flex-start; justify-content:space-between; gap:24px; flex-shrink:0; }
-.page-intro h1 { margin:0; font-size:24px; letter-spacing:-.02em; }
-.page-intro p { margin:7px 0 0; color:var(--sub); font-size:13px; }
-.intro-meta { display:flex; align-items:center; gap:20px; }
-.intro-meta>div { display:grid; gap:5px; min-width:100px; }
-.intro-meta span { color:var(--sub); font-size:11px; }
-.intro-meta strong,.intro-meta code { color:var(--ink); font-size:13px; }
+.models-page { --ink:#172033; --sub:#68748a; --border:#e3e8f2; --surface:#fff; --soft:#f7f9fd; --brand:#4f6df5; --brand-soft:#eef2ff; --green:#26b873; color:var(--ink); background:#f6f8fc; min-height:0; height:100%; box-sizing:border-box; padding:16px 22px 0; display:flex; flex-direction:column; gap:14px; overflow:hidden; }
+.tabs-with-actions { display:flex; align-items:stretch; gap:12px; flex:1; min-height:0; overflow:hidden; }
+.tabs-with-actions .main-tabs { flex:1; min-width:0; }
+.tabs-actions { display:flex; align-items:center; gap:12px; white-space:nowrap; }
+.tab-meta { display:grid; gap:5px; min-width:100px; }
+.tab-meta span { color:var(--sub); font-size:11px; }
+.tab-meta strong,.tab-meta code { color:var(--ink); font-size:13px; }
+
 .summary-grid { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:14px; flex-shrink:0; }
 .summary-grid article { min-height:90px; display:flex; align-items:center; gap:13px; padding:18px; background:var(--surface); border:1px solid var(--border); border-radius:12px; box-shadow:0 5px 18px rgba(36,50,82,.035); }
 .summary-grid article>div { display:grid; gap:5px; }
@@ -1355,10 +1600,10 @@ onMounted(load);
 .summary-icon,.model-glyph { display:grid; place-items:center; width:42px; height:42px; border-radius:12px; color:var(--brand); background:var(--brand-soft); font-size:22px; flex:0 0 auto; }
 .workspace-card,.global-card { background:var(--surface); border:1px solid var(--border); border-radius:13px; box-shadow:0 8px 24px rgba(36,50,82,.035); }
 .workspace-card { display:grid; grid-template-columns:330px minmax(0,1fr); min-height:0; height:100%; overflow:hidden; box-sizing:border-box; }
-.models-column { min-width:0; border-right:1px solid var(--border); display:flex; flex-direction:column; overflow:auto; }
-.column-head { min-height:68px; padding:16px 18px; display:flex; align-items:center; justify-content:space-between; border-bottom:1px solid var(--border); }
+.models-column { min-width:0; min-height:0; border-right:1px solid var(--border); display:flex; flex-direction:column; overflow:hidden; }
+.column-head { min-height:68px; padding:16px 18px; display:flex; align-items:center; justify-content:space-between; border-bottom:1px solid var(--border); flex-shrink:0; }
 .column-head h2,.editor h2 { margin:0; font-size:15px; }
-.model-list { display:grid; align-content:start; border-right:0; background:#fff; }
+.model-list { display:grid; align-content:start; flex:1; min-height:0; overflow-y:auto; border-right:0; background:#fff; }
 .model-row { width:100%; height:auto; line-height:normal; border:0; border-bottom:1px solid #edf0f6; border-radius:0; background:white; color:var(--ink); display:grid; grid-template-columns:8px minmax(0,1fr) auto; gap:12px; align-items:center; text-align:left; padding:18px 18px !important; }
 .model-row:hover { background:#fafbff; }
 .model-row.active,.model-row.is-active { color:var(--ink); background:#f4f6ff; box-shadow:inset 3px 0 var(--brand); }
@@ -1385,13 +1630,16 @@ onMounted(load);
 .section-tabs :deep(.el-tabs__item.is-active) { color:var(--brand); font-weight:600; }
 .section-tabs :deep(.el-tabs__content) { flex:1; overflow:auto; min-height:0; }
 .main-tabs { min-width:0; flex:1; overflow:hidden; display:flex; flex-direction:column; }
+.main-tabs--navigation-hidden > :deep(.el-tabs__header) { display:none; }
 .main-tabs :deep(.el-tabs) { display:flex; flex-direction:column; height:100%; }
 .main-tabs :deep(.el-tabs__header) { margin:0 0 14px; border-bottom:1px solid var(--border); flex-shrink:0; }
 .main-tabs :deep(.el-tabs__nav-wrap::after) { display:none; }
 .main-tabs :deep(.el-tabs__item) { height:46px; padding:0 18px; color:#60708a; font-size:13px; }
 .main-tabs :deep(.el-tabs__item.is-active) { color:var(--brand); font-weight:600; }
-.main-tabs :deep(.el-tabs__content) { flex:1; overflow:auto; min-height:0; display:flex; flex-direction:column; }
+.main-tabs :deep(.el-tabs__content) { flex:1; overflow:hidden; min-height:0; display:flex; flex-direction:column; }
 .main-tabs :deep(.el-tab-pane) { flex:1; min-height:0; }
+.main-tabs :deep(.scroll-pane) { height:100%; overflow-y:auto; padding-bottom:16px; box-sizing:border-box; }
+.main-tabs :deep(.model-services-pane) { height:100%; overflow:hidden; }
 .main-tabs :deep(.el-tabs__active-bar) { background:var(--brand); height:2px; }
 .editor-body { padding:26px 26px 30px; }
 .form-section { display:grid; gap:22px; }
@@ -1425,6 +1673,12 @@ onMounted(load);
 .voice-tts-card { display:block; }
 .voice-tts-card .route-name { display:flex; gap:10px; align-items:center; margin-bottom:12px; }
 .voice-tts-actions { display:flex; gap:8px; justify-content:flex-end; margin-top:12px; }
+.form-actions { display:flex; gap:10px; align-items:center; }
+.ha-policy-card { display:grid; gap:14px; padding:16px; border:1px solid var(--border); border-radius:10px; background:#fbfcff; }
+.ha-policy-head { display:flex; align-items:center; gap:12px; }
+.ha-policy-head code { color:#4058ca; background:#eef2ff; padding:5px 8px; border-radius:6px; }
+.ha-policy-head :deep(.el-switch) { margin-left:auto; }
+.ha-attributes { grid-column:1 / -1; }
 .route-name { display:grid; gap:4px; padding-top:4px; }
 .route-name strong { font-size:12px; }
 .route-name span { color:var(--sub); font-size:9px; }
@@ -1463,8 +1717,7 @@ onMounted(load);
 }
 @media (max-width:820px) {
   .models-page { padding:18px; }
-  .page-intro { flex-direction:column; }
-  .intro-meta { width:100%; justify-content:space-between; }
+
   .workspace-card { grid-template-columns:1fr; }
   .models-column { border-right:0; border-bottom:1px solid var(--border); }
   .model-list { display:flex; overflow-x:auto; }

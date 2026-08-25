@@ -144,6 +144,7 @@ tools:
   enabled: false
   max_tool_rounds: 1
   query:
+    enabled: true
     weather_enabled: true
     nearby_enabled: true
     route_enabled: true
@@ -157,6 +158,22 @@ tools:
     max_retries: 1
     max_concurrency: 2
     requests_per_minute: 30
+
+# Home Assistant 连接、令牌、实体、历史和动作白名单统一在管理后台配置；
+# 此处只保留首次启动的未启用默认值。
+integrations:
+  home_assistant:
+    enabled: false
+    instance_id: home-main
+    base_url: https://ha.pnkx.top:8
+    verify_tls: true
+    allow_insecure_local_http: false
+    connect_timeout_ms: 5000
+    request_timeout_ms: 8000
+    reconnect_min_seconds: 1
+    reconnect_max_seconds: 30
+    state_cache_ttl_seconds: 300
+    entities: []
 
 capability_models:
   vision: zhipu_vision_free

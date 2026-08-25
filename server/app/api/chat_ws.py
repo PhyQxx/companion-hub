@@ -62,9 +62,7 @@ class ChatConnection:
     # 连接级临时位置缓存: 不落库、不进日志, 失效后自动回落默认城市。
     location: ClientLocation | None = None
 
-    def resolve_location(
-        self, payload: ClientLocationPayload | None
-    ) -> ClientLocation | None:
+    def resolve_location(self, payload: ClientLocationPayload | None) -> ClientLocation | None:
         if payload is not None:
             self.location = payload.to_client_location()
         return self.location
@@ -232,8 +230,7 @@ class ChatWebSocketManager:
                 pending.generation_id if pending else None,
                 error.reason_code,
                 ", ".join(
-                    f"{item.endpoint}#{item.attempt}:{item.error_type}"
-                    for item in error.failures
+                    f"{item.endpoint}#{item.attempt}:{item.error_type}" for item in error.failures
                 ),
             )
             await self._send_failure(
@@ -257,9 +254,7 @@ class ChatWebSocketManager:
             )
         except Exception:
             # 前端只拿通用 reason_code; 真实异常必须落日志, 否则线上无法定位.
-            logger.exception(
-                "chat generation failed for conversation %s", frame.conversation_id
-            )
+            logger.exception("chat generation failed for conversation %s", frame.conversation_id)
             await self._send_failure(connection, frame, pending, "generation_failed")
         finally:
             if pending is not None:
@@ -304,6 +299,13 @@ class ChatWebSocketManager:
         for connection, result in zip(connections, results, strict=True):
             if isinstance(result, Exception):
                 self.disconnect(connection)
+
+    async def broadcast_proactive(self, user_id: UUID, message: MessageView) -> None:
+        await self.broadcast(
+            user_id,
+            message.conversation_id,
+            _message_event(message, event_type="proactive.committed"),
+        )
 
     def _discard_finished_task(self, task: asyncio.Task[None]) -> None:
         with suppress(asyncio.CancelledError):
@@ -376,9 +378,7 @@ async def _handle_frame(
                 await manager.subscribe(connection, conversation_id, after_seq)
         elif frame_type == "sync.request":
             sync_frame = SyncFrame.model_validate(raw)
-            await manager.subscribe(
-                connection, sync_frame.conversation_id, sync_frame.after_seq
-            )
+            await manager.subscribe(connection, sync_frame.conversation_id, sync_frame.after_seq)
         elif frame_type == "message.send":
             manager.start_generation(connection, SendFrame.model_validate(raw))
         elif frame_type == "turn.cancel":

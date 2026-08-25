@@ -6,19 +6,17 @@ import App from "./App.vue";
 import "./style.css";
 
 const router = createRouter({
-  history: createWebHistory("/admin"),
+  history: createWebHistory("/admin/"),
   routes: [
-    { path: "/", component: () => import("./views/OverviewView.vue") },
-    { path: "/models", component: () => import("./views/ModelsView.vue") },
-    { path: "/personas", component: () => import("./views/PersonasView.vue") },
-    { path: "/memory", component: () => import("./views/MemoryView.vue") },
-    { path: "/timeline", component: () => import("./views/TimelineView.vue") },
-    { path: "/devices", component: () => import("./views/DevicesView.vue") },
-    {
-      path: "/:module(logs|privacy|settings)",
-      component: () => import("./views/PlaceholderView.vue"),
-      props: true,
-    },
+    { path: "/", component: () => import("./views/ModuleWorkspaceView.vue"), props: { module: "overview" } },
+    { path: "/models", component: () => import("./views/ModuleWorkspaceView.vue"), props: { module: "models" } },
+    { path: "/personas", component: () => import("./views/ModuleWorkspaceView.vue"), props: { module: "persona" } },
+    { path: "/memory", component: () => import("./views/ModuleWorkspaceView.vue"), props: { module: "memory" } },
+    { path: "/timeline", redirect: { path: "/memory", query: { tab: "timeline" } } },
+    { path: "/devices", component: () => import("./views/ModuleWorkspaceView.vue"), props: { module: "devices" } },
+    { path: "/logs", component: () => import("./views/ModuleWorkspaceView.vue"), props: { module: "logs" } },
+    { path: "/privacy", component: () => import("./views/ModuleWorkspaceView.vue"), props: { module: "privacy" } },
+    { path: "/settings", component: () => import("./views/ModuleWorkspaceView.vue"), props: { module: "system" } },
     { path: "/:pathMatch(.*)*", redirect: "/" },
   ],
 });

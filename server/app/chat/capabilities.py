@@ -8,7 +8,7 @@
 """
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from typing import Protocol
 from uuid import UUID
@@ -27,6 +27,18 @@ class RuntimeCapabilityProvider(Protocol):
     """由未来的设备/工具注册表实现，只返回当下可用且已授权的动作。"""
 
     async def available_actions(self, user_id: UUID) -> Sequence[RuntimeActionCapability]: ...
+
+
+class CompositeRuntimeCapabilityProvider:
+    def __init__(self, providers: Iterable[RuntimeCapabilityProvider]) -> None:
+        self._providers = tuple(providers)
+
+    async def available_actions(self, user_id: UUID) -> Sequence[RuntimeActionCapability]:
+        actions: dict[str, RuntimeActionCapability] = {}
+        for provider in self._providers:
+            for action in await provider.available_actions(user_id):
+                actions[action.capability_id] = action
+        return tuple(actions.values())
 
 
 def render_reality_grounding(actions: Sequence[RuntimeActionCapability]) -> str:

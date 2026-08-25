@@ -6,6 +6,8 @@
 > 目标阶段：M3A 设备能力与主动感知
 > 相关真源：[02-功能设计](./02-功能设计.md)、[12-安全边界同意与陪伴伦理](./12-安全边界同意与陪伴伦理.md)、[14-输入输出扩展契约](./14-输入输出扩展契约.md)、[34-大模型工具使用与主动感知设计](./34-大模型工具使用与主动感知设计.md)
 
+> 实施进度：HA-0/HA-2 已落地，包括 REST/WebSocket 状态同步、实体白名单、字段脱敏、`home_get_state`、`home_get_history`、`home_control`、动作白名单、服务端确认门禁、脱敏调用台账和后台可视化配置。真实实例 `https://ha.pnkx.top:8` 已联通，当前授权 11 个实体；灯/开关可控，空调写操作要求当前用户消息明确确认。
+
 ## 1. 目标与结论
 
 本方案将 Home Assistant（以下简称 HA）作为物理设备控制平面，将 Aria Hub 作为对话、意图理解、记忆、隐私策略、确认和主动交互平面。Aria 不重复适配 Zigbee、Matter、米家等协议，而是通过 HA 的标准 API 读取实体状态、执行受控动作，并将稳定状态变化转换为中枢语义事件。
@@ -116,7 +118,14 @@ Content-Type: application/json
 
 动作调用返回后必须回读目标状态。HTTP 超时不能直接重试写操作，应先回读状态；无法判断结果时记为 `unknown_outcome`。
 
-### 3.3 MQTT 的职责
+### 3.3 历史与设备日志
+
+- 连续状态使用 `GET /api/history/period/<start>` 读取 Recorder 历史，如温度、湿度和 PM2.5；
+- 人工可读事件使用 `GET /api/logbook/<start>`，如灯的开关记录；
+- 后台按实体配置 `history_allowed` 和 `history_max_hours`，默认拒绝；
+- 当前实例真实验收：客厅灯 History/Logbook 有记录，家庭温度、湿度和水浸告警 History 可读。连续数值传感器的 Logbook 可以为空，以 History 为准。
+
+### 3.4 MQTT 的职责
 
 HA 控制和状态读取不依赖 MQTT。MQTT 只承担：
 
@@ -148,7 +157,8 @@ integrations:
     enabled: true
     instance_id: home-main
     base_url: https://ha.pnkx.top:8
-    secret_ref: env:ARIA_HA_TOKEN
+    # 连接地址、令牌、运行参数和实体白名单由管理后台保存；
+    # YAML 仅保留首次启动的未启用默认值。
     verify_tls: true
     allow_insecure_local_http: false
 
@@ -174,18 +184,12 @@ integrations:
       topic_prefix: aria
 ```
 
-环境变量：
-
-```dotenv
-ARIA_HA_TOKEN=<secret>
-```
-
 约束：
 
-- token 只允许通过 `secret_ref` 注入；
-- token 不写数据库、不进入 Admin 配置响应、不显示尾部字符、不写日志；
+- token 默认通过后台密码框写入受管理员鉴权保护的数据库配置版本；仍兼容 `secret_ref` 环境变量引用；
+- token 在界面中按密码字段遮蔽，不写日志、不进入聊天前端；
 - 生产使用 HTTPS 或受控 VPN；本地明文 HTTP 必须显式开启且只允许私网地址；
-- 配置热重载失败时保留上一可用连接；
+- 后台保存后立即重连，无需重启 Hub；
 - token 轮换后重新鉴权，不要求重启整个 Hub。
 
 ### 4.1 当前目标实例
@@ -208,7 +212,7 @@ https://ha.pnkx.top:8
 
 该地址是公网入口，落地时额外要求：
 
-- HA token 只能通过 `ARIA_HA_TOKEN` 注入，不能提交到仓库；
+- HA token 通过后台配置中心或部署环境密钥注入，不能提交到仓库；
 - 使用专门为 Aria 创建的 HA 用户和独立 token，不复用日常管理员 token；
 - 反向代理保留 WebSocket Upgrade，并对登录/API 做速率限制；
 - 可行时通过 VPN、源 IP 白名单或访问控制层限制入口；
