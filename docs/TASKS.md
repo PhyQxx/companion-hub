@@ -13,7 +13,7 @@
 | P5 文字稳定性闸门 | 使用期未开始 | 自动化通过；14 天从首条有效日志重新起算，见 `docs/32` |
 | P6 Batch A～C 语音 | 主链完成 | 真浏览器 ASR/LLM/TTS/viseme/打断已打通；延迟继续优化 |
 | M3A 地图/天气第一批 | 已完成 | 查询、定位、卡片、Admin 自检、200 条台账与延迟报告已落地，见 `docs/35` |
-| M3A 多终端与感知 | 进行中 | Browser Bridge 与 macOS Desktop 已通过真机验收；活动窗口代码闭环已落地，待原生真机验收后进入系统内容选择器 |
+| M3A 多终端与感知 | 进行中 | Browser Bridge 与 macOS Desktop 已通过真机验收；主动输出已接入 Web、macOS 通知和在线语音，活动窗口仍待原生真机验收 |
 | M3B 认知调度闭环 | 已完成（v1） | 被动对话与主动事件已统一进入 World State、Attention、结构化决策、反馈和审计闭环；自主写动作保持关闭 |
 | Admin 信息架构重整 | 进行中 | 领域分组、URL 可恢复二级 Tab 与既有页面映射已落地；待真实浏览器验收 |
 | P6 Batch D Live2D/桌宠 | 等待前置 | M2 延迟达标后再启动 |
@@ -53,7 +53,8 @@
 - [x] Perception Pipeline 第一批：HA `person` 与授权存在传感器经稳定窗口转换为 `user_arrived_home`、`user_left_home`、`presence.changed`；支持 TTL、重放幂等、并发跨来源合并和 L3 零审计。
 - [x] Home Assistant 规则式主动引擎：持续时间判定、安静时段、冷却、每日上限、固定模板、审计台账和 WebSocket 主动投递已落地。
 - [x] 通用 Proactive Policy v1：统一 DND/安静时段/每日预算、反馈降频、5 分钟跨来源合并、过期不补发；主动消息按事件 owner 选择其最近活动 Web 会话，禁止跨用户误投。
-- [ ] 多 Adapter 输出终端仲裁：把主动 `OutputIntent` 接入现有 `OutputRouter`，按 `proactive_reachable`、在线状态、隐私和用户偏好选择 Web/Desktop/Voice，并记录 DeliveryReceipt。
+- [x] 主动多终端仲裁 v1：真实接入 Web 私聊、macOS 原生通知和在线语音；后台可控制总开关、逐通道启停、优先级、隐私上限、仅紧急与“全部/首个可用”，并持久化逐通道 DeliveryReceipt。
+- [ ] 通用 OutputRouter 收敛：把当前三条真实投递链封装为标准 Output Adapter，统一 `OutputIntent`、端点 manifest、取消和 N/N-1 契约；不阻塞已落地的主动多终端能力。
 - [ ] 完成单存在传感器 7 天验收：免打扰零违规，重复/误触发可解释。
 
 ### D. M3B 认知调度闭环
@@ -84,6 +85,7 @@
 
 ## 3. 最近完成
 
+- [x] 主动多终端输出 v1：Home Assistant/M3B 决策不再只进入 Web 调试台，可按后台热配置投递至 Web 私聊、macOS Desktop 系统通知和在线空闲语音会话；离线、锁屏、隐私暂停、能力未授权和云端 L2 TTS 均安全降级，每次实际尝试写入统一投递回执。
 - [x] Perception Pipeline 第一批：新增隐私安全的语义事件审计、全局主动门禁、稳定窗口和跨来源幂等合并；HA 人员/存在状态已能自动进入 M3B CognitiveCycle，主动 Web 投递绑定事件 owner。
 - [x] M3B 认知调度闭环 v1：有界 World State、确定性 Attention、结构化模型决策与安全回退、目标/承诺、反馈降频与反思候选、被动聊天和 Home Assistant 主动事件统一管线已落地；自主写动作保持关闭。
 - [x] Desktop 屏幕安全闸门代码闭环：macOS 原生会话锁定状态进入 capability 声明与截图执行前双重检查；临时授权仅保存在进程内存、5 分钟过期且只消费一次，锁屏立即撤销；Desktop 协议测试增至 6 通过，TypeScript/Vite build 与原生 `cargo check` 通过。
@@ -112,6 +114,7 @@
 
 ## 4. 最新质量基线
 
+- 2026-08-25 主动多终端输出 v1：Ruff、全量 mypy、pytest **325 通过 / 2 跳过**、Alembic 从空库升级到 `0017_proactive_delivery_receipts`、单 head、Admin/Chat/Desktop typecheck 与 production build、Desktop 协议测试 **7 通过**、`cargo check` 和 `git diff --check` 全部通过；新增验收覆盖三通道仲裁、优先级、隐私/紧急门禁、持久化回执及 L2 语音禁止云 TTS；
 - 2026-08-25 Perception Pipeline 第一批：Ruff、全量 mypy、pytest **319 通过 / 2 跳过**、Alembic 从空库升级到 `0016_perception_pipeline`、单 head 与 `git diff --check` 全部通过；验收覆盖并发跨来源合并、事件重放、DND/预算/紧急绕过、稳定窗口失败、TTL、L3 零持久化、HA 语义映射与 owner 投递隔离；
 - 2026-08-25 M3B v1：Ruff、全量 mypy、pytest **312 通过 / 2 跳过**、Alembic 从空库升级到 `0015_cognitive_cycle`、单 head 与 `git diff --check` 全部通过；新增验收覆盖三类主动场景、被动聊天审计、DND、重复降频、反馈候选、模型 `act` 安全回退和 L3 不落库；
 - 2026-08-25 活动窗口代码闭环：Ruff、全量 mypy、pytest **304 通过 / 2 跳过**、Alembic 单 head、Desktop 协议测试 **6 通过**、Desktop typecheck/build、`cargo check`、原生 `cargo build` 与 `git diff --check` 全部通过；`active_window` 真实聊天全链待原生客户端临时授权后验收；

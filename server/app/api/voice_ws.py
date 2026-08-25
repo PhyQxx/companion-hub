@@ -24,6 +24,7 @@ from pydantic import ValidationError
 
 from app.auth import AuthService, ChatPrincipal, InvalidSession
 from app.chat import ChatService, PendingTurn, TurnCancelled
+from app.ids import uuid7
 from app.llm import LLMRouteExhausted
 from app.privacy import EgressBlocked
 from app.schemas import PrivacyLevel
@@ -117,6 +118,7 @@ class VoiceWebSocketManager:
         self._service = service
         self._voice_source = voice_source
         self._latency_metrics = VoiceLatencyMetrics()
+        self._sessions: dict[int, VoiceSession] = {}
 
     def latency_report(self) -> dict[str, object]:
         return self._latency_metrics.snapshot()
@@ -127,16 +129,97 @@ class VoiceWebSocketManager:
 
     async def run(self, session: VoiceSession) -> None:
         """连接主循环：JSON 控制 + 二进制音频。"""
-        websocket = session.websocket
-        while True:
-            message = await websocket.receive()
-            kind = message.get("type")
-            if kind == "websocket.disconnect":
-                break
-            if "text" in message:
-                await self._on_control(session, message["text"])
-            elif "bytes" in message:
-                await self._on_audio(session, message["bytes"])
+        key = id(session)
+        self._sessions[key] = session
+        try:
+            websocket = session.websocket
+            while True:
+                message = await websocket.receive()
+                kind = message.get("type")
+                if kind == "websocket.disconnect":
+                    break
+                if "text" in message:
+                    await self._on_control(session, message["text"])
+                elif "bytes" in message:
+                    await self._on_audio(session, message["bytes"])
+        finally:
+            self._sessions.pop(key, None)
+
+    async def broadcast_proactive(
+        self,
+        user_id: UUID,
+        text: str,
+        *,
+        privacy_level: PrivacyLevel,
+    ) -> int:
+        sessions = [
+            session
+            for session in self._sessions.values()
+            if session.principal.user_id == user_id
+            and session.conversation_id is not None
+            and session.turn_task is None
+            and _privacy_rank(privacy_level) <= _privacy_rank(session.privacy_level)
+        ]
+        results = await asyncio.gather(
+            *(self._send_proactive(session, text, privacy_level) for session in sessions),
+            return_exceptions=True,
+        )
+        return sum(result is True for result in results)
+
+    async def _send_proactive(
+        self,
+        session: VoiceSession,
+        text: str,
+        privacy_level: PrivacyLevel,
+    ) -> bool:
+        generation_id = uuid7()
+        await self._send(
+            session,
+            "proactive.committed",
+            {
+                "generation_id": str(generation_id),
+                "content": text,
+                "privacy_level": str(privacy_level),
+            },
+        )
+        _, tts_chain = await self._voice_source.resolve()
+        if tts_chain is None:
+            return True
+        try:
+            selection = await tts_chain.select(text, privacy_level=privacy_level)
+        except LocalOnlySynthesizerError:
+            await self._send(
+                session,
+                "voice.tts_unavailable",
+                {"reason": "local_tts_required"},
+            )
+            return True
+        await self._send(
+            session,
+            "voice.sentence",
+            {
+                "generation_id": str(generation_id),
+                "index": 0,
+                "text": text,
+                "mime": selection.provider.mime,
+                "sample_rate": selection.provider.sample_rate,
+                "provider": type(selection.provider).__name__,
+            },
+        )
+        try:
+            await session.websocket.send_bytes(selection.first_chunk)
+            async for chunk in selection.stream:
+                await session.websocket.send_bytes(chunk)
+        except Exception:
+            tts_chain.report_failure(selection.provider)
+            logger.warning("proactive voice TTS failed", exc_info=True)
+            return True
+        await self._send(
+            session,
+            "voice.sentence.end",
+            {"generation_id": str(generation_id), "index": 0},
+        )
+        return True
 
     async def _on_control(self, session: VoiceSession, raw: str) -> None:
         try:
@@ -705,3 +788,13 @@ def create_voice_websocket_router(
             await manager.disconnect(session)
 
     return router, manager
+
+
+def _privacy_rank(level: PrivacyLevel) -> int:
+    ranks = {
+        PrivacyLevel.L0: 0,
+        PrivacyLevel.L1: 1,
+        PrivacyLevel.L2: 2,
+        PrivacyLevel.L3: 3,
+    }
+    return ranks[PrivacyLevel(level)]

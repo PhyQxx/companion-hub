@@ -1,3 +1,8 @@
+from .proactive import (
+    ProactiveChannelAttempt,
+    ProactiveDeliveryResult,
+    ProactiveDeliveryService,
+)
 from .routing import (
     EndpointRegistration,
     NoCompatibleOutput,
@@ -9,5 +14,8 @@ __all__ = [
     "EndpointRegistration",
     "NoCompatibleOutput",
     "OutputRouter",
+    "ProactiveChannelAttempt",
+    "ProactiveDeliveryResult",
+    "ProactiveDeliveryService",
     "intersect_capabilities",
 ]

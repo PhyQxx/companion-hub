@@ -7,6 +7,8 @@ from .models import (
     HubConfig,
     IntegrationsConfig,
     ObservabilityConfig,
+    ProactiveChannelConfig,
+    ProactiveOutputConfig,
     QueryToolConfig,
     ToolsConfig,
 )
@@ -26,6 +28,8 @@ __all__ = [
     "HubConfig",
     "IntegrationsConfig",
     "ObservabilityConfig",
+    "ProactiveChannelConfig",
+    "ProactiveOutputConfig",
     "QueryToolConfig",
     "ToolsConfig",
 ]

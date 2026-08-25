@@ -1,6 +1,7 @@
 import { disable, enable, isEnabled } from "@tauri-apps/plugin-autostart";
 import {
   DESKTOP_BASE_CAPABILITIES,
+  DESKTOP_NOTIFICATION_CAPABILITY,
   DeviceConnection,
   forgetAccessToken,
   loadAccessToken,
@@ -24,7 +25,7 @@ if (!app) throw new Error("missing app root");
 app.innerHTML = `
   <section class="window">
     <header><div class="brand"><span>A</span><div><strong>Aria Desktop</strong><small>受控设备客户端</small></div></div><span id="state" class="state unpaired">未配对</span></header>
-    <div class="hero"><div><p class="eyebrow">M3A · DEVICE CLIENT</p><h1>让 Hub 安全地找到这台电脑</h1><p>默认只声明 <code>device.ping</code>；系统授权且隐私暂停关闭后，才会临时开放 <code>screen.capture</code>。</p></div><div class="pulse"><i></i><span id="state-detail">等待配置</span></div></div>
+    <div class="hero"><div><p class="eyebrow">M3A · DEVICE CLIENT</p><h1>让 Hub 安全地找到这台电脑</h1><p>未锁屏且隐私暂停关闭时开放 <code>notification.show</code>；屏幕授权后才会临时开放 <code>screen.capture</code>。</p></div><div class="pulse"><i></i><span id="state-detail">等待配置</span></div></div>
     <form id="pair-form" class="panel form-grid">
       <div class="panel-head"><div><h2>设备配对</h2><p>配对码从 Aria 管理后台生成；截图还需授权 <code>screen.capture</code>。</p></div></div>
       <label>Hub 地址<input id="hub-url" type="url" required placeholder="http://127.0.0.1:8000" /></label>
@@ -69,9 +70,13 @@ let screenGrant: ScreenCaptureGrant | null = null;
 privacyPause.checked = localStorage.getItem(PRIVACY_PAUSE_KEY) === "true";
 
 function activeCapabilities(): string[] {
-  return permissionGranted && !screenLocked && !privacyPause.checked && screenCaptureGrantActive(screenGrant)
-    ? [...DESKTOP_BASE_CAPABILITIES, "screen.capture"]
-    : [...DESKTOP_BASE_CAPABILITIES];
+  const capabilities: string[] = [...DESKTOP_BASE_CAPABILITIES];
+  if (!screenLocked && !privacyPause.checked) capabilities.push(DESKTOP_NOTIFICATION_CAPABILITY);
+  if (
+    permissionGranted && !screenLocked && !privacyPause.checked &&
+    screenCaptureGrantActive(screenGrant)
+  ) capabilities.push("screen.capture");
+  return capabilities;
 }
 
 function renderCapabilities() {

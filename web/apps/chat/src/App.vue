@@ -390,6 +390,9 @@ function handleVoiceEvent(event: VoiceControlEvent) {
     case "voice.tts_unavailable":
       voiceStatus.value = `语音合成不可用，将仅显示文字：${event.reason ?? "not_configured"}`;
       break;
+    case "proactive.committed":
+      voiceStatus.value = `主动提醒：${event.content ?? ""}`;
+      break;
     case "voice.error":
       voiceBusy.value = false;
       voiceStatus.value = `语音请求失败：${event.reason ?? "unknown"}`;

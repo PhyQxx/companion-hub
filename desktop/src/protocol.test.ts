@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   consumeScreenCaptureGrant,
   createScreenCaptureGrant,
+  parseNotificationRequest,
   parseScreenCaptureRequest,
   screenCaptureGrantActive,
 } from "./client";
@@ -11,6 +12,16 @@ import { canonicalFrame, signFrame, verifyFrame, websocketUrl } from "./protocol
 Object.defineProperty(globalThis, "crypto", { value: webcrypto });
 
 describe("device command protocol", () => {
+  it("accepts bounded proactive notification requests", () => {
+    expect(
+      parseNotificationRequest({ title: "Aria", body: "该回家了", privacy_level: "L1" }),
+    ).toEqual({ title: "Aria", body: "该回家了", privacyLevel: "L1" });
+    expect(parseNotificationRequest({ title: "", body: "hello", privacy_level: "L1" }))
+      .toBeNull();
+    expect(parseNotificationRequest({ title: "Aria", body: "hello", privacy_level: "L3" }))
+      .toBeNull();
+  });
+
   it("accepts active-window and bounded explicit display capture targets", () => {
     expect(parseScreenCaptureRequest({})).toEqual({
       target: "main_display",

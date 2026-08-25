@@ -8,6 +8,7 @@ import {
 } from "./protocol";
 
 export const DESKTOP_BASE_CAPABILITIES = ["device.ping"] as const;
+export const DESKTOP_NOTIFICATION_CAPABILITY = "notification.show" as const;
 
 export interface PairResult {
   device_id: string;
@@ -66,6 +67,25 @@ interface DeviceAssetUpload {
 export interface ScreenCaptureRequest {
   target: "main_display" | "display" | "active_window";
   displayIndex: number | null;
+}
+
+export interface NotificationRequest {
+  title: string;
+  body: string;
+  privacyLevel: "L0" | "L1" | "L2";
+}
+
+export function parseNotificationRequest(
+  args: Record<string, unknown>,
+): NotificationRequest | null {
+  const title = typeof args.title === "string" ? args.title.trim() : "";
+  const body = typeof args.body === "string" ? args.body.trim() : "";
+  const privacyLevel = args.privacy_level;
+  if (
+    !title || title.length > 80 || !body || body.length > 1000 ||
+    !["L0", "L1", "L2"].includes(String(privacyLevel))
+  ) return null;
+  return { title, body, privacyLevel: privacyLevel as "L0" | "L1" | "L2" };
 }
 
 export function parseScreenCaptureRequest(
@@ -249,6 +269,21 @@ export class DeviceConnection {
         return;
       }
       resultMeta = { ...uploaded, latency_ms: Math.round(performance.now() - started) };
+    } else if (frame.command === "notification.show") {
+      if (!this.capabilities.includes("notification.show")) {
+        this.sendResult(frame.command_id, "failed", "notification_unavailable", {});
+        return;
+      }
+      const request = parseNotificationRequest(args);
+      if (request === null) {
+        this.sendResult(frame.command_id, "failed", "invalid_command_args", {});
+        return;
+      }
+      await invoke("show_notification", { title: request.title, body: request.body });
+      resultMeta = {
+        privacy_level: request.privacyLevel,
+        latency_ms: Math.round(performance.now() - started),
+      };
     } else {
       this.sendResult(frame.command_id, "failed", "unsupported_command", {});
       return;

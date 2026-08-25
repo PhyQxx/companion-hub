@@ -11,7 +11,7 @@ use tauri::{
 const KEYRING_SERVICE: &str = "com.aria.companion.desktop";
 const KEYRING_ACCOUNT: &str = "device-access-token";
 const KEYRING_HUB_ACCOUNT: &str = "device-hub-url";
-const CLIENT_CAPABILITIES: [&str; 1] = ["device.ping"];
+const CLIENT_CAPABILITIES: [&str; 2] = ["device.ping", "notification.show"];
 
 #[derive(Serialize)]
 struct PairResult {
@@ -182,6 +182,52 @@ fn screen_capture_environment() -> ScreenCaptureEnvironment {
         granted: permission.granted,
         locked: screen_is_locked(),
     }
+}
+
+#[tauri::command]
+fn show_notification(title: String, body: String) -> Result<(), String> {
+    if title.trim().is_empty() || title.chars().count() > 80 {
+        return Err("通知标题无效".to_string());
+    }
+    if body.trim().is_empty() || body.chars().count() > 1000 {
+        return Err("通知正文无效".to_string());
+    }
+    if screen_is_locked() {
+        return Err("设备已锁屏，拒绝显示主动通知".to_string());
+    }
+    show_native_notification(title.trim(), body.trim())
+}
+
+#[cfg(target_os = "macos")]
+fn show_native_notification(title: &str, body: &str) -> Result<(), String> {
+    let status = Command::new("/usr/bin/osascript")
+        .args([
+            "-e",
+            "on run argv",
+            "-e",
+            "set notificationBody to item 1 of argv",
+            "-e",
+            "set notificationTitle to item 2 of argv",
+            "-e",
+            "display notification notificationBody with title notificationTitle",
+            "-e",
+            "end run",
+            "--",
+            body,
+            title,
+        ])
+        .status()
+        .map_err(|error| format!("无法调用系统通知：{error}"))?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err("系统通知命令执行失败".to_string())
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+fn show_native_notification(_title: &str, _body: &str) -> Result<(), String> {
+    Err("当前平台暂不支持系统通知".to_string())
 }
 
 #[tauri::command]
@@ -483,6 +529,7 @@ pub fn run() {
             forget_device_credential,
             screen_capture_permission,
             screen_capture_environment,
+            show_notification,
             capture_and_upload
         ])
         .run(tauri::generate_context!())

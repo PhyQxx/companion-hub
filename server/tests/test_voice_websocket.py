@@ -6,21 +6,23 @@ from __future__ import annotations
 import asyncio
 import json
 from collections.abc import AsyncIterator, Awaitable, Callable
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Any, ClassVar
+from typing import Any, ClassVar, cast
 from uuid import UUID
 
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
-from starlette.websockets import WebSocketDisconnect
+from starlette.websockets import WebSocket, WebSocketDisconnect
 
 from app.api import create_voice_websocket_router
-from app.api.voice_ws import VOICE_CONTEXT_MESSAGES
-from app.auth import AuthService
+from app.api.voice_ws import VOICE_CONTEXT_MESSAGES, VoiceSession, VoiceWebSocketManager
+from app.auth import AuthService, ChatPrincipal
 from app.chat import ChatService, PendingTurn
 from app.config import DatabaseConfigStore
 from app.db import Base, Database, create_database
+from app.ids import uuid7
 from app.llm import CompletionRequest, CompletionResult, ModelUsage
 from app.schemas import PrivacyLevel
 from app.tools import ClientLocation
@@ -168,6 +170,70 @@ class FakeWakeWord:
 
     def reset(self) -> None:
         self.resets += 1
+
+
+class RecordingWebSocket:
+    def __init__(self) -> None:
+        self.texts: list[dict[str, Any]] = []
+        self.audio: list[bytes] = []
+        self._closed = asyncio.Event()
+
+    async def receive(self) -> dict[str, str]:
+        await self._closed.wait()
+        return {"type": "websocket.disconnect"}
+
+    async def send_text(self, value: str) -> None:
+        self.texts.append(json.loads(value))
+
+    async def send_bytes(self, value: bytes) -> None:
+        self.audio.append(value)
+
+    def close(self) -> None:
+        self._closed.set()
+
+
+async def test_proactive_voice_reaches_matching_session_and_blocks_cloud_l2_tts() -> None:
+    user_id = uuid7()
+    socket = RecordingWebSocket()
+    manager = VoiceWebSocketManager(
+        cast(ChatService, object()),
+        voice_source=StaticVoiceSource(None, TtsProviderChain([FakeSynthesizer()])),
+    )
+    session = VoiceSession(
+        websocket=cast(WebSocket, socket),
+        principal=ChatPrincipal(
+            session_id=uuid7(),
+            user_id=user_id,
+            display_name="Owner",
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        ),
+        conversation_id=uuid7(),
+        privacy_level=PrivacyLevel.L2,
+        wake_word=None,
+    )
+    run_task = asyncio.create_task(manager.run(session))
+    await asyncio.sleep(0)
+
+    delivered = await manager.broadcast_proactive(
+        user_id,
+        "回来啦。",
+        privacy_level=PrivacyLevel.L2,
+    )
+    not_delivered = await manager.broadcast_proactive(
+        uuid7(),
+        "不应送达。",
+        privacy_level=PrivacyLevel.L1,
+    )
+    socket.close()
+    await run_task
+
+    assert delivered == 1
+    assert not_delivered == 0
+    assert [event["type"] for event in socket.texts] == [
+        "proactive.committed",
+        "voice.tts_unavailable",
+    ]
+    assert socket.audio == []
 
 
 def loud_frames(count: int) -> bytes:

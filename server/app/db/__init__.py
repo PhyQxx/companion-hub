@@ -24,6 +24,7 @@ from .models import (
     OutboxRecord,
     PersonaPointerRecord,
     PersonaVersionRecord,
+    ProactiveDeliveryReceiptRecord,
     SemanticEventAuditRecord,
     TimelineEventRecord,
 )
@@ -56,6 +57,7 @@ __all__ = [
     "OutboxRecord",
     "PersonaPointerRecord",
     "PersonaVersionRecord",
+    "ProactiveDeliveryReceiptRecord",
     "SemanticEventAuditRecord",
     "TimelineEventRecord",
     "create_database",

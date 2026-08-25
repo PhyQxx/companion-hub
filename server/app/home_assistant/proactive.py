@@ -6,13 +6,11 @@ import logging
 from collections.abc import Awaitable, Callable
 from contextlib import suppress
 from datetime import UTC, datetime, time, timedelta
-from typing import TypeAlias
 from uuid import UUID
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from sqlalchemy import func, select
 
-from app.chat import MessageView
 from app.cognition import CognitiveCycle, CognitiveDecision, DecisionKind, SemanticEvent
 from app.config import (
     ConfigStore,
@@ -22,6 +20,7 @@ from app.config import (
 )
 from app.db import AppUserRecord, Database, HomeAssistantProactiveLogRecord
 from app.ids import uuid7
+from app.output import ProactiveDeliveryResult
 from app.perception import PerceptionDisposition, PerceptionPipeline, PerceptionResult
 from app.schemas import PrivacyLevel
 
@@ -29,7 +28,7 @@ from .models import HomeAssistantError, HomeAssistantState
 
 logger = logging.getLogger(__name__)
 
-DeliveryResult: TypeAlias = tuple[UUID, MessageView] | None
+DeliveryResult = ProactiveDeliveryResult | None
 Deliver = Callable[..., Awaitable[DeliveryResult]]
 ReadState = Callable[[str], HomeAssistantState]
 
@@ -233,14 +232,13 @@ class HomeAssistantProactiveEngine:
         if result is None:
             await self._log(policy, rule, now, passed=False, reason="no_active_conversation")
             return
-        user_id, created = result
         await self._log(
             policy,
             rule,
             now,
             passed=True,
-            user_id=user_id,
-            conversation_id=created.conversation_id,
+            user_id=result.user_id,
+            conversation_id=result.conversation_id,
             message=message,
         )
 

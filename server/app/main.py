@@ -5,7 +5,7 @@ import os
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
-from uuid import UUID
+from typing import cast
 
 from fastapi import FastAPI
 from fastapi.responses import FileResponse
@@ -36,7 +36,6 @@ from app.chat import ChatService, CompositeRuntimeCapabilityProvider, RuntimeCap
 from app.cognition import (
     AttentionEngine,
     CognitiveCycle,
-    CognitiveDecision,
     CognitiveStore,
     RouterDeliberator,
     RuleBasedDeliberator,
@@ -52,13 +51,13 @@ from app.home_assistant import (
     HomeGetHistoryTool,
     HomeGetStateTool,
 )
-from app.home_assistant.proactive import DeliveryResult
 from app.memory import LlmMemoryExtractor, MemoryExtractor, MemoryRetriever, MemoryStore
 from app.model_capabilities import CapabilityModelService
 from app.observability import apply_observability, configure_logging
+from app.output import ProactiveDeliveryService
+from app.output.proactive import DesktopCommandGateway
 from app.perception import PerceptionPipeline, PerceptionStore, ProactivePolicy
 from app.persona import PersonaStore
-from app.schemas import PrivacyLevel
 from app.timeline import HistoryRecallService, TimelineStore
 from app.tools import ToolHandler
 from app.tools.browser import InspectWebpageTool
@@ -449,8 +448,11 @@ def create_app(
             auth_service = AuthService(runtime_database)
             device_tools: list[ToolHandler] = []
             capability_providers: list[RuntimeCapabilityProvider] = []
+            device_target_resolver: DeviceTargetResolver | None = None
+            device_command_gateway = None
             if device_registry is not None:
                 capability_providers.append(device_registry)
+                device_target_resolver = DeviceTargetResolver(device_registry)
                 admin_devices_router, devices_router = create_device_routers(
                     device_registry,
                     admin_token=runtime_admin_token,
@@ -469,18 +471,17 @@ def create_app(
                     app.include_router(command_admin_router)
                     app.include_router(device_ws_router)
                     if capability_models is not None:
-                        target_resolver = DeviceTargetResolver(device_registry)
                         screen_analyzer = CapabilityScreenAnalyzer(capability_models)
                         device_tools.append(
                             CaptureScreenTool(
-                                target_resolver,
+                                device_target_resolver,
                                 device_command_gateway,
                                 screen_analyzer,
                             )
                         )
                         device_tools.append(
                             InspectWebpageTool(
-                                target_resolver,
+                                device_target_resolver,
                                 device_command_gateway,
                                 screen_analyzer,
                             )
@@ -522,46 +523,7 @@ def create_app(
             )
             app.state.chat_websocket_manager = websocket_manager
             app.include_router(websocket_router)
-            if home_assistant_manager is not None:
-
-                async def deliver_home_assistant_message(
-                    text: str,
-                    *,
-                    entity_id: str,
-                    rule_id: str,
-                    trigger_kind: str,
-                    privacy_level: PrivacyLevel,
-                    cognitive_decision: CognitiveDecision | None = None,
-                    target_user_id: UUID | None = None,
-                ) -> DeliveryResult:
-                    result = await runtime_chat_service.create_proactive_message(
-                        text,
-                        entity_id=entity_id,
-                        rule_id=rule_id,
-                        trigger_kind=trigger_kind,
-                        privacy_level=privacy_level,
-                        cognitive_decision=cognitive_decision,
-                        target_user_id=target_user_id,
-                    )
-                    if result is not None:
-                        user_id, message = result
-                        await websocket_manager.broadcast_proactive(user_id, message)
-                    return result
-
-                home_assistant_proactive = HomeAssistantProactiveEngine(
-                    runtime_database,
-                    runtime_config,
-                    home_assistant_manager.get_state,
-                    deliver_home_assistant_message,
-                    cognitive_cycle=cognitive_cycle,
-                    perception_pipeline=perception_pipeline,
-                )
-                home_assistant_manager.set_state_change_handler(
-                    home_assistant_proactive.on_state_change
-                )
-                app.state.home_assistant_proactive_engine = home_assistant_proactive
-            # P6 语音通道：提供方来自配置中心 voice 节（后台可视化管理、
-            # 保存即生效）；未配置 ASR 时客户端收 voice.asr_unavailable
+            voice_manager = None
             if runtime_config is not None:
                 voice_router, voice_manager = create_voice_websocket_router(
                     runtime_chat_service,
@@ -570,6 +532,34 @@ def create_app(
                 )
                 app.state.voice_websocket_manager = voice_manager
                 app.include_router(voice_router)
+            if home_assistant_manager is not None:
+                proactive_delivery = ProactiveDeliveryService(
+                    runtime_database,
+                    runtime_config,
+                    runtime_chat_service,
+                    websocket_manager,
+                    device_resolver=device_target_resolver,
+                    device_gateway=(
+                        cast(DesktopCommandGateway, device_command_gateway)
+                        if device_command_gateway is not None
+                        else None
+                    ),
+                    voice_broadcaster=voice_manager,
+                )
+                app.state.proactive_delivery_service = proactive_delivery
+
+                home_assistant_proactive = HomeAssistantProactiveEngine(
+                    runtime_database,
+                    runtime_config,
+                    home_assistant_manager.get_state,
+                    proactive_delivery.deliver,
+                    cognitive_cycle=cognitive_cycle,
+                    perception_pipeline=perception_pipeline,
+                )
+                home_assistant_manager.set_state_change_handler(
+                    home_assistant_proactive.on_state_change
+                )
+                app.state.home_assistant_proactive_engine = home_assistant_proactive
 
     return app
 

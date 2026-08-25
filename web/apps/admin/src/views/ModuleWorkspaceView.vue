@@ -8,6 +8,7 @@ import ModelsView from "./ModelsView.vue";
 import OverviewView from "./OverviewView.vue";
 import PersonasView from "./PersonasView.vue";
 import PlaceholderView from "./PlaceholderView.vue";
+import ProactiveChannelsView from "./ProactiveChannelsView.vue";
 import TimelineView from "./TimelineView.vue";
 
 const props = defineProps<{ module: string }>();
@@ -23,6 +24,7 @@ const currentView = computed(() => {
   if (props.module === "memory" && activeTab.value === "timeline") return TimelineView;
   if (props.module === "memory" && activeTab.value === "deletion") return MemoryView;
   if (props.module === "devices" && ["registry", "commands"].includes(activeTab.value)) return DevicesView;
+  if (props.module === "devices" && activeTab.value === "channels") return ProactiveChannelsView;
   if (props.module === "devices" && activeTab.value === "home_assistant") return HomeAssistantDevicesView;
   return PlaceholderView;
 });

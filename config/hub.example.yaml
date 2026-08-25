@@ -175,6 +175,27 @@ integrations:
     state_cache_ttl_seconds: 300
     entities: []
 
+# 主动输出通道。Desktop 通知还需要设备端声明并获授 notification.show；
+# Voice 仅投递到当前在线且空闲的语音会话。
+proactive_output:
+  enabled: true
+  delivery_mode: all_enabled
+  web_chat:
+    enabled: true
+    priority: 100
+    max_privacy_level: L1
+    critical_only: false
+  desktop_notification:
+    enabled: false
+    priority: 80
+    max_privacy_level: L1
+    critical_only: false
+  voice:
+    enabled: false
+    priority: 60
+    max_privacy_level: L1
+    critical_only: false
+
 capability_models:
   vision: zhipu_vision_free
   image_generation: zhipu_image_free

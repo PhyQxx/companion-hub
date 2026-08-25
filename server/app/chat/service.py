@@ -393,7 +393,7 @@ class ChatService:
         target_user_id: UUID | None = None,
     ) -> tuple[UUID, MessageView] | None:
         """Persist a deterministic HA suggestion in the latest active conversation."""
-        if privacy_level not in {PrivacyLevel.L0, PrivacyLevel.L1}:
+        if privacy_level is PrivacyLevel.L3:
             return None
         now = datetime.now(UTC)
         async with self._database.sessions.begin() as session:

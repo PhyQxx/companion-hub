@@ -294,6 +294,38 @@ class IntegrationsConfig(StrictModel):
     home_assistant: HomeAssistantConfig = Field(default_factory=HomeAssistantConfig)
 
 
+class ProactiveChannelConfig(StrictModel):
+    enabled: bool = False
+    priority: Annotated[int, Field(ge=1, le=100)] = 50
+    max_privacy_level: Literal["L0", "L1", "L2"] = "L1"
+    critical_only: bool = False
+
+
+class ProactiveOutputConfig(StrictModel):
+    enabled: bool = True
+    delivery_mode: Literal["first_available", "all_enabled"] = "all_enabled"
+    web_chat: ProactiveChannelConfig = Field(
+        default_factory=lambda: ProactiveChannelConfig(enabled=True, priority=100)
+    )
+    desktop_notification: ProactiveChannelConfig = Field(
+        default_factory=lambda: ProactiveChannelConfig(priority=80)
+    )
+    voice: ProactiveChannelConfig = Field(
+        default_factory=lambda: ProactiveChannelConfig(priority=60)
+    )
+
+    @model_validator(mode="after")
+    def require_enabled_channel(self) -> ProactiveOutputConfig:
+        if self.enabled and not any(
+            channel.enabled
+            for channel in (self.web_chat, self.desktop_notification, self.voice)
+        ):
+            raise ValueError("enabled proactive output requires at least one channel")
+        if self.desktop_notification.max_privacy_level == "L2":
+            raise ValueError("desktop notifications cannot carry L2 content")
+        return self
+
+
 class HubConfig(StrictModel):
     schema_version: Literal[1] = 1
     models: Annotated[dict[str, ModelEndpoint], Field(min_length=1, max_length=64)]
@@ -303,6 +335,7 @@ class HubConfig(StrictModel):
     voice: VoiceConfig = Field(default_factory=VoiceConfig)
     tools: ToolsConfig = Field(default_factory=ToolsConfig)
     integrations: IntegrationsConfig = Field(default_factory=IntegrationsConfig)
+    proactive_output: ProactiveOutputConfig = Field(default_factory=ProactiveOutputConfig)
 
     @model_validator(mode="before")
     @classmethod

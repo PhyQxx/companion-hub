@@ -73,7 +73,7 @@ export const adminModules: AdminModule[] = [
     tabs: [
       { key: "registry", label: "设备列表", description: "设备状态、配对和授权策略。", state: "ready" },
       { key: "pairing", label: "配对授权", description: "配对码、权限确认和身份撤销。" },
-      { key: "channels", label: "能力与通道", description: "设备声明、有效能力和隐私等级。" },
+      { key: "channels", label: "主动输出通道", description: "控制 Web、Desktop 与 Voice 主动推送策略。", state: "ready" },
       { key: "home_assistant", label: "HA 实体授权", description: "HA 实体发现、读写权限、历史和主动感知。", state: "ready" },
       { key: "commands", label: "命令记录", description: "设备命令、结果和脱敏台账。", state: "ready" },
       { key: "diagnostics", label: "健康诊断", description: "心跳、网络、版本和消息异常。" },
