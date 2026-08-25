@@ -11,7 +11,7 @@ import { canonicalFrame, signFrame, verifyFrame, websocketUrl } from "./protocol
 Object.defineProperty(globalThis, "crypto", { value: webcrypto });
 
 describe("device command protocol", () => {
-  it("accepts only bounded explicit display capture targets", () => {
+  it("accepts active-window and bounded explicit display capture targets", () => {
     expect(parseScreenCaptureRequest({})).toEqual({
       target: "main_display",
       displayIndex: null,
@@ -21,7 +21,13 @@ describe("device command protocol", () => {
     ).toEqual({ target: "display", displayIndex: 2 });
     expect(parseScreenCaptureRequest({ target: "display", display_index: 0 })).toBeNull();
     expect(parseScreenCaptureRequest({ target: "display", display_index: 2.5 })).toBeNull();
-    expect(parseScreenCaptureRequest({ target: "active_window" })).toBeNull();
+    expect(parseScreenCaptureRequest({ target: "active_window" })).toEqual({
+      target: "active_window",
+      displayIndex: null,
+    });
+    expect(
+      parseScreenCaptureRequest({ target: "active_window", display_index: 1 }),
+    ).toBeNull();
     expect(
       parseScreenCaptureRequest({ target: "main_display", display_index: 1 }),
     ).toBeNull();

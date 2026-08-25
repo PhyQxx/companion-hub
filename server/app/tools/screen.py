@@ -32,7 +32,7 @@ class CaptureScreenArgs(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     device: Annotated[str, Field(min_length=1, max_length=160)] | None = None
-    target: Literal["main_display", "display"] = "main_display"
+    target: Literal["main_display", "display", "active_window"] = "main_display"
     display_index: Annotated[int, Field(ge=1, le=32)] | None = None
     question: Annotated[str, Field(min_length=1, max_length=1_000)] = (
         "描述屏幕上与用户问题相关的可见内容；不要猜测屏幕外信息。"
@@ -42,7 +42,7 @@ class CaptureScreenArgs(BaseModel):
     def validate_display_target(self) -> CaptureScreenArgs:
         if self.target == "display" and self.display_index is None:
             raise ValueError("display_index is required for display target")
-        if self.target == "main_display" and self.display_index is not None:
+        if self.target != "display" and self.display_index is not None:
             raise ValueError("display_index is only valid for display target")
         return self
 
@@ -121,7 +121,7 @@ class CapabilityScreenAnalyzer:
 class CaptureScreenTool:
     name = "capture_screen"
     description = (
-        "对已授权且在线的用户桌面设备执行一次主显示器或指定编号显示器截图，并使用已配置的视觉模型"
+        "对已授权且在线的用户桌面设备执行一次活动窗口、主显示器或指定编号显示器截图，并使用已配置的视觉模型"
         "回答当前屏幕问题。device 可填设备 UUID、名称或别名；省略时仅在唯一候选时执行。"
     )
     arguments_model: type[BaseModel] = CaptureScreenArgs

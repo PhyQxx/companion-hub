@@ -64,7 +64,7 @@ interface DeviceAssetUpload {
 }
 
 export interface ScreenCaptureRequest {
-  target: "main_display" | "display";
+  target: "main_display" | "display" | "active_window";
   displayIndex: number | null;
 }
 
@@ -74,6 +74,9 @@ export function parseScreenCaptureRequest(
   const target = args.target ?? "main_display";
   const displayIndex = args.display_index;
   if (target === "main_display") {
+    return displayIndex === undefined ? { target, displayIndex: null } : null;
+  }
+  if (target === "active_window") {
     return displayIndex === undefined ? { target, displayIndex: null } : null;
   }
   if (

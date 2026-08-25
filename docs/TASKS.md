@@ -13,7 +13,7 @@
 | P5 文字稳定性闸门 | 使用期未开始 | 自动化通过；14 天从首条有效日志重新起算，见 `docs/32` |
 | P6 Batch A～C 语音 | 主链完成 | 真浏览器 ASR/LLM/TTS/viseme/打断已打通；延迟继续优化 |
 | M3A 地图/天气第一批 | 已完成 | 查询、定位、卡片、Admin 自检、200 条台账与延迟报告已落地，见 `docs/35` |
-| M3A 多终端与感知 | 进行中 | Browser Bridge 与 macOS Desktop 已通过真机验收；下一步活动窗口与系统内容选择器 |
+| M3A 多终端与感知 | 进行中 | Browser Bridge 与 macOS Desktop 已通过真机验收；活动窗口代码闭环已落地，待原生真机验收后进入系统内容选择器 |
 | M3B 认知调度闭环 | 待开始 | 在 M3A 语义事件之上建立 World State、Attention、CognitiveDecision、行动校验与反馈学习 |
 | Admin 信息架构重整 | 进行中 | 领域分组、URL 可恢复二级 Tab 与既有页面映射已落地；待真实浏览器验收 |
 | P6 Batch D Live2D/桌宠 | 等待前置 | M2 延迟达标后再启动 |
@@ -35,7 +35,9 @@
 - [x] 截图临时资产通道：设备鉴权上传、命令/owner 绑定、PNG/JPEG 魔数与 8 MiB 上限、2 分钟 TTL、读取即销毁，数据库仅保留摘要。
 - [x] macOS 屏幕录制授权、隐私暂停与临时截图销毁闭环：原生 `.app` 已完成配对、钥匙串、TCC 授权和真实截图上传验收。
 - [x] `capture_screen` 主显示器闭环：目标解析、签名命令、终态等待、临时图片 consume-on-read、视觉分析和文字结果回注；L1 使用支持工具调用的 dialogue 路由与当前 GLM 视觉，L2 仍强制本地工具模型与本地视觉。
-- [ ] `capture_screen` 目标扩展：主/指定显示器已完成原生真机验收；活动窗口与系统内容选择器待实现。
+- [x] `capture_screen(active_window)` 代码闭环：Hub/LLM 契约、Desktop 双端参数校验、macOS 前台应用与 CoreGraphics 活动窗口解析、按窗口 ID 截图和原有隐私门禁复用已落地；Python/TypeScript 回归、`cargo check` 与原生链接通过。
+- [ ] `capture_screen(active_window)` 原生真机验收：在非 Aria 前台窗口上完成一次真实聊天工具全链，确认窗口定位、阴影剔除、临时资产销毁与视觉回答。
+- [ ] 系统内容选择器：使用 macOS 明示交互式选择界面，区分于可无人值守的 `active_window`，补齐取消、超时和命令 TTL 语义。
 - [x] 浏览器扩展真机闭环：Chrome MV3 配对/签名长连接、`browser.current_tab.read/capture`、受限 JSON/图片临时上传与 Hub `inspect_webpage` 已接入；真 Chrome 已验证单一稳定连接、正文读取和当前页截图。
 - [ ] 隐私策略：当前按用户决定先允许 L1 屏幕截图交给 GLM 视觉；L2 仍强制本地视觉，浏览器读取仍保持 L2。Desktop 已实现锁屏自动拒绝和“5 分钟内仅下一次截图”的内存态临时授权，待 macOS 真机锁屏/解锁验收后勾选。
 - [x] Web 对话跨终端验收：L2 会话发起“看一下我的电脑网页”，Hub 调用本地 Qwen 的 `inspect_webpage`，Browser Bridge 读取当前页并把结果返回原会话。
@@ -107,6 +109,7 @@
 
 ## 4. 最新质量基线
 
+- 2026-08-25 活动窗口代码闭环：Ruff、全量 mypy、pytest **304 通过 / 2 跳过**、Alembic 单 head、Desktop 协议测试 **6 通过**、Desktop typecheck/build、`cargo check`、原生 `cargo build` 与 `git diff --check` 全部通过；`active_window` 真实聊天全链待原生客户端临时授权后验收；
 - 2026-08-24 已提交主线基线：pytest **287 通过 / 2 跳过**，Desktop 协议测试 **5 通过**、Browser Bridge 协议测试 **3 通过**，Ruff、全量 mypy、Alembic 单 head、Chat/Shared/Desktop/Browser typecheck 与 production build 全部通过；macOS Desktop debug `.app` 原生编译、TCC 截图与 L1 GLM 视觉全链验收通过；
 - 2026-08-24 当前 Desktop 安全闸门改动：协议测试 **6 通过**、Desktop typecheck/build、原生 `cargo check` 与 `git diff --check` 通过；本机 Rust stable 缺少 `rustfmt` 组件，未运行 `cargo fmt --check`；
 - 2026-08-24 当前未提交 Admin 重整：`git diff --check`、Admin typecheck 和 Admin production build 通过；全仓闸门无需在仅前端在制改动阶段重复冒充为当前验证结果，浏览器验收后再复跑并刷新本节；

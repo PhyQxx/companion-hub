@@ -190,17 +190,18 @@ async fn capture_and_upload(
     target: String,
     display_index: Option<u8>,
 ) -> Result<DeviceAssetUpload, String> {
-    let display_arg = match (target.as_str(), display_index) {
-        ("main_display", None) => "-m".to_string(),
-        ("display", Some(index @ 1..=32)) => format!("-D{index}"),
-        _ => return Err("截图目标参数无效".to_string()),
-    };
     if !screen_permission_status(false).granted {
         return Err("尚未获得屏幕录制权限".to_string());
     }
     if screen_is_locked() {
         return Err("设备已锁屏，拒绝截图".to_string());
     }
+    let capture_args = match (target.as_str(), display_index) {
+        ("main_display", None) => vec!["-m".to_string()],
+        ("display", Some(index @ 1..=32)) => vec![format!("-D{index}")],
+        ("active_window", None) => vec!["-o".to_string(), format!("-l{}", active_window_id()?)],
+        _ => return Err("截图目标参数无效".to_string()),
+    };
     let normalized_hub = hub_keyring_entry()?
         .get_password()
         .map_err(|error| format!("读取 Hub 绑定失败：{error}"))?;
@@ -216,7 +217,9 @@ async fn capture_and_upload(
     let capture_path = capture.0.clone();
     let output = tauri::async_runtime::spawn_blocking(move || {
         Command::new("/usr/sbin/screencapture")
-            .args(["-x", display_arg.as_str(), "-tpng"])
+            .arg("-x")
+            .args(capture_args)
+            .arg("-tpng")
             .arg(capture_path)
             .output()
     })
@@ -249,6 +252,123 @@ async fn capture_and_upload(
         .json::<DeviceAssetUpload>()
         .await
         .map_err(|error| format!("Hub 截图响应无效：{error}"))
+}
+
+#[cfg(target_os = "macos")]
+fn active_window_id() -> Result<u32, String> {
+    use std::ffi::{c_char, c_void, CString};
+
+    type ObjcObject = *mut c_void;
+    type ObjcSelector = *mut c_void;
+
+    #[link(name = "objc")]
+    extern "C" {
+        fn objc_getClass(name: *const c_char) -> ObjcObject;
+        fn sel_registerName(name: *const c_char) -> ObjcSelector;
+        #[link_name = "objc_msgSend"]
+        fn objc_msg_send_object(receiver: ObjcObject, selector: ObjcSelector) -> ObjcObject;
+    }
+    #[link(name = "CoreGraphics", kind = "framework")]
+    extern "C" {
+        fn CGWindowListCopyWindowInfo(option: u32, relative_to_window: u32) -> *const c_void;
+        static kCGWindowLayer: *const c_void;
+        static kCGWindowNumber: *const c_void;
+        static kCGWindowOwnerPID: *const c_void;
+    }
+    #[link(name = "CoreFoundation", kind = "framework")]
+    extern "C" {
+        fn CFArrayGetCount(array: *const c_void) -> isize;
+        fn CFArrayGetValueAtIndex(array: *const c_void, index: isize) -> *const c_void;
+        fn CFDictionaryGetValue(dictionary: *const c_void, key: *const c_void) -> *const c_void;
+        fn CFNumberGetValue(number: *const c_void, number_type: i32, value: *mut c_void) -> bool;
+        fn CFRelease(value: *const c_void);
+    }
+
+    fn selector(name: &str) -> Result<ObjcSelector, String> {
+        let name = CString::new(name).map_err(|_| "Objective-C selector 无效".to_string())?;
+        let value = unsafe { sel_registerName(name.as_ptr()) };
+        if value.is_null() {
+            Err("无法创建 Objective-C selector".to_string())
+        } else {
+            Ok(value)
+        }
+    }
+
+    unsafe fn dictionary_i32(
+        dictionary: *const c_void,
+        key: *const c_void,
+    ) -> Option<i32> {
+        const CF_NUMBER_SINT32_TYPE: i32 = 3;
+        let number = CFDictionaryGetValue(dictionary, key);
+        if number.is_null() {
+            return None;
+        }
+        let mut value = 0_i32;
+        CFNumberGetValue(
+            number,
+            CF_NUMBER_SINT32_TYPE,
+            (&mut value as *mut i32).cast::<c_void>(),
+        )
+        .then_some(value)
+    }
+
+    let workspace_class_name = CString::new("NSWorkspace").expect("static class name is valid");
+    let workspace_class = unsafe { objc_getClass(workspace_class_name.as_ptr()) };
+    if workspace_class.is_null() {
+        return Err("无法读取 macOS 前台应用".to_string());
+    }
+    let workspace = unsafe { objc_msg_send_object(workspace_class, selector("sharedWorkspace")?) };
+    let application = unsafe { objc_msg_send_object(workspace, selector("frontmostApplication")?) };
+    if application.is_null() {
+        return Err("当前没有可截取的前台应用".to_string());
+    }
+    let send_pid: unsafe extern "C" fn(ObjcObject, ObjcSelector) -> i32 = unsafe {
+        std::mem::transmute(
+            objc_msg_send_object as unsafe extern "C" fn(ObjcObject, ObjcSelector) -> ObjcObject,
+        )
+    };
+    let frontmost_pid = unsafe { send_pid(application, selector("processIdentifier")?) };
+    if frontmost_pid <= 0 {
+        return Err("前台应用进程无效".to_string());
+    }
+
+    const WINDOW_LIST_ON_SCREEN_ONLY: u32 = 1;
+    const WINDOW_LIST_EXCLUDE_DESKTOP_ELEMENTS: u32 = 1 << 4;
+    let windows = unsafe {
+        CGWindowListCopyWindowInfo(
+            WINDOW_LIST_ON_SCREEN_ONLY | WINDOW_LIST_EXCLUDE_DESKTOP_ELEMENTS,
+            0,
+        )
+    };
+    if windows.is_null() {
+        return Err("无法读取 macOS 窗口列表".to_string());
+    }
+    let count = unsafe { CFArrayGetCount(windows) };
+    let mut matched = None;
+    for index in 0..count {
+        let dictionary = unsafe { CFArrayGetValueAtIndex(windows, index) };
+        if dictionary.is_null() {
+            continue;
+        }
+        let owner_pid = unsafe { dictionary_i32(dictionary, kCGWindowOwnerPID) };
+        let layer = unsafe { dictionary_i32(dictionary, kCGWindowLayer) };
+        let window_id = unsafe { dictionary_i32(dictionary, kCGWindowNumber) };
+        if owner_pid == Some(frontmost_pid) && layer == Some(0) {
+            if let Some(value) = window_id.filter(|value| *value > 0) {
+                matched = u32::try_from(value).ok();
+                if matched.is_some() {
+                    break;
+                }
+            }
+        }
+    }
+    unsafe { CFRelease(windows) };
+    matched.ok_or_else(|| "前台应用没有可截取的活动窗口".to_string())
+}
+
+#[cfg(not(target_os = "macos"))]
+fn active_window_id() -> Result<u32, String> {
+    Err("当前平台不支持活动窗口截图".to_string())
 }
 
 #[cfg(target_os = "macos")]

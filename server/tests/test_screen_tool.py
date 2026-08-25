@@ -165,11 +165,33 @@ async def test_capture_screen_passes_bounded_display_index() -> None:
     assert gateway.issued_args == {"target": "display", "display_index": 2}
 
 
+async def test_capture_screen_passes_active_window_target() -> None:
+    owner_id = uuid7()
+    device_id = uuid7()
+    gateway = FakeGateway(owner_id=owner_id, device_id=device_id)
+    tool = CaptureScreenTool(
+        FakeResolver(_device(owner_id, device_id)),
+        gateway,
+        FakeAnalyzer(),
+    )
+
+    result = await tool.execute(
+        CaptureScreenArgs(target="active_window"),
+        ToolContext(privacy_level="L2", user_id=owner_id, turn_id=uuid7()),
+    )
+
+    assert result.ok is True
+    assert result.data["target"] == "active_window"
+    assert result.data["display_index"] is None
+    assert gateway.issued_args == {"target": "active_window"}
+
+
 def test_capture_screen_rejects_invalid_display_targets() -> None:
     invalid_arguments = (
         {"target": "display"},
         {"target": "display", "display_index": 0},
         {"target": "main_display", "display_index": 1},
+        {"target": "active_window", "display_index": 1},
     )
     for arguments in invalid_arguments:
         with pytest.raises(ValidationError):
