@@ -2,7 +2,7 @@
 set -Eeuo pipefail
 
 APP_DIR="${APP_DIR:-/vol1/1000/docker/companion-hub}"
-REPOSITORY="${REPOSITORY:-https://github.com/PhyQxx/companion-hub.git}"
+REPOSITORY="${REPOSITORY:-git@github.com:PhyQxx/companion-hub.git}"
 BRANCH="${1:-${DEPLOY_BRANCH:-main}}"
 EXPORT_IMAGE="${EXPORT_IMAGE:-companion-hub-hub}"
 LOCK_DIR="${APP_DIR}/.update-lock"
