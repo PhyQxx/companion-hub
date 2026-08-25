@@ -80,8 +80,8 @@
 - [x] 一级导航按“概览 / 伴侣核心 / 能力接入 / 运维治理”分组，合并记忆与时间线入口，并保留旧 `/timeline` 兼容跳转。
 - [x] 二级 Tab 进入 URL query，可刷新恢复；已有总览、模型、Persona、记忆、时间线、删除台账、设备列表和命令台账复用真实页面。
 - [x] 尚无查询接口的 Tab 使用明确的“待接入真实数据”状态页，不展示伪造指标；Admin typecheck 与 production build 通过。
-- [ ] 真实浏览器验收：登录后逐项检查一级模块、二级 Tab、旧 `/timeline` 跳转、刷新恢复和窄屏导航；发现的 P0/P1 交互问题当批修复。
-- [ ] 验收后按 `docs/05` 的实施顺序接真实数据；不为填满导航而抢跑 M3B 的 Trace、隐私审计、备份恢复和成本能力。
+- [x] 真实浏览器验收：登录后逐项检查一级模块、二级 Tab、旧 `/timeline` 跳转、刷新恢复和窄屏导航；发现的 P0/P1 交互问题当批修复。
+- [x] 验收后按 `docs/05` 的实施顺序接真实数据：health/activity/usage/quality/conflicts/pairing/diagnostics + logs/privacy/system 三个聚合 dashboard（含实时日志独立 Tab）已全部接入真实数据；Trace、隐私审计、备份恢复和成本能力按 M3B 计划推进。
 
 ## 3. 最近完成
 
@@ -112,6 +112,9 @@
 - [x] 语音 Batch A～C：本地 faster-whisper、MiMo/edge TTS、流式分句、viseme、打断、延迟滑窗与真浏览器全链。
 - [x] M2 诊断：打断 82ms 达标；当前组合理论首音频下限约 3.3s，1.8s 指标需要架构优化而非继续机械计样。
 - [x] P5 可开发项：多主体记忆、Timeline、L2 隔离、删除闭环、前后端闸门和真实模型回归。
+- [x] Admin 全部 22 个"待接入真实数据"页面接入真实数据：overview（health/usage/activity）、memory（quality/conflicts）、devices（pairing/diagnostics）、logs/privacy/system 三个聚合 dashboard + 15 个 tab 视图。
+- [x] 管理后台实时日志：后端 `LogBroadcastHandler` + SSE 流 (`/api/v1/admin/logs/stream`) + 独立 `LiveLogsView` Tab；支持历史预加载、级别过滤、暂停/清空/重连。
+- [x] 管理后台安全设置：支持在 `system → 身份与会话` 中修改 Admin Token（运行时即时生效，无需重启）和重置聊天密码（自动撤销所有活跃会话，强制重新登录）。
 
 ## 4. 最新质量基线
 

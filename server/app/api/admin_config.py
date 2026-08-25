@@ -31,18 +31,30 @@ from app.tools import AmapProvider, AmapProviderError, ToolLedger
 _BEARER = HTTPBearer(auto_error=False)
 AdminCredentials = Annotated[HTTPAuthorizationCredentials | None, Depends(_BEARER)]
 
+_runtime_admin_token: str | None = None
+
+
+def set_runtime_admin_token(token: str | None) -> None:
+    """设置运行时的 admin token，覆盖构造时传入的固定值。
+
+    用于后台管理界面中修改 admin token 后即时生效，无需重启服务。
+    """
+    global _runtime_admin_token
+    _runtime_admin_token = token
+
 
 class AdminTokenGuard:
     def __init__(self, token: str | None) -> None:
         self._token = token
 
     async def __call__(self, credentials: AdminCredentials) -> None:
-        if not self._token:
+        token = _runtime_admin_token if _runtime_admin_token is not None else self._token
+        if not token:
             raise HTTPException(
                 status.HTTP_503_SERVICE_UNAVAILABLE,
                 detail="admin API is disabled until ARIA_ADMIN_TOKEN is configured",
             )
-        if credentials is None or not hmac.compare_digest(credentials.credentials, self._token):
+        if credentials is None or not hmac.compare_digest(credentials.credentials, token):
             raise HTTPException(status.HTTP_401_UNAUTHORIZED, detail="invalid admin credential")
 
 

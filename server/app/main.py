@@ -16,8 +16,10 @@ from app.adapters import AdapterRegistry
 from app.adapters.builtin import create_builtin_registry
 from app.api import (
     create_admin_config_router,
+    create_admin_dashboard_router,
     create_admin_memory_router,
     create_admin_persona_router,
+    create_admin_security_router,
     create_admin_timeline_router,
     create_auth_router,
     create_chat_router,
@@ -26,6 +28,7 @@ from app.api import (
     create_deletion_ledger_router,
     create_device_command_routers,
     create_device_routers,
+    create_logs_stream_router,
     create_model_capability_router,
     create_voice_websocket_router,
 )
@@ -53,7 +56,8 @@ from app.home_assistant import (
 )
 from app.memory import LlmMemoryExtractor, MemoryExtractor, MemoryRetriever, MemoryStore
 from app.model_capabilities import CapabilityModelService
-from app.observability import apply_observability, configure_logging
+from app.api.admin_config import set_runtime_admin_token
+from app.observability import apply_observability, configure_logging, get_log_broadcast_handler
 from app.output import ProactiveDeliveryService
 from app.output.proactive import DesktopCommandGateway
 from app.perception import PerceptionPipeline, PerceptionStore, ProactivePolicy
@@ -76,7 +80,14 @@ def create_app(
     watch_config: bool | None = None,
     admin_token: str | None = None,
 ) -> FastAPI:
-    configure_logging(os.getenv("ARIA_LOG_LEVEL", "INFO"))
+    import asyncio
+
+    broadcast_handler = configure_logging(os.getenv("ARIA_LOG_LEVEL", "INFO"))
+    if broadcast_handler is not None:
+        try:
+            broadcast_handler.set_event_loop(asyncio.get_running_loop())
+        except RuntimeError:
+            pass
     database_url = os.getenv("ARIA_DATABASE_URL")
     runtime_database = database or (create_database(database_url) if database_url else None)
     owns_database = database is None and runtime_database is not None
@@ -405,6 +416,7 @@ def create_app(
         runtime_admin_token = (
             admin_token if admin_token is not None else os.getenv("ARIA_ADMIN_TOKEN")
         )
+        set_runtime_admin_token(runtime_admin_token)
         app.include_router(
             create_admin_config_router(
                 runtime_config,
@@ -445,7 +457,25 @@ def create_app(
                 )
             )
         if runtime_database is not None:
+            app.include_router(
+                create_admin_dashboard_router(
+                    runtime_database,
+                    admin_token=runtime_admin_token,
+                    version=__version__,
+                )
+            )
+            app.include_router(
+                create_logs_stream_router(
+                    admin_token=runtime_admin_token,
+                )
+            )
             auth_service = AuthService(runtime_database)
+            app.include_router(
+                create_admin_security_router(
+                    admin_token=runtime_admin_token,
+                    auth_service=auth_service,
+                )
+            )
             device_tools: list[ToolHandler] = []
             capability_providers: list[RuntimeCapabilityProvider] = []
             device_target_resolver: DeviceTargetResolver | None = None

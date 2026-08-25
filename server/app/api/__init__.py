@@ -1,6 +1,9 @@
 """HTTP API package."""
 from .admin_config import create_admin_config_router
+from .admin_dashboard import create_admin_dashboard_router
+from .admin_logs_stream import create_logs_stream_router
 from .admin_memory import create_admin_memory_router, create_deletion_ledger_router
+from .admin_security import create_admin_security_router
 from .admin_persona import create_admin_persona_router
 from .admin_timeline import create_admin_timeline_router
 from .auth import ChatSessionGuard, create_auth_router
@@ -24,8 +27,11 @@ __all__ = [
     "DeviceCredentialGuard",
     "VoiceWebSocketManager",
     "create_admin_config_router",
+    "create_admin_dashboard_router",
     "create_admin_memory_router",
+    "create_logs_stream_router",
     "create_admin_persona_router",
+    "create_admin_security_router",
     "create_admin_timeline_router",
     "create_auth_router",
     "create_chat_router",

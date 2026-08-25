@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from uuid import UUID
 
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 from sqlalchemy.exc import IntegrityError
 
 from app.db import (
@@ -180,6 +180,33 @@ class AuthService:
             record = await session.get(AuthSessionRecord, principal.session_id)
             if record is not None and record.revoked_at is None:
                 record.revoked_at = now
+
+    async def reset_password(self, new_password: str) -> None:
+        """重置聊天密码并撤销所有活跃会话，强制重新登录。"""
+        secret_hash = await asyncio.to_thread(_hash_password, new_password)
+        now = datetime.now(UTC)
+        async with self._database.sessions.begin() as session:
+            credential = await session.scalar(
+                select(AuthCredentialRecord)
+                .where(
+                    AuthCredentialRecord.kind == "password",
+                    AuthCredentialRecord.revoked_at.is_(None),
+                )
+                .limit(1)
+            )
+            if credential is None:
+                raise InvalidCredentials("no active password credential found")
+            credential.secret_hash = secret_hash
+            credential.params_version = credential.params_version + 1
+            # 撤销所有活跃会话，强制重新登录
+            await session.execute(
+                update(AuthSessionRecord)
+                .where(
+                    AuthSessionRecord.revoked_at.is_(None),
+                    AuthSessionRecord.expires_at > now,
+                )
+                .values(revoked_at=now)
+            )
 
     def _new_session(
         self, user: AppUserRecord, now: datetime

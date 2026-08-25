@@ -85,6 +85,7 @@ export const adminModules: AdminModule[] = [
     label: "日志追踪",
     group: "运维治理",
     tabs: [
+      { key: "live", label: "实时日志", description: "实时查看后端运行日志流。" },
       { key: "traces", label: "Trace 查询", description: "按调用链定位失败、重试和降级。" },
       { key: "events", label: "事件日志", description: "检索脱敏后的结构化事件。" },
       { key: "performance", label: "性能分析", description: "查看 P50/P90 和阶段耗时。" },
