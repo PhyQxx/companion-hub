@@ -6,6 +6,7 @@ from .admin_timeline import create_admin_timeline_router
 from .auth import ChatSessionGuard, create_auth_router
 from .chat import create_chat_router
 from .chat_ws import ChatWebSocketManager, create_chat_websocket_router
+from .cognition import create_cognition_router
 from .device_commands import (
     DeviceCommandGateway,
     create_device_command_routers,
@@ -29,6 +30,7 @@ __all__ = [
     "create_auth_router",
     "create_chat_router",
     "create_chat_websocket_router",
+    "create_cognition_router",
     "create_deletion_ledger_router",
     "create_device_command_routers",
     "create_device_routers",

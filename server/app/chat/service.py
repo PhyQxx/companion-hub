@@ -14,6 +14,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from sqlalchemy import delete, select, update
 
+from app.cognition import CognitiveCycle, CognitiveDecision, SemanticEvent
 from app.config import ConfigStore, DatabaseConfigStore, HubConfig
 from app.db import (
     AppUserRecord,
@@ -223,6 +224,7 @@ class PendingTurn:
     tool_names: tuple[str, ...] = ()
     # 连接级临时位置(L2 原始信号): 仅随轮次存活于内存, 不写入任何持久化记录。
     client_location: ClientLocation | None = None
+    cognitive_decision: CognitiveDecision | None = None
 
 
 class TurnCancelled(RuntimeError):
@@ -244,6 +246,7 @@ class ChatService:
         capability_provider: RuntimeCapabilityProvider | None = None,
         device_tool: ToolHandler | None = None,
         device_tools: Iterable[ToolHandler] = (),
+        cognitive_cycle: CognitiveCycle | None = None,
     ) -> None:
         self._database = database
         self._config_store = config_store
@@ -254,6 +257,7 @@ class ChatService:
             HistoryRecallService(timeline_store) if timeline_store is not None else None
         )
         self._capability_provider = capability_provider
+        self._cognitive_cycle = cognitive_cycle
         handlers = list(device_tools)
         if device_tool is not None:
             handlers.append(device_tool)
@@ -385,6 +389,7 @@ class ChatService:
         rule_id: str,
         trigger_kind: str,
         privacy_level: PrivacyLevel = PrivacyLevel.L1,
+        cognitive_decision: CognitiveDecision | None = None,
     ) -> tuple[UUID, MessageView] | None:
         """Persist a deterministic HA suggestion in the latest active conversation."""
         if privacy_level not in {PrivacyLevel.L0, PrivacyLevel.L1}:
@@ -423,6 +428,11 @@ class ChatService:
                     "entity_id": entity_id,
                     "rule_id": rule_id,
                     "trigger_kind": trigger_kind,
+                    **(
+                        {"cognition": _cognitive_meta(cognitive_decision)}
+                        if cognitive_decision is not None
+                        else {}
+                    ),
                     "agent_reply": {
                         "schema_version": 1,
                         "schema_ref": "aria.agent-reply/1",
@@ -500,6 +510,26 @@ class ChatService:
         history = await self._context_messages(
             conversation_id, limit=max_context_messages or MAX_CONTEXT_MESSAGES
         )
+        cognitive_decision: CognitiveDecision | None = None
+        if self._cognitive_cycle is not None:
+            try:
+                cognitive_decision = await self._cognitive_cycle.evaluate(
+                    SemanticEvent(
+                        event_id=turn_id,
+                        user_id=user_id,
+                        conversation_id=conversation_id,
+                        kind="user.message_received",
+                        summary="用户发起了一次被动对话请求",
+                        occurred_at=now,
+                        privacy_level=privacy_level,
+                        confidence=1,
+                        evidence_ids=[str(user_record.id)],
+                        attributes={"message_length": len(text)},
+                        passive=True,
+                    )
+                )
+            except Exception:
+                logger.warning("passive cognitive cycle failed for turn %s", turn_id, exc_info=True)
         snapshot = (
             await self._config_store.refresh()
             if isinstance(self._config_store, DatabaseConfigStore)
@@ -620,6 +650,7 @@ class ChatService:
             runtime_capabilities=runtime_capabilities,
             tool_names=tool_names,
             client_location=client_location,
+            cognitive_decision=cognitive_decision,
         )
 
     async def run_stream(
@@ -1014,6 +1045,8 @@ class ChatService:
             "usage": result.usage.model_dump(mode="json"),
             "latency_ms": result.latency_ms,
         }
+        if pending.cognitive_decision is not None:
+            decision_meta["cognition"] = _cognitive_meta(pending.cognitive_decision)
         if tool_executions:
             decision_meta["tool_calls"] = [
                 {
@@ -1386,6 +1419,24 @@ def _deterministic_home_read_call(pending: PendingTurn) -> ToolCall | None:
         id=f"server-{uuid7()}",
         function={"name": tool_name, "arguments": arguments},
     )
+
+
+def _cognitive_meta(decision: CognitiveDecision) -> dict[str, object]:
+    """Persist auditable judgment metadata, never hidden chain-of-thought."""
+    return {
+        "decision_id": str(decision.id),
+        "event_id": str(decision.event_id),
+        "trigger_kind": decision.trigger_kind,
+        "decision": str(decision.decision),
+        "reason_codes": decision.reason_codes,
+        "evidence_ids": decision.evidence_ids,
+        "confidence": decision.confidence,
+        "urgency": str(decision.urgency),
+        "attention_score": decision.attention_score,
+        "policy_version": decision.policy_version,
+        "model_provider": decision.model_provider,
+        "model_name": decision.model_name,
+    }
 
 
 def _tool_result_count(result: ToolResult) -> int:

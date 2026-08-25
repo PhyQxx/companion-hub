@@ -9,6 +9,7 @@ from sqlalchemy import (
     BigInteger,
     CheckConstraint,
     DateTime,
+    Float,
     ForeignKey,
     Index,
     Integer,
@@ -396,6 +397,99 @@ class HomeAssistantProactiveLogRecord(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
+
+
+class CognitiveDecisionRecord(Base):
+    __tablename__ = "cognitive_decision"
+    __table_args__ = (
+        CheckConstraint(
+            "decision IN ('ignore','record','inform','ask','suggest','act','escalate')",
+            name="ck_cognitive_decision_kind",
+        ),
+        CheckConstraint(
+            "urgency IN ('low','normal','high','critical')",
+            name="ck_cognitive_decision_urgency",
+        ),
+        CheckConstraint(
+            "confidence >= 0 AND confidence <= 1",
+            name="ck_cognitive_decision_confidence",
+        ),
+        Index("ix_cognitive_user_created", "user_id", "created_at"),
+        Index("ix_cognitive_trigger_created", "trigger_kind", "created_at"),
+    )
+
+    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True)
+    user_id: Mapped[UUID] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("app_user.id", ondelete="CASCADE"), nullable=False
+    )
+    conversation_id: Mapped[UUID | None] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("conversation.id", ondelete="SET NULL")
+    )
+    event_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
+    trigger_kind: Mapped[str] = mapped_column(String(160), nullable=False)
+    decision: Mapped[str] = mapped_column(String(16), nullable=False)
+    reason_codes: Mapped[list[str]] = mapped_column(JSON, nullable=False)
+    evidence_ids: Mapped[list[str]] = mapped_column(JSON, nullable=False)
+    confidence: Mapped[float] = mapped_column(Float, nullable=False)
+    urgency: Mapped[str] = mapped_column(String(16), nullable=False)
+    attention_score: Mapped[float] = mapped_column(Float, nullable=False)
+    policy_version: Mapped[str] = mapped_column(String(80), nullable=False)
+    model_provider: Mapped[str | None] = mapped_column(String(80))
+    model_name: Mapped[str | None] = mapped_column(String(200))
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class CognitiveGoalRecord(Base):
+    __tablename__ = "cognitive_goal"
+    __table_args__ = (
+        CheckConstraint(
+            "kind IN ('user','shared','system')", name="ck_cognitive_goal_kind"
+        ),
+        CheckConstraint(
+            "status IN ('active','completed','cancelled','expired')",
+            name="ck_cognitive_goal_status",
+        ),
+        Index("ix_cognitive_goal_user_status", "user_id", "status", "due_at"),
+    )
+
+    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True)
+    user_id: Mapped[UUID] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("app_user.id", ondelete="CASCADE"), nullable=False
+    )
+    kind: Mapped[str] = mapped_column(String(16), nullable=False)
+    title: Mapped[str] = mapped_column(String(320), nullable=False)
+    status: Mapped[str] = mapped_column(String(16), nullable=False)
+    source_kind: Mapped[str] = mapped_column(String(40), nullable=False)
+    source_id: Mapped[str] = mapped_column(String(200), nullable=False)
+    due_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class CognitiveFeedbackRecord(Base):
+    __tablename__ = "cognitive_feedback"
+    __table_args__ = (
+        CheckConstraint(
+            "kind IN ('accepted','ignored','snoozed','forbidden')",
+            name="ck_cognitive_feedback_kind",
+        ),
+        Index("ix_cognitive_feedback_user_created", "user_id", "created_at"),
+    )
+
+    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True)
+    user_id: Mapped[UUID] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("app_user.id", ondelete="CASCADE"), nullable=False
+    )
+    decision_id: Mapped[UUID] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey("cognitive_decision.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    kind: Mapped[str] = mapped_column(String(16), nullable=False)
+    metadata_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
 
 class TimelineEventRecord(Base):

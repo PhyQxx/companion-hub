@@ -14,6 +14,13 @@ from sqlalchemy import func, select
 from app.api import create_chat_router
 from app.auth import AuthService
 from app.chat import ChatService, RuntimeActionCapability
+from app.cognition import (
+    AttentionEngine,
+    CognitiveCycle,
+    CognitiveStore,
+    RuleBasedDeliberator,
+    WorldStateBuilder,
+)
 from app.config import DatabaseConfigStore, HubConfig
 from app.db import AppUserRecord, Base, Database, MessageRecord, create_database
 from app.home_assistant import HomeAssistantState, HomeGetStateTool
@@ -322,6 +329,41 @@ async def test_chat_persists_turn_and_uses_recent_context(
         "again",
     ]
     assert second.user_message.turn_id == second.assistant_message.turn_id
+
+
+async def test_chat_records_passive_cognitive_decision_in_turn_audit(
+    database: Database, store: DatabaseConfigStore
+) -> None:
+    requests: list[CompletionRequest] = []
+    cognitive_store = CognitiveStore(database)
+    cycle = CognitiveCycle(
+        cognitive_store,
+        WorldStateBuilder(database, cognitive_store),
+        AttentionEngine(),
+        RuleBasedDeliberator(),
+    )
+    service = ChatService(
+        database,
+        store,
+        router_builder=lambda config: FakeRouter(config.models["cloud"].model, requests),
+        cognitive_cycle=cycle,
+    )
+    user = await create_user(database)
+    conversation = await service.create_conversation(user_id=user.id, title="Cognitive audit")
+
+    result = await service.send_message(
+        conversation.id,
+        user_id=user.id,
+        text="帮我想想今天先做什么",
+        privacy_level=PrivacyLevel.L1,
+    )
+
+    cognition = (result.assistant_message.decision_meta or {}).get("cognition")
+    assert isinstance(cognition, dict)
+    assert cognition["decision"] == "record"
+    assert cognition["trigger_kind"] == "user.message_received"
+    assert cognition["evidence_ids"] == [str(result.user_message.id)]
+    assert "message_length" not in cognition
 
 
 async def test_proactive_message_is_persisted_in_latest_active_conversation(

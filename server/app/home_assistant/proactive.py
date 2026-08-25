@@ -13,6 +13,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from sqlalchemy import func, select
 
 from app.chat import MessageView
+from app.cognition import CognitiveCycle, CognitiveDecision, DecisionKind, SemanticEvent
 from app.config import (
     ConfigStore,
     DatabaseConfigStore,
@@ -20,6 +21,7 @@ from app.config import (
     HomeAssistantProactiveRuleConfig,
 )
 from app.db import AppUserRecord, Database, HomeAssistantProactiveLogRecord
+from app.ids import uuid7
 from app.schemas import PrivacyLevel
 
 from .models import HomeAssistantError, HomeAssistantState
@@ -40,11 +42,13 @@ class HomeAssistantProactiveEngine:
         config_store: ConfigStore | DatabaseConfigStore,
         read_state: ReadState,
         deliver: Deliver,
+        cognitive_cycle: CognitiveCycle | None = None,
     ) -> None:
         self._database = database
         self._config_store = config_store
         self._read_state = read_state
         self._deliver = deliver
+        self._cognitive_cycle = cognitive_cycle
         self._tasks: dict[tuple[str, str], asyncio.Task[None]] = {}
 
     async def stop(self) -> None:
@@ -134,13 +138,56 @@ class HomeAssistantProactiveEngine:
             await self._log(policy, rule, now, passed=False, reason=reason)
             return
         message = rule.message or self._render_message(policy, rule, state)
-        result = await self._deliver(
-            message,
-            entity_id=policy.entity_id,
-            rule_id=rule.rule_id,
-            trigger_kind=rule.kind,
-            privacy_level=PrivacyLevel(policy.privacy_level),
-        )
+        cognitive_decision: CognitiveDecision | None = None
+        if self._cognitive_cycle is not None:
+            user_id = await self._active_user_id()
+            if user_id is None:
+                await self._log(policy, rule, now, passed=False, reason="no_active_user")
+                return
+            cognitive_decision = await self._cognitive_cycle.evaluate(
+                SemanticEvent(
+                    event_id=uuid7(),
+                    user_id=user_id,
+                    kind=rule.kind,
+                    summary=f"{policy.display_name} 触发 {rule.kind}",
+                    occurred_at=now,
+                    privacy_level=PrivacyLevel(policy.privacy_level),
+                    confidence=1,
+                    evidence_ids=[
+                        f"ha:{policy.entity_id}:"
+                        f"{_state_changed_at(state, fallback=now).isoformat()}"
+                    ],
+                    attributes={"message": message},
+                    expires_at=now + timedelta(minutes=5),
+                )
+            )
+            if cognitive_decision.decision in {DecisionKind.IGNORE, DecisionKind.RECORD}:
+                await self._log(
+                    policy,
+                    rule,
+                    now,
+                    passed=False,
+                    reason=f"cognitive_{cognitive_decision.decision}",
+                )
+                return
+            message = cognitive_decision.message or message
+        if cognitive_decision is None:
+            result = await self._deliver(
+                message,
+                entity_id=policy.entity_id,
+                rule_id=rule.rule_id,
+                trigger_kind=rule.kind,
+                privacy_level=PrivacyLevel(policy.privacy_level),
+            )
+        else:
+            result = await self._deliver(
+                message,
+                entity_id=policy.entity_id,
+                rule_id=rule.rule_id,
+                trigger_kind=rule.kind,
+                privacy_level=PrivacyLevel(policy.privacy_level),
+                cognitive_decision=cognitive_decision,
+            )
         if result is None:
             await self._log(policy, rule, now, passed=False, reason="no_active_conversation")
             return
@@ -198,6 +245,16 @@ class HomeAssistantProactiveEngine:
         if int(sent_today or 0) >= config.proactive_daily_limit:
             return "daily_limit"
         return None
+
+    async def _active_user_id(self) -> UUID | None:
+        async with self._database.sessions() as session:
+            value = await session.scalar(
+                select(AppUserRecord.id)
+                .where(AppUserRecord.status == "active")
+                .order_by(AppUserRecord.created_at)
+                .limit(1)
+            )
+        return value if isinstance(value, UUID) else None
 
     async def _user_timezone(self) -> ZoneInfo:
         async with self._database.sessions() as session:
@@ -312,3 +369,7 @@ class HomeAssistantProactiveEngine:
         for key in tuple(self._tasks):
             if key[0] == entity_id:
                 self._cancel(key)
+
+
+def _state_changed_at(state: HomeAssistantState | None, *, fallback: datetime) -> datetime:
+    return state.last_changed if state is not None and state.last_changed is not None else fallback

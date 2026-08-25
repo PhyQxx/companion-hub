@@ -14,7 +14,7 @@
 | P6 Batch A～C 语音 | 主链完成 | 真浏览器 ASR/LLM/TTS/viseme/打断已打通；延迟继续优化 |
 | M3A 地图/天气第一批 | 已完成 | 查询、定位、卡片、Admin 自检、200 条台账与延迟报告已落地，见 `docs/35` |
 | M3A 多终端与感知 | 进行中 | Browser Bridge 与 macOS Desktop 已通过真机验收；活动窗口代码闭环已落地，待原生真机验收后进入系统内容选择器 |
-| M3B 认知调度闭环 | 待开始 | 在 M3A 语义事件之上建立 World State、Attention、CognitiveDecision、行动校验与反馈学习 |
+| M3B 认知调度闭环 | 已完成（v1） | 被动对话与主动事件已统一进入 World State、Attention、结构化决策、反馈和审计闭环；自主写动作保持关闭 |
 | Admin 信息架构重整 | 进行中 | 领域分组、URL 可恢复二级 Tab 与既有页面映射已落地；待真实浏览器验收 |
 | P6 Batch D Live2D/桌宠 | 等待前置 | M2 延迟达标后再启动 |
 
@@ -57,14 +57,14 @@
 
 ### D. M3B 认知调度闭环
 
-- [ ] 定义 `SemanticEvent`、`WorldState`、`CognitiveDecision` 和 `ActionResult` 契约；决策只保存证据 ID、原因码、信心度、策略/模型版本，不持久化自由文本“内心活动”。
-- [ ] World State Builder：按事件有界组装当前环境、最近交互、真实在线能力、相关 Memory/Timeline、DND 和近期主动次数，不向模型倾倒全量原始输入。
-- [ ] Attention Engine：使用确定性规则完成去抖、新奇度、紧急度、目标相关度、重复惩罚和打扰成本评分；低分静默，达阈值才调用模型。
-- [ ] CognitiveCycle：被动消息与主动事件进入同一认知管线，结构化输出 `ignore / record / inform / ask / suggest / act / escalate`。
-- [ ] Goal/Commitment Store：区分用户明确目标、共享承诺和系统维护目标，支持状态、期限、来源、取消与失效，禁止模型无证据自行创建用户目标。
-- [ ] Action Engine：在现有工具与 Home Assistant 确认门禁之上增加风险分级、幂等执行、结果回读和 `unknown_outcome` 处理；第一版仅开放 `ignore / inform / ask / suggest`。
-- [ ] Feedback/Reflection：记录接受、忽略、稍后、禁止等反馈，用于降频和生成可溯源的偏好记忆候选；不允许反思任务直接改写 Persona 或安全策略。
-- [ ] 建立最小验收集：“用户回家”“灯长时间开启”“水浸告警”三个闭环，覆盖应静默、应询问、紧急升级、重复降频和无证据禁止行动。
+- [x] 定义 `SemanticEvent`、`WorldState`、`CognitiveDecision` 和 `ActionResult` 契约；决策只保存证据 ID、原因码、信心度、策略/模型版本，不持久化自由文本“内心活动”。
+- [x] World State Builder：按事件有界组装当前环境、最近交互、真实在线能力、相关 Memory/Timeline、DND 和近期主动次数，不向模型倾倒全量原始输入。
+- [x] Attention Engine：使用确定性规则完成紧急度、目标相关度、重复与反馈惩罚、打扰成本评分；低分静默，达阈值才调用模型。
+- [x] CognitiveCycle：被动消息与 Home Assistant 主动事件进入同一认知管线，结构化输出 `ignore / record / inform / ask / suggest / escalate`；模型请求 `act` 时安全回退。
+- [x] Goal/Commitment Store：区分用户明确目标、共享承诺和系统维护目标，支持状态、期限、来源、完成、取消与失效；用户/共享目标必须有手动或归属当前用户的消息证据。
+- [x] Action Engine v1 安全边界：自主写动作保持关闭，非动作决策返回可审计结果，任何 `act` 输出都会被契约拒绝或安全回退；风险分级、幂等、结果回读和 `unknown_outcome` 是未来开放写动作前的硬门槛。
+- [x] Feedback/Reflection：记录接受、忽略、稍后、禁止反馈，用于实时降频并生成带反馈证据、需确认的偏好候选；不直接改写 Memory、Persona 或安全策略。
+- [x] 最小验收集覆盖“用户回家”“灯长时间开启”“水浸告警”，验证 DND 静默、询问、紧急升级、重复降频、L3 不落库和无证据禁止进入主动链路。
 
 ### E. 并行门槛与优化
 
@@ -83,6 +83,7 @@
 
 ## 3. 最近完成
 
+- [x] M3B 认知调度闭环 v1：有界 World State、确定性 Attention、结构化模型决策与安全回退、目标/承诺、反馈降频与反思候选、被动聊天和 Home Assistant 主动事件统一管线已落地；自主写动作保持关闭。
 - [x] Desktop 屏幕安全闸门代码闭环：macOS 原生会话锁定状态进入 capability 声明与截图执行前双重检查；临时授权仅保存在进程内存、5 分钟过期且只消费一次，锁屏立即撤销；Desktop 协议测试增至 6 通过，TypeScript/Vite build 与原生 `cargo check` 通过。
 - [x] Admin 信息架构骨架：集中式模块/Tab 定义、分组侧栏、URL 可恢复 Tab、工作区路由和 planned 状态页已接入；当前改动已通过 diff-check、Admin typecheck 与 production build，真实浏览器验收仍在执行队列。
 - [x] L1 macOS 屏幕全链验收：真实 Web 会话触发 `capture_screen`，Desktop Client 上传截图，GLM Vision 识别当前聊天界面并生成准确最终回复；运行视觉由拥堵的 `glm-4.6v-flash` 切换为已实测的 `glm-4v-flash`，并增加 429/5xx 重试与 endpoint 输出上限。
@@ -109,6 +110,7 @@
 
 ## 4. 最新质量基线
 
+- 2026-08-25 M3B v1：Ruff、全量 mypy、pytest **312 通过 / 2 跳过**、Alembic 从空库升级到 `0015_cognitive_cycle`、单 head 与 `git diff --check` 全部通过；新增验收覆盖三类主动场景、被动聊天审计、DND、重复降频、反馈候选、模型 `act` 安全回退和 L3 不落库；
 - 2026-08-25 活动窗口代码闭环：Ruff、全量 mypy、pytest **304 通过 / 2 跳过**、Alembic 单 head、Desktop 协议测试 **6 通过**、Desktop typecheck/build、`cargo check`、原生 `cargo build` 与 `git diff --check` 全部通过；`active_window` 真实聊天全链待原生客户端临时授权后验收；
 - 2026-08-24 已提交主线基线：pytest **287 通过 / 2 跳过**，Desktop 协议测试 **5 通过**、Browser Bridge 协议测试 **3 通过**，Ruff、全量 mypy、Alembic 单 head、Chat/Shared/Desktop/Browser typecheck 与 production build 全部通过；macOS Desktop debug `.app` 原生编译、TCC 截图与 L1 GLM 视觉全链验收通过；
 - 2026-08-24 当前 Desktop 安全闸门改动：协议测试 **6 通过**、Desktop typecheck/build、原生 `cargo check` 与 `git diff --check` 通过；本机 Rust stable 缺少 `rustfmt` 组件，未运行 `cargo fmt --check`；

@@ -21,6 +21,7 @@ from app.api import (
     create_auth_router,
     create_chat_router,
     create_chat_websocket_router,
+    create_cognition_router,
     create_deletion_ledger_router,
     create_device_command_routers,
     create_device_routers,
@@ -31,6 +32,15 @@ from app.api.events import create_event_router
 from app.auth import AuthService
 from app.bus import DispatcherWorker, EventPublisher, LocalEventPublisher
 from app.chat import ChatService, CompositeRuntimeCapabilityProvider, RuntimeCapabilityProvider
+from app.cognition import (
+    AttentionEngine,
+    CognitiveCycle,
+    CognitiveDecision,
+    CognitiveStore,
+    RouterDeliberator,
+    RuleBasedDeliberator,
+    WorldStateBuilder,
+)
 from app.config import ConfigStore, ConfigWatcher, DatabaseConfigStore
 from app.db import Database, create_database
 from app.devices import DeviceCommandStore, DeviceRegistry, DeviceTargetResolver
@@ -42,7 +52,7 @@ from app.home_assistant import (
     HomeGetStateTool,
 )
 from app.home_assistant.proactive import DeliveryResult
-from app.memory import LlmMemoryExtractor, MemoryExtractor, MemoryStore
+from app.memory import LlmMemoryExtractor, MemoryExtractor, MemoryRetriever, MemoryStore
 from app.model_capabilities import CapabilityModelService
 from app.observability import apply_observability, configure_logging
 from app.persona import PersonaStore
@@ -114,6 +124,26 @@ def create_app(
     device_registry = DeviceRegistry(runtime_database) if runtime_database is not None else None
     device_command_store = (
         DeviceCommandStore(runtime_database) if runtime_database is not None else None
+    )
+    cognitive_store = CognitiveStore(runtime_database) if runtime_database is not None else None
+    cognitive_cycle = (
+        CognitiveCycle(
+            cognitive_store,
+            WorldStateBuilder(
+                runtime_database,
+                cognitive_store,
+                memory_retriever=MemoryRetriever(memory_store) if memory_store else None,
+                timeline_store=timeline_store,
+            ),
+            AttentionEngine(),
+            (
+                RouterDeliberator(runtime_config)
+                if runtime_config is not None
+                else RuleBasedDeliberator()
+            ),
+        )
+        if runtime_database is not None and cognitive_store is not None
+        else None
     )
     history_recall = (
         HistoryRecallService(
@@ -457,11 +487,14 @@ def create_app(
                 history_recall_service=history_recall,
                 capability_provider=capability_provider,
                 device_tools=device_tools,
+                cognitive_cycle=cognitive_cycle,
             )
             app.state.auth_service = auth_service
             app.state.chat_service = runtime_chat_service
             app.include_router(create_auth_router(auth_service, admin_token=runtime_admin_token))
             app.include_router(create_chat_router(runtime_chat_service, auth_service))
+            if cognitive_store is not None:
+                app.include_router(create_cognition_router(cognitive_store, auth_service))
             if capability_models is not None:
                 app.include_router(create_model_capability_router(capability_models, auth_service))
             websocket_router, websocket_manager = create_chat_websocket_router(
@@ -478,6 +511,7 @@ def create_app(
                     rule_id: str,
                     trigger_kind: str,
                     privacy_level: PrivacyLevel,
+                    cognitive_decision: CognitiveDecision | None = None,
                 ) -> DeliveryResult:
                     result = await runtime_chat_service.create_proactive_message(
                         text,
@@ -485,6 +519,7 @@ def create_app(
                         rule_id=rule_id,
                         trigger_kind=trigger_kind,
                         privacy_level=privacy_level,
+                        cognitive_decision=cognitive_decision,
                     )
                     if result is not None:
                         user_id, message = result
@@ -496,6 +531,7 @@ def create_app(
                     runtime_config,
                     home_assistant_manager.get_state,
                     deliver_home_assistant_message,
+                    cognitive_cycle=cognitive_cycle,
                 )
                 home_assistant_manager.set_state_change_handler(
                     home_assistant_proactive.on_state_change
