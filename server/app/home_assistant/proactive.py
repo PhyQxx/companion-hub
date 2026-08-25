@@ -22,6 +22,7 @@ from app.config import (
 )
 from app.db import AppUserRecord, Database, HomeAssistantProactiveLogRecord
 from app.ids import uuid7
+from app.perception import PerceptionDisposition, PerceptionPipeline, PerceptionResult
 from app.schemas import PrivacyLevel
 
 from .models import HomeAssistantError, HomeAssistantState
@@ -43,12 +44,14 @@ class HomeAssistantProactiveEngine:
         read_state: ReadState,
         deliver: Deliver,
         cognitive_cycle: CognitiveCycle | None = None,
+        perception_pipeline: PerceptionPipeline | None = None,
     ) -> None:
         self._database = database
         self._config_store = config_store
         self._read_state = read_state
         self._deliver = deliver
         self._cognitive_cycle = cognitive_cycle
+        self._perception_pipeline = perception_pipeline
         self._tasks: dict[tuple[str, str], asyncio.Task[None]] = {}
 
     async def stop(self) -> None:
@@ -75,7 +78,6 @@ class HomeAssistantProactiveEngine:
         old_state: HomeAssistantState | None,
         new_state: HomeAssistantState | None,
     ) -> None:
-        del old_state
         config = self._config_store.current.config.integrations.home_assistant
         configured = next(
             (item for item in config.entities if item.entity_id == policy.entity_id), None
@@ -83,6 +85,7 @@ class HomeAssistantProactiveEngine:
         if not config.proactive_enabled or configured is None:
             self._cancel_entity(policy.entity_id)
             return
+        await self._submit_semantic_transition(configured, old_state, new_state)
         for rule in configured.proactive_rules:
             key = (configured.entity_id, rule.rule_id)
             if not rule.enabled or not self._matches(rule, new_state):
@@ -139,7 +142,44 @@ class HomeAssistantProactiveEngine:
             return
         message = rule.message or self._render_message(policy, rule, state)
         cognitive_decision: CognitiveDecision | None = None
-        if self._cognitive_cycle is not None:
+        if self._perception_pipeline is not None:
+            user_id = await self._active_user_id()
+            if user_id is None:
+                await self._log(policy, rule, now, passed=False, reason="no_active_user")
+                return
+            perception = await self._perception_pipeline.process(
+                SemanticEvent(
+                    event_id=uuid7(),
+                    user_id=user_id,
+                    kind=rule.kind,
+                    source_kind="home_assistant",
+                    dedupe_key=f"{rule.kind}:{policy.entity_id}",
+                    summary=f"{policy.display_name} 触发 {rule.kind}",
+                    occurred_at=now,
+                    privacy_level=PrivacyLevel(policy.privacy_level),
+                    confidence=1,
+                    evidence_ids=[
+                        f"ha:{policy.entity_id}:"
+                        f"{_state_changed_at(state, fallback=now).isoformat()}"
+                    ],
+                    attributes={"message": message},
+                    expires_at=now + timedelta(minutes=5),
+                )
+            )
+            cognitive_decision = perception.decision
+            if (
+                perception.disposition != PerceptionDisposition.PROCESSED
+                or cognitive_decision is None
+            ):
+                await self._log(
+                    policy,
+                    rule,
+                    now,
+                    passed=False,
+                    reason=f"perception_{perception.reason_code or perception.disposition}",
+                )
+                return
+        elif self._cognitive_cycle is not None:
             user_id = await self._active_user_id()
             if user_id is None:
                 await self._log(policy, rule, now, passed=False, reason="no_active_user")
@@ -161,6 +201,7 @@ class HomeAssistantProactiveEngine:
                     expires_at=now + timedelta(minutes=5),
                 )
             )
+        if cognitive_decision is not None:
             if cognitive_decision.decision in {DecisionKind.IGNORE, DecisionKind.RECORD}:
                 await self._log(
                     policy,
@@ -187,6 +228,7 @@ class HomeAssistantProactiveEngine:
                 trigger_kind=rule.kind,
                 privacy_level=PrivacyLevel(policy.privacy_level),
                 cognitive_decision=cognitive_decision,
+                target_user_id=cognitive_decision.user_id,
             )
         if result is None:
             await self._log(policy, rule, now, passed=False, reason="no_active_conversation")
@@ -200,6 +242,80 @@ class HomeAssistantProactiveEngine:
             user_id=user_id,
             conversation_id=created.conversation_id,
             message=message,
+        )
+
+    async def _submit_semantic_transition(
+        self,
+        policy: HomeAssistantEntityConfig,
+        old_state: HomeAssistantState | None,
+        new_state: HomeAssistantState | None,
+    ) -> None:
+        if self._perception_pipeline is None or old_state is None or new_state is None:
+            return
+        transition = _semantic_transition(policy, old_state, new_state)
+        if transition is None:
+            return
+        user_id = await self._active_user_id()
+        if user_id is None:
+            return
+        kind, summary, message, stable_for = transition
+        occurred_at = _state_changed_at(new_state, fallback=datetime.now(UTC))
+        event = SemanticEvent(
+            event_id=uuid7(),
+            user_id=user_id,
+            kind=kind,
+            source_kind="home_assistant",
+            dedupe_key=(
+                f"user:{user_id}:arrival"
+                if kind == "user_arrived_home"
+                else f"{kind}:{policy.entity_id}"
+            ),
+            summary=summary,
+            occurred_at=occurred_at,
+            privacy_level=PrivacyLevel(policy.privacy_level),
+            confidence=1,
+            evidence_ids=[f"ha:{policy.entity_id}:{occurred_at.isoformat()}"],
+            attributes={"message": message, "entity_id": policy.entity_id},
+            expires_at=datetime.now(UTC) + timedelta(minutes=5),
+        )
+
+        def still_valid() -> bool:
+            try:
+                current = self._read_state(policy.entity_id)
+            except HomeAssistantError:
+                return False
+            return current.state.strip().casefold() == new_state.state.strip().casefold()
+
+        self._perception_pipeline.submit(
+            event,
+            stable_for_seconds=stable_for,
+            validate=still_valid,
+            handler=self._deliver_transition,
+        )
+
+    async def _deliver_transition(
+        self,
+        event: SemanticEvent,
+        result: PerceptionResult,
+    ) -> None:
+        decision = result.decision
+        if (
+            result.disposition != PerceptionDisposition.PROCESSED
+            or decision is None
+            or decision.decision in {DecisionKind.IGNORE, DecisionKind.RECORD}
+            or not decision.message
+        ):
+            return
+        raw_entity_id = event.attributes.get("entity_id")
+        entity_id = raw_entity_id if isinstance(raw_entity_id, str) else "perception"
+        await self._deliver(
+            decision.message,
+            entity_id=entity_id,
+            rule_id=f"perception_{event.kind}",
+            trigger_kind=event.kind,
+            privacy_level=PrivacyLevel(event.privacy_level),
+            cognitive_decision=decision,
+            target_user_id=event.user_id,
         )
 
     async def _gate_reason(
@@ -373,3 +489,40 @@ class HomeAssistantProactiveEngine:
 
 def _state_changed_at(state: HomeAssistantState | None, *, fallback: datetime) -> datetime:
     return state.last_changed if state is not None and state.last_changed is not None else fallback
+
+
+def _semantic_transition(
+    policy: HomeAssistantEntityConfig,
+    old_state: HomeAssistantState,
+    new_state: HomeAssistantState,
+) -> tuple[str, str, str, float] | None:
+    old_value = old_state.state.strip().casefold()
+    new_value = new_state.state.strip().casefold()
+    if old_value == new_value:
+        return None
+    domain = policy.entity_id.split(".", 1)[0]
+    if domain == "person":
+        if old_value in {"not_home", "away"} and new_value == "home":
+            return (
+                "user_arrived_home",
+                f"{policy.display_name} 已回到家",
+                "欢迎回家。需要我帮你检查一下家里的灯光或温度吗？",
+                3,
+            )
+        if old_value == "home" and new_value in {"not_home", "away"}:
+            return (
+                "user_left_home",
+                f"{policy.display_name} 已离开家",
+                "检测到你已经离家。",
+                3,
+            )
+    device_class = str(new_state.attributes.get("device_class", "")).casefold()
+    if domain == "binary_sensor" and device_class in {"presence", "occupancy", "motion"}:
+        present = new_value in {"on", "home", "present", "detected"}
+        return (
+            "presence.changed",
+            f"{policy.display_name} 的稳定存在状态发生变化",
+            "检测到存在状态发生变化。",
+            5,
+        ) if present or old_value in {"on", "home", "present", "detected"} else None
+    return None

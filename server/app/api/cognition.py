@@ -7,6 +7,7 @@ from pydantic import Field
 
 from app.auth import AuthService, ChatPrincipal
 from app.cognition import (
+    CognitiveDecisionView,
     CognitiveStore,
     FeedbackKind,
     GoalKind,
@@ -15,6 +16,7 @@ from app.cognition import (
     ReflectionCandidate,
 )
 from app.db import CognitiveDecisionRecord
+from app.perception import PerceptionStore, SemanticEventAuditView
 from app.schemas.common import StrictModel
 
 from .auth import ChatSessionGuard
@@ -42,7 +44,11 @@ class FeedbackResponse(StrictModel):
     reflection_candidate: ReflectionCandidate | None = None
 
 
-def create_cognition_router(store: CognitiveStore, auth_service: AuthService) -> APIRouter:
+def create_cognition_router(
+    store: CognitiveStore,
+    auth_service: AuthService,
+    perception_store: PerceptionStore | None = None,
+) -> APIRouter:
     guard = ChatSessionGuard(auth_service)
     router = APIRouter(prefix="/api/v1/cognition", tags=["cognition"])
 
@@ -63,6 +69,13 @@ def create_cognition_router(store: CognitiveStore, auth_service: AuthService) ->
             )
         except ValueError as error:
             raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(error)) from error
+
+    @router.get("/decisions", response_model=list[CognitiveDecisionView])
+    async def list_decisions(
+        principal: Annotated[ChatPrincipal, Depends(guard)],
+        limit: Annotated[int, Field(ge=1, le=200)] = 100,
+    ) -> list[CognitiveDecisionView]:
+        return await store.recent_decisions(principal.user_id, limit=limit)
 
     @router.get("/goals", response_model=list[GoalView])
     async def list_active_goals(
@@ -112,5 +125,14 @@ def create_cognition_router(store: CognitiveStore, auth_service: AuthService) ->
             else None
         )
         return FeedbackResponse(id=feedback_id, reflection_candidate=candidate)
+
+    if perception_store is not None:
+
+        @router.get("/perception-events", response_model=list[SemanticEventAuditView])
+        async def list_perception_events(
+            principal: Annotated[ChatPrincipal, Depends(guard)],
+            limit: Annotated[int, Field(ge=1, le=200)] = 100,
+        ) -> list[SemanticEventAuditView]:
+            return await perception_store.recent(principal.user_id, limit=limit)
 
     return router

@@ -50,3 +50,24 @@ class CognitiveCycle:
         if event.privacy_level != PrivacyLevel.L3:
             await self.store.save_decision(decision)
         return decision
+
+    async def suppress(self, event: SemanticEvent, *reason_codes: str) -> CognitiveDecision:
+        decision = CognitiveDecision(
+            id=uuid7(),
+            event_id=event.event_id,
+            user_id=event.user_id,
+            conversation_id=event.conversation_id,
+            trigger_kind=event.kind,
+            decision=DecisionKind.IGNORE,
+            reason_codes=list(reason_codes),
+            evidence_ids=event.evidence_ids,
+            confidence=event.confidence,
+            urgency=Urgency.LOW,
+            attention_score=0,
+            policy_version=f"{ATTENTION_POLICY_VERSION}+proactive-policy-v1",
+            expires_at=event.expires_at,
+            created_at=datetime.now(UTC),
+        )
+        if event.privacy_level != PrivacyLevel.L3:
+            await self.store.save_decision(decision)
+        return decision

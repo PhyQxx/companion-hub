@@ -50,9 +50,10 @@
 - [ ] 第一硬件闭环：ESP32 + LD2410 存在雷达。
 - [ ] 原始遥测进入 `EphemeralSignal`，按通道去抖并设置过期时间；L3 原始值不落库、不进日志、不进模型。
 - [ ] `read_sensors` 工具读取最新有效状态，支持“现在有人吗”“室温多少”等被动查询。
-- [ ] Perception 规则把稳定状态转换为 `presence.changed`、`user_arrived_home` 等语义事件。
+- [x] Perception Pipeline 第一批：HA `person` 与授权存在传感器经稳定窗口转换为 `user_arrived_home`、`user_left_home`、`presence.changed`；支持 TTL、重放幂等、并发跨来源合并和 L3 零审计。
 - [x] Home Assistant 规则式主动引擎：持续时间判定、安静时段、冷却、每日上限、固定模板、审计台账和 WebSocket 主动投递已落地。
-- [ ] 通用 Proactive Policy：DND、忽略降频、跨来源合并、输出终端仲裁与过期不补发。
+- [x] 通用 Proactive Policy v1：统一 DND/安静时段/每日预算、反馈降频、5 分钟跨来源合并、过期不补发；主动消息按事件 owner 选择其最近活动 Web 会话，禁止跨用户误投。
+- [ ] 多 Adapter 输出终端仲裁：把主动 `OutputIntent` 接入现有 `OutputRouter`，按 `proactive_reachable`、在线状态、隐私和用户偏好选择 Web/Desktop/Voice，并记录 DeliveryReceipt。
 - [ ] 完成单存在传感器 7 天验收：免打扰零违规，重复/误触发可解释。
 
 ### D. M3B 认知调度闭环
@@ -83,6 +84,7 @@
 
 ## 3. 最近完成
 
+- [x] Perception Pipeline 第一批：新增隐私安全的语义事件审计、全局主动门禁、稳定窗口和跨来源幂等合并；HA 人员/存在状态已能自动进入 M3B CognitiveCycle，主动 Web 投递绑定事件 owner。
 - [x] M3B 认知调度闭环 v1：有界 World State、确定性 Attention、结构化模型决策与安全回退、目标/承诺、反馈降频与反思候选、被动聊天和 Home Assistant 主动事件统一管线已落地；自主写动作保持关闭。
 - [x] Desktop 屏幕安全闸门代码闭环：macOS 原生会话锁定状态进入 capability 声明与截图执行前双重检查；临时授权仅保存在进程内存、5 分钟过期且只消费一次，锁屏立即撤销；Desktop 协议测试增至 6 通过，TypeScript/Vite build 与原生 `cargo check` 通过。
 - [x] Admin 信息架构骨架：集中式模块/Tab 定义、分组侧栏、URL 可恢复 Tab、工作区路由和 planned 状态页已接入；当前改动已通过 diff-check、Admin typecheck 与 production build，真实浏览器验收仍在执行队列。
@@ -110,6 +112,7 @@
 
 ## 4. 最新质量基线
 
+- 2026-08-25 Perception Pipeline 第一批：Ruff、全量 mypy、pytest **319 通过 / 2 跳过**、Alembic 从空库升级到 `0016_perception_pipeline`、单 head 与 `git diff --check` 全部通过；验收覆盖并发跨来源合并、事件重放、DND/预算/紧急绕过、稳定窗口失败、TTL、L3 零持久化、HA 语义映射与 owner 投递隔离；
 - 2026-08-25 M3B v1：Ruff、全量 mypy、pytest **312 通过 / 2 跳过**、Alembic 从空库升级到 `0015_cognitive_cycle`、单 head 与 `git diff --check` 全部通过；新增验收覆盖三类主动场景、被动聊天审计、DND、重复降频、反馈候选、模型 `act` 安全回退和 L3 不落库；
 - 2026-08-25 活动窗口代码闭环：Ruff、全量 mypy、pytest **304 通过 / 2 跳过**、Alembic 单 head、Desktop 协议测试 **6 通过**、Desktop typecheck/build、`cargo check`、原生 `cargo build` 与 `git diff --check` 全部通过；`active_window` 真实聊天全链待原生客户端临时授权后验收；
 - 2026-08-24 已提交主线基线：pytest **287 通过 / 2 跳过**，Desktop 协议测试 **5 通过**、Browser Bridge 协议测试 **3 通过**，Ruff、全量 mypy、Alembic 单 head、Chat/Shared/Desktop/Browser typecheck 与 production build 全部通过；macOS Desktop debug `.app` 原生编译、TCC 截图与 L1 GLM 视觉全链验收通过；

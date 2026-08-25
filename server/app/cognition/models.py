@@ -52,6 +52,8 @@ class SemanticEvent(StrictModel):
     user_id: UUID
     conversation_id: UUID | None = None
     kind: Annotated[str, Field(min_length=1, max_length=160)]
+    source_kind: Annotated[str, Field(min_length=1, max_length=80)] = "internal"
+    dedupe_key: Annotated[str, Field(min_length=1, max_length=240)] | None = None
     summary: Annotated[str, Field(min_length=1, max_length=500)]
     occurred_at: datetime
     privacy_level: PrivacyLevel
@@ -132,6 +134,24 @@ class CognitiveDecision(StrictModel):
         } and not self.message:
             raise ValueError("visible decisions require a message")
         return self
+
+
+class CognitiveDecisionView(StrictModel):
+    id: UUID
+    event_id: UUID
+    conversation_id: UUID | None = None
+    trigger_kind: str
+    decision: DecisionKind
+    reason_codes: list[str]
+    evidence_ids: list[str]
+    confidence: Annotated[float, Field(ge=0, le=1)]
+    urgency: Urgency
+    attention_score: Annotated[float, Field(ge=0, le=1)]
+    policy_version: str
+    model_provider: str | None = None
+    model_name: str | None = None
+    expires_at: datetime | None = None
+    created_at: datetime
 
 
 class ActionResult(StrictModel):

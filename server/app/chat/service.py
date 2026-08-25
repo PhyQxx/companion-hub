@@ -390,20 +390,26 @@ class ChatService:
         trigger_kind: str,
         privacy_level: PrivacyLevel = PrivacyLevel.L1,
         cognitive_decision: CognitiveDecision | None = None,
+        target_user_id: UUID | None = None,
     ) -> tuple[UUID, MessageView] | None:
         """Persist a deterministic HA suggestion in the latest active conversation."""
         if privacy_level not in {PrivacyLevel.L0, PrivacyLevel.L1}:
             return None
         now = datetime.now(UTC)
         async with self._database.sessions.begin() as session:
+            query = (
+                select(ConversationRecord, AppUserRecord)
+                .join(AppUserRecord, AppUserRecord.id == ConversationRecord.user_id)
+                .where(
+                    ConversationRecord.status == "active",
+                    AppUserRecord.status == "active",
+                )
+            )
+            if target_user_id is not None:
+                query = query.where(ConversationRecord.user_id == target_user_id)
             row = (
                 await session.execute(
-                    select(ConversationRecord, AppUserRecord)
-                    .join(AppUserRecord, AppUserRecord.id == ConversationRecord.user_id)
-                    .where(
-                        ConversationRecord.status == "active",
-                        AppUserRecord.status == "active",
-                    )
+                    query
                     .order_by(ConversationRecord.last_active_at.desc())
                     .limit(1)
                     .with_for_update()

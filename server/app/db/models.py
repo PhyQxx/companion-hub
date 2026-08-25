@@ -492,6 +492,47 @@ class CognitiveFeedbackRecord(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
 
+class SemanticEventAuditRecord(Base):
+    __tablename__ = "semantic_event_audit"
+    __table_args__ = (
+        CheckConstraint(
+            "disposition IN ('processed','suppressed','merged','expired','unstable')",
+            name="ck_semantic_event_disposition",
+        ),
+        CheckConstraint(
+            "privacy_level IN ('L0','L1','L2')",
+            name="ck_semantic_event_privacy",
+        ),
+        Index("ix_semantic_event_user_created", "user_id", "created_at"),
+        Index(
+            "ix_semantic_event_user_dedupe_created",
+            "user_id",
+            "dedupe_key",
+            "created_at",
+        ),
+    )
+
+    event_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True)
+    user_id: Mapped[UUID] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("app_user.id", ondelete="CASCADE"), nullable=False
+    )
+    kind: Mapped[str] = mapped_column(String(160), nullable=False)
+    source_kind: Mapped[str] = mapped_column(String(80), nullable=False)
+    dedupe_key: Mapped[str] = mapped_column(String(240), nullable=False)
+    privacy_level: Mapped[str] = mapped_column(String(2), nullable=False)
+    evidence_ids: Mapped[list[str]] = mapped_column(JSON, nullable=False)
+    disposition: Mapped[str] = mapped_column(String(16), nullable=False)
+    reason_code: Mapped[str | None] = mapped_column(String(160))
+    decision_id: Mapped[UUID | None] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey("cognitive_decision.id", ondelete="SET NULL"),
+    )
+    merged_into_event_id: Mapped[UUID | None] = mapped_column(Uuid(as_uuid=True))
+    occurred_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
 class TimelineEventRecord(Base):
     __tablename__ = "timeline_event"
     __table_args__ = (

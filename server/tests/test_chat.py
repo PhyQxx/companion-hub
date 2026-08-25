@@ -390,6 +390,29 @@ async def test_proactive_message_is_persisted_in_latest_active_conversation(
     assert message.decision_meta["kind"] == "home_assistant_proactive"
 
 
+async def test_proactive_delivery_arbitration_stays_with_target_owner(
+    database: Database, store: DatabaseConfigStore
+) -> None:
+    service = ChatService(database, store)
+    owner = await create_user(database, "Owner")
+    other = await create_user(database, "Other")
+    owner_conversation = await service.create_conversation(user_id=owner.id, title="Owner Home")
+    await service.create_conversation(user_id=other.id, title="Other Newer Conversation")
+
+    result = await service.create_proactive_message(
+        "欢迎回家。",
+        entity_id="person.owner",
+        rule_id="perception_user_arrived_home",
+        trigger_kind="user_arrived_home",
+        target_user_id=owner.id,
+    )
+
+    assert result is not None
+    target_user_id, message = result
+    assert target_user_id == owner.id
+    assert message.conversation_id == owner_conversation.id
+
+
 async def test_start_turn_supports_smaller_context_window_for_voice(
     database: Database, store: DatabaseConfigStore
 ) -> None:

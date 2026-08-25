@@ -18,6 +18,7 @@ from app.ids import uuid7
 
 from .models import (
     CognitiveDecision,
+    CognitiveDecisionView,
     FeedbackKind,
     GoalKind,
     GoalStatus,
@@ -52,6 +53,42 @@ class CognitiveStore:
                     created_at=decision.created_at,
                 )
             )
+
+    async def recent_decisions(
+        self,
+        user_id: UUID,
+        *,
+        limit: int = 100,
+    ) -> list[CognitiveDecisionView]:
+        async with self.database.sessions() as session:
+            rows = list(
+                await session.scalars(
+                    select(CognitiveDecisionRecord)
+                    .where(CognitiveDecisionRecord.user_id == user_id)
+                    .order_by(CognitiveDecisionRecord.created_at.desc())
+                    .limit(limit)
+                )
+            )
+        return [
+            CognitiveDecisionView(
+                id=row.id,
+                event_id=row.event_id,
+                conversation_id=row.conversation_id,
+                trigger_kind=row.trigger_kind,
+                decision=row.decision,
+                reason_codes=row.reason_codes,
+                evidence_ids=row.evidence_ids,
+                confidence=row.confidence,
+                urgency=row.urgency,
+                attention_score=row.attention_score,
+                policy_version=row.policy_version,
+                model_provider=row.model_provider,
+                model_name=row.model_name,
+                expires_at=row.expires_at,
+                created_at=row.created_at,
+            )
+            for row in rows
+        ]
 
     async def create_goal(
         self,

@@ -5,6 +5,7 @@ import os
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
+from uuid import UUID
 
 from fastapi import FastAPI
 from fastapi.responses import FileResponse
@@ -55,6 +56,7 @@ from app.home_assistant.proactive import DeliveryResult
 from app.memory import LlmMemoryExtractor, MemoryExtractor, MemoryRetriever, MemoryStore
 from app.model_capabilities import CapabilityModelService
 from app.observability import apply_observability, configure_logging
+from app.perception import PerceptionPipeline, PerceptionStore, ProactivePolicy
 from app.persona import PersonaStore
 from app.schemas import PrivacyLevel
 from app.timeline import HistoryRecallService, TimelineStore
@@ -145,6 +147,18 @@ def create_app(
         if runtime_database is not None and cognitive_store is not None
         else None
     )
+    perception_store = PerceptionStore(runtime_database) if runtime_database is not None else None
+    perception_pipeline = (
+        PerceptionPipeline(
+            cognitive_cycle,
+            perception_store,
+            ProactivePolicy(runtime_database),
+        )
+        if runtime_database is not None
+        and cognitive_cycle is not None
+        and perception_store is not None
+        else None
+    )
     history_recall = (
         HistoryRecallService(
             timeline_store,
@@ -182,6 +196,8 @@ def create_app(
         finally:
             if home_assistant_proactive is not None:
                 await home_assistant_proactive.stop()
+            if perception_pipeline is not None:
+                await perception_pipeline.stop()
             if runtime_chat_service is not None:
                 # 等待仍在执行的后台记忆沉淀收尾，避免丢最后一轮的事实
                 await runtime_chat_service.drain_background_work()
@@ -203,6 +219,8 @@ def create_app(
     app.state.persona_store = persona_store
     app.state.memory_store = memory_store
     app.state.timeline_store = timeline_store
+    app.state.perception_pipeline = perception_pipeline
+    app.state.perception_store = perception_store
     app.state.device_registry = device_registry
     app.state.device_command_store = device_command_store
     app.state.history_recall_service = history_recall
@@ -494,7 +512,9 @@ def create_app(
             app.include_router(create_auth_router(auth_service, admin_token=runtime_admin_token))
             app.include_router(create_chat_router(runtime_chat_service, auth_service))
             if cognitive_store is not None:
-                app.include_router(create_cognition_router(cognitive_store, auth_service))
+                app.include_router(
+                    create_cognition_router(cognitive_store, auth_service, perception_store)
+                )
             if capability_models is not None:
                 app.include_router(create_model_capability_router(capability_models, auth_service))
             websocket_router, websocket_manager = create_chat_websocket_router(
@@ -512,6 +532,7 @@ def create_app(
                     trigger_kind: str,
                     privacy_level: PrivacyLevel,
                     cognitive_decision: CognitiveDecision | None = None,
+                    target_user_id: UUID | None = None,
                 ) -> DeliveryResult:
                     result = await runtime_chat_service.create_proactive_message(
                         text,
@@ -520,6 +541,7 @@ def create_app(
                         trigger_kind=trigger_kind,
                         privacy_level=privacy_level,
                         cognitive_decision=cognitive_decision,
+                        target_user_id=target_user_id,
                     )
                     if result is not None:
                         user_id, message = result
@@ -532,6 +554,7 @@ def create_app(
                     home_assistant_manager.get_state,
                     deliver_home_assistant_message,
                     cognitive_cycle=cognitive_cycle,
+                    perception_pipeline=perception_pipeline,
                 )
                 home_assistant_manager.set_state_change_handler(
                     home_assistant_proactive.on_state_change
