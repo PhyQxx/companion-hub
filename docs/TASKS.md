@@ -85,6 +85,7 @@
 
 ## 3. 最近完成
 
+- [x] M3B 认知调度闭环 v1 文档补齐与 Action/Reflection 代码完善：新增 `docs/37-M3B认知调度闭环设计.md` 系统性阐述六层架构（Semantic Event、World State、Attention、Deliberation、Action、Reflection）数据契约、流程与安全边界；Action Engine 实现 A0～A3 分级执行与结果回读闭环，v1 仅开放 A0/A1，任何 `act` 均被阻断并记录 `blocked` 结果；Reflection Engine 实现确定性反馈分析，按 trigger_kind 聚合近 30 天反馈生成带证据、需确认的偏好候选；新增 `action_result` 与 `reflection_candidate` 表及 `0019` 迁移，扩展 API `/action-results` 与 `/reflection-candidates`，新增 8 个对应回归测试。
 - [x] 主动多终端输出 v1：Home Assistant/M3B 决策不再只进入 Web 调试台，可按后台热配置投递至 Web 私聊、macOS Desktop 系统通知和在线空闲语音会话；离线、锁屏、隐私暂停、能力未授权和云端 L2 TTS 均安全降级，每次实际尝试写入统一投递回执。真实 PostgreSQL 已从 `0014` 升级至 `0017`，Admin 主动测试接口返回成功；实测回执为 Web delivered、无空闲会话的 Voice failed，符合降级预期。
 - [x] Perception Pipeline 第一批：新增隐私安全的语义事件审计、全局主动门禁、稳定窗口和跨来源幂等合并；HA 人员/存在状态已能自动进入 M3B CognitiveCycle，主动 Web 投递绑定事件 owner。
 - [x] M3B 认知调度闭环 v1：有界 World State、确定性 Attention、结构化模型决策与安全回退、目标/承诺、反馈降频与反思候选、被动聊天和 Home Assistant 主动事件统一管线已落地；自主写动作保持关闭。
@@ -114,6 +115,7 @@
 
 ## 4. 最新质量基线
 
+- 2026-08-25 M3B 文档与 Action/Reflection 补齐：Ruff、全量 mypy（132 source files）、pytest **337 通过 / 2 跳过**、Alembic 从空库升级到 `0019_action_and_reflection`、单 head、`git diff --check` 全部通过；新增验收覆盖 Action Engine 分级映射、A2/A3 v1 阻断、结果回读持久化、Reflection Engine `_analyse` 单元、FeedbackSummary 聚合和候选生成；
 - 2026-08-25 主动多终端输出 v1：Ruff、全量 mypy、pytest **325 通过 / 2 跳过**、Alembic 从空库和真实 PostgreSQL 均升级到 `0017_proactive_delivery_receipts`、单 head、Admin/Chat/Desktop typecheck 与 production build、Desktop 协议测试 **7 通过**、`cargo check` 和 `git diff --check` 全部通过；真实 Admin 主动测试接口返回 `ok=true`，回执表写入 1 条 delivered 与 1 条预期内 failed；新增验收覆盖三通道仲裁、优先级、隐私/紧急门禁、持久化回执及 L2 语音禁止云 TTS；
 - 2026-08-25 Perception Pipeline 第一批：Ruff、全量 mypy、pytest **319 通过 / 2 跳过**、Alembic 从空库升级到 `0016_perception_pipeline`、单 head 与 `git diff --check` 全部通过；验收覆盖并发跨来源合并、事件重放、DND/预算/紧急绕过、稳定窗口失败、TTL、L3 零持久化、HA 语义映射与 owner 投递隔离；
 - 2026-08-25 M3B v1：Ruff、全量 mypy、pytest **312 通过 / 2 跳过**、Alembic 从空库升级到 `0015_cognitive_cycle`、单 head 与 `git diff --check` 全部通过；新增验收覆盖三类主动场景、被动聊天审计、DND、重复降频、反馈候选、模型 `act` 安全回退和 L3 不落库；

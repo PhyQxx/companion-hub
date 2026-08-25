@@ -1,4 +1,5 @@
 from .models import (
+    ActionResultRecord,
     AppUserRecord,
     AuthCredentialRecord,
     AuthSessionRecord,
@@ -25,12 +26,14 @@ from .models import (
     PersonaPointerRecord,
     PersonaVersionRecord,
     ProactiveDeliveryReceiptRecord,
+    ReflectionCandidateRecord,
     SemanticEventAuditRecord,
     TimelineEventRecord,
 )
 from .session import Database, create_database
 
 __all__ = [
+    "ActionResultRecord",
     "AppUserRecord",
     "AuthCredentialRecord",
     "AuthSessionRecord",
@@ -58,6 +61,7 @@ __all__ = [
     "PersonaPointerRecord",
     "PersonaVersionRecord",
     "ProactiveDeliveryReceiptRecord",
+    "ReflectionCandidateRecord",
     "SemanticEventAuditRecord",
     "TimelineEventRecord",
     "create_database",

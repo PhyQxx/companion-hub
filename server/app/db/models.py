@@ -797,3 +797,63 @@ class InteractionTurnRecord(Base):
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class ActionResultRecord(Base):
+    __tablename__ = "action_result"
+    __table_args__ = (
+        CheckConstraint(
+            "outcome IN ('observed','prompted','blocked','executed','verified','unknown_outcome')",
+            name="ck_action_result_outcome",
+        ),
+        Index("ix_action_result_user_created", "user_id", "created_at"),
+        Index("ix_action_result_decision", "decision_id"),
+    )
+
+    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True)
+    user_id: Mapped[UUID] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("app_user.id", ondelete="CASCADE"), nullable=False
+    )
+    decision_id: Mapped[UUID] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey("cognitive_decision.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    level: Mapped[str] = mapped_column(String(4), nullable=False)
+    outcome: Mapped[str] = mapped_column(String(20), nullable=False)
+    reason_code: Mapped[str | None] = mapped_column(String(160))
+    verified: Mapped[bool] = mapped_column(nullable=False, default=False, server_default=false())
+    observed_state: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False, default=dict)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+
+class ReflectionCandidateRecord(Base):
+    __tablename__ = "reflection_candidate"
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('pending','confirmed','rejected','superseded')",
+            name="ck_reflection_candidate_status",
+        ),
+        Index("ix_reflection_candidate_user_created", "user_id", "created_at"),
+        Index("ix_reflection_candidate_status", "user_id", "status"),
+    )
+
+    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True)
+    user_id: Mapped[UUID] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("app_user.id", ondelete="CASCADE"), nullable=False
+    )
+    content: Mapped[str] = mapped_column(Text, nullable=False)
+    evidence_ids: Mapped[list[str]] = mapped_column(JSON, nullable=False)
+    confidence: Mapped[float] = mapped_column(nullable=False)
+    requires_confirmation: Mapped[bool] = mapped_column(
+        nullable=False, default=True, server_default="true"
+    )
+    status: Mapped[str] = mapped_column(
+        String(16), nullable=False, default="pending", server_default="pending"
+    )
+    reviewed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )

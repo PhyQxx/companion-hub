@@ -12,6 +12,8 @@ from sqlalchemy import func, select
 
 from app.cognition import (
     ActionEngine,
+    ActionLevel,
+    ActionOutcome,
     AttentionEngine,
     CognitiveCycle,
     CognitiveStore,
@@ -19,6 +21,7 @@ from app.cognition import (
     FeedbackKind,
     GoalKind,
     GoalStatus,
+    ReflectionEngine,
     RouterDeliberator,
     RuleBasedDeliberator,
     SemanticEvent,
@@ -229,8 +232,181 @@ async def test_no_evidence_cannot_enter_proactive_or_action_path(
 
     decision = await cognitive_cycle.evaluate(semantic_event(user_id, "light_on_too_long"))
     result = await ActionEngine().execute(decision)
-    assert result.outcome == "not_applicable"
+    assert result.outcome == ActionOutcome.PROMPTED
+    assert result.verified is False
+
+
+async def test_action_engine_maps_decisions_to_correct_levels() -> None:
+    engine = ActionEngine()
+    from app.cognition import CognitiveDecision, Urgency
+
+    now = datetime.now(UTC)
+
+    def make_decision(kind: DecisionKind) -> CognitiveDecision:
+        # Use model_construct to bypass the deliberation-level ACT guard
+        # so we can test the action-layer mapping independently.
+        return CognitiveDecision.model_construct(
+            id=uuid7(),
+            event_id=uuid7(),
+            user_id=uuid7(),
+            trigger_kind="test",
+            decision=kind,
+            reason_codes=["test"],
+            evidence_ids=["ev1"],
+            confidence=0.9,
+            urgency=Urgency.NORMAL,
+            attention_score=0.7,
+            policy_version="test",
+            message="test message" if kind != DecisionKind.IGNORE else None,
+            approval_required=kind in {DecisionKind.ASK, DecisionKind.SUGGEST},
+            expires_at=now + timedelta(minutes=5),
+            created_at=now,
+        )
+
+    plan_ignore = engine.plan(make_decision(DecisionKind.IGNORE))
+    assert plan_ignore.level == ActionLevel.A0_OBSERVE
+
+    plan_suggest = engine.plan(make_decision(DecisionKind.SUGGEST))
+    assert plan_suggest.level == ActionLevel.A1_PROMPT
+
+    plan_act = engine.plan(make_decision(DecisionKind.ACT))
+    assert plan_act.level == ActionLevel.A2_PREAUTHORIZED
+
+
+async def test_action_engine_blocks_a2_and_a3_in_v1() -> None:
+    engine = ActionEngine()
+    from app.cognition import CognitiveDecision, Urgency
+
+    now = datetime.now(UTC)
+    act_decision = CognitiveDecision.model_construct(
+        id=uuid7(),
+        event_id=uuid7(),
+        user_id=uuid7(),
+        trigger_kind="test",
+        decision=DecisionKind.ACT,
+        reason_codes=["unsafe"],
+        evidence_ids=["ev1"],
+        confidence=1.0,
+        urgency=Urgency.HIGH,
+        attention_score=0.9,
+        policy_version="test",
+        expires_at=now + timedelta(minutes=5),
+        created_at=now,
+    )
+    result = await engine.execute(act_decision)
+    assert result.outcome == ActionOutcome.BLOCKED
+    assert result.reason_code == "autonomous_action_disabled"
     assert result.verified is True
+
+
+async def test_action_engine_records_outcome() -> None:
+    engine = ActionEngine()
+
+    result = await engine.record_outcome(
+        uuid7(),
+        outcome=ActionOutcome.VERIFIED,
+        reason_code="delivery_confirmed",
+        verified=True,
+        observed_state={"channel": "web_chat"},
+    )
+    assert result.outcome == ActionOutcome.VERIFIED
+    assert result.verified is True
+    assert result.observed_state == {"channel": "web_chat"}
+
+
+async def test_reflection_engine_generates_candidates_from_feedback(
+    cognitive_cycle: CognitiveCycle,
+    user_id: UUID,
+) -> None:
+    # Create 3 decisions with ignored feedback.
+    decisions = [
+        await cognitive_cycle.evaluate(semantic_event(user_id, "temperature_high"))
+        for _ in range(3)
+    ]
+    for decision in decisions:
+        await cognitive_cycle.store.add_feedback(
+            user_id=user_id,
+            decision_id=decision.id,
+            kind=FeedbackKind.IGNORED,
+        )
+
+    engine = ReflectionEngine(cognitive_cycle.store)
+    candidates = await engine.run_for_user(user_id)
+
+    assert len(candidates) >= 1
+    assert any("忽略率较高" in c.content for c in candidates)
+    assert all(c.requires_confirmation for c in candidates)
+
+
+async def test_reflection_engine_respects_min_total_threshold(
+    cognitive_cycle: CognitiveCycle,
+    user_id: UUID,
+) -> None:
+    # Only 2 feedbacks, below default min_total=3.
+    decisions = [
+        await cognitive_cycle.evaluate(semantic_event(user_id, "device_offline"))
+        for _ in range(2)
+    ]
+    for decision in decisions:
+        await cognitive_cycle.store.add_feedback(
+            user_id=user_id,
+            decision_id=decision.id,
+            kind=FeedbackKind.IGNORED,
+        )
+
+    engine = ReflectionEngine(cognitive_cycle.store, min_total=3)
+    candidates = await engine.run_for_user(user_id)
+    assert candidates == []
+
+
+async def test_reflection_engine_detects_forbidden() -> None:
+    from app.cognition.reflection import FeedbackSummary, ReflectionEngine
+
+    engine = ReflectionEngine(
+        None, forbidden_threshold=2, min_total=2  # type: ignore[arg-type]
+    )
+    summary = FeedbackSummary(
+        total=2, accepted=0, ignored=0, snoozed=0, forbidden=2, acceptance_rate=0.0
+    )
+    candidate = engine._analyse(summary, trigger_kind="light_on_too_long")
+    assert candidate is not None
+    assert "明确禁止" in candidate.content
+    assert candidate.requires_confirmation is True
+
+
+async def test_store_saves_and_retrieves_action_results(
+    cognitive_cycle: CognitiveCycle,
+    user_id: UUID,
+) -> None:
+    decision = await cognitive_cycle.evaluate(semantic_event(user_id, "light_on_too_long"))
+    result = await ActionEngine().execute(decision)
+    await cognitive_cycle.store.save_action_result(result, user_id=user_id)
+
+    results = await cognitive_cycle.store.recent_action_results(user_id, limit=10)
+    assert len(results) == 1
+    assert results[0].outcome == ActionOutcome.PROMPTED
+
+
+async def test_store_saves_and_lists_reflection_candidates(
+    cognitive_cycle: CognitiveCycle,
+    user_id: UUID,
+) -> None:
+    from app.cognition import ReflectionCandidate
+
+    candidate_id = await cognitive_cycle.store.save_candidate(
+        user_id=user_id,
+        candidate=ReflectionCandidate(
+            content="test candidate",
+            evidence_ids=["ev1"],
+            confidence=0.8,
+            requires_confirmation=True,
+        ),
+    )
+    assert candidate_id is not None
+
+    pending = await cognitive_cycle.store.pending_candidates(user_id, limit=10)
+    assert len(pending) == 1
+    assert pending[0].content == "test candidate"
 
 
 async def test_model_deliberation_is_structured_and_cannot_enable_act(

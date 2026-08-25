@@ -7,16 +7,19 @@ from uuid import UUID
 from sqlalchemy import select
 
 from app.db import (
+    ActionResultRecord,
     CognitiveDecisionRecord,
     CognitiveFeedbackRecord,
     CognitiveGoalRecord,
     ConversationRecord,
     Database,
     MessageRecord,
+    ReflectionCandidateRecord,
 )
 from app.ids import uuid7
 
 from .models import (
+    ActionResult,
     CognitiveDecision,
     CognitiveDecisionView,
     FeedbackKind,
@@ -25,6 +28,7 @@ from .models import (
     GoalView,
     ReflectionCandidate,
 )
+from .reflection import FeedbackSummary
 
 
 class CognitiveStore:
@@ -245,6 +249,154 @@ class CognitiveStore:
             confidence=0.8,
             requires_confirmation=True,
         )
+
+    # ----- Action Results -----
+
+    async def save_action_result(self, result: ActionResult, *, user_id: UUID) -> None:
+        async with self.database.sessions.begin() as session:
+            session.add(
+                ActionResultRecord(
+                    id=uuid7(),
+                    user_id=user_id,
+                    decision_id=result.decision_id,
+                    level="A0",  # simplified; caller should derive from plan if needed
+                    outcome=str(result.outcome),
+                    reason_code=result.reason_code,
+                    verified=result.verified,
+                    observed_state=result.observed_state,
+                    created_at=datetime.now(UTC),
+                )
+            )
+
+    async def recent_action_results(
+        self, user_id: UUID, *, limit: int = 100
+    ) -> list[ActionResult]:
+        async with self.database.sessions() as session:
+            rows = list(
+                await session.scalars(
+                    select(ActionResultRecord)
+                    .where(ActionResultRecord.user_id == user_id)
+                    .order_by(ActionResultRecord.created_at.desc())
+                    .limit(limit)
+                )
+            )
+        return [
+            ActionResult(
+                decision_id=row.decision_id,
+                outcome=row.outcome,
+                reason_code=row.reason_code,
+                verified=row.verified,
+                observed_state=row.observed_state,
+            )
+            for row in rows
+        ]
+
+    # ----- Reflection Store Protocol -----
+
+    async def distinct_trigger_kinds(
+        self, user_id: UUID, *, since: datetime
+    ) -> list[str]:
+        async with self.database.sessions() as session:
+            rows = list(
+                await session.scalars(
+                    select(CognitiveDecisionRecord.trigger_kind)
+                    .join(
+                        CognitiveFeedbackRecord,
+                        CognitiveFeedbackRecord.decision_id == CognitiveDecisionRecord.id,
+                    )
+                    .where(
+                        CognitiveDecisionRecord.user_id == user_id,
+                        CognitiveFeedbackRecord.created_at >= since,
+                    )
+                    .distinct()
+                )
+            )
+        return [str(r) for r in rows]
+
+    async def feedback_summary(
+        self,
+        *,
+        user_id: UUID,
+        trigger_kind: str,
+        since: datetime,
+    ) -> FeedbackSummary:
+        async with self.database.sessions() as session:
+            rows = list(
+                await session.scalars(
+                    select(CognitiveFeedbackRecord)
+                    .join(
+                        CognitiveDecisionRecord,
+                        CognitiveDecisionRecord.id == CognitiveFeedbackRecord.decision_id,
+                    )
+                    .where(
+                        CognitiveDecisionRecord.user_id == user_id,
+                        CognitiveDecisionRecord.trigger_kind == trigger_kind,
+                        CognitiveFeedbackRecord.created_at >= since,
+                    )
+                )
+            )
+        counts: dict[str, int] = {"accepted": 0, "ignored": 0, "snoozed": 0, "forbidden": 0}
+        for row in rows:
+            kind = row.kind
+            if kind in counts:
+                counts[kind] += 1
+        total = len(rows)
+        acceptance_rate = counts["accepted"] / total if total else 0.0
+        return FeedbackSummary(
+            total=total,
+            accepted=counts["accepted"],
+            ignored=counts["ignored"],
+            snoozed=counts["snoozed"],
+            forbidden=counts["forbidden"],
+            acceptance_rate=acceptance_rate,
+        )
+
+    async def save_candidate(
+        self,
+        *,
+        user_id: UUID,
+        candidate: ReflectionCandidate,
+    ) -> UUID:
+        candidate_id = uuid7()
+        async with self.database.sessions.begin() as session:
+            session.add(
+                ReflectionCandidateRecord(
+                    id=candidate_id,
+                    user_id=user_id,
+                    content=candidate.content,
+                    evidence_ids=candidate.evidence_ids,
+                    confidence=candidate.confidence,
+                    requires_confirmation=candidate.requires_confirmation,
+                    status="pending",
+                    created_at=datetime.now(UTC),
+                )
+            )
+        return candidate_id
+
+    async def pending_candidates(
+        self, user_id: UUID, *, limit: int = 50
+    ) -> list[ReflectionCandidate]:
+        async with self.database.sessions() as session:
+            rows = list(
+                await session.scalars(
+                    select(ReflectionCandidateRecord)
+                    .where(
+                        ReflectionCandidateRecord.user_id == user_id,
+                        ReflectionCandidateRecord.status == "pending",
+                    )
+                    .order_by(ReflectionCandidateRecord.created_at.desc())
+                    .limit(limit)
+                )
+            )
+        return [
+            ReflectionCandidate(
+                content=row.content,
+                evidence_ids=row.evidence_ids,
+                confidence=row.confidence,
+                requires_confirmation=row.requires_confirmation,
+            )
+            for row in rows
+        ]
 
 
 def _goal(record: CognitiveGoalRecord) -> GoalView:

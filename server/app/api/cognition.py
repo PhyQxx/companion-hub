@@ -7,6 +7,7 @@ from pydantic import Field
 
 from app.auth import AuthService, ChatPrincipal
 from app.cognition import (
+    ActionResult,
     CognitiveDecisionView,
     CognitiveStore,
     FeedbackKind,
@@ -125,6 +126,20 @@ def create_cognition_router(
             else None
         )
         return FeedbackResponse(id=feedback_id, reflection_candidate=candidate)
+
+    @router.get("/action-results", response_model=list[ActionResult])
+    async def list_action_results(
+        principal: Annotated[ChatPrincipal, Depends(guard)],
+        limit: Annotated[int, Field(ge=1, le=200)] = 100,
+    ) -> list[ActionResult]:
+        return await store.recent_action_results(principal.user_id, limit=limit)
+
+    @router.get("/reflection-candidates", response_model=list[ReflectionCandidate])
+    async def list_reflection_candidates(
+        principal: Annotated[ChatPrincipal, Depends(guard)],
+        limit: Annotated[int, Field(ge=1, le=200)] = 50,
+    ) -> list[ReflectionCandidate]:
+        return await store.pending_candidates(principal.user_id, limit=limit)
 
     if perception_store is not None:
 

@@ -3,6 +3,9 @@ from .attention import ATTENTION_POLICY_VERSION, AttentionEngine
 from .cycle import CognitiveCycle
 from .deliberation import COGNITIVE_POLICY_VERSION, RouterDeliberator, RuleBasedDeliberator
 from .models import (
+    ActionLevel,
+    ActionOutcome,
+    ActionPlan,
     ActionResult,
     AttentionResult,
     CognitiveDecision,
@@ -17,6 +20,7 @@ from .models import (
     Urgency,
     WorldState,
 )
+from .reflection import ReflectionEngine
 from .store import CognitiveStore
 from .world import WorldStateBuilder
 
@@ -24,6 +28,9 @@ __all__ = [
     "ATTENTION_POLICY_VERSION",
     "COGNITIVE_POLICY_VERSION",
     "ActionEngine",
+    "ActionLevel",
+    "ActionOutcome",
+    "ActionPlan",
     "ActionResult",
     "AttentionEngine",
     "AttentionResult",
@@ -37,6 +44,7 @@ __all__ = [
     "GoalStatus",
     "GoalView",
     "ReflectionCandidate",
+    "ReflectionEngine",
     "RouterDeliberator",
     "RuleBasedDeliberator",
     "SemanticEvent",

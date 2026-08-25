@@ -47,6 +47,36 @@ class FeedbackKind(StrEnum):
     FORBIDDEN = "forbidden"
 
 
+class ActionLevel(StrEnum):
+    """Autonomous action risk levels. A2/A3 remain disabled in v1."""
+
+    A0_OBSERVE = "A0"
+    A1_PROMPT = "A1"
+    A2_PREAUTHORIZED = "A2"
+    A3_CONFIRMED = "A3"
+
+
+class ActionOutcome(StrEnum):
+    OBSERVED = "observed"
+    PROMPTED = "prompted"
+    BLOCKED = "blocked"
+    EXECUTED = "executed"
+    VERIFIED = "verified"
+    UNKNOWN_OUTCOME = "unknown_outcome"
+
+
+class ActionPlan(StrictModel):
+    """Planned execution derived from a CognitiveDecision."""
+
+    decision_id: UUID
+    level: ActionLevel
+    decision_kind: DecisionKind
+    approval_required: bool
+    message: Annotated[str, Field(max_length=1_000)] | None = None
+    tool_plan: dict[str, JsonValue] | None = None
+    ttl_seconds: int = 300
+
+
 class SemanticEvent(StrictModel):
     event_id: UUID
     user_id: UUID
