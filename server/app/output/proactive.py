@@ -2,10 +2,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import Protocol
 from uuid import UUID
 
-from pydantic import JsonValue
 from sqlalchemy import select
 
 from app.chat import MessageView
@@ -14,63 +12,19 @@ from app.config import ConfigStore, DatabaseConfigStore, ProactiveChannelConfig
 from app.db import AppUserRecord, Database, ProactiveDeliveryReceiptRecord
 from app.devices import DeviceTargetResolutionError, DeviceTargetResolver
 from app.ids import uuid7
+from app.output.adapter import DeliveryIntent, OutputAdapter
+from app.output.adapters import DesktopNotificationAdapter, VoiceAdapter, WebChatAdapter
+from app.output.protocols import (
+    ChatProactiveBroadcaster,
+    ChatProactiveStore,
+    DesktopCommand,
+    DesktopCommandGateway,
+    VoiceProactiveBroadcaster,
+)
 from app.schemas import PrivacyLevel
 
 _PRIVACY_RANK = {"L0": 0, "L1": 1, "L2": 2, "L3": 3}
 _CRITICAL_KINDS = {"water_leak", "water_leak_detected", "safety.alarm"}
-
-
-class ChatProactiveBroadcaster(Protocol):
-    async def broadcast_proactive(self, user_id: UUID, message: MessageView) -> None: ...
-
-
-class ChatProactiveStore(Protocol):
-    async def create_proactive_message(
-        self,
-        text: str,
-        *,
-        entity_id: str,
-        rule_id: str,
-        trigger_kind: str,
-        privacy_level: PrivacyLevel,
-        cognitive_decision: CognitiveDecision | None = None,
-        target_user_id: UUID | None = None,
-    ) -> tuple[UUID, MessageView] | None: ...
-
-
-class DesktopCommand(Protocol):
-    id: UUID
-    status: str
-    reason_code: str | None
-
-
-class DesktopCommandGateway(Protocol):
-    async def issue(
-        self,
-        *,
-        device_id: UUID,
-        command: str,
-        args: dict[str, JsonValue],
-        idempotency_key: str,
-        ttl_seconds: int,
-    ) -> DesktopCommand: ...
-
-    async def wait_for_terminal(
-        self,
-        command_id: UUID,
-        *,
-        timeout_seconds: float | None = None,
-    ) -> DesktopCommand: ...
-
-
-class VoiceProactiveBroadcaster(Protocol):
-    async def broadcast_proactive(
-        self,
-        user_id: UUID,
-        text: str,
-        *,
-        privacy_level: PrivacyLevel,
-    ) -> int: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -103,6 +57,7 @@ class ProactiveDeliveryService:
         device_resolver: DeviceTargetResolver | None = None,
         device_gateway: DesktopCommandGateway | None = None,
         voice_broadcaster: VoiceProactiveBroadcaster | None = None,
+        adapters: list[OutputAdapter] | None = None,
     ) -> None:
         self._database = database
         self._config_store = config_store
@@ -111,6 +66,16 @@ class ProactiveDeliveryService:
         self._device_resolver = device_resolver
         self._device_gateway = device_gateway
         self._voice_broadcaster = voice_broadcaster
+        # 内部构建适配器列表；外部也可直接传入自定义适配器
+        self._adapters: list[OutputAdapter] = list(adapters) if adapters is not None else []
+        if not self._adapters:
+            self._adapters.append(WebChatAdapter(chat, chat_broadcaster))
+            if device_resolver is not None and device_gateway is not None:
+                self._adapters.append(
+                    DesktopNotificationAdapter(device_resolver, device_gateway)
+                )
+            if voice_broadcaster is not None:
+                self._adapters.append(VoiceAdapter(voice_broadcaster))
 
     async def deliver(
         self,
@@ -149,34 +114,40 @@ class ProactiveDeliveryService:
         )
         attempts: list[ProactiveChannelAttempt] = []
         conversation_id: UUID | None = None
+        # 按配置优先级排序适配器
+        adapter_map = {a.name: a for a in self._adapters}
         for channel, policy in channels:
             if not self._eligible(policy, privacy_level, trigger_kind):
                 continue
-            if channel == "web_chat":
-                attempt, conversation_id = await self._web(
-                    user_id,
-                    text,
-                    entity_id=entity_id,
-                    rule_id=rule_id,
-                    trigger_kind=trigger_kind,
-                    privacy_level=privacy_level,
-                    cognitive_decision=cognitive_decision,
-                )
-            elif channel == "desktop_notification":
-                attempt = await self._desktop(
-                    user_id,
-                    text,
-                    trigger_kind=trigger_kind,
-                    privacy_level=privacy_level,
-                    decision_id=cognitive_decision.id if cognitive_decision else None,
-                )
-            else:
-                attempt = await self._voice(
-                    user_id,
-                    text,
-                    privacy_level=privacy_level,
-                )
+            adapter = adapter_map.get(channel)
+            if adapter is None or not adapter.available:
+                continue
+            intent = DeliveryIntent(
+                user_id=user_id,
+                text=text,
+                privacy_level=privacy_level,
+                trigger_kind=trigger_kind,
+                entity_id=entity_id,
+                rule_id=rule_id,
+                decision_id=cognitive_decision.id if cognitive_decision else None,
+            )
+            receipt = await adapter.deliver(intent)
+            attempt = ProactiveChannelAttempt(
+                channel=receipt.channel,
+                delivered=receipt.delivered,
+                reason_code=receipt.reason_code,
+                external_operation_id=receipt.external_operation_id,
+            )
             attempts.append(attempt)
+            if (
+                channel == "web_chat"
+                and receipt.delivered
+                and receipt.metadata is not None
+                and "conversation_id" in receipt.metadata
+            ):
+                from uuid import UUID as _UUID
+
+                conversation_id = _UUID(str(receipt.metadata["conversation_id"]))
             if attempt.delivered and config.delivery_mode == "first_available":
                 break
         await self._record_attempts(

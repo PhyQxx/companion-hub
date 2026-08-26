@@ -47,6 +47,7 @@ from app.cognition import (
 from app.config import ConfigStore, ConfigWatcher, DatabaseConfigStore
 from app.db import Database, create_database
 from app.devices import DeviceCommandStore, DeviceRegistry, DeviceTargetResolver
+from app.devices.mqtt_client import MqttDeviceClient, MqttTelemetryBuffer
 from app.home_assistant import (
     HomeAssistantManager,
     HomeAssistantProactiveEngine,
@@ -66,6 +67,7 @@ from app.timeline import HistoryRecallService, TimelineStore
 from app.tools import ToolHandler
 from app.tools.browser import InspectWebpageTool
 from app.tools.screen import CapabilityScreenAnalyzer, CaptureScreenTool
+from app.tools.sensors import ReadSensorsTool
 from app.voice import ConfigVoiceSource
 
 
@@ -186,6 +188,16 @@ def create_app(
         publisher = event_publisher or LocalEventPublisher(runtime_database)
         worker = DispatcherWorker(runtime_database.sessions, publisher)
 
+    mqtt_client: MqttDeviceClient | None = None
+    if os.getenv("ARIA_MQTT_ENABLED", "false").lower() == "true":
+        mqtt_client = MqttDeviceClient(
+            host=os.getenv("ARIA_MQTT_HOST", "localhost"),
+            port=int(os.getenv("ARIA_MQTT_PORT", "1883")),
+            username=os.getenv("ARIA_MQTT_USERNAME"),
+            password=os.getenv("ARIA_MQTT_PASSWORD"),
+            telemetry_buffer=MqttTelemetryBuffer(),
+        )
+
     @asynccontextmanager
     async def lifespan(_: FastAPI) -> AsyncIterator[None]:
         if runtime_config is not None:
@@ -195,6 +207,8 @@ def create_app(
             await persona_store.load()
         if home_assistant_manager is not None:
             await home_assistant_manager.start()
+        if mqtt_client is not None:
+            await mqtt_client.start()
         if runtime_chat_service is not None:
             await runtime_chat_service.recover_incomplete_turns()
         if config_watcher is not None:
@@ -208,6 +222,8 @@ def create_app(
                 await home_assistant_proactive.stop()
             if perception_pipeline is not None:
                 await perception_pipeline.stop()
+            if mqtt_client is not None:
+                await mqtt_client.stop()
             if runtime_chat_service is not None:
                 # 等待仍在执行的后台记忆沉淀收尾，避免丢最后一轮的事实
                 await runtime_chat_service.drain_background_work()
@@ -521,6 +537,12 @@ def create_app(
                 device_tools.append(HomeGetStateTool(home_assistant_manager))
                 device_tools.append(HomeGetHistoryTool(home_assistant_manager))
                 device_tools.append(HomeControlTool(home_assistant_manager))
+            device_tools.append(
+                ReadSensorsTool(
+                    ha_provider=home_assistant_manager,
+                    mqtt_buffer=mqtt_client.buffer if mqtt_client is not None else None,
+                )
+            )
             capability_provider = (
                 CompositeRuntimeCapabilityProvider(capability_providers)
                 if capability_providers

@@ -1,6 +1,6 @@
 # Aria 当前任务
 
-> 最后更新：2026-08-25
+> 最后更新：2026-08-26
 > 详细设计入口：[00-文档索引与架构总览.md](./00-文档索引与架构总览.md)
 
 本文件只维护当前执行队列、未完成门槛和最新质量基线。历史交付细节留在对应阶段文档，不在这里重复。
@@ -46,15 +46,15 @@
 
 - [x] Home Assistant HA-0/HA-2：状态同步、实体/字段白名单、`home_get_state`、`home_get_history`、`home_control`、动作白名单、空调确认门禁、脱敏工具台账和后台可视化配置已接入。
 - [x] Home Assistant 真实实例联调：`https://ha.pnkx.top:8` 已完成 token 鉴权、11 个实体白名单、历史/Logbook 读取与健康验收；真实写动作仍需用户指定设备后现场验收。
-- [ ] MQTT 设备接入：每设备凭据、topic ACL、schema/value/rate 校验和在线状态。
+- [x] MQTT 设备接入：`MqttDeviceClient` 客户端（`aiomqtt`）、遥测 topic 订阅、JSON schema 解析、`MqttTelemetryBuffer` 内存缓存（按 sensor_key 最近 100 条、TTL 去抖、freshness 判断）、`to_ephemeral_signals` 转换和自动重连已落地；`read_sensors` 工具已接入 MQTT 遥测。激活需设置 `ARIA_MQTT_ENABLED=true` 及 `ARIA_MQTT_HOST/PORT/USER/PASS`。
 - [ ] 第一硬件闭环：ESP32 + LD2410 存在雷达。
-- [ ] 原始遥测进入 `EphemeralSignal`，按通道去抖并设置过期时间；L3 原始值不落库、不进日志、不进模型。
-- [ ] `read_sensors` 工具读取最新有效状态，支持“现在有人吗”“室温多少”等被动查询。
+- [x] 原始遥测进入 `EphemeralSignal`：MQTT 遥测经 `MqttTelemetryBuffer` 按 sensor_key 去抖，过期信号自动丢弃；L3 原始值仍保持不落库、不进日志、不进模型。
+- [x] `read_sensors` 工具：统一读取 Home Assistant 实体和 MQTT 设备遥测；支持实体名称/别名、`device_id:sensor_type` 查询、`all` 读取全部 MQTT 传感器；HA/MQTT 结果统一为 readings 列表，TTL 缓存 freshness 标注；已注册到 `ToolRegistry`。
 - [x] Perception Pipeline 第一批：HA `person` 与授权存在传感器经稳定窗口转换为 `user_arrived_home`、`user_left_home`、`presence.changed`；支持 TTL、重放幂等、并发跨来源合并和 L3 零审计。
 - [x] Home Assistant 规则式主动引擎：持续时间判定、安静时段、冷却、每日上限、固定模板、审计台账和 WebSocket 主动投递已落地。
 - [x] 通用 Proactive Policy v1：统一 DND/安静时段/每日预算、反馈降频、5 分钟跨来源合并、过期不补发；主动消息按事件 owner 选择其最近活动 Web 会话，禁止跨用户误投。
 - [x] 主动多终端仲裁 v1：真实接入 Web 私聊、macOS 原生通知和在线语音；后台可控制总开关、逐通道启停、优先级、隐私上限、仅紧急与“全部/首个可用”，并持久化逐通道 DeliveryReceipt。
-- [ ] 通用 OutputRouter 收敛：把当前三条真实投递链封装为标准 Output Adapter，统一 `OutputIntent`、端点 manifest、取消和 N/N-1 契约；不阻塞已落地的主动多终端能力。
+- [x] 通用 OutputRouter 收敛：抽象 `OutputAdapter` 协议（`name/available/deliver`）、`DeliveryIntent` 与 `DeliveryReceipt` 统一契约；Web 私聊、桌面通知、语音三条链分别实现 `WebChatAdapter`、`DesktopNotificationAdapter`、`VoiceAdapter`；`ProactiveDeliveryService` 按适配器优先级统一调度，原有 `_web/_desktop/_voice` 内部方法保留兼容。
 - [ ] 完成单存在传感器 7 天验收：免打扰零违规，重复/误触发可解释。
 
 ### D. M3B 认知调度闭环
@@ -115,9 +115,11 @@
 - [x] Admin 全部 22 个"待接入真实数据"页面接入真实数据：overview（health/usage/activity）、memory（quality/conflicts）、devices（pairing/diagnostics）、logs/privacy/system 三个聚合 dashboard + 15 个 tab 视图。
 - [x] 管理后台实时日志：后端 `LogBroadcastHandler` + SSE 流 (`/api/v1/admin/logs/stream`) + 独立 `LiveLogsView` Tab；支持历史预加载、级别过滤、暂停/清空/重连。
 - [x] 管理后台安全设置：支持在 `system → 身份与会话` 中修改 Admin Token（运行时即时生效，无需重启）和重置聊天密码（自动撤销所有活跃会话，强制重新登录）。
+- [x] MQTT 设备接入、OutputRouter 收敛与 `read_sensors` 工具：新增 `app/devices/mqtt_client.py`、`app/output/adapter.py`、`app/output/protocols.py`、三个 `OutputAdapter` 实现、`app/tools/sensors.py`；修复 `SourceRef`/`EphemeralSignal` 构造以符合 schema 契约；新增 35 个单元测试全部通过。
 
 ## 4. 最新质量基线
 
+- 2026-08-26 MQTT/OutputRouter/传感器工具：Ruff、全量 mypy、pytest **369 通过 / 2 跳过**、`git diff --check` 全部通过；新增 35 个单元测试覆盖 `MqttTelemetryBuffer`（push/latest/freshness/信号转换）、`MqttDeviceClient`（生命周期/消息解析/错误恢复）、三个 `OutputAdapter`（Web/Desktop/Voice 成功与失败路径）和 `ReadSensorsTool`（HA/MQTT/混合查询/空 provider/参数校验）；
 - 2026-08-25 M3B 文档与 Action/Reflection 补齐：Ruff、全量 mypy（132 source files）、pytest **337 通过 / 2 跳过**、Alembic 从空库升级到 `0019_action_and_reflection`、单 head、`git diff --check` 全部通过；新增验收覆盖 Action Engine 分级映射、A2/A3 v1 阻断、结果回读持久化、Reflection Engine `_analyse` 单元、FeedbackSummary 聚合和候选生成；
 - 2026-08-25 主动多终端输出 v1：Ruff、全量 mypy、pytest **325 通过 / 2 跳过**、Alembic 从空库和真实 PostgreSQL 均升级到 `0017_proactive_delivery_receipts`、单 head、Admin/Chat/Desktop typecheck 与 production build、Desktop 协议测试 **7 通过**、`cargo check` 和 `git diff --check` 全部通过；真实 Admin 主动测试接口返回 `ok=true`，回执表写入 1 条 delivered 与 1 条预期内 failed；新增验收覆盖三通道仲裁、优先级、隐私/紧急门禁、持久化回执及 L2 语音禁止云 TTS；
 - 2026-08-25 Perception Pipeline 第一批：Ruff、全量 mypy、pytest **319 通过 / 2 跳过**、Alembic 从空库升级到 `0016_perception_pipeline`、单 head 与 `git diff --check` 全部通过；验收覆盖并发跨来源合并、事件重放、DND/预算/紧急绕过、稳定窗口失败、TTL、L3 零持久化、HA 语义映射与 owner 投递隔离；
