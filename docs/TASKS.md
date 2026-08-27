@@ -144,6 +144,7 @@
 
 ## 4. 最新质量基线
 
+- 2026-08-27 屏幕感知上线运行验证：配置 v63 开启（60s×三屏）、设备声明+授权 `screen.monitor`、修复上传白名单后（`8d80ebb`）三屏截图与 GLM 视觉分析实测成功（微信/文件系统/编程界面三份摘要入 Timeline），循环无错误；感知哈希变化检测、即焚与降频待长期观察。
 - 2026-08-27 设备别名释放修复：Ruff、严格 mypy、非 soak 全量 pytest 通过（含新增撤销重配回归）；`0023_device_alias_reuse` 已在 SQLite 空库与真实 PostgreSQL 双端验证，真实库现处 head `0023`。同批 Admin 交互修复：设备设置保存遇 revision 冲突自动刷新版本号并提示重试（`a9ab560`）、设备注册表行级配对码按钮（`249eae7`）、Desktop debug bundle 过期问题（`ef0420e`，`bundle.active` 已启用）。
 - 2026-08-27 选择器隔离 E2E 与迁移修复：迁移 `now()` 默认值修复后 Ruff、严格 mypy、Avatar/Theme/Jobs 定向 pytest 通过；隔离环境（8001 + SQLite + 复制的真实模型配置 + 虚拟桌面设备）两条 E2E 全部闭环——interactive 命令线上 TTL 115s、幂等键含 target、PNG 资产上传后 GLM 视觉准确描述、picker_cancelled 透传后模型优雅重试。已知观察：弱祈使句下模型可能只叙述不调用工具；Desktop 真机 .app 本次 WS 鉴权未完成（last_seen 不随连接推进，待用户查看窗口状态）。
 - 2026-08-27 系统内容选择器代码闭环：Ruff、严格 mypy、非 soak 全量 pytest **532 通过 / 0 失败**（含 4 个新增 interactive 回归）、Desktop vitest **9 通过**、Desktop typecheck/build、`cargo check` 与 `git diff --check` 全部通过；真机验收（真实聊天 → 系统选择器 → 视觉回答 → 原图销毁）待用户在场执行。
