@@ -7,6 +7,7 @@ from uuid import UUID
 from sqlalchemy import (
     JSON,
     BigInteger,
+    Boolean,
     CheckConstraint,
     DateTime,
     Float,
@@ -19,6 +20,7 @@ from sqlalchemy import (
     Uuid,
     false,
     func,
+    text,
 )
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
@@ -773,7 +775,7 @@ class InteractionTurnRecord(Base):
     __tablename__ = "interaction_turn"
     __table_args__ = (
         CheckConstraint(
-            "state IN ('accepted','thinking','streaming','cancelled','failed','completed')",
+            "state IN ('accepted','listening','thinking','streaming','speaking','interrupted','cancelled','failed','completed')",
             name="ck_interaction_turn_state",
         ),
         UniqueConstraint("conversation_id", "turn_seq", name="uq_turn_conversation_seq"),
@@ -793,6 +795,7 @@ class InteractionTurnRecord(Base):
         Uuid(as_uuid=True), ForeignKey("message.id", ondelete="RESTRICT"), nullable=False
     )
     cancel_reason: Mapped[str | None] = mapped_column(String(160))
+    degradation: Mapped[dict[str, Any] | None] = mapped_column(JSON)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
@@ -856,4 +859,301 @@ class ReflectionCandidateRecord(Base):
     reviewed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+
+class RuntimeLeaseRecord(Base):
+    __tablename__ = "runtime_lease"
+    __table_args__ = (Index("ix_runtime_lease_expires", "expires_at"),)
+
+    lease_type: Mapped[str] = mapped_column(String(32), primary_key=True)
+    holder_device_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
+    generation_id: Mapped[UUID | None] = mapped_column(Uuid(as_uuid=True), nullable=True)
+    epoch: Mapped[int] = mapped_column(BigInteger, nullable=False, server_default="1")
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+
+class UserModeRecord(Base):
+    __tablename__ = "user_mode"
+    __table_args__ = (
+        Index("ix_user_mode_user_active", "user_id", "superseded_at", "priority"),
+    )
+
+    id: Mapped[int] = mapped_column(BIGINT_PK, primary_key=True, autoincrement=True)
+    user_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
+    mode: Mapped[str] = mapped_column(String(16), nullable=False)
+    source: Mapped[str] = mapped_column(String(160), nullable=False)
+    reason: Mapped[str | None] = mapped_column(String(400))
+    confidence: Mapped[float | None] = mapped_column(Float)
+    priority: Mapped[int] = mapped_column(Integer, nullable=False, server_default="50")
+    starts_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    superseded_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+
+class JobRecord(Base):
+    __tablename__ = "job"
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('queued','admitted','running','waiting_user','retry_wait','cancelling','succeeded','failed','cancelled')",
+            name="ck_job_status",
+        ),
+        Index("ix_job_status_available", "status", "available_at"),
+        Index("ix_job_owner_created", "owner", "created_at"),
+        Index("ix_job_idempotency", "idempotency_key"),
+    )
+
+    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True)
+    kind: Mapped[str] = mapped_column(String(64), nullable=False)
+    owner: Mapped[str] = mapped_column(String(160), nullable=False, server_default="local-user")
+    status: Mapped[str] = mapped_column(String(16), nullable=False)
+    priority: Mapped[int] = mapped_column(Integer, nullable=False, server_default="50")
+    idempotency_key: Mapped[str | None] = mapped_column(String(256), unique=True)
+    input: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    progress: Mapped[float] = mapped_column(Float, nullable=False, server_default="0")
+    current_step: Mapped[str | None] = mapped_column(String(128))
+    resource_class: Mapped[str] = mapped_column(String(32), nullable=False, server_default="cpu-small")
+    attempts: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
+    max_attempts: Mapped[int] = mapped_column(Integer, nullable=False, server_default="3")
+    available_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    lease_owner: Mapped[str | None] = mapped_column(String(160))
+    lease_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    cancel_requested_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    error_code: Mapped[str | None] = mapped_column(String(160))
+    error_detail_safe: Mapped[dict[str, Any] | None] = mapped_column(JSON)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class JobStepRecord(Base):
+    __tablename__ = "job_step"
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('pending','running','completed','failed','cancelled')",
+            name="ck_job_step_status",
+        ),
+        UniqueConstraint("job_id", "name", "attempt", name="uq_job_step_name_attempt"),
+        Index("ix_job_step_job", "job_id", "created_at"),
+    )
+
+    id: Mapped[int] = mapped_column(BIGINT_PK, primary_key=True, autoincrement=True)
+    job_id: Mapped[UUID] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("job.id", ondelete="CASCADE"), nullable=False
+    )
+    name: Mapped[str] = mapped_column(String(128), nullable=False)
+    attempt: Mapped[int] = mapped_column(Integer, nullable=False, server_default="1")
+    status: Mapped[str] = mapped_column(String(16), nullable=False)
+    progress: Mapped[float] = mapped_column(Float, nullable=False, server_default="0")
+    checkpoint: Mapped[dict[str, Any] | None] = mapped_column(JSON)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+
+class JobArtifactRecord(Base):
+    __tablename__ = "job_artifact"
+    __table_args__ = (Index("ix_job_artifact_asset", "asset_id"),)
+
+    job_id: Mapped[UUID] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("job.id", ondelete="CASCADE"), primary_key=True
+    )
+    step_name: Mapped[str] = mapped_column(String(128), primary_key=True)
+    asset_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True)
+    role: Mapped[str] = mapped_column(String(32), primary_key=True)
+    committed: Mapped[bool] = mapped_column(nullable=False, default=False, server_default=false())
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+
+class AssetRecord(Base):
+    __tablename__ = "asset"
+    __table_args__ = (
+        CheckConstraint(
+            "state IN ('staging','active','unreferenced','deleting','deleted','quarantined')",
+            name="ck_asset_state",
+        ),
+        CheckConstraint("privacy_level IN ('L0','L1','L2')", name="ck_asset_privacy_level"),
+        Index("ix_asset_hash", "content_hash"),
+        Index("ix_asset_state", "state", "created_at"),
+    )
+
+    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True)
+    content_hash: Mapped[str] = mapped_column(String(128), nullable=False, unique=True)
+    byte_size: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    media_type: Mapped[str] = mapped_column(String(128), nullable=False)
+    privacy_level: Mapped[str] = mapped_column(String(4), nullable=False)
+    storage_key: Mapped[str] = mapped_column(String(512), nullable=False)
+    state: Mapped[str] = mapped_column(String(16), nullable=False, server_default="staging")
+    encryption_key_ref: Mapped[str | None] = mapped_column(String(256))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    verified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class AssetReferenceRecord(Base):
+    __tablename__ = "asset_reference"
+
+    asset_id: Mapped[UUID] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("asset.id", ondelete="CASCADE"), primary_key=True
+    )
+    owner_kind: Mapped[str] = mapped_column(String(64), primary_key=True)
+    owner_id: Mapped[str] = mapped_column(String(256), primary_key=True)
+    role: Mapped[str] = mapped_column(String(32), primary_key=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+
+class AssetDerivationRecord(Base):
+    __tablename__ = "asset_derivation"
+
+    parent_asset_id: Mapped[UUID] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("asset.id", ondelete="CASCADE"), primary_key=True
+    )
+    child_asset_id: Mapped[UUID] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("asset.id", ondelete="CASCADE"), primary_key=True
+    )
+    operation: Mapped[str] = mapped_column(String(128), primary_key=True)
+    model_version: Mapped[str | None] = mapped_column(String(128))
+    params_hash: Mapped[str | None] = mapped_column(String(128))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+
+class AvatarPackRecord(Base):
+    __tablename__ = "avatar_pack"
+    __table_args__ = (
+        CheckConstraint(
+            "engine IN ('static','live2d','vrm','abstract')",
+            name="ck_avatar_pack_engine",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    name: Mapped[str] = mapped_column(String(160), nullable=False)
+    archetype: Mapped[str] = mapped_column(String(64), nullable=False)
+    engine: Mapped[str] = mapped_column(String(16), nullable=False)
+    manifest: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    content_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    license: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    built_in: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default="false")
+    installed_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+
+class AvatarInstanceRecord(Base):
+    __tablename__ = "avatar_instance"
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('active','preview','archived')",
+            name="ck_avatar_instance_status",
+        ),
+        Index("ix_avatar_instance_owner", "owner"),
+    )
+
+    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True)
+    owner: Mapped[str] = mapped_column(String(160), nullable=False, server_default="local-user")
+    name: Mapped[str] = mapped_column(String(160), nullable=False)
+    pack_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("avatar_pack.id", ondelete="RESTRICT"), nullable=False
+    )
+    customization: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False, server_default="{}")
+    voice_profile_id: Mapped[str | None] = mapped_column(String(160))
+    theme_id: Mapped[UUID | None] = mapped_column(Uuid(as_uuid=True))
+    version: Mapped[int] = mapped_column(Integer, nullable=False, server_default="1")
+    status: Mapped[str] = mapped_column(String(16), nullable=False, server_default="active")
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+
+class PersonaAvatarBindingRecord(Base):
+    __tablename__ = "persona_avatar_binding"
+    __table_args__ = (
+        Index(
+            "uq_persona_avatar_default",
+            "persona_id",
+            unique=True,
+            postgresql_where=text("is_default"),
+            sqlite_where=text("is_default = 1"),
+        ),
+    )
+
+    persona_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("persona_version.id", ondelete="CASCADE"), primary_key=True
+    )
+    avatar_instance_id: Mapped[UUID] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("avatar_instance.id", ondelete="CASCADE"), primary_key=True
+    )
+    is_default: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default="false")
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+
+class UiThemeRecord(Base):
+    __tablename__ = "ui_theme"
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('published','archived')",
+            name="ck_ui_theme_status",
+        ),
+        UniqueConstraint("key", name="uq_ui_theme_key"),
+    )
+
+    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True)
+    key: Mapped[str] = mapped_column(String(64), nullable=False)
+    name: Mapped[str] = mapped_column(String(160), nullable=False)
+    mode: Mapped[str] = mapped_column(String(16), nullable=False)
+    schema_version: Mapped[int] = mapped_column(Integer, nullable=False, server_default="1")
+    version: Mapped[int] = mapped_column(Integer, nullable=False, server_default="1")
+    status: Mapped[str] = mapped_column(String(16), nullable=False, server_default="published")
+    definition: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    content_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    built_in: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default="false")
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now()
+    )
+
+
+class UiPreferenceRecord(Base):
+    __tablename__ = "ui_preference"
+    __table_args__ = (
+        CheckConstraint(
+            "appearance_mode IN ('light','dark','system')",
+            name="ck_ui_preference_mode",
+        ),
+    )
+
+    owner: Mapped[str] = mapped_column(String(160), primary_key=True)
+    theme_id: Mapped[UUID] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("ui_theme.id", ondelete="RESTRICT"), nullable=False
+    )
+    appearance_mode: Mapped[str] = mapped_column(
+        String(16), nullable=False, server_default="light"
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now()
     )

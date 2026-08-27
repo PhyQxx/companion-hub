@@ -22,6 +22,15 @@ if database_url:
 target_metadata = Base.metadata
 
 
+def _include_object(object, name, type_, reflected, compare_to):
+    # pgvector column managed by raw SQL migrations (0009 / 0021); ignore in autogenerate
+    if type_ == "column" and name == "embedding_vec" and getattr(object, "table", None) is not None and object.table.name == "memory":
+        return False
+    if type_ == "index" and name == "ix_memory_embedding_vec":
+        return False
+    return True
+
+
 def run_migrations_offline() -> None:
     context.configure(
         url=config.get_main_option("sqlalchemy.url"),
@@ -29,13 +38,19 @@ def run_migrations_offline() -> None:
         literal_binds=True,
         dialect_opts={"paramstyle": "named"},
         compare_type=True,
+        include_object=_include_object,
     )
     with context.begin_transaction():
         context.run_migrations()
 
 
 def do_run_migrations(connection: Connection) -> None:
-    context.configure(connection=connection, target_metadata=target_metadata, compare_type=True)
+    context.configure(
+        connection=connection,
+        target_metadata=target_metadata,
+        compare_type=True,
+        include_object=_include_object,
+    )
     with context.begin_transaction():
         context.run_migrations()
 
