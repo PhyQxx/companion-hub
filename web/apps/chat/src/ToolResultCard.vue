@@ -100,22 +100,22 @@ function sourceLabel(cacheHit: boolean): string {
 </template>
 
 <style scoped>
-.tool-card { margin-top:10px; padding:12px; border:1px solid #34415c; border-radius:12px; background:#111827; white-space:normal; }
+.tool-card { margin-top:10px; padding:12px; border:1px solid var(--line); border-radius:12px; background: var(--panel2); white-space:normal; }
 header { display:flex; justify-content:space-between; align-items:center; gap:10px; margin-bottom:9px; }
-header small, .tool-card small { color:#8f9bb3; font-size:11px; }
+header small, .tool-card small { color:var(--muted); font-size:11px; }
 .weather-current { display:flex; align-items:baseline; gap:10px; flex-wrap:wrap; }
 .weather-current b { font-size:25px; }
-.weather-current span { color:#c9d3e7; font-size:13px; }
+.weather-current span { color:var(--muted); font-size:13px; }
 .forecast-list { display:grid; grid-template-columns:repeat(auto-fit,minmax(110px,1fr)); gap:7px; margin-top:10px; }
-.forecast-list div { display:grid; gap:2px; padding:7px; border-radius:8px; background:#182235; }
+.forecast-list div { display:grid; gap:2px; padding:7px; border-radius:8px; background:var(--panel); }
 .candidate-list { display:grid; gap:7px; }
 .candidate-list button { display:flex; justify-content:space-between; text-align:left; }
 .poi-list, .steps { margin:0; padding-left:20px; }
 .poi-list li { margin:8px 0; }
 .poi-list li > div:first-child { display:grid; }
-.poi-meta { display:flex; gap:8px; flex-wrap:wrap; color:#9eabc2; font-size:12px; }
-a { color:#8db5ff; }
+.poi-meta { display:flex; gap:8px; flex-wrap:wrap; color:var(--muted); font-size:12px; }
+a { color:var(--accent); }
 .route-main { display:grid; gap:5px; }
-.steps { margin-top:8px; color:#b6c1d6; font-size:12px; }
-.nav-button { display:inline-block; margin-top:10px; padding:6px 10px; border:1px solid #4f79c5; border-radius:8px; text-decoration:none; }
+.steps { margin-top:8px; color:var(--muted); font-size:12px; }
+.nav-button { display:inline-block; margin-top:10px; padding:6px 10px; border:1px solid var(--accent); border-radius:8px; text-decoration:none; }
 </style>

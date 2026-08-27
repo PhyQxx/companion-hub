@@ -6,6 +6,104 @@
 /** 隐私等级：L0 可上云 / L1 常规 / L2 仅本地模型 */
 export type PrivacyLevel = "L0" | "L1" | "L2";
 
+/** 聊天端与管理后台共享的基础主题。system 只负责选择明/暗预设。 */
+export type ThemePreference = "pure-light" | "midnight-violet" | "system";
+
+export const THEME_STORAGE_KEY = "ariaThemePreference";
+export const THEME_CHANNEL_NAME = "ariaThemePreferenceChanged";
+
+export const THEME_OPTIONS: ReadonlyArray<{ value: ThemePreference; label: string }> = [
+  { value: "pure-light", label: "纯净明亮" },
+  { value: "midnight-violet", label: "静夜紫" },
+  { value: "system", label: "跟随系统" },
+];
+
+export interface UiThemeItem {
+  id: string;
+  key: string;
+  name: string;
+  mode: "light" | "dark";
+  schema_version: number;
+  version: number;
+  definition: {
+    description?: string;
+    swatches?: string[];
+    tokens?: Record<string, string>;
+  };
+  content_hash: string;
+  built_in: boolean;
+  updated_at: string;
+}
+
+export interface UiThemePreference {
+  owner: string;
+  selection: ThemePreference;
+  theme: UiThemeItem;
+  appearance_mode: "light" | "dark" | "system";
+  updated_at: string | null;
+}
+
+const THEME_TOKENS = {
+  "pure-light": {
+    "--bg": "#f6f8fc", "--panel": "#ffffff", "--panel2": "#f7f9fd", "--control": "#ffffff",
+    "--line": "#e3e8f2", "--text": "#172033", "--muted": "#68748a", "--accent": "#4f6df5",
+    "--accent-soft": "#eef2ff", "--message-user-bg": "#4864dc", "--danger": "#e24b54", "--success": "#26b873",
+    "--shadow": "0 8px 24px rgba(36, 50, 82, 0.06)", "--stage-from": "#f7eef0",
+    "--stage-to": "#eef2ff", "--color-scheme": "light",
+  },
+  "midnight-violet": {
+    "--bg": "#0c0e15", "--panel": "#141824", "--panel2": "#1a1f2d", "--control": "#10131d",
+    "--line": "#2a3041", "--text": "#e7eaf3", "--muted": "#929caf", "--accent": "#7c8ff5",
+    "--accent-soft": "#202944", "--message-user-bg": "#5264cc", "--danger": "#f08da2", "--success": "#6ee7b7",
+    "--shadow": "0 16px 36px rgba(0, 0, 0, 0.24)", "--stage-from": "#282035",
+    "--stage-to": "#171923", "--color-scheme": "dark",
+  },
+} as const;
+
+export function readThemePreference(): ThemePreference {
+  if (typeof localStorage === "undefined") return "pure-light";
+  const saved = localStorage.getItem(THEME_STORAGE_KEY);
+  return THEME_OPTIONS.some((option) => option.value === saved)
+    ? saved as ThemePreference
+    : "pure-light";
+}
+
+export function applyThemePreference(preference: ThemePreference): void {
+  if (typeof document === "undefined") return;
+  const prefersDark = typeof matchMedia !== "undefined" && matchMedia("(prefers-color-scheme: dark)").matches;
+  const resolved = preference === "system" ? (prefersDark ? "midnight-violet" : "pure-light") : preference;
+  const root = document.documentElement;
+  root.dataset.themePreference = preference;
+  root.dataset.theme = resolved;
+  for (const [name, value] of Object.entries(THEME_TOKENS[resolved])) {
+    if (name === "--color-scheme") root.style.colorScheme = value;
+    else root.style.setProperty(name, value);
+  }
+}
+
+export function saveThemePreference(preference: ThemePreference): void {
+  if (typeof localStorage !== "undefined") localStorage.setItem(THEME_STORAGE_KEY, preference);
+  applyThemePreference(preference);
+}
+
+export function broadcastThemePreference(preference: ThemePreference): void {
+  if (typeof BroadcastChannel === "undefined") return;
+  const channel = new BroadcastChannel(THEME_CHANNEL_NAME);
+  channel.postMessage({ selection: preference });
+  channel.close();
+}
+
+export function initializeTheme(): () => void {
+  applyThemePreference(readThemePreference());
+  if (typeof matchMedia === "undefined") return () => undefined;
+  const query = matchMedia("(prefers-color-scheme: dark)");
+  const update = () => {
+    if (readThemePreference() === "system") applyThemePreference("system");
+  };
+  query.addEventListener("change", update);
+  return () => query.removeEventListener("change", update);
+}
+
 /** 终端 WGS84 临时位置：仅随消息帧在内存中传递，用于工具位置解析，不落库 */
 export interface ClientLocationPayload {
   latitude: number;
@@ -105,10 +203,95 @@ export interface RuntimeMeta {
     content_hash: string;
     name: string;
   };
+  avatar?: {
+    instance_id: string;
+    pack_id: string;
+    name: string;
+    engine: "static" | "live2d" | "vrm" | "abstract";
+    customization: Record<string, unknown>;
+    assets: {
+      thumbnail?: string;
+      emotions?: Record<string, string>;
+      model?: string;
+    };
+  };
   location_policy?: {
     tools_enabled: boolean;
     precise: "ask_each_time" | "allow_session";
   };
+}
+
+export interface AvatarChoice {
+  instance_id: string;
+  pack_id: string;
+  name: string;
+  engine: "static" | "live2d" | "vrm" | "abstract";
+  status: string;
+  is_current: boolean;
+  customization: Record<string, unknown>;
+  manifest: {
+    assets?: { thumbnail?: string; emotions?: Record<string, string>; model?: string };
+    runtime?: { adapter?: string; core_required?: boolean; network_access?: boolean };
+    [key: string]: unknown;
+  };
+}
+
+export type AriaLive2DHandle = {
+  destroy?: () => void;
+  setLipSync?: (value: number) => void;
+  setSpeaking?: (active: boolean) => void;
+  setExpression?: (expression: string) => boolean;
+  setEmotion?: (emotion: string) => void;
+  playMotion?: (group: string, index?: number) => boolean;
+} | void;
+export interface AriaLive2DRuntime {
+  mount: (
+    canvas: HTMLCanvasElement,
+    options: { modelUrl: string; transparent: boolean },
+  ) => AriaLive2DHandle | Promise<AriaLive2DHandle>;
+}
+
+declare global {
+  interface Window { AriaLive2DRuntime?: AriaLive2DRuntime }
+}
+
+let live2DRuntimeLoad: Promise<AriaLive2DRuntime | null> | null = null;
+
+/** Load an optional, locally installed Cubism adapter without bundling licensed Core files. */
+export function ensureLive2DRuntime(): Promise<AriaLive2DRuntime | null> {
+  if (typeof window === "undefined" || typeof document === "undefined") return Promise.resolve(null);
+  if (window.AriaLive2DRuntime) return Promise.resolve(window.AriaLive2DRuntime);
+  if (live2DRuntimeLoad) return live2DRuntimeLoad;
+  live2DRuntimeLoad = new Promise((resolve) => {
+    let settled = false;
+    const script = document.createElement("script");
+    script.src = "/api/v1/avatar-live2d-runtime/runtime.js";
+    script.async = true;
+    script.dataset.ariaLive2dRuntime = "true";
+    const finish = (runtime: AriaLive2DRuntime | null) => {
+      if (settled) return;
+      settled = true;
+      window.clearTimeout(timeout);
+      window.removeEventListener("aria-live2d-runtime-ready", onReady);
+      window.removeEventListener("aria-live2d-runtime-error", onError);
+      if (!runtime) {
+        script.remove();
+        live2DRuntimeLoad = null;
+      }
+      resolve(runtime);
+    };
+    const onReady = () => finish(window.AriaLive2DRuntime ?? null);
+    const onError = () => finish(null);
+    const timeout = window.setTimeout(onError, 20_000);
+    window.addEventListener("aria-live2d-runtime-ready", onReady);
+    window.addEventListener("aria-live2d-runtime-error", onError);
+    script.onerror = onError;
+    script.onload = () => {
+      if (window.AriaLive2DRuntime) finish(window.AriaLive2DRuntime);
+    };
+    document.head.appendChild(script);
+  });
+  return live2DRuntimeLoad;
 }
 
 export interface SystemHealth {
@@ -438,6 +621,28 @@ export class ChatApi {
       token,
     );
   }
+
+  themePreference(token: string) {
+    return this.request<UiThemePreference>("/api/v1/ui/preferences", { method: "GET" }, token);
+  }
+
+  updateThemePreference(token: string, selection: ThemePreference) {
+    return this.request<UiThemePreference>("/api/v1/ui/preferences", {
+      method: "PUT",
+      body: JSON.stringify({ selection }),
+    }, token);
+  }
+
+  listAvatars(token: string) {
+    return this.request<AvatarChoice[]>("/api/v1/avatars", { method: "GET" }, token);
+  }
+
+  switchAvatar(token: string, instanceId: string) {
+    return this.request<AvatarChoice>("/api/v1/avatars/current", {
+      method: "PUT",
+      body: JSON.stringify({ instance_id: instanceId }),
+    }, token);
+  }
 }
 
 /** 管理端 REST 客户端：令牌保存在实例上（来自 sessionStorage） */
@@ -448,10 +653,8 @@ export class AdminApi {
   ) {}
 
   async request<T>(path: string, init: RequestInit = {}): Promise<T> {
-    const headers: Record<string, string> = {
-      "Content-Type": "application/json",
-      ...(init.headers as Record<string, string> | undefined),
-    };
+    const headers: Record<string, string> = { ...(init.headers as Record<string, string> | undefined) };
+    if (!(init.body instanceof FormData)) headers["Content-Type"] = "application/json";
     if (this.token) headers.Authorization = `Bearer ${this.token}`;
     const response = await fetch(`${this.baseUrl}${path}`, { ...init, headers });
     if (!response.ok) {
