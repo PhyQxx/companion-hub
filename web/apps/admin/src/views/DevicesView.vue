@@ -178,6 +178,20 @@ async function refresh() {
 
 function openPairing() {
   pairingResult.value = null;
+  pairForm.ownerUserId = "";
+  pairForm.grants = ["device.ping"];
+  pairForm.ttlSeconds = 600;
+  pairingOpen.value = true;
+}
+
+/** 按现有设备预填所有者与授权能力，生成新的重新配对码；一次性码只显示一次。 */
+function openPairingFor(item: DeviceItem) {
+  pairingResult.value = null;
+  pairForm.ownerUserId = item.owner_user_id;
+  pairForm.grants = item.granted_capabilities.length
+    ? [...item.granted_capabilities]
+    : ["device.ping"];
+  pairForm.ttlSeconds = 600;
   pairingOpen.value = true;
 }
 
@@ -370,11 +384,12 @@ onMounted(refresh);
         <el-table-column label="最后心跳" min-width="150">
           <template #default="{ row }"><span>{{ relativeTime(row.last_seen_at) }}</span><small>{{ fmt(row.last_seen_at) }}</small></template>
         </el-table-column>
-        <el-table-column label="操作" width="250" fixed="right">
+        <el-table-column label="操作" width="330" fixed="right">
           <template #default="{ row }">
             <div class="row-actions">
               <el-button size="small" :disabled="!!row.revoked_at" @click="openEdit(row as DeviceItem)">设置</el-button>
               <el-button size="small" :disabled="!row.online || !row.effective_capabilities.length || !!row.revoked_at" @click="openIssue(row as DeviceItem)">测试命令</el-button>
+              <el-button size="small" @click="openPairingFor(row as DeviceItem)">配对码</el-button>
               <el-button size="small" type="danger" plain :disabled="!!row.revoked_at" @click="revoke(row as DeviceItem)">撤销</el-button>
             </div>
           </template>
@@ -408,7 +423,7 @@ onMounted(refresh);
 
     <el-dialog v-model="pairingOpen" title="生成一次性配对码" width="620px">
       <div class="dialog-stack">
-        <el-alert title="配对码只能使用一次，到期自动失效。留空 owner_user_id 时仅支持系统中恰好有一个活跃用户。" type="info" :closable="false" />
+        <el-alert title="配对码只能使用一次，到期自动失效；仅本次显示，请立即复制。从设备行进入时已预填该设备的所有者与授权能力。" type="info" :closable="false" />
         <template v-if="!pairingResult">
           <el-form label-position="top">
             <el-form-item label="Owner user_id（可选）"><el-input v-model="pairForm.ownerUserId" placeholder="单用户环境可留空" /></el-form-item>
