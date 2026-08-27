@@ -1,23 +1,16 @@
 <script setup lang="ts">
-import { computed, inject, onMounted, ref } from "vue";
+import { inject, onMounted, ref } from "vue";
 import { AdminApi, type VoiceLatencySummary } from "@aria/shared";
 
 const api = inject("adminApi") as AdminApi;
 const emit = defineEmits<{ status: [text: string, error?: boolean] }>();
 
-interface ConversationItem {
-  id: string;
-  user_id: string;
-  status: string;
-  created_at: string;
-  last_active_at: string;
-}
-
-interface MessageItem {
-  id: string;
-  role: string;
-  privacy_level: string;
-  created_at: string;
+interface UsageSummary {
+  total_conversations: number;
+  active_conversations: number;
+  total_messages: number;
+  messages_by_role: Record<string, number>;
+  messages_by_privacy_level: Record<string, number>;
 }
 
 interface AmapMetrics {
@@ -29,8 +22,7 @@ interface AmapMetrics {
   failures: Record<string, number>;
 }
 
-const conversations = ref<ConversationItem[]>([]);
-const messages = ref<MessageItem[]>([]);
+const usage = ref<UsageSummary | null>(null);
 const voiceLatency = ref<VoiceLatencySummary | null>(null);
 const amapMetrics = ref<AmapMetrics | null>(null);
 const haLedger = ref<unknown[]>([]);
@@ -39,17 +31,13 @@ const loading = ref(false);
 async function refresh() {
   loading.value = true;
   try {
-    const [c, m, v, a, h] = await Promise.allSettled([
-      api.request<ConversationItem[]>("/api/v1/chat/conversations"),
-      api.request<MessageItem[]>("/api/v1/admin/memories?status=active&limit=1").then(() =>
-        api.request<MessageItem[]>("/api/v1/chat/conversations/00000000-0000-0000-0000-000000000000/messages").catch(() => []),
-      ),
+    const [u, v, a, h] = await Promise.allSettled([
+      api.request<UsageSummary>("/api/v1/admin/dashboard/usage"),
       api.request<VoiceLatencySummary>("/api/v1/meta/voice/latency"),
       api.request<AmapMetrics>("/api/v1/admin/config/tools/amap/metrics"),
       api.request<unknown[]>("/api/v1/admin/config/integrations/home-assistant/ledger?limit=50"),
     ]);
-    if (c.status === "fulfilled") conversations.value = c.value;
-    if (m.status === "fulfilled") messages.value = m.value;
+    if (u.status === "fulfilled") usage.value = u.value;
     if (v.status === "fulfilled") voiceLatency.value = v.value;
     if (a.status === "fulfilled") amapMetrics.value = a.value;
     if (h.status === "fulfilled") haLedger.value = h.value;
@@ -59,22 +47,6 @@ async function refresh() {
     loading.value = false;
   }
 }
-
-const activeConversations = computed(() => conversations.value.filter((c) => c.status === "active"));
-const messageCounts = computed(() => {
-  const counts: Record<string, number> = {};
-  for (const m of messages.value) {
-    counts[m.role] = (counts[m.role] ?? 0) + 1;
-  }
-  return counts;
-});
-const privacyCounts = computed(() => {
-  const counts: Record<string, number> = {};
-  for (const m of messages.value) {
-    counts[m.privacy_level] = (counts[m.privacy_level] ?? 0) + 1;
-  }
-  return counts;
-});
 
 onMounted(refresh);
 </script>
@@ -89,8 +61,12 @@ onMounted(refresh);
     <div class="stats">
       <el-card shadow="never">
         <span>会话总数</span>
-        <strong>{{ conversations.length }}</strong>
-        <small>{{ activeConversations.length }} 个活跃</small>
+        <strong>{{ usage?.total_conversations ?? "—" }}</strong>
+        <small>{{ usage ? `${usage.active_conversations} 个活跃` : "" }}</small>
+      </el-card>
+      <el-card shadow="never">
+        <span>消息总数</span>
+        <strong>{{ usage?.total_messages ?? "—" }}</strong>
       </el-card>
       <el-card shadow="never">
         <span>语音样本</span>
@@ -119,6 +95,26 @@ onMounted(refresh);
           <div><dt>打断 P90</dt><dd>{{ voiceLatency?.interrupt_ms.p90 ?? "—" }} ms</dd></div>
           <div><dt>总耗时 P90</dt><dd>{{ voiceLatency?.total_ms.p90 ?? "—" }} ms</dd></div>
         </div>
+      </el-card>
+
+      <el-card shadow="never">
+        <template #header><span>消息角色分布</span></template>
+        <div v-if="usage && Object.keys(usage.messages_by_role).length" class="meta">
+          <div v-for="(count, role) in usage.messages_by_role" :key="role">
+            <dt>{{ role }}</dt><dd>{{ count }}</dd>
+          </div>
+        </div>
+        <div v-else class="meta"><dt>—</dt><dd>暂无数据</dd></div>
+      </el-card>
+
+      <el-card shadow="never">
+        <template #header><span>消息隐私分布</span></template>
+        <div v-if="usage && Object.keys(usage.messages_by_privacy_level).length" class="meta">
+          <div v-for="(count, level) in usage.messages_by_privacy_level" :key="level">
+            <dt>{{ level }}</dt><dd>{{ count }}</dd>
+          </div>
+        </div>
+        <div v-else class="meta"><dt>—</dt><dd>暂无数据</dd></div>
       </el-card>
 
       <el-card v-if="amapMetrics" shadow="never">

@@ -135,6 +135,14 @@ class SystemDashboardView(StrictModel):
     database_url_type: str
 
 
+class UsageDashboardView(StrictModel):
+    total_conversations: int
+    active_conversations: int
+    total_messages: int
+    messages_by_role: dict[str, int]
+    messages_by_privacy_level: dict[str, int]
+
+
 def create_admin_dashboard_router(
     database: Database,
     *,
@@ -336,6 +344,37 @@ def create_admin_dashboard_router(
             total_conversations=total_conversations or 0,
             total_messages=total_messages or 0,
             total_memories=total_memories or 0,
+        )
+
+    @router.get("/usage", response_model=UsageDashboardView)
+    async def usage_dashboard() -> UsageDashboardView:
+        async with database.sessions() as session:
+            total_conversations = await session.scalar(
+                select(func.count(ConversationRecord.id))
+            )
+            active_conversations = await session.scalar(
+                select(func.count(ConversationRecord.id)).where(
+                    ConversationRecord.status == "active"
+                )
+            )
+            total_messages = await session.scalar(select(func.count(MessageRecord.id)))
+            role_rows = await session.execute(
+                select(MessageRecord.role, func.count(MessageRecord.id)).group_by(
+                    MessageRecord.role
+                )
+            )
+            privacy_rows = await session.execute(
+                select(MessageRecord.privacy_level, func.count(MessageRecord.id)).group_by(
+                    MessageRecord.privacy_level
+                )
+            )
+
+        return UsageDashboardView(
+            total_conversations=total_conversations or 0,
+            active_conversations=active_conversations or 0,
+            total_messages=total_messages or 0,
+            messages_by_role={role: count for role, count in role_rows.all()},
+            messages_by_privacy_level={level: count for level, count in privacy_rows.all()},
         )
 
     @router.get("/system", response_model=SystemDashboardView)
