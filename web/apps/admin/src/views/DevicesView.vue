@@ -51,6 +51,7 @@ const emit = defineEmits<{ status: [text: string, error?: boolean] }>();
 const knownCapabilities = [
   "device.ping",
   "screen.capture",
+  "screen.monitor",
   "notification.show",
   "browser.current_tab.read",
   "browser.current_tab.capture",

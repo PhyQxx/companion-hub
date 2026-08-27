@@ -117,6 +117,42 @@ class TimelineStore:
             return None
         return await self._insert(record)
 
+    async def index_screen_observation(
+        self,
+        *,
+        user_id: UUID,
+        observation_id: UUID,
+        display: int,
+        summary: str,
+        privacy_level: PrivacyLevel,
+        occurred_at: datetime,
+        metadata: dict[str, Any] | None = None,
+        importance: float = 0.3,
+    ) -> TimelineEvent | None:
+        """记录一次周期屏幕感知的观察摘要（原图即焚，只存分析文本）。"""
+        privacy = PrivacyLevel(privacy_level)
+        if privacy is PrivacyLevel.L3:
+            return None
+        text = summary.strip()
+        if not text:
+            return None
+        record = TimelineEventRecord(
+            user_id=user_id,
+            occurred_at=_utc(occurred_at),
+            source_type=TimelineSourceType.DEVICE.value,
+            source_id=str(observation_id),
+            actor=TimelineActor.DEVICE.value,
+            event_type="screen.observed",
+            title=f"屏幕观察 · 显示器 {display}",
+            summary=_index_summary(text),
+            privacy_level=privacy.value,
+            importance=importance,
+            entities=[],
+            keywords=_keywords(text)[:8],
+            metadata_json={"display": display, **(metadata or {})},
+        )
+        return await self._insert(record)
+
     async def get(self, timeline_id: int, *, user_id: UUID | None = None) -> TimelineEvent:
         async with self._database.sessions() as session:
             record = await session.get(TimelineEventRecord, timeline_id)

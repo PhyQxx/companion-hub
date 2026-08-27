@@ -21,6 +21,7 @@ import PlaceholderView from "./PlaceholderView.vue";
 import PrivacyView from "./PrivacyView.vue";
 import ProactiveChannelsView from "./ProactiveChannelsView.vue";
 import QualityView from "./QualityView.vue";
+import ScreenAwarenessView from "./ScreenAwarenessView.vue";
 import SystemView from "./SystemView.vue";
 import TimelineView from "./TimelineView.vue";
 import UsageView from "./UsageView.vue";
@@ -52,6 +53,7 @@ const currentView = computed(() => {
   if (props.module === "privacy") return PrivacyView;
   if (props.module === "system") return SystemView;
   if (props.module === "jobs") return JobsView;
+  if (props.module === "screen_awareness") return ScreenAwarenessView;
   if (props.module === "avatars") return AvatarsView;
   if (props.module === "appearance") return AppearanceView;
   return PlaceholderView;

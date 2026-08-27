@@ -260,9 +260,11 @@ export class DeviceConnection {
         client_version: "0.1.0",
         platform: navigator.platform,
       };
-    } else if (frame.command === "screen.capture") {
-      if (!this.capabilities.includes("screen.capture")) {
-        this.sendResult(frame.command_id, "failed", "screen_capture_unavailable", {});
+    } else if (frame.command === "screen.capture" || frame.command === "screen.monitor") {
+      const isMonitor = frame.command === "screen.monitor";
+      const requiredCapability = isMonitor ? "screen.monitor" : "screen.capture";
+      if (!this.capabilities.includes(requiredCapability)) {
+        this.sendResult(frame.command_id, "failed", `${isMonitor ? "screen_monitor" : "screen_capture"}_unavailable`, {});
         return;
       }
       const request = parseScreenCaptureRequest(args);
@@ -270,10 +272,14 @@ export class DeviceConnection {
         this.sendResult(frame.command_id, "failed", "invalid_command_args", {});
         return;
       }
-      const authorization = this.callbacks.authorizeScreenCapture();
-      if (authorization !== "allowed") {
-        this.sendResult(frame.command_id, "failed", authorization, {});
-        return;
+      if (!isMonitor) {
+        // 单次授权只约束手动截图；screen.monitor 由 Hub 配置开关驱动，
+        // 设备端硬闸门（TCC/锁屏/隐私暂停）分别在能力声明与 Rust 端把关。
+        const authorization = this.callbacks.authorizeScreenCapture();
+        if (authorization !== "allowed") {
+          this.sendResult(frame.command_id, "failed", authorization, {});
+          return;
+        }
       }
       let uploaded: DeviceAssetUpload;
       try {

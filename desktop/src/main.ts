@@ -76,6 +76,10 @@ function activeCapabilities(): string[] {
     permissionGranted && !screenLocked && !privacyPause.checked &&
     screenCaptureGrantActive(screenGrant)
   ) capabilities.push("screen.capture");
+  // 屏幕感知：跟随 Hub 配置开关运行；这里只把关 TCC/锁屏/隐私暂停三道设备端闸门
+  if (permissionGranted && !screenLocked && !privacyPause.checked) {
+    capabilities.push("screen.monitor");
+  }
   return capabilities;
 }
 

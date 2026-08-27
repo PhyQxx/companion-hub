@@ -20,6 +20,7 @@ from app.api import (
     create_admin_jobs_router,
     create_admin_memory_router,
     create_admin_persona_router,
+    create_admin_screen_awareness_router,
     create_admin_security_router,
     create_admin_theme_router,
     create_admin_timeline_router,
@@ -63,7 +64,13 @@ from app.home_assistant import (
     HomeGetStateTool,
 )
 from app.jobs import AssetStore, JobEngine
-from app.memory import LlmMemoryExtractor, MemoryExtractor, MemoryRetriever, MemoryStore
+from app.memory import (
+    LlmMemoryExtractor,
+    MemoryExtractor,
+    MemoryIngester,
+    MemoryRetriever,
+    MemoryStore,
+)
 from app.model_capabilities import CapabilityModelService
 from app.observability import apply_observability, configure_logging
 from app.output import ProactiveDeliveryService
@@ -71,6 +78,12 @@ from app.output.proactive import DesktopCommandGateway
 from app.perception import PerceptionPipeline, PerceptionStore, ProactivePolicy
 from app.persona import PersonaStore
 from app.runtime import TurnCoordinator
+from app.screen_awareness import (
+    ScreenAwarenessAnalyzer,
+    ScreenAwarenessGateway,
+    ScreenAwarenessLoop,
+    ScreenAwarenessResolver,
+)
 from app.timeline import HistoryRecallService, TimelineStore
 from app.tools import ToolHandler
 from app.tools.browser import InspectWebpageTool
@@ -132,6 +145,8 @@ def create_app(
     worker = None
     runtime_chat_service: ChatService | None = None
     home_assistant_proactive: HomeAssistantProactiveEngine | None = None
+    screen_awareness_loop: ScreenAwarenessLoop | None = None
+    proactive_delivery: ProactiveDeliveryService | None = None
 
     async def test_home_assistant_proactive() -> bool:
         if home_assistant_proactive is None:
@@ -242,9 +257,13 @@ def create_app(
             await config_watcher.start()
         if worker is not None:
             await worker.start()
+        if screen_awareness_loop is not None:
+            screen_awareness_loop.start()
         try:
             yield
         finally:
+            if screen_awareness_loop is not None:
+                await screen_awareness_loop.stop()
             if home_assistant_proactive is not None:
                 await home_assistant_proactive.stop()
             if perception_pipeline is not None:
@@ -568,6 +587,12 @@ def create_app(
                         admin_token=runtime_admin_token,
                     )
                 )
+            app.include_router(
+                create_admin_screen_awareness_router(
+                    timeline_store,
+                    admin_token=runtime_admin_token,
+                )
+            )
             if avatar_store is not None:
                 app.include_router(
                     create_admin_avatar_router(
@@ -717,6 +742,33 @@ def create_app(
                     home_assistant_proactive.on_state_change
                 )
                 app.state.home_assistant_proactive_engine = home_assistant_proactive
+
+            if (
+                runtime_database is not None
+                and timeline_store is not None
+                and device_target_resolver is not None
+                and device_command_gateway is not None
+                and capability_models is not None
+            ):
+                screen_awareness_loop = ScreenAwarenessLoop(
+                    config_store=runtime_config,
+                    database=runtime_database,
+                    resolver=cast(ScreenAwarenessResolver, device_target_resolver),
+                    gateway=cast(ScreenAwarenessGateway, device_command_gateway),
+                    analyzer=cast(
+                        ScreenAwarenessAnalyzer, CapabilityScreenAnalyzer(capability_models)
+                    ),
+                    timeline=timeline_store,
+                    memory_ingester=(
+                        MemoryIngester(memory_store) if memory_store is not None else None
+                    ),
+                    perception_pipeline=perception_pipeline,
+                    proactive_deliver=(
+                        proactive_delivery.deliver if proactive_delivery is not None else None
+                    ),
+                    cognitive_cycle=cognitive_cycle,
+                )
+                app.state.screen_awareness_loop = screen_awareness_loop
 
     return app
 

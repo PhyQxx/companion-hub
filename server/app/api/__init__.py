@@ -6,6 +6,7 @@ from .admin_jobs import create_admin_jobs_router
 from .admin_logs_stream import create_logs_stream_router
 from .admin_memory import create_admin_memory_router, create_deletion_ledger_router
 from .admin_persona import create_admin_persona_router
+from .admin_screen_awareness import create_admin_screen_awareness_router
 from .admin_security import create_admin_security_router
 from .admin_timeline import create_admin_timeline_router
 from .auth import ChatSessionGuard, create_auth_router
@@ -36,6 +37,7 @@ __all__ = [
     "create_admin_jobs_router",
     "create_admin_memory_router",
     "create_admin_persona_router",
+    "create_admin_screen_awareness_router",
     "create_admin_security_router",
     "create_admin_theme_router",
     "create_admin_timeline_router",

@@ -18,6 +18,7 @@ const router = createRouter({
     { path: "/privacy", component: () => import("./views/ModuleWorkspaceView.vue"), props: { module: "privacy" } },
     { path: "/settings", component: () => import("./views/ModuleWorkspaceView.vue"), props: { module: "system" } },
     { path: "/jobs", component: () => import("./views/ModuleWorkspaceView.vue"), props: { module: "jobs" } },
+    { path: "/screen-awareness", component: () => import("./views/ModuleWorkspaceView.vue"), props: { module: "screen_awareness" } },
     { path: "/avatars", component: () => import("./views/ModuleWorkspaceView.vue"), props: { module: "avatars" } },
     { path: "/appearance", component: () => import("./views/ModuleWorkspaceView.vue"), props: { module: "appearance" } },
     { path: "/:pathMatch(.*)*", redirect: "/" },

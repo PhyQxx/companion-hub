@@ -146,6 +146,16 @@ export const adminModules: AdminModule[] = [
       { key: "list", label: "任务列表", description: "后台任务、租约和状态管理。", state: "ready" },
     ],
   },
+  {
+    key: "screen_awareness",
+    path: "/screen-awareness",
+    label: "屏幕感知",
+    group: "能力接入",
+    tabs: [
+      { key: "status", label: "运行状态", description: "周期截屏循环健康与各屏分析进度。", state: "ready" },
+      { key: "observations", label: "观察记录", description: "屏幕观察摘要的时间线检索。", state: "ready" },
+    ],
+  },
 ];
 
 export const adminGroups = ["概览", "伴侣核心", "能力接入", "运维治理"].map((group) => ({

@@ -108,6 +108,28 @@ class AmapToolConfig(StrictModel):
         return self
 
 
+class ScreenAwarenessConfig(StrictModel):
+    """中枢周期截屏感知：设备端仅保留 TCC/锁屏/隐私暂停三道硬闸门。"""
+
+    enabled: bool = False
+    interval_seconds: Annotated[int, Field(ge=15, le=600)] = 60
+    displays: Annotated[list[Annotated[int, Field(ge=1, le=32)]], Field(max_length=8)] = Field(
+        default_factory=lambda: [1]
+    )
+    analysis_prompt: Annotated[str, Field(min_length=1, max_length=1_000)] = (
+        "概括这块屏幕当前展示的主要内容，并判断是否值得主动分享或记忆。"
+    )
+    memory_enabled: bool = True
+    proactive_enabled: bool = True
+    unchanged_skip_threshold: Annotated[int, Field(ge=0, le=64)] = 6
+
+    @model_validator(mode="after")
+    def validate_displays(self) -> ScreenAwarenessConfig:
+        if self.enabled and not self.displays:
+            raise ValueError("enabled screen awareness requires at least one display index")
+        return self
+
+
 class ToolsConfig(StrictModel):
     enabled: bool = False
     max_tool_rounds: Literal[1] = 1
@@ -335,6 +357,7 @@ class HubConfig(StrictModel):
     tools: ToolsConfig = Field(default_factory=ToolsConfig)
     integrations: IntegrationsConfig = Field(default_factory=IntegrationsConfig)
     proactive_output: ProactiveOutputConfig = Field(default_factory=ProactiveOutputConfig)
+    screen_awareness: ScreenAwarenessConfig = Field(default_factory=ScreenAwarenessConfig)
 
     @model_validator(mode="before")
     @classmethod
