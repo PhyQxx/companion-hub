@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Aria Live2D runtime smoke test</title>
+    <style>
+      html, body { height: 100%; margin: 0; background: #171923; color: #fff; }
+      body { display: grid; place-items: center; font: 14px system-ui; }
+      main { display: grid; gap: 12px; text-align: center; }
+      canvas { width: 480px; height: 640px; background: #232636; border-radius: 20px; }
+    </style>
+  </head>
+  <body>
+    <main>
+      <canvas id="live2d"></canvas>
+      <div id="status">loading</div>
+    </main>
+    <script src="/api/v1/avatar-live2d-runtime/runtime.js"></script>
+    <script>
+      async function mount() {
+        const status = document.querySelector('#status');
+        try {
+          const handle = await window.AriaLive2DRuntime.mount(document.querySelector('#live2d'), {
+            modelUrl: '/api/v1/avatar-user-assets/Hiyori/Hiyori.model3.json',
+            transparent: true,
+          });
+          handle.setSpeaking?.(true);
+          handle.setEmotion?.('happy');
+          handle.playMotion?.('Tap', 0);
+          let phase = 0;
+          window.setInterval(() => {
+            phase += 0.45;
+            handle.setLipSync?.(0.15 + Math.abs(Math.sin(phase)) * 0.75);
+          }, 80);
+          status.textContent = 'ready · interactive controls';
+          document.title = 'ready';
+        } catch (error) {
+          status.textContent = String(error);
+          document.title = 'failed';
+          console.error(error);
+        }
+      }
+      if (window.AriaLive2DRuntime) mount();
+      else window.addEventListener('aria-live2d-runtime-ready', mount, { once: true });
+    </script>
+  </body>
+</html>

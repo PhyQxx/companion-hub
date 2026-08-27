@@ -4,15 +4,22 @@ import {
   ApiError,
   ChatApi,
   ChatSocket,
+  THEME_CHANNEL_NAME,
+  THEME_OPTIONS,
   VoiceSocket,
+  broadcastThemePreference,
+  readThemePreference,
+  saveThemePreference,
   matchesLocationIntent,
   type AgentReplyControl,
+  type AvatarChoice,
   type AuthSession,
   type ChatMessage,
   type ClientLocationPayload,
   type Conversation,
   type PrivacyLevel,
   type SocketEvent,
+  type ThemePreference,
   type ToolPresentation,
   type VoiceControlEvent,
 } from "@aria/shared";
@@ -23,6 +30,7 @@ import {
   type VoiceVisemeFrame,
 } from "./voice";
 import ToolResultCard from "./ToolResultCard.vue";
+import Live2DStage from "./Live2DStage.vue";
 
 // 聊天前端主组件：登录 → 会话侧栏 → 流式消息区 → 发送区。
 // 令牌持久化在 localStorage；WS 断线自动重连（最多 3 次）。
@@ -30,6 +38,7 @@ const api = new ChatApi();
 const TOKEN_KEY = "ariaChatToken";
 const TEXT_REPLY_VOICE_KEY = "ariaTextReplyVoice";
 const LOCATION_ENABLED_KEY = "ariaLocationEnabled";
+const themePreference = ref<ThemePreference>(readThemePreference());
 // 与服务端 tools/location.py 的 LOCATION_TTL(15 分钟)保持一致。
 const LOCATION_TTL_MS = 15 * 60 * 1000;
 
@@ -42,6 +51,15 @@ const authBusy = ref(false);
 const statusText = ref("");
 const statusError = ref(false);
 const personaMeta = ref<{ version: number; name: string } | null>(null);
+const avatarMeta = ref<{
+  instanceId: string;
+  packId: string;
+  name: string;
+  engine: "static" | "live2d" | "vrm" | "abstract";
+  assets: { thumbnail?: string; emotions?: Record<string, string>; model?: string };
+} | null>(null);
+const avatars = ref<AvatarChoice[]>([]);
+const avatarSwitchBusy = ref(false);
 
 const conversations = ref<Conversation[]>([]);
 const activeId = ref<string | null>(null);
@@ -53,6 +71,7 @@ const streaming = ref<{
   generationId: string;
   text: string;
   emotion: string | null;
+  expression?: string | null;
 } | null>(null);
 const socketReady = ref(false);
 const messagesRoot = ref<HTMLElement | null>(null);
@@ -65,6 +84,7 @@ const sendPending = ref(false);
 const voiceStatus = ref("语音未连接");
 const voiceTranscript = ref("");
 const voiceViseme = ref(0);
+const avatarMotion = ref<{ value: string; sequence: number } | null>(null);
 const textReplyVoice = ref(localStorage.getItem(TEXT_REPLY_VOICE_KEY) === "1");
 const voiceTtsConfigured = ref<boolean | null>(null);
 
@@ -123,6 +143,31 @@ function onLocationEnabledChanged() {
   if (!locationEnabled.value) cachedLocation = null;
 }
 
+async function onThemeChanged() {
+  saveThemePreference(themePreference.value);
+  broadcastThemePreference(themePreference.value);
+  if (!token.value) return;
+  try {
+    await api.updateThemePreference(token.value, themePreference.value);
+    setStatus("主题已同步");
+  } catch (error) {
+    setStatus(error instanceof Error ? `${error.message}；已保存在本机` : "主题同步失败；已保存在本机", true);
+  }
+}
+
+async function syncThemePreference() {
+  if (!token.value) return;
+  try {
+    const preference = await api.themePreference(token.value);
+    if (preference.selection !== themePreference.value) {
+      themePreference.value = preference.selection;
+      saveThemePreference(preference.selection);
+    }
+  } catch {
+    /* 服务不可用时保留本机最后可用主题 */
+  }
+}
+
 const asrUnavailableLabels: Record<string, string> = {
   not_configured: "后台尚未启用语音识别",
   local_asr_required: "当前是 L2，仅允许本地语音识别",
@@ -135,6 +180,7 @@ const asrUnavailableLabels: Record<string, string> = {
 let socket: ChatSocket | null = null;
 let reconnectTimer: number | null = null;
 let reconnectAttempts = 0;
+let themeChannel: BroadcastChannel | null = null;
 let voiceSocket: VoiceSocket | null = null;
 let voiceSocketKey = "";
 let voiceConnectPromise: Promise<VoiceSocket> | null = null;
@@ -150,6 +196,27 @@ const playback = new VoicePlaybackQueue();
 const activeMessages = computed(() =>
   activeId.value ? (messagesByConversation.get(activeId.value) ?? []) : [],
 );
+const avatarEmotion = computed(() => {
+  if (streaming.value?.emotion) return streaming.value.emotion;
+  const latest = [...activeMessages.value]
+    .reverse()
+    .find((message) => message.role === "assistant" && emotionKeyOf(message));
+  return latest ? (emotionKeyOf(latest) ?? "neutral") : "neutral";
+});
+const avatarExpression = computed(() => {
+  if (streaming.value?.expression) return streaming.value.expression;
+  const latest = [...activeMessages.value]
+    .reverse()
+    .find((message) => message.role === "assistant" && agentReplyOf(message)?.expressions?.length);
+  return latest ? (agentReplyOf(latest)?.expressions?.[0] ?? null) : null;
+});
+const avatarSpeaking = computed(
+  () => voiceViseme.value > 0.001 || voiceBusy.value || Boolean(streaming.value?.text),
+);
+const avatarImageUrl = computed(() => {
+  const assets = avatarMeta.value?.assets;
+  return assets?.emotions?.[avatarEmotion.value] ?? assets?.thumbnail ?? null;
+});
 const canSend = computed(
   () =>
     socketReady.value &&
@@ -535,9 +602,43 @@ async function loadRuntimeMeta() {
     personaMeta.value = runtime.persona
       ? { version: runtime.persona.version, name: runtime.persona.name }
       : null;
+    avatarMeta.value = runtime.avatar
+      ? {
+          instanceId: runtime.avatar.instance_id,
+          packId: runtime.avatar.pack_id,
+          name: runtime.avatar.name,
+          engine: runtime.avatar.engine,
+          assets: runtime.avatar.assets,
+        }
+      : null;
     if (runtime.location_policy) locationPolicy.value = runtime.location_policy.precise;
   } catch {
     personaMeta.value = null;
+    avatarMeta.value = null;
+  }
+}
+
+async function loadAvatars() {
+  if (!token.value) return;
+  try {
+    avatars.value = await api.listAvatars(token.value);
+  } catch {
+    avatars.value = [];
+  }
+}
+
+async function switchAvatar(event: Event) {
+  const instanceId = (event.target as HTMLSelectElement).value;
+  if (!instanceId || instanceId === avatarMeta.value?.instanceId) return;
+  avatarSwitchBusy.value = true;
+  try {
+    await api.switchAvatar(token.value, instanceId);
+    await Promise.all([loadRuntimeMeta(), loadAvatars()]);
+    setStatus("形象已切换，记忆与当前会话保持不变");
+  } catch (error) {
+    setStatus(error instanceof Error ? error.message : "形象切换失败", true);
+  } finally {
+    avatarSwitchBusy.value = false;
   }
 }
 
@@ -556,9 +657,17 @@ const emotionLabels: Record<string, string> = {
   concerned: "关切",
 };
 
+function emotionKeyOf(message: ChatMessage): string | null {
+  const reply = agentReplyOf(message);
+  return reply?.emotion ?? null;
+}
+
+function agentReplyOf(message: ChatMessage): AgentReplyControl | null {
+  return (message.decision_meta as { agent_reply?: AgentReplyControl } | null)?.agent_reply ?? null;
+}
+
 function emotionOf(message: ChatMessage): string | null {
-  const reply = (message.decision_meta as { agent_reply?: AgentReplyControl } | null)?.agent_reply;
-  const emotion = reply?.emotion ?? null;
+  const emotion = emotionKeyOf(message);
   return emotion ? (emotionLabels[emotion] ?? emotion) : null;
 }
 
@@ -616,7 +725,9 @@ function closeSocket() {
 }
 
 async function enterChat() {
+  await syncThemePreference();
   await loadRuntimeMeta();
+  await loadAvatars();
   await loadConversations();
   connectSocket();
 }
@@ -769,7 +880,11 @@ function handleEvent(event: SocketEvent) {
   }
   if (event.type === "reply.control") {
     if (streaming.value && streaming.value.generationId === event.generation_id) {
-      streaming.value.emotion = event.payload.agent_reply?.emotion ?? null;
+      const control = event.payload.agent_reply;
+      streaming.value.emotion = control?.emotion ?? null;
+      streaming.value.expression = control?.expressions?.[0] ?? null;
+      const motion = control?.actions?.find((action) => action.type === "animation")?.value;
+      if (motion) avatarMotion.value = { value: motion, sequence: (avatarMotion.value?.sequence ?? 0) + 1 };
     }
     return;
   }
@@ -826,6 +941,16 @@ function cancelStreaming() {
 }
 
 onMounted(async () => {
+  window.addEventListener("focus", syncThemePreference);
+  if (typeof BroadcastChannel !== "undefined") {
+    themeChannel = new BroadcastChannel(THEME_CHANNEL_NAME);
+    themeChannel.onmessage = (event: MessageEvent<{ selection?: ThemePreference }>) => {
+      const selection = event.data?.selection;
+      if (!selection || !THEME_OPTIONS.some((option) => option.value === selection)) return;
+      themePreference.value = selection;
+      saveThemePreference(selection);
+    };
+  }
   const saved = localStorage.getItem(TOKEN_KEY);
   if (!saved) {
     void loadRuntimeMeta();
@@ -851,6 +976,9 @@ onMounted(async () => {
 });
 
 onBeforeUnmount(() => {
+  window.removeEventListener("focus", syncThemePreference);
+  themeChannel?.close();
+  themeChannel = null;
   closeSocket();
   void closeVoice();
   void playback.close();
@@ -880,14 +1008,10 @@ onBeforeUnmount(() => {
   </div>
 
   <div v-else class="shell">
-    <aside>
-      <header>
-        <strong>{{ personaMeta?.name ?? '助手' }}</strong>
-        <small v-if="personaMeta" class="persona-version">Persona v{{ personaMeta.version }}</small>
-        <div class="aside-meta">
-          <span>{{ displayName }}</span>
-          <button class="ghost" type="button" @click="logout">退出</button>
-        </div>
+    <aside class="conversation-sidebar">
+      <header class="conversation-heading">
+        <strong>会话</strong>
+        <small>{{ conversations.length }} 个</small>
       </header>
       <button class="primary new-chat" type="button" @click="createConversation">新会话</button>
       <div class="conversation-list">
@@ -904,7 +1028,15 @@ onBeforeUnmount(() => {
           <button class="danger-text" type="button" title="删除会话" @click="removeConversation(conversation.id)">✕</button>
         </div>
       </div>
-      <a class="debug-link" href="/chat/debug">调试台</a>
+      <div class="aside-footer">
+        <label class="theme-field">
+          <span>界面主题</span>
+          <select v-model="themePreference" aria-label="界面主题" @change="onThemeChanged">
+            <option v-for="option in THEME_OPTIONS" :key="option.value" :value="option.value">{{ option.label }}</option>
+          </select>
+        </label>
+        <a class="debug-link" href="/chat/debug">调试台</a>
+      </div>
     </aside>
 
     <main>
@@ -995,44 +1127,99 @@ onBeforeUnmount(() => {
         </div>
       </footer>
     </main>
+
+    <aside class="avatar-sidebar">
+      <header class="companion-heading">
+        <div>
+          <strong>{{ personaMeta?.name ?? '助手' }}</strong>
+          <small v-if="personaMeta" class="persona-version">Persona v{{ personaMeta.version }}</small>
+        </div>
+        <div class="aside-meta">
+          <span>{{ displayName }}</span>
+          <button class="ghost" type="button" @click="logout">退出</button>
+        </div>
+      </header>
+      <section v-if="avatarMeta" class="avatar-stage" :class="`avatar-${avatarMeta.engine}`">
+        <Transition name="avatar-expression" mode="out-in">
+          <Live2DStage
+            v-if="avatarMeta.engine === 'live2d' && avatarMeta.assets.model"
+            :key="avatarMeta.assets.model"
+            :model-url="avatarMeta.assets.model"
+            :emotion="avatarEmotion"
+            :expression="avatarExpression"
+            :lip-sync="voiceViseme"
+            :speaking="avatarSpeaking"
+            :motion="avatarMotion?.value"
+            :motion-sequence="avatarMotion?.sequence"
+          />
+          <img v-else-if="avatarImageUrl" :key="avatarImageUrl" class="avatar-image" :src="avatarImageUrl" :alt="`${avatarMeta.name} · ${emotionLabels[avatarEmotion] ?? avatarEmotion}`" />
+          <div v-else :key="avatarMeta.instanceId" class="avatar-orb"><span>{{ avatarMeta.name[0] }}</span></div>
+        </Transition>
+        <div class="avatar-caption"><strong>{{ avatarMeta.name }}</strong><small>{{ emotionLabels[avatarEmotion] ?? avatarEmotion }}</small></div>
+      </section>
+      <label v-if="avatars.length" class="avatar-switcher">
+        <span>当前形象</span>
+        <select :value="avatarMeta?.instanceId ?? ''" :disabled="avatarSwitchBusy" @change="switchAvatar">
+          <option v-for="avatar in avatars" :key="avatar.instance_id" :value="avatar.instance_id">{{ avatar.name }}</option>
+        </select>
+      </label>
+    </aside>
   </div>
 </template>
 
 <style scoped>
 .auth { display: grid; place-items: center; height: 100%; }
-.card { display: grid; gap: 12px; width: min(360px, 90vw); background: var(--panel); border: 1px solid var(--line); border-radius: 16px; padding: 28px; }
+.card { display: grid; gap: 12px; width: min(360px, 90vw); background: var(--panel); border: 1px solid var(--line); border-radius: 16px; padding: 28px; box-shadow: var(--shadow); }
 .card h1 { margin: 0; font-size: 22px; }
 .hint { color: var(--muted); margin: 0; font-size: 13px; }
 .status { color: var(--muted); font-size: 12px; margin: 0; }
 .status.error { color: var(--danger); }
 
-.shell { display: grid; grid-template-columns: 250px 1fr; height: 100%; }
-aside { display: flex; flex-direction: column; gap: 12px; border-right: 1px solid var(--line); padding: 14px; min-height: 0; }
-aside header strong { font-size: 16px; }
+.shell { display:grid; grid-template-columns:250px minmax(0,1fr) clamp(320px,22vw,380px); grid-template-areas:"conversations chat avatar"; height:100%; background:var(--bg); }
+aside { display:flex; flex-direction:column; gap:12px; min-width:0; padding:14px; min-height:0; background:var(--panel); }
+aside header strong { font-size:16px; }
+.conversation-sidebar { grid-area:conversations; border-right:1px solid var(--line); }
+.conversation-heading { display:flex; align-items:center; justify-content:space-between; min-height:34px; }
+.conversation-heading small { color:var(--muted); font-size:11px; }
+.avatar-sidebar { grid-area:avatar; gap:14px; padding:18px; border-left:1px solid var(--line); }
+.companion-heading { display:grid; gap:12px; }
 .persona-version { display:block; margin-top:3px; color:var(--muted); font-size:10px; }
-.aside-meta { display: flex; justify-content: space-between; align-items: center; color: var(--muted); font-size: 12px; margin-top: 4px; }
+.aside-meta { display:flex; justify-content:space-between; align-items:center; color:var(--muted); font-size:12px; }
+.avatar-stage { position:relative; display:grid; flex:1 1 auto; place-items:center; min-height:300px; overflow:hidden; border:1px solid var(--line); border-radius:16px; background:linear-gradient(160deg,var(--stage-from),var(--stage-to)); }
+.avatar-image { width:100%; height:100%; min-height:300px; object-fit:contain; object-position:center; transition:opacity 180ms ease,transform 220ms ease; }
+.avatar-expression-enter-from,.avatar-expression-leave-to { opacity:0; transform:scale(1.015); }
+.avatar-expression-leave-active { position:absolute; }
+.avatar-orb { display:grid; place-items:center; width:68px; height:68px; border-radius:50%; background:linear-gradient(135deg,#f2b6aa,#b97679); box-shadow:0 12px 34px #b9767955; color:#fff; font-size:24px; font-weight:700; }
+.avatar-abstract .avatar-orb { background:radial-gradient(circle at 35% 30%,#fff,#75d8d7 24%,#9a86d2 62%,#28244c); box-shadow:0 0 38px #75d8d777; animation:avatar-pulse 3s ease-in-out infinite; }
+.avatar-caption { position:absolute; inset:auto 12px 10px; display:flex; justify-content:space-between; align-items:end; gap:8px; }.avatar-caption strong { max-width:78%; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:11px; }.avatar-caption small { color:var(--muted); font-size:9px; }
+.avatar-switcher{display:grid;flex:none;gap:6px;color:var(--muted);font-size:10px}.avatar-switcher select{min-width:0;width:100%;padding:9px 10px;font-size:12px}
+@keyframes avatar-pulse { 50% { transform:scale(1.06); filter:brightness(1.12); } }
 .new-chat { width: 100%; }
-.conversation-list { flex: 1; min-height: 0; overflow-y: auto; display: grid; align-content: start; gap: 6px; }
-.conversation-item { position: relative; display: flex; align-items: center; }
-.conversation { flex: 1; text-align: left; border: 1px solid var(--line); background: #10131d; padding: 8px 30px 8px 10px; border-radius: 8px; }
-.conversation-item.active .conversation { border-color: var(--accent); background: #1b2540; }
-.conversation small { display: block; color: var(--muted); margin-top: 3px; font-size: 11px; }
+.conversation-list { flex: 1; min-width:0; min-height: 0; overflow-x:hidden; overflow-y: auto; display: grid; align-content: start; gap: 6px; }
+.conversation-item { position: relative; display: flex; align-items: center; min-width:0; max-width:100%; }
+.conversation { flex: 1 1 auto; min-width:0; max-width:100%; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; text-align: left; border: 1px solid var(--line); background: var(--panel); padding: 8px 30px 8px 10px; border-radius: 8px; }
+.conversation-item.active .conversation { border-color: var(--accent); background: var(--accent-soft); color:var(--accent); font-weight:600; }
+.conversation small { display: block; overflow:hidden; text-overflow:ellipsis; color: var(--muted); margin-top: 3px; font-size: 11px; font-weight:400; }
 .conversation-item .danger-text { position: absolute; right: 4px; padding: 2px 6px; }
 .debug-link { color: var(--muted); font-size: 12px; text-decoration: none; }
+.aside-footer { display:flex; align-items:end; gap:8px; min-width:0; padding-top:10px; border-top:1px solid var(--line); }
+.theme-field { display:grid; flex:1; min-width:0; gap:5px; color:var(--muted); font-size:10px; }
+.theme-field select { min-width:0; width:100%; padding:7px 9px; font-size:12px; }
+.aside-footer .debug-link { flex:none; padding:8px 2px; }
 
-main { display: grid; grid-template-rows: minmax(0, 1fr) auto; min-height: 0; }
+main { grid-area:chat; display:grid; grid-template-rows:minmax(0,1fr) auto; min-width:0; min-height:0; background:var(--bg); }
 .messages { overflow-y: auto; padding: 20px; }
 .empty { height: 100%; display: grid; place-items: center; color: var(--muted); }
 .message { max-width: 80%; margin-bottom: 14px; }
 .message.user { margin-left: auto; }
-.bubble { white-space: pre-wrap; line-height: 1.55; padding: 10px 14px; border-radius: 14px; background: #1a2130; position: relative; }
-.user .bubble { background: var(--accent); color: #fff; }
+.bubble { white-space: pre-wrap; line-height: 1.55; padding: 10px 14px; border:1px solid var(--line); border-radius: 14px; background: var(--panel); box-shadow:0 3px 12px color-mix(in srgb,var(--text) 4%,transparent); position: relative; }
+.user .bubble { background: var(--message-user-bg); border-color:var(--message-user-bg); color: #fff; }
 .bubble.streaming::after { content: ""; }
 .emotion { display: inline-block; margin-left: 8px; font-size: 11px; color: var(--muted); border: 1px solid var(--line); border-radius: 999px; padding: 0 8px; vertical-align: 1px; }
 .persona-badge { display:inline-block; margin-left:6px; font-size:10px; color:var(--muted); opacity:.75; }
 .recall-badge { display:inline-block; margin-left:6px; font-size:10px; color:var(--muted); border:1px solid var(--line); border-radius:999px; padding:0 7px; opacity:.8; }
 
-.composer { border-top: 1px solid var(--line); padding: 12px 16px; display: grid; gap: 8px; }
+.composer { border-top: 1px solid var(--line); padding: 12px 16px; display: grid; gap: 8px; background:var(--panel); }
 .composer-meta { display: flex; align-items: center; gap: 12px; }
 .tts-toggle { display:flex; align-items:center; gap:6px; color:var(--muted); font-size:12px; cursor:pointer; user-select:none; }
 .tts-toggle input { accent-color:var(--accent); cursor:pointer; }
@@ -1040,17 +1227,32 @@ main { display: grid; grid-template-rows: minmax(0, 1fr) auto; min-height: 0; }
 .voice-row { display: flex; align-items: center; gap: 8px; min-width: 0; flex-wrap: wrap; }
 .voice-button.recording { border-color: var(--danger); color: var(--danger); }
 .voice-status { color: var(--muted); font-size: 12px; }
-.viseme-meter { width:44px; height:8px; border:1px solid var(--line); border-radius:999px; overflow:hidden; background:#10131d; }
+.viseme-meter { width:44px; height:8px; border:1px solid var(--line); border-radius:999px; overflow:hidden; background:var(--panel2); }
 .viseme-fill { display:block; width:100%; height:100%; transform-origin:left center; background:var(--accent); transition:transform 50ms linear; }
 .message-time { margin-left:6px; color:var(--muted); font-size:11px; white-space:nowrap; }
+.user .message-time { color:#fff; font-weight:500; }
 .voice-transcript { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); font-size: 12px; }
 .composer-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 10px; align-items: end; }
 .composer textarea { resize: none; }
 
-@media (max-width: 720px) {
-  .shell { grid-template-columns: 1fr; grid-template-rows: auto minmax(0, 1fr); }
-  aside { border-right: none; border-bottom: 1px solid var(--line); }
-  .conversation-list { display: flex; overflow-x: auto; gap: 6px; }
+@media (max-width:1100px) {
+  .shell { grid-template-columns:220px minmax(0,1fr) 280px; }
+  .avatar-sidebar { padding:14px; }
+  .avatar-stage { min-height:260px; }
+}
+
+@media (max-width: 760px) {
+  .shell { grid-template-columns:1fr; grid-template-rows:auto auto minmax(0,1fr); grid-template-areas:"avatar" "conversations" "chat"; }
+  aside { border-right:none; border-left:none; border-bottom:1px solid var(--line); }
+  .avatar-sidebar { display:grid; grid-template-columns:minmax(0,1fr); max-height:360px; padding:12px; }
+  .avatar-stage { flex:none; height:220px; min-height:220px; }
+  .avatar-image { min-height:220px; }
+  .conversation-sidebar { max-height:160px; }
+  .conversation-heading { display:none; }
+  .conversation-list { display: flex; overflow-x: auto; overflow-y:hidden; gap: 6px; scrollbar-width:none; }
+  .conversation-list::-webkit-scrollbar { display:none; }
+  .conversation-item { flex:0 0 min(210px,72vw); }
+  .aside-footer { display:none; }
   .message { max-width: 95%; }
 }
 </style>

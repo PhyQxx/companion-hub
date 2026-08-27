@@ -1,0 +1,20 @@
+{
+  "compilerOptions": {
+    "target": "es2020",
+    "module": "esnext",
+    "moduleResolution": "bundler",
+    "esModuleInterop": true,
+    "experimentalDecorators": true,
+    "forceConsistentCasingInFileNames": true,
+    "noImplicitAny": true,
+    "skipLibCheck": true,
+    "baseUrl": ".",
+    "paths": {
+      "@framework/*": ["sdk/Framework/src/*"]
+    }
+  },
+  "include": [
+    "src/**/*.ts",
+    "sdk/Core/live2dcubismcore.d.ts"
+  ]
+}
