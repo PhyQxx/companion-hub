@@ -6,6 +6,7 @@ import hmac
 import importlib.metadata
 import importlib.util
 import json
+import logging
 import re
 from collections.abc import Awaitable, Callable
 from datetime import datetime
@@ -30,6 +31,8 @@ from app.tools import AmapProvider, AmapProviderError, ToolLedger
 
 _BEARER = HTTPBearer(auto_error=False)
 AdminCredentials = Annotated[HTTPAuthorizationCredentials | None, Depends(_BEARER)]
+
+logger = logging.getLogger(__name__)
 
 _runtime_admin_token: str | None = None
 
@@ -186,6 +189,24 @@ class HomeAssistantConnectionTestResult(StrictModel):
     message: str
     error_type: str | None = None
     entities: list[HomeAssistantEntityView] = Field(default_factory=list)
+
+
+class HomeAssistantEntityDetailView(StrictModel):
+    entity_id: str
+    friendly_name: str
+    domain: str
+    state: str
+    device_class: str | None = None
+    unit_of_measurement: str | None = None
+    area: str | None = None
+
+
+class HomeAssistantEntitiesResult(StrictModel):
+    ok: bool
+    latency_ms: float
+    message: str
+    error_type: str | None = None
+    entities: list[HomeAssistantEntityDetailView] = Field(default_factory=list)
 
 
 class HomeAssistantProactiveTestResult(StrictModel):
@@ -755,6 +776,82 @@ def create_admin_config_router(
             for state in sorted(states, key=lambda item: item.entity_id)
         ]
         return HomeAssistantConnectionTestResult(
+            ok=True,
+            latency_ms=(perf_counter() - started) * 1_000,
+            message=f"连接成功，发现 {len(entities)} 个实体",
+            entities=entities,
+        )
+
+    @router.post(
+        "/integrations/home-assistant/entities",
+        response_model=HomeAssistantEntitiesResult,
+    )
+    async def list_home_assistant_entities() -> HomeAssistantEntitiesResult:
+        """拉取当前配置下 Home Assistant 的所有实体，包含区域信息。"""
+        config = store.current.config.integrations.home_assistant
+        started = perf_counter()
+        if not config.enabled or config.base_url is None:
+            return HomeAssistantEntitiesResult(
+                ok=False,
+                latency_ms=0,
+                message="Home Assistant 未启用或未配置地址",
+                error_type="ha_config_invalid",
+            )
+        try:
+            token = config.secret_value
+            if token is None and config.secret_ref is not None:
+                token = EnvSecretProvider().resolve(config.secret_ref)
+            if not token:
+                raise HomeAssistantError("ha_secret_unavailable")
+            client = HomeAssistantClient(
+                str(config.base_url).rstrip("/"),
+                token,
+                verify_tls=config.verify_tls,
+                connect_timeout_ms=config.connect_timeout_ms,
+                request_timeout_ms=config.request_timeout_ms,
+            )
+            try:
+                states = await client.fetch_states()
+                try:
+                    areas = await client.fetch_entity_areas()
+                except HomeAssistantError as area_error:
+                    logger.warning(
+                        "home assistant entity areas fetch failed: %s", area_error.reason_code
+                    )
+                    areas = {}
+            finally:
+                await client.close()
+        except Exception as error:
+            reason = (
+                error.reason_code if isinstance(error, HomeAssistantError) else type(error).__name__
+            )
+            return HomeAssistantEntitiesResult(
+                ok=False,
+                latency_ms=(perf_counter() - started) * 1_000,
+                message=f"连接失败：{reason}",
+                error_type=reason,
+            )
+        entities = [
+            HomeAssistantEntityDetailView(
+                entity_id=state.entity_id,
+                friendly_name=str(state.attributes.get("friendly_name") or state.entity_id),
+                domain=state.entity_id.split(".", 1)[0],
+                state=state.state,
+                device_class=(
+                    str(state.attributes["device_class"])
+                    if state.attributes.get("device_class") is not None
+                    else None
+                ),
+                unit_of_measurement=(
+                    str(state.attributes["unit_of_measurement"])
+                    if state.attributes.get("unit_of_measurement") is not None
+                    else None
+                ),
+                area=areas.get(state.entity_id) or None,
+            )
+            for state in sorted(states, key=lambda item: item.entity_id)
+        ]
+        return HomeAssistantEntitiesResult(
             ok=True,
             latency_ms=(perf_counter() - started) * 1_000,
             message=f"连接成功，发现 {len(entities)} 个实体",
