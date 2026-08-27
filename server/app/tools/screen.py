@@ -31,8 +31,27 @@ class CaptureScreenArgs(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     device: Annotated[str, Field(min_length=1, max_length=160)] | None = None
-    target: Literal["main_display", "display", "active_window", "interactive"] = "main_display"
-    display_index: Annotated[int, Field(ge=1, le=32)] | None = None
+    target: Annotated[
+        Literal["main_display", "display", "active_window", "interactive"],
+        Field(
+            description=(
+                "截图目标：main_display 主显示器；display 指定编号显示器（多显示器时用，"
+                "需同时传 display_index）；active_window 前台活动窗口；"
+                "interactive 弹出系统选择器由用户当场框选（可跨任意屏幕）"
+            )
+        ),
+    ] = "main_display"
+    display_index: (
+        Annotated[
+            int,
+            Field(
+                ge=1,
+                le=32,
+                description="display 目标的显示器编号，1 为主显示器，多显示器按系统设置排列编号",
+            ),
+        ]
+        | None
+    ) = None
     question: Annotated[str, Field(min_length=1, max_length=1_000)] = (
         "描述屏幕上与用户问题相关的可见内容；不要猜测屏幕外信息。"
     )
@@ -129,6 +148,7 @@ class CaptureScreenTool:
     name = "capture_screen"
     description = (
         "对已授权且在线的用户桌面设备执行一次截图，并使用已配置的视觉模型回答当前屏幕问题。"
+        "支持多显示器：用户提到第 N 块屏幕/显示器时，用 target=display 并传 display_index=N。"
         "target：main_display 主显示器、display 指定编号显示器、"
         "active_window 前台活动窗口（可无人值守）、"
         "interactive 弹出系统选择器由用户当场框选区域或窗口"
