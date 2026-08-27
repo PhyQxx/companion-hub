@@ -158,3 +158,13 @@ def test_webpage_intent_prefers_browser_over_screen_capture() -> None:
     )
 
     assert selected == ("inspect_webpage",)
+
+
+def test_screen_intent_matches_interactive_picker_phrases() -> None:
+    capability = (f"{uuid7()}:screen.capture",)
+
+    assert select_device_tools("现在立即用交互式选择器让我圈选屏幕内容", capability) == (
+        "capture_screen",
+    )
+    assert select_device_tools("帮我截个图看看当前桌面", capability) == ("capture_screen",)
+    assert select_device_tools("今天天气怎么样", capability) == ()
