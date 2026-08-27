@@ -17,6 +17,8 @@ dependencies = [
   "sqlalchemy[asyncio]>=2.0.41,<3",
   "uvicorn[standard]>=0.35,<1",
   "websockets>=15,<18",
+  "pillow>=11,<13",
+  "python-multipart>=0.0.20,<1",
 ]
 
 [project.optional-dependencies]

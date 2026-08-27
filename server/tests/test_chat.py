@@ -13,6 +13,7 @@ from sqlalchemy import func, select
 
 from app.api import create_chat_router
 from app.auth import AuthService
+from app.avatar import AvatarStore
 from app.chat import ChatService, RuntimeActionCapability
 from app.cognition import (
     AttentionEngine,
@@ -962,6 +963,9 @@ async def test_runtime_meta_and_rest_chat_share_published_persona_version(
             actor="test",
         )
         published = await persona_store.publish(draft.version)
+        avatar_store: AvatarStore = app.state.avatar_store
+        avatar = await avatar_store.create_instance("light-core", "Nova Core")
+        await avatar_store.bind_to_persona(published.version, avatar.id, is_default=True)
         auth_service: AuthService = app.state.auth_service
         auth_session = await auth_service.setup(
             display_name="Test",
@@ -971,6 +975,7 @@ async def test_runtime_meta_and_rest_chat_share_published_persona_version(
 
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
             runtime = await client.get("/api/v1/meta/runtime")
+            avatar_asset = await client.get("/api/v1/avatar-assets/warm-daily/neutral.png")
             conversation = await client.post(
                 "/api/v1/chat/conversations",
                 headers=headers,
@@ -988,10 +993,21 @@ async def test_runtime_meta_and_rest_chat_share_published_persona_version(
         "content_hash": published.content_hash,
         "name": "Nova",
     }
+    assert runtime.json()["avatar"] == {
+        "instance_id": str(avatar.id),
+        "pack_id": "light-core",
+        "name": "Nova Core",
+        "engine": "abstract",
+        "customization": {},
+        "assets": {},
+    }
+    assert avatar_asset.status_code == 200
+    assert avatar_asset.headers["content-type"] == "image/png"
     assert conversation.status_code == 201
     assert turn.status_code == 200
     assistant = turn.json()["assistant_message"]
     assert assistant["decision_meta"]["persona_version"] == published.version
+    assert assistant["decision_meta"]["avatar_instance_id"] == str(avatar.id)
     assert requests[0].messages[0].role == "system"
     assert "你是 Nova：第二版人格。" in requests[0].messages[0].content
 

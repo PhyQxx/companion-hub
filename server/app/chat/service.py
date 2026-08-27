@@ -8,7 +8,7 @@ import re
 from collections.abc import Awaitable, Callable, Coroutine, Iterable
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import Protocol
+from typing import Any, Protocol
 from uuid import UUID
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -247,6 +247,7 @@ class ChatService:
         device_tool: ToolHandler | None = None,
         device_tools: Iterable[ToolHandler] = (),
         cognitive_cycle: CognitiveCycle | None = None,
+        avatar_store: Any | None = None,
     ) -> None:
         self._database = database
         self._config_store = config_store
@@ -258,6 +259,7 @@ class ChatService:
         )
         self._capability_provider = capability_provider
         self._cognitive_cycle = cognitive_cycle
+        self._avatar_store = avatar_store
         handlers = list(device_tools)
         if device_tool is not None:
             handlers.append(device_tool)
@@ -1051,6 +1053,16 @@ class ChatService:
             "usage": result.usage.model_dump(mode="json"),
             "latency_ms": result.latency_ms,
         }
+        if self._avatar_store is not None and pending.persona_version is not None:
+            try:
+                default_avatar = await self._avatar_store.get_default_for_persona(
+                    pending.persona_version
+                )
+                if default_avatar is not None:
+                    decision_meta["avatar_instance_id"] = str(default_avatar.id)
+                    decision_meta["avatar_pack_id"] = default_avatar.pack_id
+            except Exception:
+                logger.exception("failed to resolve default avatar for persona")
         if pending.cognitive_decision is not None:
             decision_meta["cognition"] = _cognitive_meta(pending.cognitive_decision)
         if tool_executions:
@@ -1289,6 +1301,8 @@ class ChatService:
                 raise LookupError("turn not found")
             if turn.state == "cancelled":
                 raise TurnCancelled("generation_cancelled")
+            if turn.state == target:
+                return
             if turn.state not in from_states:
                 raise RuntimeError("invalid turn state transition")
             turn.state = target
