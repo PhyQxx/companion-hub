@@ -3,12 +3,13 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from types import SimpleNamespace
 from typing import Any
-from unittest.mock import AsyncMock
 from uuid import UUID
 
 import pytest
 from pydantic import ValidationError
 
+from app.config.models import HomeAssistantEntityConfig
+from app.devices.mqtt_client import MqttTelemetryBuffer
 from app.home_assistant import HomeAssistantError
 from app.home_assistant.tools import HomeStateProvider
 from app.schemas import PrivacyLevel
@@ -26,10 +27,10 @@ class FakeHaProvider(HomeStateProvider):
             ),
         }
 
-    def resolve(self, target: str) -> SimpleNamespace:
+    def resolve(self, target: str) -> HomeAssistantEntityConfig:
         aliases = {"主灯": "light.living_room"}
         entity_id = aliases.get(target, target)
-        return SimpleNamespace(
+        return HomeAssistantEntityConfig(
             entity_id=entity_id,
             display_name="客厅灯",
             allowed_attributes=["brightness", "friendly_name"],
@@ -41,8 +42,9 @@ class FakeHaProvider(HomeStateProvider):
         return self._states[entity_id]
 
 
-class FakeMqttBuffer:
+class FakeMqttBuffer(MqttTelemetryBuffer):
     def __init__(self) -> None:
+        super().__init__()
         self._data: dict[str, dict[str, Any]] = {
             "esp32_001:temp": {
                 "value": 26.5,
@@ -53,10 +55,15 @@ class FakeMqttBuffer:
     async def latest(self, device_id: str, sensor_type: str) -> dict[str, Any] | None:
         return self._data.get(f"{device_id}:{sensor_type}")
 
-    async def latest_all(self) -> dict[str, dict[str, Any]]:
-        return dict(self._data)
+    async def latest_all(self, device_id: str | None = None) -> dict[str, dict[str, Any]]:
+        if device_id is None:
+            return dict(self._data)
+        prefix = f"{device_id}:"
+        return {k: v for k, v in self._data.items() if k.startswith(prefix)}
 
-    async def is_fresh(self, device_id: str, sensor_type: str, max_age_seconds: float = 300.0) -> bool:
+    async def is_fresh(
+        self, device_id: str, sensor_type: str, max_age_seconds: float = 300.0
+    ) -> bool:
         return True
 
 

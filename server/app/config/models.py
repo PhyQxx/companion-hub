@@ -1,4 +1,3 @@
-# ruff: noqa: RUF002
 from __future__ import annotations
 
 import re
@@ -251,7 +250,7 @@ class HomeAssistantConfig(StrictModel):
     )
     proactive_daily_limit: Annotated[int, Field(ge=1, le=50)] = 5
     proactive_critical_bypasses_quiet_hours: bool = True
-    entities: Annotated[list[HomeAssistantEntityConfig], Field(max_length=512)] = Field(
+    entities: Annotated[list[HomeAssistantEntityConfig], Field(max_length=4096)] = Field(
         default_factory=list
     )
 

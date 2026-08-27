@@ -29,8 +29,18 @@ def upgrade() -> None:
         sa.Column("definition", sa.JSON(), nullable=False),
         sa.Column("content_hash", sa.String(length=64), nullable=False),
         sa.Column("built_in", sa.Boolean(), server_default="false", nullable=False),
-        sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.text("now()"), nullable=False),
-        sa.Column("updated_at", sa.DateTime(timezone=True), server_default=sa.text("now()"), nullable=False),
+        sa.Column(
+            "created_at",
+            sa.DateTime(timezone=True),
+            server_default=sa.text("now()"),
+            nullable=False,
+        ),
+        sa.Column(
+            "updated_at",
+            sa.DateTime(timezone=True),
+            server_default=sa.text("now()"),
+            nullable=False,
+        ),
         sa.CheckConstraint("status IN ('published','archived')", name="ck_ui_theme_status"),
         sa.PrimaryKeyConstraint("id"),
         sa.UniqueConstraint("key", name="uq_ui_theme_key"),
@@ -40,8 +50,15 @@ def upgrade() -> None:
         sa.Column("owner", sa.String(length=160), nullable=False),
         sa.Column("theme_id", sa.Uuid(), nullable=False),
         sa.Column("appearance_mode", sa.String(length=16), server_default="light", nullable=False),
-        sa.Column("updated_at", sa.DateTime(timezone=True), server_default=sa.text("now()"), nullable=False),
-        sa.CheckConstraint("appearance_mode IN ('light','dark','system')", name="ck_ui_preference_mode"),
+        sa.Column(
+            "updated_at",
+            sa.DateTime(timezone=True),
+            server_default=sa.text("now()"),
+            nullable=False,
+        ),
+        sa.CheckConstraint(
+            "appearance_mode IN ('light','dark','system')", name="ck_ui_preference_mode"
+        ),
         sa.ForeignKeyConstraint(["theme_id"], ["ui_theme.id"], ondelete="RESTRICT"),
         sa.PrimaryKeyConstraint("owner"),
     )

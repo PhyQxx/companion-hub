@@ -1,4 +1,3 @@
-# ruff: noqa: RUF002
 """语音延迟滑动窗口统计：为 M2 P50/P90 验收提供轻量运行时报告。"""
 
 from __future__ import annotations

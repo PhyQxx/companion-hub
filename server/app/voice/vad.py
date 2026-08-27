@@ -1,4 +1,4 @@
-# ruff: noqa: RUF002, RUF003
+# ruff: noqa: RUF003
 """语音活动检测：优先 Silero，运行条件不足时稳定回退到能量 VAD。
 
 自动断句使用统一 ``VoiceActivityDetector`` 契约，因此 ``/ws/voice``、PTT 与

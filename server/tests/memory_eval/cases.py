@@ -1,4 +1,4 @@
-# ruff: noqa: RUF001, RUF002, RUF003, E501
+# ruff: noqa: RUF001, E501
 """记忆回归评估集的用例数据（docs/03 §1.8 最小版）。
 
 数量与判定阈值对齐 docs/01 Release Criteria 第 2~4 条：

@@ -775,7 +775,8 @@ class InteractionTurnRecord(Base):
     __tablename__ = "interaction_turn"
     __table_args__ = (
         CheckConstraint(
-            "state IN ('accepted','listening','thinking','streaming','speaking','interrupted','cancelled','failed','completed')",
+            "state IN ('accepted','listening','thinking','streaming','speaking',"
+            "'interrupted','cancelled','failed','completed')",
             name="ck_interaction_turn_state",
         ),
         UniqueConstraint("conversation_id", "turn_seq", name="uq_turn_conversation_seq"),
@@ -903,7 +904,8 @@ class JobRecord(Base):
     __tablename__ = "job"
     __table_args__ = (
         CheckConstraint(
-            "status IN ('queued','admitted','running','waiting_user','retry_wait','cancelling','succeeded','failed','cancelled')",
+            "status IN ('queued','admitted','running','waiting_user','retry_wait',"
+            "'cancelling','succeeded','failed','cancelled')",
             name="ck_job_status",
         ),
         Index("ix_job_status_available", "status", "available_at"),
@@ -920,7 +922,9 @@ class JobRecord(Base):
     input: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
     progress: Mapped[float] = mapped_column(Float, nullable=False, server_default="0")
     current_step: Mapped[str | None] = mapped_column(String(128))
-    resource_class: Mapped[str] = mapped_column(String(32), nullable=False, server_default="cpu-small")
+    resource_class: Mapped[str] = mapped_column(
+        String(32), nullable=False, server_default="cpu-small"
+    )
     attempts: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
     max_attempts: Mapped[int] = mapped_column(Integer, nullable=False, server_default="3")
     available_at: Mapped[datetime] = mapped_column(

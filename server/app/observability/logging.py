@@ -1,13 +1,13 @@
-# ruff: noqa: RUF002, RUF003
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import logging
 import os
 import sys
 from collections import deque
-from collections.abc import AsyncIterator, Mapping
+from collections.abc import Mapping
 from threading import Lock
 from typing import TYPE_CHECKING, Any
 from uuid import UUID
@@ -52,16 +52,12 @@ class LogBroadcastHandler(logging.Handler):
         loop = self._loop
         if loop is not None and loop.is_running():
             for client in clients:
-                try:
+                with contextlib.suppress(Exception):
                     loop.call_soon_threadsafe(client.put_nowait, line)
-                except Exception:
-                    pass
         else:
             for client in clients:
-                try:
+                with contextlib.suppress(Exception):
                     client.put_nowait(line)
-                except Exception:
-                    pass
 
     def subscribe(self) -> asyncio.Queue[str]:
         queue: asyncio.Queue[str] = asyncio.Queue(maxsize=500)

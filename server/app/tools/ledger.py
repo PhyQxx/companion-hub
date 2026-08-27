@@ -1,4 +1,3 @@
-# ruff: noqa: RUF002
 from __future__ import annotations
 
 from collections import deque

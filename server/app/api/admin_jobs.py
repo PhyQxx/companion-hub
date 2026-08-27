@@ -1,4 +1,3 @@
-# ruff: noqa: RUF001, RUF003
 from __future__ import annotations
 
 from datetime import datetime
@@ -6,7 +5,6 @@ from typing import Annotated, Any
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, Query
-from pydantic import Field
 
 from app.jobs import JobEngine, JobView
 from app.schemas.common import StrictModel

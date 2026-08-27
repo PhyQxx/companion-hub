@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -9,7 +8,6 @@ import pytest
 
 from app.devices.mqtt_client import MqttDeviceClient, MqttTelemetryBuffer, MqttTelemetryMessage
 from app.schemas import PrivacyLevel
-from app.schemas.common import SourceRef
 
 
 @pytest.fixture
@@ -29,7 +27,9 @@ def sample_msg() -> MqttTelemetryMessage:
 
 
 class TestMqttTelemetryBuffer:
-    async def test_push_and_latest(self, buffer: MqttTelemetryBuffer, sample_msg: MqttTelemetryMessage) -> None:
+    async def test_push_and_latest(
+        self, buffer: MqttTelemetryBuffer, sample_msg: MqttTelemetryMessage
+    ) -> None:
         await buffer.push(sample_msg)
         latest = await buffer.latest("esp32_001", "presence")
         assert latest is not None
@@ -162,9 +162,11 @@ class TestMqttDeviceClient:
         )
         message = MagicMock()
         message.topic = "hub/devices/esp32_001/telemetry"
-        message.payload = b'{"sensor_type": "temp", "value": 26.5, "timestamp": "2026-08-17T10:00:00+00:00"}'
+        message.payload = (
+            b'{"sensor_type": "temp", "value": 26.5, "timestamp": "2026-08-17T10:00:00+00:00"}'
+        )
 
-        await client._handle(message)  # type: ignore[arg-type]
+        await client._handle(message)
         latest = await buf.latest("esp32_001", "temp")
         assert latest is not None
         assert latest["value"] == 26.5
@@ -178,7 +180,7 @@ class TestMqttDeviceClient:
         message.topic = "hub/devices/esp32_001/telemetry"
         message.payload = b"not-json"
 
-        await client._handle(message)  # type: ignore[arg-type]
+        await client._handle(message)
         assert await buf.latest("esp32_001", "unknown") is None
 
     async def test_handle_missing_timestamp_uses_now(self) -> None:
@@ -188,7 +190,7 @@ class TestMqttDeviceClient:
         message.topic = "hub/devices/esp32_001/telemetry"
         message.payload = b'{"sensor_type": "motion", "value": 1}'
 
-        await client._handle(message)  # type: ignore[arg-type]
+        await client._handle(message)
         latest = await buf.latest("esp32_001", "motion")
         assert latest is not None
         assert latest["value"] == 1

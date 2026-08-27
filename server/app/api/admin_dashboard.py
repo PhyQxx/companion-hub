@@ -1,20 +1,18 @@
-# ruff: noqa: RUF001, RUF003
 from __future__ import annotations
 
-from datetime import datetime, timedelta
-from typing import Annotated, Any
+from datetime import datetime
+from typing import Annotated
 
 from fastapi import APIRouter, Depends, Query
-from pydantic import Field
 from sqlalchemy import func, select
 
 from app.db import (
     AppUserRecord,
-    AuthCredentialRecord,
     AuthSessionRecord,
     CognitiveDecisionRecord,
     ConfigVersionRecord,
     ConversationRecord,
+    Database,
     DeadLetterRecord,
     DeletionLedgerRecord,
     DeviceClientRecord,
@@ -27,7 +25,6 @@ from app.db import (
     SemanticEventAuditRecord,
     TimelineEventRecord,
 )
-from app.db import Database
 from app.schemas.common import StrictModel
 
 from .admin_config import AdminTokenGuard
@@ -184,7 +181,9 @@ def create_admin_dashboard_router(
 
             # Counts
             trace_count = await session.scalar(select(func.count(CognitiveDecisionRecord.id)))
-            event_count = await session.scalar(select(func.count(SemanticEventAuditRecord.event_id)))
+            event_count = await session.scalar(
+                select(func.count(SemanticEventAuditRecord.event_id))
+            )
             dl_count = await session.scalar(select(func.count(DeadLetterRecord.id)))
             cmd_err_count = await session.scalar(
                 select(func.count(DeviceCommandRecord.id)).where(
@@ -254,7 +253,9 @@ def create_admin_dashboard_router(
             summary: list[PrivacyDistributionView] = []
             for level in levels:
                 event_count = await session.scalar(
-                    select(func.count(EventRecord.event_id)).where(EventRecord.privacy_level == level)
+                    select(func.count(EventRecord.event_id)).where(
+                        EventRecord.privacy_level == level
+                    )
                 )
                 message_count = await session.scalar(
                     select(func.count(MessageRecord.id)).where(MessageRecord.privacy_level == level)
@@ -263,7 +264,9 @@ def create_admin_dashboard_router(
                     select(func.count(MemoryRecord.id)).where(MemoryRecord.privacy_level == level)
                 )
                 timeline_count = await session.scalar(
-                    select(func.count(TimelineEventRecord.id)).where(TimelineEventRecord.privacy_level == level)
+                    select(func.count(TimelineEventRecord.id)).where(
+                        TimelineEventRecord.privacy_level == level
+                    )
                 )
                 summary.append(
                     PrivacyDistributionView(
@@ -339,13 +342,17 @@ def create_admin_dashboard_router(
     async def system_dashboard() -> SystemDashboardView:
         async with database.sessions() as session:
             # Users with session counts
-            user_rows = await session.execute(select(AppUserRecord).order_by(AppUserRecord.created_at.desc()).limit(50))
+            user_rows = await session.execute(
+                select(AppUserRecord).order_by(AppUserRecord.created_at.desc()).limit(50)
+            )
             users = user_rows.scalars().all()
 
             user_views: list[UserIdentityView] = []
             for u in users:
                 session_count = await session.scalar(
-                    select(func.count(AuthSessionRecord.id)).where(AuthSessionRecord.user_id == u.id)
+                    select(func.count(AuthSessionRecord.id)).where(
+                        AuthSessionRecord.user_id == u.id
+                    )
                 )
                 user_views.append(
                     UserIdentityView(
@@ -379,12 +386,18 @@ def create_admin_dashboard_router(
                 ("outbox", OutboxRecord, OutboxRecord.id),
             ]
             storage: list[StorageTableView] = []
-            for name, model, pk_col in tables:
+            for name, _model, pk_col in tables:
                 count = await session.scalar(select(func.count(pk_col)))
                 storage.append(StorageTableView(name=name, row_count=count or 0))
 
         db_url = str(database.engine.url)
-        db_type = "sqlite" if "sqlite" in db_url else "postgresql" if "postgresql" in db_url else "other"
+        db_type = (
+            "sqlite"
+            if "sqlite" in db_url
+            else "postgresql"
+            if "postgresql" in db_url
+            else "other"
+        )
 
         return SystemDashboardView(
             version=version,

@@ -2,10 +2,11 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from typing import Literal
+from typing import Any, Literal, cast
 from uuid import UUID
 
 from sqlalchemy import delete, select, update
+from sqlalchemy.engine import CursorResult
 
 from app.db import Database, RuntimeLeaseRecord
 
@@ -102,7 +103,7 @@ class LeaseManager:
                 )
                 .values(expires_at=expires)
             )
-            if result.rowcount == 0:
+            if int(cast(CursorResult[Any], result).rowcount or 0) == 0:
                 return LeaseResult(
                     acquired=False,
                     lease_type=lease_type,
@@ -138,7 +139,7 @@ class LeaseManager:
                     RuntimeLeaseRecord.holder_device_id == holder_device_id,
                 )
             )
-            return result.rowcount > 0
+            return int(cast(CursorResult[Any], result).rowcount or 0) > 0
 
     async def current_holder(
         self, lease_type: LeaseType
@@ -154,7 +155,7 @@ class LeaseManager:
                 return None
             return LeaseResult(
                 acquired=True,
-                lease_type=lease_type,  # type: ignore[arg-type]
+                lease_type=lease_type,
                 holder_device_id=record.holder_device_id,
                 epoch=record.epoch,
                 expires_at=record.expires_at,

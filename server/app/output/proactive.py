@@ -6,7 +6,6 @@ from uuid import UUID
 
 from sqlalchemy import select
 
-from app.chat import MessageView
 from app.cognition import CognitiveDecision
 from app.config import ConfigStore, DatabaseConfigStore, ProactiveChannelConfig
 from app.db import AppUserRecord, Database, ProactiveDeliveryReceiptRecord
@@ -15,11 +14,16 @@ from app.ids import uuid7
 from app.output.adapter import DeliveryIntent, OutputAdapter
 from app.output.adapters import DesktopNotificationAdapter, VoiceAdapter, WebChatAdapter
 from app.output.protocols import (
-    ChatProactiveBroadcaster,
-    ChatProactiveStore,
-    DesktopCommand,
-    DesktopCommandGateway,
-    VoiceProactiveBroadcaster,
+    ChatProactiveBroadcaster as ChatProactiveBroadcaster,
+)
+from app.output.protocols import (
+    ChatProactiveStore as ChatProactiveStore,
+)
+from app.output.protocols import (
+    DesktopCommandGateway as DesktopCommandGateway,
+)
+from app.output.protocols import (
+    VoiceProactiveBroadcaster as VoiceProactiveBroadcaster,
 )
 from app.schemas import PrivacyLevel
 

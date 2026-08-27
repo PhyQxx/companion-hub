@@ -4,10 +4,10 @@ import asyncio
 import json
 import logging
 from collections import deque
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from typing import Any, Callable
-from uuid import UUID
+from typing import Any
 
 from app.ids import uuid7
 from app.schemas import EphemeralSignal, PrivacyLevel
@@ -70,7 +70,9 @@ class MqttTelemetryBuffer:
                     result[key] = dict(buf[-1])
             return result
 
-    async def is_fresh(self, device_id: str, sensor_type: str, max_age_seconds: float = 300.0) -> bool:
+    async def is_fresh(
+        self, device_id: str, sensor_type: str, max_age_seconds: float = 300.0
+    ) -> bool:
         key = f"{device_id}:{sensor_type}"
         async with self._lock:
             last = self._last_seen.get(key)
@@ -101,7 +103,11 @@ class MqttTelemetryBuffer:
                         channel=sensor_type,
                         occurred_at=ts,
                         privacy_level=PrivacyLevel.L2,
-                        content={"type": "telemetry", "channel": sensor_type, "value": last["value"]},
+                        content={
+                            "type": "telemetry",
+                            "channel": sensor_type,
+                            "value": last["value"],
+                        },
                         expires_at=now + timedelta(seconds=1),
                     )
                 )
@@ -119,7 +125,7 @@ class MqttDeviceClient:
         username: str | None = None,
         password: str | None = None,
         telemetry_buffer: MqttTelemetryBuffer | None = None,
-        on_signal: Callable[[EphemeralSignal], asyncio.Future[None] | None] | None = None,
+        on_signal: Callable[[EphemeralSignal], Awaitable[None] | None] | None = None,
     ) -> None:
         self._host = host
         self._port = port

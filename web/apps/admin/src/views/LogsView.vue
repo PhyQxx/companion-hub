@@ -74,7 +74,7 @@ const urgencyType = (u: string) => {
   if (u === "critical") return "danger";
   if (u === "high") return "warning";
   if (u === "normal") return "info";
-  return "";
+  return "info";
 };
 
 const decisionType = (d: string) => {

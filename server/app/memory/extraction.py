@@ -1,4 +1,4 @@
-# ruff: noqa: RUF001, RUF002, RUF003
+# ruff: noqa: RUF001
 """记忆提取器：从聊天消息中产出候选记忆。
 
 两个实现共用 MemoryExtractor 协议：

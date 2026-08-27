@@ -53,6 +53,8 @@ src = ["server", "integrations/open_llm_vtuber/src"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "SIM", "RUF"]
+# 中文文档/注释允许使用全角标点（与既有文档风格一致）
+allowed-confusables = ["（", "）", "，", "：", "；"]
 
 [tool.mypy]
 python_version = "3.11"

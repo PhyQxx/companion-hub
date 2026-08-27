@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import UTC, datetime
 from time import perf_counter
 from typing import Any
 
@@ -10,8 +9,8 @@ from pydantic import BaseModel, ConfigDict, Field
 from app.devices.mqtt_client import MqttTelemetryBuffer
 from app.home_assistant import HomeAssistantError
 from app.home_assistant.tools import HomeStateProvider
-from app.schemas import PrivacyLevel
 from app.llm import ToolDefinition
+from app.schemas import PrivacyLevel
 from app.tools.contracts import ToolContext, ToolHandler, ToolResult
 
 

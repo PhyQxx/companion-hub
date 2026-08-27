@@ -1,11 +1,10 @@
 from __future__ import annotations
 
 from typing import Any
-from uuid import UUID
 
 import pytest
 
-from app.db import AssetRecord, Base, Database, create_database
+from app.db import Base, Database, create_database
 from app.jobs import AssetStore
 
 

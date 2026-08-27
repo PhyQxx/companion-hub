@@ -1,4 +1,3 @@
-# ruff: noqa: RUF001, RUF002, RUF003
 """混合检索器：双路召回 → 硬过滤 → 归一化重排 → 类型配额 Top-K。
 
 策略版本 hybrid-quota-v1 会随 decision_meta 一起落库，任何打分或

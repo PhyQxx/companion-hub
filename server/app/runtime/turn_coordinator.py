@@ -1,16 +1,20 @@
 from __future__ import annotations
 
+import contextlib
 import logging
 from dataclasses import dataclass
-from datetime import UTC, datetime, timedelta
-from typing import Literal, Protocol
+from datetime import UTC, datetime
+from typing import Any, Literal, Protocol, cast
 from uuid import UUID
 
 from sqlalchemy import select, update
+from sqlalchemy.engine import CursorResult
 
+from app.chat.service import PendingTurn
 from app.db import Database, InteractionTurnRecord, UserModeRecord
-from app.ids import uuid7
 from app.runtime.lease import LeaseManager, LeaseResult
+from app.schemas import PrivacyLevel
+from app.tools import ClientLocation
 
 logger = logging.getLogger("app.runtime.turns")
 
@@ -59,11 +63,14 @@ class ChatServiceLike(Protocol):
 
     async def start_turn(
         self,
-        *,
         conversation_id: UUID,
+        *,
         user_id: UUID,
-        input_message_id: UUID,
-    ) -> object: ...
+        text: str,
+        privacy_level: PrivacyLevel,
+        max_context_messages: int | None = None,
+        client_location: ClientLocation | None = None,
+    ) -> PendingTurn: ...
 
     async def cancel_turn(
         self,
@@ -106,8 +113,11 @@ class TurnCoordinator:
         *,
         conversation_id: UUID,
         user_id: UUID,
-        input_message_id: UUID,
+        text: str,
+        privacy_level: PrivacyLevel,
         mode: Literal["text", "voice"],
+        max_context_messages: int | None = None,
+        client_location: ClientLocation | None = None,
     ) -> TurnContext:
         """创建新回合。
 
@@ -120,15 +130,18 @@ class TurnCoordinator:
 
         # 2. 通过 ChatService 创建回合记录
         pending = await self._chat.start_turn(
-            conversation_id=conversation_id,
+            conversation_id,
             user_id=user_id,
-            input_message_id=input_message_id,
+            text=text,
+            privacy_level=privacy_level,
+            max_context_messages=max_context_messages,
+            client_location=client_location,
         )
 
         # 3. 若 voice 模式，先进入 listening
-        turn_id = pending.turn_id  # type: ignore[attr-defined]
-        generation_id = pending.generation_id  # type: ignore[attr-defined]
-        turn_seq = pending.turn_seq  # type: ignore[attr-defined]
+        turn_id = pending.turn_id
+        generation_id = pending.generation_id
+        turn_seq = pending.turn_seq
 
         if mode == "voice":
             await self.transition(turn_id, 1, "listening")
@@ -183,7 +196,7 @@ class TurnCoordinator:
                 )
                 return False
 
-            values: dict = {
+            values: dict[str, Any] = {
                 "state": target,
                 "state_version": expected_version + 1,
             }
@@ -200,7 +213,7 @@ class TurnCoordinator:
                 )
                 .values(**values)
             )
-            return result.rowcount > 0
+            return int(cast(CursorResult[Any], result).rowcount or 0) > 0
 
     async def interrupt(
         self,
@@ -236,28 +249,26 @@ class TurnCoordinator:
                         ConversationRecord.id == record.conversation_id
                     )
                 )
-                user_id = conv.user_id if conv is not None else None  # type: ignore[assignment]
+                user_id = conv.user_id if conv is not None else None
 
             # CAS 到 interrupted
             result = await session.execute(
                 update(InteractionTurnRecord)
                 .where(
                     InteractionTurnRecord.id == turn_id,
-                    InteractionTurnRecord.state.in_(_INTERRUPTIBLE),  # type: ignore[arg-type]
+                    InteractionTurnRecord.state.in_(_INTERRUPTIBLE),
                 )
                 .values(
                     state="interrupted",
                     state_version=InteractionTurnRecord.state_version + 1,
                 )
             )
-            if result.rowcount == 0:
+            if int(cast(CursorResult[Any], result).rowcount or 0) == 0:
                 return False
 
         # 异步释放租约（不阻塞状态转移事务）
-        try:
-            await self._leases.release("audio_output", record.generation_id)  # type: ignore[arg-type]
-        except Exception:
-            pass
+        with contextlib.suppress(Exception):
+            await self._leases.release("audio_output", record.generation_id)
 
         # 通过 ChatService 传播取消
         if user_id is not None:
@@ -298,7 +309,7 @@ class TurnCoordinator:
                 select(InteractionTurnRecord)
                 .where(
                     InteractionTurnRecord.conversation_id == conversation_id,
-                    InteractionTurnRecord.state.in_(  # type: ignore[arg-type]
+                    InteractionTurnRecord.state.in_(
                         {"accepted", "listening", "thinking", "streaming", "speaking"}
                     ),
                 )
@@ -459,7 +470,7 @@ class TurnCoordinator:
             result = await session.execute(
                 update(InteractionTurnRecord)
                 .where(
-                    InteractionTurnRecord.state.in_(unsafe_states),  # type: ignore[arg-type]
+                    InteractionTurnRecord.state.in_(unsafe_states),
                 )
                 .values(
                     state="cancelled",
@@ -468,7 +479,7 @@ class TurnCoordinator:
                     state_version=InteractionTurnRecord.state_version + 1,
                 )
             )
-            count = result.rowcount
+            count = int(cast(CursorResult[Any], result).rowcount or 0)
             if count:
                 logger.warning(
                     "recovered %s unfinished turn(s) to cancelled after restart",
@@ -492,7 +503,7 @@ class TurnCoordinator:
             rows = await session.scalars(
                 select(InteractionTurnRecord).where(
                     InteractionTurnRecord.conversation_id == conversation_id,
-                    InteractionTurnRecord.state.in_(_INTERRUPTIBLE),  # type: ignore[arg-type]
+                    InteractionTurnRecord.state.in_(_INTERRUPTIBLE),
                 )
             )
             for record in rows.all():

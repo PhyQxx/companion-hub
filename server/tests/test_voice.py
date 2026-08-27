@@ -1,4 +1,4 @@
-# ruff: noqa: RUF001, RUF002, RUF003
+# ruff: noqa: RUF001
 """语音管线单元测试：VAD 断句、句级切分、WAV 包装、TTS 故障转移、MiMo 契约。"""
 
 from __future__ import annotations

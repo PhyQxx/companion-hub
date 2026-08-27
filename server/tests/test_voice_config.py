@@ -1,4 +1,3 @@
-# ruff: noqa: RUF002, RUF003
 """语音配置中心化测试：voice 节校验、提供方工厂与保存即生效链路。"""
 
 from __future__ import annotations

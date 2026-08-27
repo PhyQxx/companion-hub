@@ -1,4 +1,4 @@
-# ruff: noqa: RUF001, RUF003
+# ruff: noqa: RUF001
 from __future__ import annotations
 
 from collections.abc import AsyncIterator, Awaitable, Callable

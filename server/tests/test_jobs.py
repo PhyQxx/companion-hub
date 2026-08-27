@@ -2,12 +2,10 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 from typing import Any
-from uuid import UUID
 
 import pytest
 
-from app.db import Base, Database, JobRecord, JobStepRecord, create_database
-from app.ids import uuid7
+from app.db import Base, Database, JobStepRecord, create_database
 from app.jobs import JobEngine
 
 

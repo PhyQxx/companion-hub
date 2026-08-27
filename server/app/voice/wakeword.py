@@ -1,4 +1,3 @@
-# ruff: noqa: RUF002
 """openWakeWord 可选唤醒门：运行时存在才启用，不阻塞既有 VAD/PTT。"""
 
 from __future__ import annotations

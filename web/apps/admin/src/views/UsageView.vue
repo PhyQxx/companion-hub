@@ -100,7 +100,7 @@ onMounted(refresh);
       <el-card shadow="never">
         <span>高德调用</span>
         <strong>{{ amapMetrics?.total_calls ?? "—" }}</strong>
-        <small>{{ amapMetrics?.success_rate !== null ? (amapMetrics.success_rate * 100).toFixed(0) + "% 成功" : "" }}</small>
+        <small>{{ amapMetrics && amapMetrics.success_rate !== null ? (amapMetrics.success_rate * 100).toFixed(0) + "% 成功" : "" }}</small>
       </el-card>
       <el-card shadow="never">
         <span>HA 调用</span>

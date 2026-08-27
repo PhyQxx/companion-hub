@@ -227,7 +227,9 @@ class ChatWebSocketManager:
         except (TurnCancelled, asyncio.CancelledError):
             if pending is not None:
                 if self._turns is not None:
-                    await self._turns.transition(pending.turn_id, 2, "cancelled", reason="user_cancelled")
+                    await self._turns.transition(
+                        pending.turn_id, 2, "cancelled", reason="user_cancelled"
+                    )
                 await self.broadcast(
                     connection.principal.user_id,
                     frame.conversation_id,

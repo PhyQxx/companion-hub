@@ -3,11 +3,11 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-
-from typing import Any, Literal
+from typing import Any, Literal, cast
 from uuid import UUID
 
 from sqlalchemy import select, update
+from sqlalchemy.engine import CursorResult
 
 from app.db import Database, JobRecord, JobStepRecord
 from app.ids import uuid7
@@ -78,7 +78,7 @@ class JobEngine:
     async def submit(
         self,
         kind: str,
-        input: dict[str, Any],  # noqa: A002
+        input: dict[str, Any],
         *,
         owner: str = "local-user",
         priority: int = 50,
@@ -132,7 +132,9 @@ class JobEngine:
         offset: int = 0,
     ) -> list[JobView]:
         async with self._database.sessions() as session:
-            stmt = select(JobRecord).order_by(JobRecord.created_at.desc()).limit(limit).offset(offset)
+            stmt = (
+                select(JobRecord).order_by(JobRecord.created_at.desc()).limit(limit).offset(offset)
+            )
             if owner is not None:
                 stmt = stmt.where(JobRecord.owner == owner)
             if status is not None:
@@ -166,7 +168,7 @@ class JobEngine:
             record = await session.scalar(
                 select(JobRecord)
                 .where(
-                    JobRecord.status.in_({"queued", "admitted"}),  # type: ignore[arg-type]
+                    JobRecord.status.in_({"queued", "admitted"}),
                     JobRecord.available_at <= now,
                     JobRecord.resource_class == resource_class,
                 )
@@ -198,7 +200,9 @@ class JobEngine:
             record.attempts = values["attempts"]
             return self._to_view(record)
 
-    async def renew_lease(self, job_id: UUID, worker_id: str, *, lease_seconds: float = 300.0) -> bool:
+    async def renew_lease(
+        self, job_id: UUID, worker_id: str, *, lease_seconds: float = 300.0
+    ) -> bool:
         """续约：只有当前持有者可以续约。"""
         expires = datetime.now(UTC) + timedelta(seconds=lease_seconds)
         async with self._database.sessions.begin() as session:
@@ -210,7 +214,7 @@ class JobEngine:
                 )
                 .values(lease_expires_at=expires)
             )
-            return result.rowcount > 0
+            return int(cast(CursorResult[Any], result).rowcount or 0) > 0
 
     async def release_lease(self, job_id: UUID, worker_id: str) -> bool:
         """释放租约：Job 回到 queued 状态。"""
@@ -224,7 +228,7 @@ class JobEngine:
                 )
                 .values(status="queued", lease_owner=None, lease_expires_at=None)
             )
-            return result.rowcount > 0
+            return int(cast(CursorResult[Any], result).rowcount or 0) > 0
 
     # ------------------------------------------------------------------ #
     # Step 生命周期
@@ -259,7 +263,7 @@ class JobEngine:
                 .where(JobRecord.id == job_id)
                 .values(current_step=step_name)
             )
-            return step.id  # type: ignore[return-value]
+            return step.id
 
     async def complete_step(
         self,
@@ -338,9 +342,11 @@ class JobEngine:
                     JobRecord.lease_owner == worker_id,
                     JobRecord.status == "cancelling",
                 )
-                .values(status="cancelled", completed_at=now, lease_owner=None, lease_expires_at=None)
+                .values(
+                    status="cancelled", completed_at=now, lease_owner=None, lease_expires_at=None
+                )
             )
-            return result.rowcount > 0
+            return int(cast(CursorResult[Any], result).rowcount or 0) > 0
 
     async def succeed(self, job_id: UUID) -> bool:
         """标记 Job 成功完成。"""
@@ -350,11 +356,17 @@ class JobEngine:
                 update(JobRecord)
                 .where(
                     JobRecord.id == job_id,
-                    JobRecord.status.in_({"running", "admitted"}),  # type: ignore[arg-type]
+                    JobRecord.status.in_({"running", "admitted"}),
                 )
-                .values(status="succeeded", progress=1.0, completed_at=now, lease_owner=None, lease_expires_at=None)
+                .values(
+                    status="succeeded",
+                    progress=1.0,
+                    completed_at=now,
+                    lease_owner=None,
+                    lease_expires_at=None,
+                )
             )
-            return result.rowcount > 0
+            return int(cast(CursorResult[Any], result).rowcount or 0) > 0
 
     # ------------------------------------------------------------------ #
     # Worker 心跳与租约清理
@@ -369,7 +381,7 @@ class JobEngine:
                 update(JobRecord)
                 .where(
                     JobRecord.lease_owner == worker_id,
-                    JobRecord.status.in_({"running", "admitted", "cancelling"}),  # type: ignore[arg-type]
+                    JobRecord.status.in_({"running", "admitted", "cancelling"}),
                 )
                 .values(lease_expires_at=expires)
             )
@@ -392,7 +404,7 @@ class JobEngine:
                 await session.scalars(
                     select(JobRecord).where(
                         JobRecord.lease_expires_at < now,
-                        JobRecord.status.in_({"running", "admitted", "cancelling"}),  # type: ignore[arg-type]
+                        JobRecord.status.in_({"running", "admitted", "cancelling"}),
                     )
                 )
             )
@@ -416,7 +428,7 @@ class JobEngine:
     @staticmethod
     def _to_view(record: JobRecord) -> JobView:
         return JobView(
-            id=record.id,  # type: ignore[arg-type]
+            id=record.id,
             kind=record.kind,
             owner=record.owner,
             status=record.status,  # type: ignore[arg-type]

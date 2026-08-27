@@ -1,4 +1,3 @@
-# ruff: noqa: RUF002, RUF003
 """edge-tts 流式合成：免费、无 key，作为 MiMo TTS 的故障备份。
 
 输出 mp3 分片（24kHz 单声道）；浏览器端按 sentence 事件的 mime 播放，

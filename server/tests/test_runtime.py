@@ -3,7 +3,6 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from typing import Any
-from unittest.mock import AsyncMock
 from uuid import UUID
 
 import pytest
@@ -11,15 +10,14 @@ from sqlalchemy import select, update
 
 from app.db import (
     Base,
-    ConversationRecord,
     Database,
     InteractionTurnRecord,
-    RuntimeLeaseRecord,
     UserModeRecord,
     create_database,
 )
 from app.ids import uuid7
-from app.runtime import LeaseManager, TurnCoordinator, TurnState
+from app.runtime import LeaseManager, TurnCoordinator
+from app.schemas import PrivacyLevel
 
 
 @pytest.fixture
@@ -42,10 +40,13 @@ class FakeChatService:
 
     async def start_turn(
         self,
-        *,
         conversation_id: UUID,
+        *,
         user_id: UUID,
-        input_message_id: UUID,
+        text: str,
+        privacy_level: PrivacyLevel,
+        max_context_messages: int | None = None,
+        client_location: object | None = None,
     ) -> Any:
         pending = SimpleNamespace(
             turn_id=uuid7(),
@@ -58,7 +59,8 @@ class FakeChatService:
             {
                 "conversation_id": conversation_id,
                 "user_id": user_id,
-                "input_message_id": input_message_id,
+                "text": text,
+                "privacy_level": privacy_level,
             }
         )
         return pending
@@ -144,14 +146,16 @@ class TestLeaseManager:
 
 
 class TestTurnCoordinator:
-    async def test_create_text_turn(self, coordinator: TurnCoordinator, fake_chat: FakeChatService) -> None:
+    async def test_create_text_turn(
+        self, coordinator: TurnCoordinator, fake_chat: FakeChatService
+    ) -> None:
         conv = uuid7()
         user = uuid7()
-        msg = uuid7()
         ctx = await coordinator.create_turn(
             conversation_id=conv,
             user_id=user,
-            input_message_id=msg,
+            text="你好",
+            privacy_level=PrivacyLevel.L1,
             mode="text",
         )
         assert ctx.conversation_id == conv
@@ -159,14 +163,16 @@ class TestTurnCoordinator:
         assert ctx.state_version == 1
         assert len(fake_chat.started) == 1
 
-    async def test_create_voice_turn(self, coordinator: TurnCoordinator, fake_chat: FakeChatService) -> None:
+    async def test_create_voice_turn(
+        self, coordinator: TurnCoordinator, fake_chat: FakeChatService
+    ) -> None:
         conv = uuid7()
         user = uuid7()
-        msg = uuid7()
         ctx = await coordinator.create_turn(
             conversation_id=conv,
             user_id=user,
-            input_message_id=msg,
+            text="你好",
+            privacy_level=PrivacyLevel.L1,
             mode="voice",
         )
         assert ctx.state == "listening"
@@ -194,12 +200,15 @@ class TestTurnCoordinator:
         await coordinator.create_turn(
             conversation_id=conv,
             user_id=user,
-            input_message_id=uuid7(),
+            text="新的一轮",
+            privacy_level=PrivacyLevel.L1,
             mode="text",
         )
         assert any(c["reason"] == "new_turn" for c in fake_chat.cancelled)
 
-    async def test_transition_success(self, database: Database, coordinator: TurnCoordinator) -> None:
+    async def test_transition_success(
+        self, database: Database, coordinator: TurnCoordinator
+    ) -> None:
         turn_id = uuid7()
         async with database.sessions.begin() as session:
             session.add(
@@ -219,10 +228,13 @@ class TestTurnCoordinator:
             rec = await session.scalar(
                 select(InteractionTurnRecord).where(InteractionTurnRecord.id == turn_id)
             )
+            assert rec is not None
             assert rec.state == "thinking"
             assert rec.state_version == 2
 
-    async def test_transition_cas_failure(self, database: Database, coordinator: TurnCoordinator) -> None:
+    async def test_transition_cas_failure(
+        self, database: Database, coordinator: TurnCoordinator
+    ) -> None:
         turn_id = uuid7()
         async with database.sessions.begin() as session:
             session.add(
@@ -239,7 +251,9 @@ class TestTurnCoordinator:
         ok = await coordinator.transition(turn_id, 1, "thinking")
         assert ok is False
 
-    async def test_transition_illegal(self, database: Database, coordinator: TurnCoordinator) -> None:
+    async def test_transition_illegal(
+        self, database: Database, coordinator: TurnCoordinator
+    ) -> None:
         turn_id = uuid7()
         async with database.sessions.begin() as session:
             session.add(
@@ -256,7 +270,9 @@ class TestTurnCoordinator:
         ok = await coordinator.transition(turn_id, 1, "thinking")
         assert ok is False
 
-    async def test_interrupt(self, database: Database, coordinator: TurnCoordinator, fake_chat: FakeChatService) -> None:
+    async def test_interrupt(
+        self, database: Database, coordinator: TurnCoordinator, fake_chat: FakeChatService
+    ) -> None:
         turn_id = uuid7()
         gen = uuid7()
         user = uuid7()
@@ -285,7 +301,9 @@ class TestTurnCoordinator:
         assert ok is True
         assert any(c["generation_id"] == gen for c in fake_chat.cancelled)
 
-    async def test_interrupt_non_interruptible(self, database: Database, coordinator: TurnCoordinator) -> None:
+    async def test_interrupt_non_interruptible(
+        self, database: Database, coordinator: TurnCoordinator
+    ) -> None:
         turn_id = uuid7()
         async with database.sessions.begin() as session:
             session.add(
@@ -302,7 +320,9 @@ class TestTurnCoordinator:
         ok = await coordinator.interrupt(turn_id)
         assert ok is False
 
-    async def test_is_generation_active(self, database: Database, coordinator: TurnCoordinator) -> None:
+    async def test_is_generation_active(
+        self, database: Database, coordinator: TurnCoordinator
+    ) -> None:
         gen = uuid7()
         async with database.sessions.begin() as session:
             session.add(
@@ -343,7 +363,9 @@ class TestTurnCoordinator:
             )
         assert await coordinator.reject_stale(gen) is True
 
-    async def test_reject_stale_active(self, database: Database, coordinator: TurnCoordinator) -> None:
+    async def test_reject_stale_active(
+        self, database: Database, coordinator: TurnCoordinator
+    ) -> None:
         gen = uuid7()
         async with database.sessions.begin() as session:
             session.add(
@@ -359,16 +381,25 @@ class TestTurnCoordinator:
             )
         assert await coordinator.reject_stale(gen) is False
 
-    async def test_recover_after_restart(self, database: Database, coordinator: TurnCoordinator) -> None:
+    async def test_recover_after_restart(
+        self, database: Database, coordinator: TurnCoordinator
+    ) -> None:
         async with database.sessions.begin() as session:
-            for state in ("accepted", "listening", "thinking", "streaming", "speaking", "interrupted"):
+            for state in (
+                "accepted",
+                "listening",
+                "thinking",
+                "streaming",
+                "speaking",
+                "interrupted",
+            ):
                 session.add(
                     InteractionTurnRecord(
                         id=uuid7(),
                         conversation_id=uuid7(),
                         turn_seq=1,
                         generation_id=uuid7(),
-                        state=state,  # type: ignore[arg-type]
+                        state=state,
                         state_version=1,
                         input_message_id=uuid7(),
                     )
@@ -390,21 +421,32 @@ class TestTurnCoordinator:
         async with database.sessions() as session:
             unsafe = await session.scalars(
                 select(InteractionTurnRecord).where(
-                    InteractionTurnRecord.state.in_(  # type: ignore[arg-type]
-                        {"accepted", "listening", "thinking", "streaming", "speaking", "interrupted"}
+                    InteractionTurnRecord.state.in_(
+                        {
+                            "accepted",
+                            "listening",
+                            "thinking",
+                            "streaming",
+                            "speaking",
+                            "interrupted",
+                        }
                     )
                 )
             )
             assert len(unsafe.all()) == 0
 
-    async def test_user_mode_priority(self, database: Database, coordinator: TurnCoordinator) -> None:
+    async def test_user_mode_priority(
+        self, database: Database, coordinator: TurnCoordinator
+    ) -> None:
         user = uuid7()
         await coordinator.set_user_mode(user, "available", source="default", priority=10)
         await coordinator.set_user_mode(user, "dnd", source="user", priority=90)
         mode = await coordinator.current_user_mode(user)
         assert mode == "dnd"
 
-    async def test_user_mode_expired_ignored(self, database: Database, coordinator: TurnCoordinator) -> None:
+    async def test_user_mode_expired_ignored(
+        self, database: Database, coordinator: TurnCoordinator
+    ) -> None:
         user = uuid7()
         past = datetime.now(UTC) - timedelta(hours=1)
         async with database.sessions.begin() as session:

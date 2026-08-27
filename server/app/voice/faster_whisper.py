@@ -1,4 +1,3 @@
-# ruff: noqa: RUF002
 """faster-whisper 本地 ASR：延迟加载，缺依赖时不阻断 Hub 启动。"""
 
 from __future__ import annotations

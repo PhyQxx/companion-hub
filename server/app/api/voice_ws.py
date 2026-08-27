@@ -1,4 +1,3 @@
-# ruff: noqa: RUF002, RUF003
 """P6 语音通道（docs/33 §3.1）：/ws/voice 双向音频流。
 
 上行：PCM16 音频二进制帧 + JSON 控制（hello / PTT 边界 / 打断）；
@@ -617,7 +616,9 @@ class VoiceWebSocketManager:
         except (TurnCancelled, asyncio.CancelledError):
             if pending is not None:
                 if self._turns is not None:
-                    await self._turns.transition(pending.turn_id, 2, "cancelled", reason="user_cancelled")
+                    await self._turns.transition(
+                        pending.turn_id, 2, "cancelled", reason="user_cancelled"
+                    )
                 if not session.turn_committed:
                     await self._send(
                         session,

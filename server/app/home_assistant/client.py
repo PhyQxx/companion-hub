@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextlib
 import json
 import ssl
 from collections.abc import AsyncIterator
@@ -98,17 +99,17 @@ class HomeAssistantClient:
         # HA template endpoint returns quoted JSON string inside HTML or plain text
         # Remove surrounding quotes if present
         if text.startswith('"') and text.endswith('"'):
-            try:
+            with contextlib.suppress(ValueError):
                 text = json.loads(text)
-            except ValueError:
-                pass
         try:
             payload = json.loads(text)
         except ValueError as error:
             raise HomeAssistantError("ha_response_invalid") from error
         if not isinstance(payload, dict):
             raise HomeAssistantError("ha_response_invalid")
-        return {str(k): str(v) for k, v in payload.items() if isinstance(k, str) and isinstance(v, str)}
+        return {
+            str(k): str(v) for k, v in payload.items() if isinstance(k, str) and isinstance(v, str)
+        }
 
     async def call_service(
         self,

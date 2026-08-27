@@ -1,4 +1,3 @@
-# ruff: noqa: RUF002
 """语音管线契约：VAD / ASR / TTS 的提供方中立协议（对齐 LLMProvider 模式）。
 
 实现方可以随时替换（能量 VAD → silero-vad、云端 MiMo → 本地

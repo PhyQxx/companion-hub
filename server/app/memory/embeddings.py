@@ -1,4 +1,4 @@
-# ruff: noqa: RUF001, RUF002, RUF003
+# ruff: noqa: RUF001
 """嵌入提供方：记忆向量化的统一入口。
 
 设计要点：

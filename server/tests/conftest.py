@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+from collections.abc import Iterator
 from datetime import UTC, datetime, timedelta
 
 import pytest
 
+from app.api.admin_config import set_runtime_admin_token
 from app.schemas import (
     AdapterCapabilities,
     AdapterManifest,
@@ -35,6 +37,14 @@ UUIDS = {
     )
 }
 NOW = datetime(2026, 8, 17, 10, 0, tzinfo=UTC)
+
+
+@pytest.fixture(autouse=True)
+def _reset_runtime_admin_token() -> Iterator[None]:
+    """隔离模块级运行时 admin token，避免跨测试文件泄漏覆盖构造时令牌。"""
+    set_runtime_admin_token(None)
+    yield
+    set_runtime_admin_token(None)
 
 
 @pytest.fixture

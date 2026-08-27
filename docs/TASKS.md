@@ -29,8 +29,8 @@
 
 ### 0.1 并行收口项（不占用下一功能定义）
 
-- [ ] 恢复在制分支质量闸门：清零 Ruff **163** 项、mypy **38** 项和 Admin TypeScript **4** 项，复跑非 soak 全量 pytest、前端 typecheck/build、Alembic 单 head/空库升级和 `git diff --check`。
-- [ ] 收口当前实现批次：迁移链 `0019 → 0020 → 0021 → bb15882faef4 → 0022` 已确认单 head，空库/现有库升级复验待随质量闸门复跑；`.design-qa/`、`.zcode/`、本地截图、`server/assets/` 运行时上传与授权 SDK/Core 已入 `.gitignore`，在制批次已分 8 个逻辑提交入库。
+- [x] 恢复在制分支质量闸门：Ruff **163** 项、mypy **38** 项和 Admin TypeScript **4** 项已清零；非 soak 全量 pytest **532 通过 / 0 失败**（3 个既有全局 Admin token 状态污染失败已用 conftest autouse 重置 fixture 修复）；Chat/Admin/Shared typecheck 与 production build、Alembic 空库升级到 `0022` 单 head 和 `git diff --check` 全部通过。
+- [x] 收口当前实现批次：迁移链 `0019 → 0020 → 0021 → bb15882faef4 → 0022` 已确认单 head，空库升级复验通过；`.design-qa/`、`.zcode/`、本地截图、`server/assets/` 运行时上传与授权 SDK/Core 已入 `.gitignore`，在制批次已分 9 个逻辑提交入库。
 - [ ] 写入首条可核验每日日志，启动 P5 连续 14 天文字稳定性观察；M2 语音延迟优化作为并行性能专项推进。
 
 ### A. 多终端设备底座
@@ -99,6 +99,7 @@
 
 ## 3. 最近完成
 
+- [x] 在制批次收口与质量闸门恢复：9 个逻辑提交（db 基座/TurnCoordinator/Jobs+AssetStore/Avatar/Theme/Live2D/HA 区域映射/Admin 实体接口/集成注册）入库；`.gitignore` 排除本地 QA 产物、agent 会话与 `server/assets/` 运行时上传；Ruff 163、mypy 38、Admin TS 4 清零；全量 pytest 532 通过且修复 3 个全局 Admin token 污染失败；TurnCoordinator `create_turn` 契约对齐真实 `ChatService.start_turn`；空库升级复验到 `0022`。
 - [x] Live2D Web 最小壳与形象导入：`AvatarAssetImporter` 支持静态图片净化和 Live2D ZIP 安全校验，发行包多 runtime 时优先 PRO 并忽略 `.cmo3`/`.can3` 等工程源文件；聊天端和 Admin 通过同源运行时加载真实模型，转发 TTS viseme、说话状态、回复情绪、显式表情和动作指令。官方 Cubism Core 不入库，由本机已授权运行时目录提供；Hiyori 真模型已在聊天三栏界面渲染并完成 1920/1024/720 px 视觉验收。
 - [x] 主题中心 v1：新增 `ui_theme`/`ui_preference` 与 `0022_ui_theme` 迁移，内置“纯净明亮”“静夜紫”和“跟随系统”选择；Admin 新增“外观与主题”工作区，账户偏好经 `/api/v1/admin/ui/*` 保存；聊天端经 `/api/v1/ui/preferences` 登录同步、本机回退、窗口聚焦刷新和同源 `BroadcastChannel` 即时切换；真实 PostgreSQL 已升级到 `0022`，浏览器验证 Admin 保存后 Chat 从浅色即时切到深色并可恢复。
 - [x] M3B 认知调度闭环 v1 文档补齐与 Action/Reflection 代码完善：新增 `docs/37-M3B认知调度闭环设计.md` 系统性阐述六层架构（Semantic Event、World State、Attention、Deliberation、Action、Reflection）数据契约、流程与安全边界；Action Engine 实现 A0～A3 分级执行与结果回读闭环，v1 仅开放 A0/A1，任何 `act` 均被阻断并记录 `blocked` 结果；Reflection Engine 实现确定性反馈分析，按 trigger_kind 聚合近 30 天反馈生成带证据、需确认的偏好候选；新增 `action_result` 与 `reflection_candidate` 表及 `0019` 迁移，扩展 API `/action-results` 与 `/reflection-candidates`，新增 8 个对应回归测试。
@@ -138,6 +139,7 @@
 
 ## 4. 最新质量基线
 
+- 2026-08-27 质量闸门恢复：在制批次分 9 个逻辑提交入库后，Ruff（含 `allowed-confusables` 白名单全角标点）、严格 mypy（132→214 source files）、Admin/Chat/Shared typecheck 与 production build 全部通过；非 soak 全量 pytest **532 通过 / 0 失败**（新增 conftest autouse fixture 修复 3 个既有全局 Admin token 状态污染失败；ruff/mypy 版本随本批次升级，TurnCoordinator `create_turn` 已对齐真实 `ChatService.start_turn` 契约，原 `input_message_id` 参数为运行时 TypeError 隐患）；Alembic 空库升级到单 head `0022_ui_theme`、`git diff --check` 通过。
 - 2026-08-27 当前在制分支：Avatar/Theme 定向 pytest **25 通过**；Shared 与 Chat TypeScript typecheck 通过；Alembic 为单 head `0022_ui_theme`；文档同步后 `git diff --check` 通过。发布闸门尚未恢复：全仓 Ruff 报 **163** 项，严格 mypy 报 **38** 项（5 个文件），Admin typecheck 报 **4** 项；因此此前“全量通过”只代表对应历史快照，不能作为当前分支结论。
 - 2026-08-26 主题中心 v1：新增主题 Store、Admin API 与 Chat 会话 API 的 4 个测试全部通过，OpenAPI 路由生成回归通过；Ruff、新 Store mypy、Shared typecheck、Chat production build、Admin production build、Alembic 单 head 与离线 SQL 生成通过；真实 PostgreSQL 已升级到 `0022_ui_theme`；全量 pytest 运行至 97% 时仍复现 3 个既有全局 Admin token 状态污染失败，并挂在既有语音 soak 用例；过程中发现的主题路由 OpenAPI 注解回归已修复并单独复测通过。
 - 2026-08-26 伴侣形象与角色系统 v1：Ruff、全量 mypy、pytest **430 通过 / 2 跳过**（新增 11 个测试）、`git diff --check` 全部通过；新增测试覆盖 `AvatarStore`（内置包加载/幂等、实例创建/更新/删除/查询、未知包拦截、状态过滤、人格绑定/解绑/默认查询/列表）；Admin Avatar API 已挂载到 `/api/v1/admin/avatars`；`ChatService.decision_meta` 已注入 `avatar_instance_id` 与 `avatar_pack_id`；

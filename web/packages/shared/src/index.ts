@@ -648,7 +648,7 @@ export class ChatApi {
 /** 管理端 REST 客户端：令牌保存在实例上（来自 sessionStorage） */
 export class AdminApi {
   constructor(
-    private baseUrl = "",
+    public baseUrl = "",
     public token = "",
   ) {}
 

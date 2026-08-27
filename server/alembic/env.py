@@ -23,12 +23,11 @@ target_metadata = Base.metadata
 
 
 def _include_object(object, name, type_, reflected, compare_to):
-    # pgvector column managed by raw SQL migrations (0009 / 0021); ignore in autogenerate
-    if type_ == "column" and name == "embedding_vec" and getattr(object, "table", None) is not None and object.table.name == "memory":
-        return False
-    if type_ == "index" and name == "ix_memory_embedding_vec":
-        return False
-    return True
+    # pgvector column/index managed by raw SQL migrations (0009 / 0021); ignore in autogenerate
+    if type_ == "column" and name == "embedding_vec":
+        table = getattr(object, "table", None)
+        return table is None or table.name != "memory"
+    return not (type_ == "index" and name == "ix_memory_embedding_vec")
 
 
 def run_migrations_offline() -> None:

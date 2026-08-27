@@ -1,4 +1,4 @@
-# ruff: noqa: RUF001, RUF002, RUF003
+# ruff: noqa: RUF001, RUF003
 """语音通道端到端测试：fake ASR/TTS 走完整回路、打断仲裁与 L2 出站拒绝。"""
 
 from __future__ import annotations

@@ -1,4 +1,3 @@
-# ruff: noqa: RUF002, RUF003
 from __future__ import annotations
 
 import asyncio

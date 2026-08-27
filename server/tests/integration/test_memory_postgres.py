@@ -1,4 +1,3 @@
-# ruff: noqa: RUF001, RUF003
 from __future__ import annotations
 
 import os

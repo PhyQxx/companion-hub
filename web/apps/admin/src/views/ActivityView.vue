@@ -38,7 +38,7 @@ async function refresh() {
 function statusType(status: string) {
   if (status === "published") return "success";
   if (status === "draft") return "info";
-  return "";
+  return "info";
 }
 
 onMounted(refresh);

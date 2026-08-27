@@ -2,11 +2,12 @@ from __future__ import annotations
 
 import asyncio
 import json
+from collections.abc import AsyncIterator
 
 from fastapi import APIRouter, Depends
 from fastapi.responses import StreamingResponse
 
-from app.observability import get_log_broadcast_handler
+from app.observability import LogBroadcastHandler, get_log_broadcast_handler
 from app.schemas.common import StrictModel
 
 from .admin_config import AdminTokenGuard
@@ -52,12 +53,12 @@ def create_logs_stream_router(*, admin_token: str | None) -> APIRouter:
     return router
 
 
-async def _empty_stream():
+async def _empty_stream() -> AsyncIterator[str]:
     yield "data: {}\n\n"
     await asyncio.sleep(60)
 
 
-async def _log_event_stream(handler) -> asyncio.AsyncIterator[str]:
+async def _log_event_stream(handler: LogBroadcastHandler) -> AsyncIterator[str]:
     queue = handler.subscribe()
     try:
         while True:

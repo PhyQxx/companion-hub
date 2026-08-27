@@ -151,6 +151,20 @@ const filteredEntities = computed(() => {
 });
 const authorizedIds = computed(() => new Set(ha.value?.entities.map((e) => e.entity_id) ?? []));
 
+const whitelistSearch = ref("");
+const whitelistVisible = ref(100);
+const whitelistFiltered = computed(() => {
+  const rows = (ha.value?.entities ?? []).map((entity, index) => ({ entity, index }));
+  const kw = whitelistSearch.value.trim().toLowerCase();
+  if (!kw) return rows;
+  return rows.filter(({ entity }) =>
+    [entity.entity_id, entity.display_name, ...(entity.aliases ?? [])].some((value) =>
+      value.toLowerCase().includes(kw),
+    ),
+  );
+});
+const visibleWhitelist = computed(() => whitelistFiltered.value.slice(0, whitelistVisible.value));
+
 function clonePlain<T>(value: T): T {
   return JSON.parse(JSON.stringify(value)) as T;
 }
@@ -506,9 +520,9 @@ onMounted(load);
       </div>
 
       <div class="panel">
-        <div class="panel-head"><div><h2>实体权限白名单</h2><p>每个实体独立配置最小权限和主动规则。</p></div><div class="actions"><el-button size="small" type="danger" plain @click="clearWhitelist">清空白名单</el-button><el-button size="small" type="primary" @click="autoAuthorize">智能授权</el-button><el-tag effect="plain">{{ ha.entities.length }} 个实体</el-tag></div></div>
+        <div class="panel-head"><div><h2>实体权限白名单</h2><p>每个实体独立配置最小权限和主动规则。</p></div><div class="actions"><el-input v-model="whitelistSearch" clearable placeholder="搜索白名单" style="width:180px" /><el-button size="small" type="danger" plain @click="clearWhitelist">清空白名单</el-button><el-button size="small" type="primary" @click="autoAuthorize">智能授权</el-button><el-tag effect="plain">{{ ha.entities.length }} 个实体</el-tag></div></div>
         <el-empty v-if="!ha.entities.length" description="请先同步 HA 并加入需要授权的实体" />
-        <div v-for="(entity, index) in ha.entities" :key="entity.entity_id" class="entity-card">
+        <div v-for="{ entity, index } in visibleWhitelist" :key="entity.entity_id" class="entity-card">
           <div class="entity-head"><div><strong>{{ entity.display_name }}</strong><code>{{ entity.entity_id }}</code></div><div class="actions"><el-switch v-model="entity.read_allowed" active-text="允许读取" /><el-button size="small" type="danger" plain @click="removeEntity(index)">移除</el-button></div></div>
           <div class="form-grid three">
             <label><span>显示名称</span><el-input v-model="entity.display_name" /></label>
@@ -533,11 +547,14 @@ onMounted(load);
             </div>
           </div>
         </div>
+        <div v-if="whitelistFiltered.length > whitelistVisible" class="load-more">
+          <el-button @click="whitelistVisible += 200">显示更多（还有 {{ whitelistFiltered.length - whitelistVisible }} 个）</el-button>
+        </div>
       </div>
     </template>
   </section>
 </template>
 
 <style scoped>
-.ha-workspace{padding:20px 24px 28px;display:grid;gap:16px;align-content:start}.panel{background:#fff;border:1px solid var(--line);border-radius:14px;padding:18px}.hero,.panel-head,.entity-head,.rules-head,.actions{display:flex;align-items:center;justify-content:space-between;gap:14px}.hero{background:linear-gradient(135deg,#fff,#f1f5ff)}h2,p{margin:0}.hero h2,.panel h2{font-size:16px}.hero p,.panel-head p{margin-top:7px;color:var(--muted);font-size:12px}.eyebrow{margin-bottom:7px;color:var(--accent);font-size:11px;font-weight:700}.actions{justify-content:flex-end}.form-grid{display:grid;grid-template-columns:repeat(4,minmax(160px,1fr));gap:14px}.form-grid.three{grid-template-columns:repeat(3,minmax(180px,1fr))}.form-grid label,.rule-row label{display:grid;gap:6px;color:var(--muted);font-size:11px}.form-grid small,.rule-row small,.rules-head small{color:var(--muted);font-size:10px}.wide{grid-column:1/-1}.discovery{display:grid;gap:14px}.filter-bar{display:flex;gap:10px;flex-wrap:wrap;align-items:center}.auth-badge{display:inline-block;margin-left:6px;padding:1px 6px;border-radius:4px;background:#e8f5e9;color:#2e7d32;font-size:10px;font-weight:600}.muted{color:var(--muted);font-size:12px}.entity-card{display:grid;gap:16px;margin-top:14px;padding:16px;border:1px solid #e5e9f2;border-radius:12px;background:#fbfcff}.entity-head>div:first-child{display:grid;gap:5px}.entity-head code{color:var(--muted);font-size:10px}.rules{display:grid;gap:10px;padding-top:14px;border-top:1px dashed #dfe4ee}.rules-head>div{display:grid;gap:4px}.rule-row{display:grid;grid-template-columns:auto minmax(150px,1fr) repeat(3,minmax(105px,auto)) minmax(200px,1.4fr) auto;gap:10px;align-items:end;padding:11px;border:1px solid #e7ebf3;border-radius:9px;background:#fff}@media(max-width:1100px){.form-grid,.form-grid.three{grid-template-columns:repeat(2,minmax(160px,1fr))}.rule-row{grid-template-columns:repeat(2,minmax(0,1fr))}}@media(max-width:700px){.hero,.panel-head,.entity-head{align-items:flex-start;flex-direction:column}.form-grid,.form-grid.three,.rule-row{grid-template-columns:1fr}.wide{grid-column:auto}.filter-bar{flex-direction:column;align-items:stretch}}
+.ha-workspace{padding:20px 24px 28px;display:grid;gap:16px;align-content:start}.panel{background:#fff;border:1px solid var(--line);border-radius:14px;padding:18px}.hero,.panel-head,.entity-head,.rules-head,.actions{display:flex;align-items:center;justify-content:space-between;gap:14px}.hero{background:linear-gradient(135deg,#fff,#f1f5ff)}h2,p{margin:0}.hero h2,.panel h2{font-size:16px}.hero p,.panel-head p{margin-top:7px;color:var(--muted);font-size:12px}.eyebrow{margin-bottom:7px;color:var(--accent);font-size:11px;font-weight:700}.actions{justify-content:flex-end}.form-grid{display:grid;grid-template-columns:repeat(4,minmax(160px,1fr));gap:14px}.form-grid.three{grid-template-columns:repeat(3,minmax(180px,1fr))}.form-grid label,.rule-row label{display:grid;gap:6px;color:var(--muted);font-size:11px}.form-grid small,.rule-row small,.rules-head small{color:var(--muted);font-size:10px}.wide{grid-column:1/-1}.discovery{display:grid;gap:14px}.filter-bar{display:flex;gap:10px;flex-wrap:wrap;align-items:center}.auth-badge{display:inline-block;margin-left:6px;padding:1px 6px;border-radius:4px;background:#e8f5e9;color:#2e7d32;font-size:10px;font-weight:600}.muted{color:var(--muted);font-size:12px}.load-more{display:flex;justify-content:center;margin-top:14px}.entity-card{display:grid;gap:16px;margin-top:14px;padding:16px;border:1px solid #e5e9f2;border-radius:12px;background:#fbfcff}.entity-head>div:first-child{display:grid;gap:5px}.entity-head code{color:var(--muted);font-size:10px}.rules{display:grid;gap:10px;padding-top:14px;border-top:1px dashed #dfe4ee}.rules-head>div{display:grid;gap:4px}.rule-row{display:grid;grid-template-columns:auto minmax(150px,1fr) repeat(3,minmax(105px,auto)) minmax(200px,1.4fr) auto;gap:10px;align-items:end;padding:11px;border:1px solid #e7ebf3;border-radius:9px;background:#fff}@media(max-width:1100px){.form-grid,.form-grid.three{grid-template-columns:repeat(2,minmax(160px,1fr))}.rule-row{grid-template-columns:repeat(2,minmax(0,1fr))}}@media(max-width:700px){.hero,.panel-head,.entity-head{align-items:flex-start;flex-direction:column}.form-grid,.form-grid.three,.rule-row{grid-template-columns:1fr}.wide{grid-column:auto}.filter-bar{flex-direction:column;align-items:stretch}}
 </style>

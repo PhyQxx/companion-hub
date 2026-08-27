@@ -7,10 +7,11 @@ import shutil
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 from uuid import UUID
 
 from sqlalchemy import delete, func, select, update
+from sqlalchemy.engine import CursorResult
 
 from app.db import AssetDerivationRecord, AssetRecord, AssetReferenceRecord, Database
 from app.ids import uuid7
@@ -118,7 +119,7 @@ class AssetStore:
                 .where(AssetRecord.id == asset_id, AssetRecord.state == "staging")
                 .values(state="active")
             )
-            return result.rowcount > 0
+            return int(cast(CursorResult[Any], result).rowcount or 0) > 0
 
     # ------------------------------------------------------------------ #
     # 引用管理
@@ -174,7 +175,7 @@ class AssetStore:
                     AssetReferenceRecord.role == role,
                 )
             )
-            if result.rowcount == 0:
+            if int(cast(CursorResult[Any], result).rowcount or 0) == 0:
                 return False
             # 检查是否还有引用
             count = await session.scalar(
@@ -327,7 +328,7 @@ class AssetStore:
     @staticmethod
     def _to_view(record: AssetRecord) -> AssetView:
         return AssetView(
-            id=record.id,  # type: ignore[arg-type]
+            id=record.id,
             content_hash=record.content_hash,
             byte_size=record.byte_size,
             media_type=record.media_type,
