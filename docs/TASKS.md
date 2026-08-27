@@ -23,15 +23,15 @@
 
 ### 0. 当前功能主线
 
-- [ ] **当前功能：macOS 系统内容选择器（代码闭环 + 隔离 E2E 已完成，剩真机人工环节）。** `capture_screen` 新增 `target=interactive`：Desktop 弹出系统选择器由用户当场框选/选窗（Esc 取消）；Hub 命令 TTL 115s、终态等待 116s，设备端选择器 100s 超时自动终止；Rust 结构化错误码（picker_cancelled/picker_timeout 等）经 command.reason_code 透传；幂等键纳入 target。已在隔离环境（8001 端口 + SQLite + 真实 GLM/视觉配置 + 虚拟桌面设备）完成两条 E2E：真实聊天 → interactive 命令（线上确认 TTL 115s 与幂等键）→ PNG 资产上传 → GLM 视觉准确描述合成图 → 回答回注；以及 picker_cancelled 透传 → 模型优雅解释并主动提出重试。剩余真机人工环节：Desktop 窗口点「允许下一次截图」、真实 `screencapture -i` 框选/取消、原图销毁现场确认（与 active_window 真机验收同批）。
-- [ ] **随后功能：ESP32 + LD2410 第一硬件闭环。** 单存在传感器接入现有 MQTT → `EphemeralSignal` → Perception → Proactive Pipeline，开始 7 天免打扰与误触发验收。
+- [x] **macOS 系统内容选择器（代码闭环 + 隔离 E2E 已完成，剩真机人工环节）。** `capture_screen` 新增 `target=interactive`：Desktop 弹出系统选择器由用户当场框选/选窗（Esc 取消）；Hub 命令 TTL 115s、终态等待 116s，设备端选择器 100s 超时自动终止；Rust 结构化错误码（picker_cancelled/picker_timeout 等）经 command.reason_code 透传；幂等键纳入 target。已在隔离环境完成两条 E2E：真实聊天 → interactive 命令 → PNG 资产上传 → GLM 视觉准确描述 → 回答回注；以及 picker_cancelled 透传 → 模型优雅解释并主动提出重试。剩余真机人工环节：Desktop 窗口点「允许下一次截图」、真实 `screencapture -i` 框选/取消、原图销毁现场确认（与 active_window 真机验收同批）。
+- [ ] **当前功能：ESP32 + LD2410 第一硬件闭环。** 单存在传感器接入现有 MQTT → `EphemeralSignal` → Perception → Proactive Pipeline，开始 7 天免打扰与误触发验收。
 - [ ] **暂不作为下一功能：Tauri 透明桌宠。** Live2D Web 最小壳已经可用，但桌宠仍需等待 M2 首音频和打断门槛达标；VRM、换装、AI 形象工厂和更多主题也继续后置。
 
 ### 0.1 并行收口项（不占用下一功能定义）
 
 - [x] 恢复在制分支质量闸门：Ruff **163** 项、mypy **38** 项和 Admin TypeScript **4** 项已清零；非 soak 全量 pytest **532 通过 / 0 失败**（3 个既有全局 Admin token 状态污染失败已用 conftest autouse 重置 fixture 修复）；Chat/Admin/Shared typecheck 与 production build、Alembic 空库升级到 `0022` 单 head 和 `git diff --check` 全部通过。
-- [x] 收口当前实现批次：迁移链 `0019 → 0020 → 0021 → bb15882faef4 → 0022` 已确认单 head，空库升级复验通过；`.design-qa/`、`.zcode/`、本地截图、`server/assets/` 运行时上传与授权 SDK/Core 已入 `.gitignore`，在制批次已分 9 个逻辑提交入库。
-- [ ] 写入首条可核验每日日志，启动 P5 连续 14 天文字稳定性观察；M2 语音延迟优化作为并行性能专项推进。
+- [x] 收口当前实现批次：迁移链 `0019 → 0020 → 0021 → bb15882faef4 → 0022 → 0023` 已确认单 head，空库升级复验通过；`.design-qa/`、`.zcode/`、本地截图、`server/assets/` 运行时上传与授权 SDK/Core 已入 `.gitignore`，在制批次已分 9 个逻辑提交入库。
+- [ ] 写入首条可核验每日日志，启动 P5 连续 14 天文字稳定性观察；M2 语音延迟优化作为并行性能专项推进；设备真机人工验收批次同步推进。
 
 ### A. 多终端设备底座
 
@@ -49,7 +49,7 @@
 - [x] macOS 屏幕录制授权、隐私暂停与临时截图销毁闭环：原生 `.app` 已完成配对、钥匙串、TCC 授权和真实截图上传验收。
 - [x] `capture_screen` 主显示器闭环：目标解析、签名命令、终态等待、临时图片 consume-on-read、视觉分析和文字结果回注；L1 使用支持工具调用的 dialogue 路由与当前 GLM 视觉，L2 仍强制本地工具模型与本地视觉。
 - [x] `capture_screen(active_window)` 代码闭环：Hub/LLM 契约、Desktop 双端参数校验、macOS 前台应用与 CoreGraphics 活动窗口解析、按窗口 ID 截图和原有隐私门禁复用已落地；Python/TypeScript 回归、`cargo check` 与原生链接通过。
-- [ ] `capture_screen(active_window)` 原生真机验收：在非 Aria 前台窗口上完成一次真实聊天工具全链，确认窗口定位、阴影剔除、临时资产销毁与视觉回答。
+- [ ] `capture_screen(active_window)` 原生真机验收：在非 Aria 前台窗口上完成一次真实聊天工具全链，确认窗口定位、阴影剔除、临时资产销毁与视觉回答（与 interactive 真机验收同批）。
 - [x] 系统内容选择器代码闭环与隔离 E2E：`target=interactive` 复用 screen.capture 命令与 TCC/锁屏/临时授权门禁，`screencapture -i` 交互框选、100s 选择器超时、用户取消（Esc 无产物即 picker_cancelled）、命令 TTL 115s/等待 116s、结构化错误码透传与幂等键按 target 隔离均已落地。隔离 E2E（真实 GLM 对话 + 虚拟桌面设备 + 真实视觉端点）验证：模型正确选择 interactive 工具、线上 TTL 115s、资产上传与视觉回答回注、picker_cancelled 优雅透传；同时发现弱祈使句下模型可能只描述动作而不调用工具（提示词/模型行为，非代码缺陷，真机验收时注意话术）。原生真机人工环节待做（与 active_window 验收同批）。
 - [x] 修复迁移 SQLite 兼容 bug：`0020/bb15882faef4/0022` 迁移中 `server_default=sa.text("now()")` 在 SQLite 上插入即崩（PG 正常；单测走 `create_all` 未暴露），统一改为方言感知的 `sa.func.now()`；真实 PostgreSQL 已应用的迁移不受影响，SQLite 从空库升级 + 启动种子写入已实测通过。
 - [x] 浏览器扩展真机闭环：Chrome MV3 配对/签名长连接、`browser.current_tab.read/capture`、受限 JSON/图片临时上传与 Hub `inspect_webpage` 已接入；真 Chrome 已验证单一稳定连接、正文读取和当前页截图。
@@ -144,12 +144,11 @@
 
 ## 4. 最新质量基线
 
+- 2026-08-27 全量质量闸门已恢复：在制批次分 9 个逻辑提交入库后，Ruff（含 `allowed-confusables` 白名单全角标点）、严格 mypy（214 source files）、Admin/Chat/Shared typecheck 与 production build 全部通过；非 soak 全量 pytest **532 通过 / 0 失败**（新增 conftest autouse fixture 修复 3 个既有全局 Admin token 状态污染失败；TurnCoordinator `create_turn` 已对齐真实 `ChatService.start_turn` 契约）；Alembic 空库升级到单 head `0023_device_alias_reuse`、`git diff --check` 通过。
 - 2026-08-27 屏幕感知上线运行验证：配置 v63 开启（60s×三屏）、设备声明+授权 `screen.monitor`、修复上传白名单后（`8d80ebb`）三屏截图与 GLM 视觉分析实测成功（微信/文件系统/编程界面三份摘要入 Timeline），循环无错误；感知哈希变化检测、即焚与降频待长期观察。
 - 2026-08-27 设备别名释放修复：Ruff、严格 mypy、非 soak 全量 pytest 通过（含新增撤销重配回归）；`0023_device_alias_reuse` 已在 SQLite 空库与真实 PostgreSQL 双端验证，真实库现处 head `0023`。同批 Admin 交互修复：设备设置保存遇 revision 冲突自动刷新版本号并提示重试（`a9ab560`）、设备注册表行级配对码按钮（`249eae7`）、Desktop debug bundle 过期问题（`ef0420e`，`bundle.active` 已启用）。
-- 2026-08-27 选择器隔离 E2E 与迁移修复：迁移 `now()` 默认值修复后 Ruff、严格 mypy、Avatar/Theme/Jobs 定向 pytest 通过；隔离环境（8001 + SQLite + 复制的真实模型配置 + 虚拟桌面设备）两条 E2E 全部闭环——interactive 命令线上 TTL 115s、幂等键含 target、PNG 资产上传后 GLM 视觉准确描述、picker_cancelled 透传后模型优雅重试。已知观察：弱祈使句下模型可能只叙述不调用工具；Desktop 真机 .app 本次 WS 鉴权未完成（last_seen 不随连接推进，待用户查看窗口状态）。
+- 2026-08-27 选择器隔离 E2E 与迁移修复：迁移 `now()` 默认值修复后 Ruff、严格 mypy、Avatar/Theme/Jobs 定向 pytest 通过；隔离环境（8001 + SQLite + 复制的真实模型配置 + 虚拟桌面设备）两条 E2E 全部闭环——interactive 命令线上 TTL 115s、幂等键含 target、PNG 资产上传后 GLM 视觉准确描述、picker_cancelled 透传后模型优雅重试。已知观察：弱祈使句下模型可能只叙述不调用工具。
 - 2026-08-27 系统内容选择器代码闭环：Ruff、严格 mypy、非 soak 全量 pytest **532 通过 / 0 失败**（含 4 个新增 interactive 回归）、Desktop vitest **9 通过**、Desktop typecheck/build、`cargo check` 与 `git diff --check` 全部通过；真机验收（真实聊天 → 系统选择器 → 视觉回答 → 原图销毁）待用户在场执行。
-- 2026-08-27 质量闸门恢复：在制批次分 9 个逻辑提交入库后，Ruff（含 `allowed-confusables` 白名单全角标点）、严格 mypy（132→214 source files）、Admin/Chat/Shared typecheck 与 production build 全部通过；非 soak 全量 pytest **532 通过 / 0 失败**（新增 conftest autouse fixture 修复 3 个既有全局 Admin token 状态污染失败；ruff/mypy 版本随本批次升级，TurnCoordinator `create_turn` 已对齐真实 `ChatService.start_turn` 契约，原 `input_message_id` 参数为运行时 TypeError 隐患）；Alembic 空库升级到单 head `0022_ui_theme`、`git diff --check` 通过。
-- 2026-08-27 当前在制分支：Avatar/Theme 定向 pytest **25 通过**；Shared 与 Chat TypeScript typecheck 通过；Alembic 为单 head `0022_ui_theme`；文档同步后 `git diff --check` 通过。发布闸门尚未恢复：全仓 Ruff 报 **163** 项，严格 mypy 报 **38** 项（5 个文件），Admin typecheck 报 **4** 项；因此此前“全量通过”只代表对应历史快照，不能作为当前分支结论。
 - 2026-08-26 主题中心 v1：新增主题 Store、Admin API 与 Chat 会话 API 的 4 个测试全部通过，OpenAPI 路由生成回归通过；Ruff、新 Store mypy、Shared typecheck、Chat production build、Admin production build、Alembic 单 head 与离线 SQL 生成通过；真实 PostgreSQL 已升级到 `0022_ui_theme`；全量 pytest 运行至 97% 时仍复现 3 个既有全局 Admin token 状态污染失败，并挂在既有语音 soak 用例；过程中发现的主题路由 OpenAPI 注解回归已修复并单独复测通过。
 - 2026-08-26 伴侣形象与角色系统 v1：Ruff、全量 mypy、pytest **430 通过 / 2 跳过**（新增 11 个测试）、`git diff --check` 全部通过；新增测试覆盖 `AvatarStore`（内置包加载/幂等、实例创建/更新/删除/查询、未知包拦截、状态过滤、人格绑定/解绑/默认查询/列表）；Admin Avatar API 已挂载到 `/api/v1/admin/avatars`；`ChatService.decision_meta` 已注入 `avatar_instance_id` 与 `avatar_pack_id`；
 - 2026-08-26 Job System + Asset Store：Ruff、全量 mypy、pytest **419 通过 / 2 跳过**（新增 28 个测试）、`git diff --check` 全部通过；新增测试覆盖 `JobEngine`（提交/幂等/领取/优先级/续约/释放/Step 生命周期/失败重试/最终失败/取消队列中/running 中/确认取消/成功/列表/Worker 心跳/租约过期清理）、`AssetStore`（存储/去重/提交/读取/引用生命周期/重新激活/派生/staging GC/未引用 GC）；Admin Jobs API 已挂载到 `/api/v1/admin/jobs`；
