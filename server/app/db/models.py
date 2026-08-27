@@ -260,7 +260,15 @@ class DeviceClientRecord(Base):
     __tablename__ = "device_client"
     __table_args__ = (
         UniqueConstraint("credential_hash", name="uq_device_client_credential_hash"),
-        UniqueConstraint("owner_user_id", "alias", name="uq_device_client_owner_alias"),
+        # 别名只在活跃设备间唯一：撤销设备不释放记录但应让出别名，允许重新配对复用
+        Index(
+            "uq_device_client_owner_alias",
+            "owner_user_id",
+            "alias",
+            unique=True,
+            postgresql_where=text("revoked_at IS NULL"),
+            sqlite_where=text("revoked_at IS NULL"),
+        ),
         Index("ix_device_client_owner_seen", "owner_user_id", "revoked_at", "last_seen_at"),
     )
 

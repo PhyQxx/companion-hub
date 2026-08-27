@@ -100,6 +100,7 @@
 
 ## 3. 最近完成
 
+- [x] 修复撤销设备永久占用别名的缺陷：`device_client` 的 `(owner, alias)` 唯一约束改为部分唯一索引（仅约束 `revoked_at IS NULL` 的活跃行），撤销后别名自动释放、可用原别名重新配对，活跃设备之间仍强唯一；新增 `0023_device_alias_reuse` 迁移（batch 兼容 SQLite）并已应用到真实 PostgreSQL（现处 head），新增撤销重配与活跃冲突双向回归测试。
 - [x] macOS 系统内容选择器代码闭环：`CaptureScreenTool` 新增 `target=interactive` 并在工具描述中与可无人值守的 `active_window` 明确区分（仅在用户明确要求选择/分享时使用）；Hub 侧 interactive 命令 TTL 115s、终态等待 116s，幂等键纳入 target；Desktop Rust 端 `screencapture -i` 交互框选、100 秒轮询超时自动 kill、Esc 取消（无产物判定）与 `CaptureError{code,message}` 结构化错误码；TS 端解析 interactive 并把结构化错误码作为 command.result reason_code 透传，旧字符串错误按锁屏/权限归类。新增 4 个 Python 回归与 2 个 vitest 用例；Ruff、mypy、非 soak 全量 pytest、Desktop typecheck/build/test、`cargo check` 全部通过。
 - [x] 在制批次收口与质量闸门恢复：9 个逻辑提交（db 基座/TurnCoordinator/Jobs+AssetStore/Avatar/Theme/Live2D/HA 区域映射/Admin 实体接口/集成注册）入库；`.gitignore` 排除本地 QA 产物、agent 会话与 `server/assets/` 运行时上传；Ruff 163、mypy 38、Admin TS 4 清零；全量 pytest 532 通过且修复 3 个全局 Admin token 污染失败；TurnCoordinator `create_turn` 契约对齐真实 `ChatService.start_turn`；空库升级复验到 `0022`。
 - [x] Live2D Web 最小壳与形象导入：`AvatarAssetImporter` 支持静态图片净化和 Live2D ZIP 安全校验，发行包多 runtime 时优先 PRO 并忽略 `.cmo3`/`.can3` 等工程源文件；聊天端和 Admin 通过同源运行时加载真实模型，转发 TTS viseme、说话状态、回复情绪、显式表情和动作指令。官方 Cubism Core 不入库，由本机已授权运行时目录提供；Hiyori 真模型已在聊天三栏界面渲染并完成 1920/1024/720 px 视觉验收。
@@ -141,6 +142,7 @@
 
 ## 4. 最新质量基线
 
+- 2026-08-27 设备别名释放修复：Ruff、严格 mypy、非 soak 全量 pytest 通过（含新增撤销重配回归）；`0023_device_alias_reuse` 已在 SQLite 空库与真实 PostgreSQL 双端验证，真实库现处 head `0023`。同批 Admin 交互修复：设备设置保存遇 revision 冲突自动刷新版本号并提示重试（`a9ab560`）、设备注册表行级配对码按钮（`249eae7`）、Desktop debug bundle 过期问题（`ef0420e`，`bundle.active` 已启用）。
 - 2026-08-27 选择器隔离 E2E 与迁移修复：迁移 `now()` 默认值修复后 Ruff、严格 mypy、Avatar/Theme/Jobs 定向 pytest 通过；隔离环境（8001 + SQLite + 复制的真实模型配置 + 虚拟桌面设备）两条 E2E 全部闭环——interactive 命令线上 TTL 115s、幂等键含 target、PNG 资产上传后 GLM 视觉准确描述、picker_cancelled 透传后模型优雅重试。已知观察：弱祈使句下模型可能只叙述不调用工具；Desktop 真机 .app 本次 WS 鉴权未完成（last_seen 不随连接推进，待用户查看窗口状态）。
 - 2026-08-27 系统内容选择器代码闭环：Ruff、严格 mypy、非 soak 全量 pytest **532 通过 / 0 失败**（含 4 个新增 interactive 回归）、Desktop vitest **9 通过**、Desktop typecheck/build、`cargo check` 与 `git diff --check` 全部通过；真机验收（真实聊天 → 系统选择器 → 视觉回答 → 原图销毁）待用户在场执行。
 - 2026-08-27 质量闸门恢复：在制批次分 9 个逻辑提交入库后，Ruff（含 `allowed-confusables` 白名单全角标点）、严格 mypy（132→214 source files）、Admin/Chat/Shared typecheck 与 production build 全部通过；非 soak 全量 pytest **532 通过 / 0 失败**（新增 conftest autouse fixture 修复 3 个既有全局 Admin token 状态污染失败；ruff/mypy 版本随本批次升级，TurnCoordinator `create_turn` 已对齐真实 `ChatService.start_turn` 契约，原 `input_message_id` 参数为运行时 TypeError 隐患）；Alembic 空库升级到单 head `0022_ui_theme`、`git diff --check` 通过。

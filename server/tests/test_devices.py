@@ -147,6 +147,71 @@ async def test_pair_heartbeat_admin_update_and_revoke(database: Database) -> Non
     assert len(record.credential_hash) == 64
 
 
+async def test_revoked_device_frees_alias_for_repairing(database: Database) -> None:
+    app, _registry = await _app_with_owner(database)
+    admin_headers = {"Authorization": "Bearer admin-token"}
+
+    async with AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        first_pairing = await client.post(
+            "/api/v1/admin/devices/pairing-codes",
+            headers=admin_headers,
+            json={"granted_capabilities": ["screen.capture"]},
+        )
+        first = await client.post(
+            "/api/v1/devices/pair",
+            json={
+                "pairing_code": first_pairing.json()["pairing_code"],
+                "name": "我的 Mac",
+                "alias": "我的电脑",
+                "client_type": "desktop",
+                "capabilities": ["screen.capture"],
+            },
+        )
+        device_id = first.json()["device"]["id"]
+        revoked = await client.post(
+            f"/api/v1/admin/devices/{device_id}/revoke",
+            headers=admin_headers,
+        )
+        second_pairing = await client.post(
+            "/api/v1/admin/devices/pairing-codes",
+            headers=admin_headers,
+            json={"granted_capabilities": ["screen.capture"]},
+        )
+        repaired = await client.post(
+            "/api/v1/devices/pair",
+            json={
+                "pairing_code": second_pairing.json()["pairing_code"],
+                "name": "我的 Mac",
+                "alias": "我的电脑",
+                "client_type": "desktop",
+                "capabilities": ["screen.capture"],
+            },
+        )
+        third_pairing = await client.post(
+            "/api/v1/admin/devices/pairing-codes",
+            headers=admin_headers,
+            json={"granted_capabilities": ["screen.capture"]},
+        )
+        active_conflict = await client.post(
+            "/api/v1/devices/pair",
+            json={
+                "pairing_code": third_pairing.json()["pairing_code"],
+                "name": "Another Mac",
+                "alias": "我的电脑",
+                "client_type": "desktop",
+                "capabilities": ["screen.capture"],
+            },
+        )
+
+    assert revoked.status_code == 200
+    assert repaired.status_code == 201
+    assert repaired.json()["device"]["alias"] == "我的电脑"
+    # 活跃设备之间别名仍然唯一
+    assert active_conflict.status_code == 409
+
+
 async def test_expired_pairing_code_is_rejected(database: Database) -> None:
     _, registry = await _app_with_owner(database)
     pairing = await registry.create_pairing_code(
