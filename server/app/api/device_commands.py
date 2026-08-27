@@ -436,6 +436,7 @@ def create_device_command_routers(
             raise HTTPException(status.HTTP_404_NOT_FOUND, detail="command not found")
         accepted_media = {
             "screen.capture": {"image/png", "image/jpeg"},
+            "screen.monitor": {"image/png", "image/jpeg"},
             "browser.current_tab.capture": {"image/png", "image/jpeg"},
             "browser.current_tab.read": {"application/json"},
         }
