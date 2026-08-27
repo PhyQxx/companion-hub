@@ -27,8 +27,10 @@
     }
   },
   "bundle": {
-    "active": false,
-    "targets": "all",
+    "active": true,
+    "targets": [
+      "app"
+    ],
     "category": "Utility",
     "shortDescription": "Secure Aria companion device client"
   }
