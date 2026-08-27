@@ -21,6 +21,9 @@ class ToolRegistry:
     def get(self, name: str) -> ToolHandler | None:
         return self._handlers.get(name)
 
+    def names(self) -> tuple[str, ...]:
+        return tuple(self._handlers)
+
     def definitions(self, names: Iterable[str] | None = None) -> list[ToolDefinition]:
         if names is None:
             return [handler.definition() for handler in self._handlers.values()]

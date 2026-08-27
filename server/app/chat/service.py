@@ -59,7 +59,7 @@ from app.tools import (
     nearby_tool_definition,
     route_tool_definition,
     select_device_tools,
-    select_query_tools,
+    supports_device_capability,
     weather_tool_definition,
 )
 
@@ -117,6 +117,23 @@ def _vision_ready(config: HubConfig, privacy_level: PrivacyLevel) -> bool:
         PrivacyLevel.L1,
         PrivacyLevel.L2,
     }
+
+
+def _enabled_query_tools(config: HubConfig, privacy_level: PrivacyLevel) -> tuple[str, ...]:
+    """查询类工具按配置开关与隐私等级挂载；具体调不调用由模型判断。"""
+    if privacy_level not in {PrivacyLevel.L0, PrivacyLevel.L1}:
+        return ()
+    if not config.tools.enabled or not config.tools.query.enabled:
+        return ()
+    query = config.tools.query
+    selected: list[str] = []
+    if query.weather_enabled:
+        selected.append("get_weather")
+    if query.nearby_enabled:
+        selected.append("search_nearby")
+    if query.route_enabled:
+        selected.append("plan_route")
+    return tuple(selected)
 
 
 def _device_tool_ready(
@@ -590,24 +607,15 @@ class ChatService:
             except Exception:
                 # 历史索引是增强路径，故障不能让普通聊天不可用。
                 logger.warning("history recall failed for turn %s", turn_id, exc_info=True)
-        query_tool_names = (
-            select_query_tools(text, snapshot.config)
-            if privacy_level in {PrivacyLevel.L0, PrivacyLevel.L1}
-            else ()
-        )
-        selected_device_tools = (
-            select_device_tools(
-                text,
-                (item.capability_id for item in runtime_capabilities),
-            )
-            if privacy_level in {PrivacyLevel.L0, PrivacyLevel.L1, PrivacyLevel.L2}
-            and self._device_tools.definitions()
-            else ()
-        )
+        query_tool_names = _enabled_query_tools(snapshot.config, privacy_level)
+        # 工具挂载只看在线能力与配置就绪；选哪个、何时调用由模型根据工具描述自行判断。
         device_tool_names = tuple(
             name
-            for name in selected_device_tools
-            if _device_tool_ready(name, snapshot.config, privacy_level)
+            for name in self._device_tools.names()
+            if supports_device_capability(
+                name, (item.capability_id for item in runtime_capabilities)
+            )
+            and _device_tool_ready(name, snapshot.config, privacy_level)
         )
         tool_names = (*query_tool_names, *device_tool_names)
         definition_builders = {

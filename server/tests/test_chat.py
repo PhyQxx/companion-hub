@@ -810,7 +810,11 @@ async def test_weather_tool_round_hides_preamble_and_records_redacted_metadata(
         capture_tool_event,
     )
 
-    assert [tool.name for tool in pending.request.tools] == ["get_weather"]
+    assert [tool.name for tool in pending.request.tools] == [
+        "get_weather",
+        "search_nearby",
+        "plan_route",
+    ]
     assert deltas == ["济南现在多云，29℃。"]
     assert [event["type"] for event in tool_events] == [
         "tool.started",

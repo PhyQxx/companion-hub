@@ -2,7 +2,7 @@ from .amap import AmapProvider, AmapProviderError, wgs84_to_gcj02
 from .contracts import ToolContext, ToolExecution, ToolHandler, ToolResult
 from .executor import ToolExecutor
 from .factory import QueryToolRuntime, build_query_tool_runtime
-from .intent import select_device_tools, select_query_tools
+from .intent import select_device_tools, select_query_tools, supports_device_capability
 from .ledger import ToolLedger, ToolLedgerEntry
 from .location import ClientLocation, ClientLocationPayload, LocationSource, ResolvedLocation
 from .nearby import NearbyTool, SearchNearbyArgs, nearby_tool_definition
@@ -37,6 +37,7 @@ __all__ = [
     "route_tool_definition",
     "select_device_tools",
     "select_query_tools",
+    "supports_device_capability",
     "weather_tool_definition",
     "wgs84_to_gcj02",
 ]

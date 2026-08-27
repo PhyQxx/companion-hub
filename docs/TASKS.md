@@ -100,6 +100,7 @@
 
 ## 3. 最近完成
 
+- [x] 工具挂载改为能力就绪制、选择交给模型：`send_message` 不再用文本关键词预筛工具——设备工具按「在线能力满足（`DEVICE_TOOL_REQUIREMENTS`）+ 隐私/模型/视觉就绪」全量挂载，查询工具按配置开关挂载，何时调用由模型依据工具描述自行判断；关键词表仅保留给确定性 HA 读回退（`_deterministic_home_read_call`）与选择器单测。起因是真机验收中「圈选屏幕内容」未命中词表导致 `capture_screen` 缺席；已同步在上一提交补充词表作为确定性路径的覆盖。
 - [x] 修复撤销设备永久占用别名的缺陷：`device_client` 的 `(owner, alias)` 唯一约束改为部分唯一索引（仅约束 `revoked_at IS NULL` 的活跃行），撤销后别名自动释放、可用原别名重新配对，活跃设备之间仍强唯一；新增 `0023_device_alias_reuse` 迁移（batch 兼容 SQLite）并已应用到真实 PostgreSQL（现处 head），新增撤销重配与活跃冲突双向回归测试。
 - [x] macOS 系统内容选择器代码闭环：`CaptureScreenTool` 新增 `target=interactive` 并在工具描述中与可无人值守的 `active_window` 明确区分（仅在用户明确要求选择/分享时使用）；Hub 侧 interactive 命令 TTL 115s、终态等待 116s，幂等键纳入 target；Desktop Rust 端 `screencapture -i` 交互框选、100 秒轮询超时自动 kill、Esc 取消（无产物判定）与 `CaptureError{code,message}` 结构化错误码；TS 端解析 interactive 并把结构化错误码作为 command.result reason_code 透传，旧字符串错误按锁屏/权限归类。新增 4 个 Python 回归与 2 个 vitest 用例；Ruff、mypy、非 soak 全量 pytest、Desktop typecheck/build/test、`cargo check` 全部通过。
 - [x] 在制批次收口与质量闸门恢复：9 个逻辑提交（db 基座/TurnCoordinator/Jobs+AssetStore/Avatar/Theme/Live2D/HA 区域映射/Admin 实体接口/集成注册）入库；`.gitignore` 排除本地 QA 产物、agent 会话与 `server/assets/` 运行时上传；Ruff 163、mypy 38、Admin TS 4 清零；全量 pytest 532 通过且修复 3 个全局 Admin token 污染失败；TurnCoordinator `create_turn` 契约对齐真实 `ChatService.start_turn`；空库升级复验到 `0022`。

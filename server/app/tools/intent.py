@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 
 from app.config import HubConfig
 
@@ -99,34 +99,44 @@ def select_query_tools(text: str, config: HubConfig) -> tuple[str, ...]:
 
 def select_device_tools(text: str, capability_ids: Iterable[str]) -> tuple[str, ...]:
     values = tuple(capability_ids)
-    has_browser = any(
-        value.endswith(":browser.current_tab.read")
-        or value.endswith(":browser.current_tab.capture")
-        for value in values
-    )
-    if has_browser and any(term in text for term in _WEBPAGE_TERMS):
-        return ("inspect_webpage",)
-    has_screen = any(value.endswith(":screen.capture") for value in values)
-    if has_screen and any(term in text for term in _SCREEN_TERMS):
-        return ("capture_screen",)
-    has_home_history = any(
-        value.startswith("home_assistant:") and value.endswith(":history.read")
-        for value in values
-    )
-    if has_home_history and any(term in text for term in _HOME_HISTORY_TERMS):
-        return ("home_get_history",)
-    has_home_control = any(
-        value.startswith("home_assistant:")
-        and value.rsplit(":", 1)[-1]
-        in {"turn_on", "turn_off", "toggle", "set_temperature"}
-        for value in values
-    )
-    if has_home_control and any(term in text for term in _HOME_CONTROL_TERMS):
-        return ("home_control",)
-    has_home_state = any(
-        value.startswith("home_assistant:") and value.endswith(":state.read")
-        for value in values
-    )
-    if has_home_state and any(term in text for term in _HOME_STATE_TERMS):
-        return ("home_get_state",)
+    for name in DEVICE_TOOL_REQUIREMENTS:
+        if supports_device_capability(name, values) and _term_hit(text, name):
+            return (name,)
     return ()
+
+
+def _term_hit(text: str, tool_name: str) -> bool:
+    terms = _DEVICE_TOOL_TERMS.get(tool_name, ())
+    return any(term in text for term in terms)
+
+
+def supports_device_capability(tool_name: str, capability_ids: Iterable[str]) -> bool:
+    """设备工具的能力要求：任一在线能力满足即视为可挂载（文本无关，由模型自选）。"""
+    supports = DEVICE_TOOL_REQUIREMENTS.get(tool_name)
+    if supports is None:
+        return True
+    return any(supports(value) for value in capability_ids)
+
+
+# 工具 → 在线能力要求。挂载只看能力与配置就绪；何时调用由模型根据工具描述自行判断。
+# 顺序即 select_device_tools 的确定性优先级：浏览器读取先于屏幕截图。
+DEVICE_TOOL_REQUIREMENTS: dict[str, Callable[[str], bool]] = {
+    "inspect_webpage": lambda value: value.endswith(":browser.current_tab.read")
+    or value.endswith(":browser.current_tab.capture"),
+    "capture_screen": lambda value: value.endswith(":screen.capture"),
+    "home_get_history": lambda value: value.startswith("home_assistant:")
+    and value.endswith(":history.read"),
+    "home_control": lambda value: value.startswith("home_assistant:")
+    and value.rsplit(":", 1)[-1] in {"turn_on", "turn_off", "toggle", "set_temperature"},
+    "home_get_state": lambda value: value.startswith("home_assistant:")
+    and value.endswith(":state.read"),
+}
+
+# 仅用于确定性 HA 读回退（_deterministic_home_read_call）与选择器单测的关键词表。
+_DEVICE_TOOL_TERMS: dict[str, tuple[str, ...]] = {
+    "inspect_webpage": _WEBPAGE_TERMS,
+    "capture_screen": _SCREEN_TERMS,
+    "home_get_history": _HOME_HISTORY_TERMS,
+    "home_control": _HOME_CONTROL_TERMS,
+    "home_get_state": _HOME_STATE_TERMS,
+}
