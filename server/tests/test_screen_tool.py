@@ -54,8 +54,10 @@ class FakeGateway:
         self.asset_id: UUID | None = None
         self.command_id: UUID | None = None
         self.issued_args: dict[str, object] | None = None
+        self.issued_kwargs: dict[str, object] | None = None
 
     async def issue(self, **kwargs: object) -> CommandSnapshot:
+        self.issued_kwargs = kwargs
         self.issued_args = kwargs["args"]  # type: ignore[assignment]
         now = datetime.now(UTC)
         command_id = uuid7()
@@ -88,6 +90,43 @@ class FakeGateway:
 
     async def wait_for_terminal(self, *_: object, **__: object) -> CommandSnapshot:
         raise AssertionError("already-terminal command must not wait")
+
+
+class PendingGateway(FakeGateway):
+    """设备已 ACK 但尚未回执的命令，用于验证终态等待与错误码透传。"""
+
+    def __init__(self, *, owner_id: UUID, device_id: UUID, terminal: CommandSnapshot) -> None:
+        super().__init__(owner_id=owner_id, device_id=device_id)
+        self._terminal = terminal
+        self.wait_timeout_seconds: float | None = None
+
+    async def issue(self, **kwargs: object) -> CommandSnapshot:
+        await super().issue(**kwargs)
+        return self._replace_status("acknowledged")
+
+    async def wait_for_terminal(self, *args: object, **kwargs: object) -> CommandSnapshot:
+        timeout = kwargs.get("timeout_seconds")
+        self.wait_timeout_seconds = timeout if isinstance(timeout, (int, float)) else None
+        return self._terminal
+
+    def _replace_status(self, status: str) -> CommandSnapshot:
+        now = datetime.now(UTC)
+        return CommandSnapshot(
+            id=uuid7(),
+            device_id=self.device_id,
+            command_name="screen.capture",
+            args_redacted={"target": "interactive"},
+            idempotency_key="screen-test-idempotency",
+            status=status,  # type: ignore[arg-type]
+            revision=2,
+            issued_at=now,
+            expires_at=now + timedelta(seconds=115),
+            sent_at=now,
+            acknowledged_at=now,
+            completed_at=None,
+            reason_code=None,
+            result_meta=None,
+        )
 
 
 def _device(owner_id: UUID, device_id: UUID) -> DeviceSnapshot:
@@ -184,6 +223,99 @@ async def test_capture_screen_passes_active_window_target() -> None:
     assert result.data["target"] == "active_window"
     assert result.data["display_index"] is None
     assert gateway.issued_args == {"target": "active_window"}
+    assert gateway.issued_kwargs is not None
+    assert gateway.issued_kwargs["ttl_seconds"] == 30
+    assert str(gateway.issued_kwargs["idempotency_key"]).endswith("-active_window")
+
+
+async def test_capture_screen_issues_interactive_target_with_extended_ttl() -> None:
+    owner_id = uuid7()
+    device_id = uuid7()
+    gateway = FakeGateway(owner_id=owner_id, device_id=device_id)
+    tool = CaptureScreenTool(
+        FakeResolver(_device(owner_id, device_id)),
+        gateway,
+        FakeAnalyzer(),
+    )
+
+    result = await tool.execute(
+        CaptureScreenArgs(target="interactive"),
+        ToolContext(privacy_level="L2", user_id=owner_id, turn_id=uuid7()),
+    )
+
+    assert result.ok is True
+    assert result.data["target"] == "interactive"
+    assert gateway.issued_args == {"target": "interactive"}
+    assert gateway.issued_kwargs is not None
+    assert gateway.issued_kwargs["ttl_seconds"] == 115
+    assert str(gateway.issued_kwargs["idempotency_key"]).endswith("-interactive")
+
+
+def _terminal_failure(owner_id: UUID, device_id: UUID, reason_code: str) -> CommandSnapshot:
+    now = datetime.now(UTC)
+    return CommandSnapshot(
+        id=uuid7(),
+        device_id=device_id,
+        command_name="screen.capture",
+        args_redacted={"target": "interactive"},
+        idempotency_key="screen-test-idempotency",
+        status="failed",
+        revision=4,
+        issued_at=now,
+        expires_at=now + timedelta(seconds=115),
+        sent_at=now,
+        acknowledged_at=now,
+        completed_at=now,
+        reason_code=reason_code,
+        result_meta=None,
+    )
+
+
+async def test_capture_screen_waits_interactive_terminal_and_reports_user_cancel() -> None:
+    owner_id = uuid7()
+    device_id = uuid7()
+    gateway = PendingGateway(
+        owner_id=owner_id,
+        device_id=device_id,
+        terminal=_terminal_failure(owner_id, device_id, "picker_cancelled"),
+    )
+    tool = CaptureScreenTool(
+        FakeResolver(_device(owner_id, device_id)),
+        gateway,
+        FakeAnalyzer(),
+    )
+
+    result = await tool.execute(
+        CaptureScreenArgs(target="interactive"),
+        ToolContext(privacy_level="L2", user_id=owner_id, turn_id=uuid7()),
+    )
+
+    assert result.ok is False
+    assert result.reason_code == "picker_cancelled"
+    assert gateway.wait_timeout_seconds == 116
+
+
+async def test_capture_screen_reports_interactive_picker_timeout() -> None:
+    owner_id = uuid7()
+    device_id = uuid7()
+    gateway = PendingGateway(
+        owner_id=owner_id,
+        device_id=device_id,
+        terminal=_terminal_failure(owner_id, device_id, "picker_timeout"),
+    )
+    tool = CaptureScreenTool(
+        FakeResolver(_device(owner_id, device_id)),
+        gateway,
+        FakeAnalyzer(),
+    )
+
+    result = await tool.execute(
+        CaptureScreenArgs(target="interactive"),
+        ToolContext(privacy_level="L2", user_id=owner_id, turn_id=uuid7()),
+    )
+
+    assert result.ok is False
+    assert result.reason_code == "picker_timeout"
 
 
 def test_capture_screen_rejects_invalid_display_targets() -> None:
@@ -192,6 +324,7 @@ def test_capture_screen_rejects_invalid_display_targets() -> None:
         {"target": "display", "display_index": 0},
         {"target": "main_display", "display_index": 1},
         {"target": "active_window", "display_index": 1},
+        {"target": "interactive", "display_index": 1},
     )
     for arguments in invalid_arguments:
         with pytest.raises(ValidationError):

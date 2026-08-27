@@ -73,6 +73,25 @@ struct DeviceAssetUpload {
     expires_at: String,
 }
 
+/// 截图命令失败的结构化错误码，Desktop 前端原样作为 command.result 的 reason_code 回传 Hub。
+#[derive(Serialize)]
+struct CaptureError {
+    code: &'static str,
+    message: String,
+}
+
+impl CaptureError {
+    fn new(code: &'static str, message: impl Into<String>) -> Self {
+        Self {
+            code,
+            message: message.into(),
+        }
+    }
+}
+
+/// 交互式选择器等待用户完成框选/选窗的最长时间；超时后终止截图进程并回传 picker_timeout。
+const PICKER_TIMEOUT_SECS: u64 = 100;
+
 struct TemporaryCapture(PathBuf);
 
 impl Drop for TemporaryCapture {
@@ -235,52 +254,131 @@ async fn capture_and_upload(
     command_id: String,
     target: String,
     display_index: Option<u8>,
-) -> Result<DeviceAssetUpload, String> {
+) -> Result<DeviceAssetUpload, CaptureError> {
     if !screen_permission_status(false).granted {
-        return Err("尚未获得屏幕录制权限".to_string());
+        return Err(CaptureError::new(
+            "screen_capture_not_granted",
+            "尚未获得屏幕录制权限",
+        ));
     }
     if screen_is_locked() {
-        return Err("设备已锁屏，拒绝截图".to_string());
+        return Err(CaptureError::new("screen_locked", "设备已锁屏，拒绝截图"));
     }
-    let capture_args = match (target.as_str(), display_index) {
-        ("main_display", None) => vec!["-m".to_string()],
-        ("display", Some(index @ 1..=32)) => vec![format!("-D{index}")],
-        ("active_window", None) => vec!["-o".to_string(), format!("-l{}", active_window_id()?)],
-        _ => return Err("截图目标参数无效".to_string()),
-    };
-    let normalized_hub = hub_keyring_entry()?
+    let interactive = target == "interactive";
+    let mut capture_args: Vec<String> = Vec::new();
+    match (target.as_str(), display_index) {
+        ("main_display", None) => capture_args.push("-m".to_string()),
+        ("display", Some(index @ 1..=32)) => capture_args.push(format!("-D{index}")),
+        ("active_window", None) => {
+            let window_id = active_window_id()
+                .map_err(|error| CaptureError::new("active_window_unavailable", error))?;
+            capture_args.push("-o".to_string());
+            capture_args.push(format!("-l{window_id}"));
+        }
+        // 交互式选择器：用户当场框选区域，空格切换选窗，Esc 取消。
+        ("interactive", None) => {
+            capture_args.push("-i".to_string());
+            capture_args.push("-o".to_string());
+        }
+        _ => {
+            return Err(CaptureError::new(
+                "invalid_capture_target",
+                "截图目标参数无效",
+            ))
+        }
+    }
+    let normalized_hub = hub_keyring_entry()
+        .map_err(|error| CaptureError::new("credential_store_unavailable", error))?
         .get_password()
-        .map_err(|error| format!("读取 Hub 绑定失败：{error}"))?;
+        .map_err(|error| {
+            CaptureError::new("credential_store_unavailable", format!("读取 Hub 绑定失败：{error}"))
+        })?;
     let parsed = reqwest::Url::parse(&normalized_hub)
-        .map_err(|_| "Hub 地址不是有效 URL".to_string())?;
+        .map_err(|_| CaptureError::new("hub_url_invalid", "Hub 地址不是有效 URL".to_string()))?;
     if parsed.scheme() != "http" && parsed.scheme() != "https" {
-        return Err("Hub 地址只允许 http:// 或 https://".to_string());
+        return Err(CaptureError::new(
+            "hub_url_invalid",
+            "Hub 地址只允许 http:// 或 https://",
+        ));
     }
     let capture = TemporaryCapture(std::env::temp_dir().join(format!(
         "aria-screen-{}.png",
         uuid::Uuid::new_v4()
     )));
     let capture_path = capture.0.clone();
-    let output = tauri::async_runtime::spawn_blocking(move || {
-        Command::new("/usr/sbin/screencapture")
+    let timed_out_code: &'static str = if interactive {
+        "picker_timeout"
+    } else {
+        "capture_timeout"
+    };
+    let outcome = tauri::async_runtime::spawn_blocking(move || {
+        let mut child = Command::new("/usr/sbin/screencapture")
             .arg("-x")
             .args(capture_args)
             .arg("-tpng")
-            .arg(capture_path)
-            .output()
+            .arg(&capture_path)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .map_err(|error| {
+                CaptureError::new("capture_failed", format!("无法启动系统截图工具：{error}"))
+            })?;
+        let deadline =
+            std::time::Instant::now() + std::time::Duration::from_secs(PICKER_TIMEOUT_SECS);
+        loop {
+            match child.try_wait() {
+                Ok(Some(status)) => return Ok(Some(status)),
+                Ok(None) => {
+                    if std::time::Instant::now() >= deadline {
+                        let _ = child.kill();
+                        let _ = child.wait();
+                        return Ok(None);
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(100));
+                }
+                Err(error) => {
+                    return Err(CaptureError::new(
+                        "capture_failed",
+                        format!("等待截图进程失败：{error}"),
+                    ))
+                }
+            }
+        }
     })
     .await
-    .map_err(|error| format!("截图任务失败：{error}"))?
-    .map_err(|error| format!("无法启动系统截图工具：{error}"))?;
-    if !output.status.success() {
-        return Err("系统截图失败；请检查屏幕录制权限".to_string());
+    .map_err(|error| CaptureError::new("capture_failed", format!("截图任务失败：{error}")))?
+    .map_err(|error| error)?;
+    let status = match outcome {
+        Some(status) => status,
+        None => {
+            return Err(CaptureError::new(
+                timed_out_code,
+                if interactive {
+                    "等待用户完成屏幕选择超时"
+                } else {
+                    "系统截图超时"
+                },
+            ))
+        }
+    };
+    // 交互模式下用户按 Esc 取消时不会写出任何文件；以此与真正的截图失败区分。
+    if interactive && !capture.0.exists() {
+        return Err(CaptureError::new("picker_cancelled", "用户已取消选择"));
     }
-    let bytes = std::fs::read(&capture.0).map_err(|error| format!("读取截图失败：{error}"))?;
+    if !status.success() {
+        return Err(CaptureError::new(
+            "capture_failed",
+            "系统截图失败；请检查屏幕录制权限",
+        ));
+    }
+    let bytes = std::fs::read(&capture.0)
+        .map_err(|error| CaptureError::new("capture_read_failed", format!("读取截图失败：{error}")))?;
     if bytes.len() > 8 * 1024 * 1024 {
-        return Err("截图超过 8 MiB 上限".to_string());
+        return Err(CaptureError::new("capture_too_large", "截图超过 8 MiB 上限"));
     }
-    let access_token = load_device_credential()?
-        .ok_or_else(|| "系统凭据库中没有设备凭据".to_string())?;
+    let access_token = load_device_credential()
+        .map_err(|error| CaptureError::new("credential_store_unavailable", error))?
+        .ok_or_else(|| CaptureError::new("credential_missing", "系统凭据库中没有设备凭据"))?;
     let endpoint = format!("{normalized_hub}/api/v1/devices/commands/{command_id}/asset");
     let response = reqwest::Client::new()
         .post(endpoint)
@@ -290,14 +388,17 @@ async fn capture_and_upload(
         .body(bytes)
         .send()
         .await
-        .map_err(|error| format!("上传截图失败：{error}"))?;
+        .map_err(|error| CaptureError::new("upload_failed", format!("上传截图失败：{error}")))?;
     if !response.status().is_success() {
-        return Err(format!("Hub 拒绝截图上传：{}", response.status()));
+        return Err(CaptureError::new(
+            "upload_failed",
+            format!("Hub 拒绝截图上传：{}", response.status()),
+        ));
     }
     response
         .json::<DeviceAssetUpload>()
         .await
-        .map_err(|error| format!("Hub 截图响应无效：{error}"))
+        .map_err(|error| CaptureError::new("upload_failed", format!("Hub 截图响应无效：{error}")))
 }
 
 #[cfg(target_os = "macos")]

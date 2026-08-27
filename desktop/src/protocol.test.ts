@@ -1,6 +1,7 @@
 import { webcrypto } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import {
+  captureFailureCode,
   consumeScreenCaptureGrant,
   createScreenCaptureGrant,
   parseNotificationRequest,
@@ -42,6 +43,27 @@ describe("device command protocol", () => {
     expect(
       parseScreenCaptureRequest({ target: "main_display", display_index: 1 }),
     ).toBeNull();
+  });
+
+  it("accepts the interactive picker target without a display index", () => {
+    expect(parseScreenCaptureRequest({ target: "interactive" })).toEqual({
+      target: "interactive",
+      displayIndex: null,
+    });
+    expect(
+      parseScreenCaptureRequest({ target: "interactive", display_index: 1 }),
+    ).toBeNull();
+  });
+
+  it("maps structured capture errors to command reason codes", () => {
+    expect(captureFailureCode({ code: "picker_cancelled", message: "用户取消" }))
+      .toBe("picker_cancelled");
+    expect(captureFailureCode({ code: "picker_timeout", message: "" }))
+      .toBe("picker_timeout");
+    expect(captureFailureCode("设备已锁屏，拒绝截图")).toBe("screen_locked");
+    expect(captureFailureCode("尚未获得屏幕录制权限")).toBe("screen_capture_not_granted");
+    expect(captureFailureCode("别的错误")).toBe("command_execution_failed");
+    expect(captureFailureCode(null)).toBe("command_execution_failed");
   });
 
   it("matches Python sort_keys canonical JSON ordering", () => {

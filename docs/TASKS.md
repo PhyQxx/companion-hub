@@ -23,7 +23,7 @@
 
 ### 0. 当前功能主线
 
-- [ ] **下一功能：macOS 系统内容选择器。** 新增用户明示触发的屏幕/窗口选择能力，复用现有 Desktop Command、TCC 权限、临时截图资产和视觉分析回注链；与可无人值守的 `active_window` 明确区分，并补齐用户取消、选择器超时、命令 TTL、锁屏/隐私暂停拒绝和图片 consume-on-read。验收以一次真实聊天发起、系统选择窗口、视觉回答、原图销毁的真机全链为准。
+- [ ] **当前功能：macOS 系统内容选择器（代码闭环已完成，待原生真机验收）。** `capture_screen` 新增 `target=interactive`：Desktop 弹出系统选择器由用户当场框选/选窗（Esc 取消）；Hub 命令 TTL 放宽到 115s、终态等待 116s，设备端选择器 100s 超时自动终止；Rust 结构化错误码（picker_cancelled/picker_timeout 等）经 command.reason_code 透传到工具结果；幂等键纳入 target 支持同回合混用与取消后跨回合重试。TCC、锁屏、5 分钟单次授权与 consume-on-read 门禁全部复用。验收以一次真实聊天发起、系统选择窗口、视觉回答、原图销毁的真机全链为准。
 - [ ] **随后功能：ESP32 + LD2410 第一硬件闭环。** 单存在传感器接入现有 MQTT → `EphemeralSignal` → Perception → Proactive Pipeline，开始 7 天免打扰与误触发验收。
 - [ ] **暂不作为下一功能：Tauri 透明桌宠。** Live2D Web 最小壳已经可用，但桌宠仍需等待 M2 首音频和打断门槛达标；VRM、换装、AI 形象工厂和更多主题也继续后置。
 
@@ -50,7 +50,7 @@
 - [x] `capture_screen` 主显示器闭环：目标解析、签名命令、终态等待、临时图片 consume-on-read、视觉分析和文字结果回注；L1 使用支持工具调用的 dialogue 路由与当前 GLM 视觉，L2 仍强制本地工具模型与本地视觉。
 - [x] `capture_screen(active_window)` 代码闭环：Hub/LLM 契约、Desktop 双端参数校验、macOS 前台应用与 CoreGraphics 活动窗口解析、按窗口 ID 截图和原有隐私门禁复用已落地；Python/TypeScript 回归、`cargo check` 与原生链接通过。
 - [ ] `capture_screen(active_window)` 原生真机验收：在非 Aria 前台窗口上完成一次真实聊天工具全链，确认窗口定位、阴影剔除、临时资产销毁与视觉回答。
-- [ ] 系统内容选择器：使用 macOS 明示交互式选择界面，区分于可无人值守的 `active_window`，补齐取消、超时和命令 TTL 语义。
+- [x] 系统内容选择器代码闭环：`target=interactive` 复用 screen.capture 命令与 TCC/锁屏/临时授权门禁，`screencapture -i` 交互框选、100s 选择器超时、用户取消（Esc 无产物即 picker_cancelled）、命令 TTL 115s/等待 116s、结构化错误码透传与幂等键按 target 隔离均已落地；Python/TypeScript 回归、Desktop typecheck/build 与 `cargo check` 通过。原生真机验收待做（与 active_window 验收可同批进行）。
 - [x] 浏览器扩展真机闭环：Chrome MV3 配对/签名长连接、`browser.current_tab.read/capture`、受限 JSON/图片临时上传与 Hub `inspect_webpage` 已接入；真 Chrome 已验证单一稳定连接、正文读取和当前页截图。
 - [ ] 隐私策略：当前按用户决定先允许 L1 屏幕截图交给 GLM 视觉；L2 仍强制本地视觉，浏览器读取仍保持 L2。Desktop 已实现锁屏自动拒绝和“5 分钟内仅下一次截图”的内存态临时授权，待 macOS 真机锁屏/解锁验收后勾选。
 - [x] Web 对话跨终端验收：L2 会话发起“看一下我的电脑网页”，Hub 调用本地 Qwen 的 `inspect_webpage`，Browser Bridge 读取当前页并把结果返回原会话。
@@ -99,6 +99,7 @@
 
 ## 3. 最近完成
 
+- [x] macOS 系统内容选择器代码闭环：`CaptureScreenTool` 新增 `target=interactive` 并在工具描述中与可无人值守的 `active_window` 明确区分（仅在用户明确要求选择/分享时使用）；Hub 侧 interactive 命令 TTL 115s、终态等待 116s，幂等键纳入 target；Desktop Rust 端 `screencapture -i` 交互框选、100 秒轮询超时自动 kill、Esc 取消（无产物判定）与 `CaptureError{code,message}` 结构化错误码；TS 端解析 interactive 并把结构化错误码作为 command.result reason_code 透传，旧字符串错误按锁屏/权限归类。新增 4 个 Python 回归与 2 个 vitest 用例；Ruff、mypy、非 soak 全量 pytest、Desktop typecheck/build/test、`cargo check` 全部通过。
 - [x] 在制批次收口与质量闸门恢复：9 个逻辑提交（db 基座/TurnCoordinator/Jobs+AssetStore/Avatar/Theme/Live2D/HA 区域映射/Admin 实体接口/集成注册）入库；`.gitignore` 排除本地 QA 产物、agent 会话与 `server/assets/` 运行时上传；Ruff 163、mypy 38、Admin TS 4 清零；全量 pytest 532 通过且修复 3 个全局 Admin token 污染失败；TurnCoordinator `create_turn` 契约对齐真实 `ChatService.start_turn`；空库升级复验到 `0022`。
 - [x] Live2D Web 最小壳与形象导入：`AvatarAssetImporter` 支持静态图片净化和 Live2D ZIP 安全校验，发行包多 runtime 时优先 PRO 并忽略 `.cmo3`/`.can3` 等工程源文件；聊天端和 Admin 通过同源运行时加载真实模型，转发 TTS viseme、说话状态、回复情绪、显式表情和动作指令。官方 Cubism Core 不入库，由本机已授权运行时目录提供；Hiyori 真模型已在聊天三栏界面渲染并完成 1920/1024/720 px 视觉验收。
 - [x] 主题中心 v1：新增 `ui_theme`/`ui_preference` 与 `0022_ui_theme` 迁移，内置“纯净明亮”“静夜紫”和“跟随系统”选择；Admin 新增“外观与主题”工作区，账户偏好经 `/api/v1/admin/ui/*` 保存；聊天端经 `/api/v1/ui/preferences` 登录同步、本机回退、窗口聚焦刷新和同源 `BroadcastChannel` 即时切换；真实 PostgreSQL 已升级到 `0022`，浏览器验证 Admin 保存后 Chat 从浅色即时切到深色并可恢复。
@@ -139,6 +140,7 @@
 
 ## 4. 最新质量基线
 
+- 2026-08-27 系统内容选择器代码闭环：Ruff、严格 mypy、非 soak 全量 pytest **532 通过 / 0 失败**（含 4 个新增 interactive 回归）、Desktop vitest **9 通过**、Desktop typecheck/build、`cargo check` 与 `git diff --check` 全部通过；真机验收（真实聊天 → 系统选择器 → 视觉回答 → 原图销毁）待用户在场执行。
 - 2026-08-27 质量闸门恢复：在制批次分 9 个逻辑提交入库后，Ruff（含 `allowed-confusables` 白名单全角标点）、严格 mypy（132→214 source files）、Admin/Chat/Shared typecheck 与 production build 全部通过；非 soak 全量 pytest **532 通过 / 0 失败**（新增 conftest autouse fixture 修复 3 个既有全局 Admin token 状态污染失败；ruff/mypy 版本随本批次升级，TurnCoordinator `create_turn` 已对齐真实 `ChatService.start_turn` 契约，原 `input_message_id` 参数为运行时 TypeError 隐患）；Alembic 空库升级到单 head `0022_ui_theme`、`git diff --check` 通过。
 - 2026-08-27 当前在制分支：Avatar/Theme 定向 pytest **25 通过**；Shared 与 Chat TypeScript typecheck 通过；Alembic 为单 head `0022_ui_theme`；文档同步后 `git diff --check` 通过。发布闸门尚未恢复：全仓 Ruff 报 **163** 项，严格 mypy 报 **38** 项（5 个文件），Admin typecheck 报 **4** 项；因此此前“全量通过”只代表对应历史快照，不能作为当前分支结论。
 - 2026-08-26 主题中心 v1：新增主题 Store、Admin API 与 Chat 会话 API 的 4 个测试全部通过，OpenAPI 路由生成回归通过；Ruff、新 Store mypy、Shared typecheck、Chat production build、Admin production build、Alembic 单 head 与离线 SQL 生成通过；真实 PostgreSQL 已升级到 `0022_ui_theme`；全量 pytest 运行至 97% 时仍复现 3 个既有全局 Admin token 状态污染失败，并挂在既有语音 soak 用例；过程中发现的主题路由 OpenAPI 注解回归已修复并单独复测通过。

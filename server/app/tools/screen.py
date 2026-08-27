@@ -31,7 +31,7 @@ class CaptureScreenArgs(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     device: Annotated[str, Field(min_length=1, max_length=160)] | None = None
-    target: Literal["main_display", "display", "active_window"] = "main_display"
+    target: Literal["main_display", "display", "active_window", "interactive"] = "main_display"
     display_index: Annotated[int, Field(ge=1, le=32)] | None = None
     question: Annotated[str, Field(min_length=1, max_length=1_000)] = (
         "描述屏幕上与用户问题相关的可见内容；不要猜测屏幕外信息。"
@@ -44,6 +44,14 @@ class CaptureScreenArgs(BaseModel):
         if self.target != "display" and self.display_index is not None:
             raise ValueError("display_index is only valid for display target")
         return self
+
+
+# 交互式选择器在设备端等待用户完成框选/选窗，命令 TTL 与终态等待需覆盖
+# 「选择器超时 + 截图上传」的完整窗口；标准目标保持原有 30 秒语义。
+STANDARD_COMMAND_TTL_SECONDS = 30
+STANDARD_WAIT_SECONDS = 31
+INTERACTIVE_COMMAND_TTL_SECONDS = 115
+INTERACTIVE_WAIT_SECONDS = 116
 
 
 @dataclass(frozen=True, slots=True)
@@ -120,8 +128,12 @@ class CapabilityScreenAnalyzer:
 class CaptureScreenTool:
     name = "capture_screen"
     description = (
-        "对已授权且在线的用户桌面设备执行一次活动窗口、主显示器或指定编号显示器截图，并使用已配置的视觉模型"
-        "回答当前屏幕问题。device 可填设备 UUID、名称或别名；省略时仅在唯一候选时执行。"
+        "对已授权且在线的用户桌面设备执行一次截图，并使用已配置的视觉模型回答当前屏幕问题。"
+        "target：main_display 主显示器、display 指定编号显示器、"
+        "active_window 前台活动窗口（可无人值守）、"
+        "interactive 弹出系统选择器由用户当场框选区域或窗口"
+        "（仅在用户明确要求选择、圈选或分享屏幕内容时使用，需要用户在场配合并可随时按 Esc 取消）。"
+        "device 可填设备 UUID、名称或别名；省略时仅在唯一候选时执行。"
     )
     arguments_model: type[BaseModel] = CaptureScreenArgs
     runs_local = True
@@ -176,12 +188,17 @@ class CaptureScreenTool:
             command_args: dict[str, JsonValue] = {"target": args.target}
             if args.display_index is not None:
                 command_args["display_index"] = args.display_index
+            interactive = args.target == "interactive"
             command = await self._gateway.issue(
                 device_id=device.id,
                 command="screen.capture",
                 args=command_args,
-                idempotency_key=f"screen-{context.turn_id}-{device.id}",
-                ttl_seconds=30,
+                idempotency_key=f"screen-{context.turn_id}-{device.id}-{args.target}",
+                ttl_seconds=(
+                    INTERACTIVE_COMMAND_TTL_SECONDS
+                    if interactive
+                    else STANDARD_COMMAND_TTL_SECONDS
+                ),
             )
         except (DeviceCommandConflict, DeviceCommandNotFound):
             return self._failure("device_command_rejected", started)
@@ -189,7 +206,9 @@ class CaptureScreenTool:
             try:
                 command = await self._gateway.wait_for_terminal(
                     command.id,
-                    timeout_seconds=31,
+                    timeout_seconds=(
+                        INTERACTIVE_WAIT_SECONDS if interactive else STANDARD_WAIT_SECONDS
+                    ),
                 )
             except TimeoutError:
                 return self._failure("device_command_timeout", started)

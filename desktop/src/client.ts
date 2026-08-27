@@ -65,7 +65,7 @@ interface DeviceAssetUpload {
 }
 
 export interface ScreenCaptureRequest {
-  target: "main_display" | "display" | "active_window";
+  target: "main_display" | "display" | "active_window" | "interactive";
   displayIndex: number | null;
 }
 
@@ -96,7 +96,7 @@ export function parseScreenCaptureRequest(
   if (target === "main_display") {
     return displayIndex === undefined ? { target, displayIndex: null } : null;
   }
-  if (target === "active_window") {
+  if (target === "active_window" || target === "interactive") {
     return displayIndex === undefined ? { target, displayIndex: null } : null;
   }
   if (
@@ -109,6 +109,22 @@ export function parseScreenCaptureRequest(
     return { target, displayIndex };
   }
   return null;
+}
+
+/** 把 Rust 侧结构化截图错误映射为命令回执 reason_code；旧字符串错误按已知文案归类。 */
+export function captureFailureCode(error: unknown): string {
+  if (typeof error === "object" && error !== null && "code" in error) {
+    const code = (error as { code: unknown }).code;
+    if (typeof code === "string" && code.length > 0) return code;
+  }
+  const message = typeof error === "string"
+    ? error
+    : error instanceof Error
+      ? error.message
+      : String(error ?? "");
+  if (message.includes("锁屏")) return "screen_locked";
+  if (message.includes("屏幕录制权限")) return "screen_capture_not_granted";
+  return "command_execution_failed";
 }
 
 export type ConnectionState = "unpaired" | "connecting" | "online" | "offline" | "error";
@@ -259,11 +275,17 @@ export class DeviceConnection {
         this.sendResult(frame.command_id, "failed", authorization, {});
         return;
       }
-      const uploaded = await captureAndUpload(
-        frame.command_id,
-        request.target,
-        request.displayIndex,
-      );
+      let uploaded: DeviceAssetUpload;
+      try {
+        uploaded = await captureAndUpload(
+          frame.command_id,
+          request.target,
+          request.displayIndex,
+        );
+      } catch (error) {
+        this.sendResult(frame.command_id, "failed", captureFailureCode(error), {});
+        return;
+      }
       if (this.cancelledCommands.has(frame.command_id)) {
         this.sendResult(frame.command_id, "failed", "command_cancelled", {});
         return;
