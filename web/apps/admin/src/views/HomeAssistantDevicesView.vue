@@ -71,6 +71,16 @@ interface DiscoveredEntity {
   unit_of_measurement?: string | null;
 }
 
+interface EntityDetail {
+  entity_id: string;
+  friendly_name: string;
+  domain: string;
+  state: string;
+  device_class?: string | null;
+  unit_of_measurement?: string | null;
+  area?: string | null;
+}
+
 interface ConnectionResult {
   ok: boolean;
   latency_ms: number;
@@ -89,6 +99,57 @@ const testingProactive = ref(false);
 const testResult = ref<ConnectionResult | null>(null);
 const search = ref("");
 const selected = ref<string[]>([]);
+
+const HA_ENTITIES_KEY = "aria:ha:entities";
+
+function loadCachedEntities(): EntityDetail[] {
+  try {
+    const raw = localStorage.getItem(HA_ENTITIES_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw) as unknown;
+    if (!Array.isArray(parsed)) return [];
+    return parsed as EntityDetail[];
+  } catch {
+    return [];
+  }
+}
+
+function saveCachedEntities(entities: EntityDetail[]) {
+  try {
+    localStorage.setItem(HA_ENTITIES_KEY, JSON.stringify(entities));
+  } catch { /* storage full or private mode */ }
+}
+
+const allEntities = ref<EntityDetail[]>(loadCachedEntities());
+const fetchingAll = ref(false);
+const keyword = ref("");
+const areaFilter = ref("");
+const domainFilter = ref("");
+
+const areaOptions = computed(() =>
+  [...new Set(allEntities.value.map((e) => e.area).filter((a): a is string => !!a))].sort(),
+);
+const domainOptions = computed(() =>
+  [...new Set(allEntities.value.map((e) => e.domain))].sort(),
+);
+const filteredEntities = computed(() => {
+  let rows = allEntities.value;
+  const kw = keyword.value.trim().toLowerCase();
+  if (kw) {
+    rows = rows.filter((item) =>
+      [item.entity_id, item.friendly_name, item.domain, item.device_class ?? "", item.area ?? ""]
+        .some((v) => v.toLowerCase().includes(kw)),
+    );
+  }
+  if (areaFilter.value) {
+    rows = rows.filter((item) => item.area === areaFilter.value);
+  }
+  if (domainFilter.value) {
+    rows = rows.filter((item) => item.domain === domainFilter.value);
+  }
+  return rows;
+});
+const authorizedIds = computed(() => new Set(ha.value?.entities.map((e) => e.entity_id) ?? []));
 
 function clonePlain<T>(value: T): T {
   return JSON.parse(JSON.stringify(value)) as T;
@@ -112,12 +173,12 @@ const ruleLabels: Record<RuleKind, string> = {
 };
 
 const discovered = computed(() => {
-  const keyword = search.value.trim().toLocaleLowerCase();
-  const rows = testResult.value?.entities ?? [];
-  if (!keyword) return rows;
+  const kw = search.value.trim().toLocaleLowerCase();
+  const rows = allEntities.value;
+  if (!kw) return rows;
   return rows.filter((item) =>
-    [item.entity_id, item.friendly_name, item.domain, item.device_class ?? ""]
-      .some((value) => value.toLocaleLowerCase().includes(keyword)),
+    [item.entity_id, item.friendly_name, item.domain, item.device_class ?? "", item.area ?? ""]
+      .some((value) => value.toLocaleLowerCase().includes(kw)),
   );
 });
 
@@ -155,10 +216,36 @@ async function load() {
   try {
     current.value = await api.request<CurrentConfig>("/api/v1/admin/config/current");
     ha.value = normalizeConfig(clonePlain(current.value.config.integrations.home_assistant));
+    if (ha.value?.enabled && ha.value.base_url && allEntities.value.length === 0) {
+      await fetchAllEntities(true);
+    }
   } catch (error) {
     emit("status", error instanceof Error ? error.message : "HA 实体配置加载失败", true);
   } finally {
     loading.value = false;
+  }
+}
+
+async function fetchAllEntities(silent = false) {
+  fetchingAll.value = true;
+  try {
+    const result = await api.request<{
+      ok: boolean;
+      latency_ms: number;
+      message: string;
+      entities: EntityDetail[];
+    }>("/api/v1/admin/config/integrations/home-assistant/entities", { method: "POST" });
+    if (result.ok) {
+      allEntities.value = result.entities;
+      saveCachedEntities(result.entities);
+      if (!silent) ElMessage.success(result.message);
+    } else {
+      ElMessage.error(result.message);
+    }
+  } catch (error) {
+    ElMessage.error(error instanceof Error ? error.message : "获取 HA 设备列表失败");
+  } finally {
+    fetchingAll.value = false;
   }
 }
 
@@ -272,7 +359,7 @@ function addSelected() {
   if (!ha.value) return;
   const ids = new Set(selected.value);
   const existing = new Set(ha.value.entities.map((item) => item.entity_id));
-  for (const item of testResult.value?.entities ?? []) {
+  for (const item of allEntities.value) {
     if (!ids.has(item.entity_id) || existing.has(item.entity_id)) continue;
     ha.value.entities.push({
       entity_id: item.entity_id,
@@ -307,6 +394,61 @@ async function removeEntity(index: number) {
   } catch { /* user cancelled */ }
 }
 
+async function clearWhitelist() {
+  if (!ha.value) return;
+  try {
+    await ElMessageBox.confirm("清空后所有实体的读取、控制和主动感知权限将被撤销。", "清空白名单", { type: "warning" });
+    ha.value.entities = [];
+    ElMessage.success("白名单已清空");
+  } catch { /* user cancelled */ }
+}
+
+function defaultActionsForDomain(domain: string): Action[] {
+  if (domain === "light" || domain === "switch") return ["turn_on", "turn_off", "toggle"];
+  if (domain === "climate") return ["turn_on", "turn_off", "set_temperature"];
+  return [];
+}
+
+function autoAuthorize() {
+  if (!ha.value) return;
+  const ignoredDomains = new Set([
+    "automation", "script", "scene",
+    "input_boolean", "input_text", "input_number", "input_select", "input_datetime", "input_button",
+    "timer", "counter", "zone", "person", "sun", "weather",
+    "update", "persistent_notification", "group",
+  ]);
+  const existing = new Set(ha.value.entities.map((item) => item.entity_id));
+  let added = 0;
+  for (const item of allEntities.value) {
+    if (existing.has(item.entity_id)) continue;
+    if (ignoredDomains.has(item.domain)) continue;
+    const actions = defaultActionsForDomain(item.domain);
+    ha.value.entities.push({
+      entity_id: item.entity_id,
+      display_name: item.friendly_name,
+      aliases: [],
+      read_allowed: true,
+      history_allowed: false,
+      history_max_hours: 24,
+      allowed_actions: actions,
+      confirmation_required_actions: [],
+      proactive_rules: [{
+        rule_id: "device_offline",
+        kind: "device_offline",
+        enabled: true,
+        threshold: null,
+        duration_seconds: 120,
+        cooldown_minutes: 240,
+        message: null,
+      }],
+      privacy_level: "L1",
+      allowed_attributes: ["friendly_name", "device_class", "unit_of_measurement"],
+    });
+    added++;
+  }
+  ElMessage.success(`已自动授权 ${added} 个实体`);
+}
+
 onMounted(load);
 </script>
 
@@ -314,10 +456,45 @@ onMounted(load);
   <section v-loading="loading" class="ha-workspace">
     <div class="hero panel">
       <div><div class="eyebrow">设备与授权 · Home Assistant</div><h2>HA 实体授权</h2><p>统一管理实体发现、读取、历史、控制、确认和主动感知。未授权能力默认拒绝。</p></div>
-      <div class="actions"><el-button :loading="testing" @click="testConnection">同步 HA 实体</el-button><el-button type="primary" :loading="saving" @click="save">保存并生效</el-button></div>
+      <div class="actions"><el-button :loading="fetchingAll" @click="() => fetchAllEntities()">刷新设备列表</el-button><el-button type="primary" :loading="saving" @click="save">保存并生效</el-button></div>
     </div>
 
     <template v-if="ha">
+      <div v-if="ha.enabled" class="panel discovery">
+        <div class="panel-head"><div><h2>HA 设备总览</h2><p>共 {{ allEntities.length }} 个实体 · 已授权 {{ ha.entities.length }} 个</p></div><el-button type="primary" :disabled="!selected.length" @click="addSelected">加入授权（{{ selected.length }}）</el-button></div>
+        <div class="filter-bar">
+          <el-input v-model="keyword" clearable placeholder="按名称、实体 ID、区域或类型搜索" style="width:260px" />
+          <el-select v-model="areaFilter" clearable placeholder="全部区域" style="width:160px">
+            <el-option v-for="area in areaOptions" :key="area" :label="area" :value="area" />
+          </el-select>
+          <el-select v-model="domainFilter" clearable placeholder="全部类型" style="width:160px">
+            <el-option v-for="domain in domainOptions" :key="domain" :label="domain" :value="domain" />
+          </el-select>
+        </div>
+        <el-table :data="filteredEntities" max-height="480" @selection-change="rows => selected = rows.map((row: EntityDetail) => row.entity_id)">
+          <el-table-column type="selection" width="48" />
+          <el-table-column label="名称" min-width="180">
+            <template #default="{ row }">
+              <span>{{ row.friendly_name }}</span>
+              <small v-if="authorizedIds.has(row.entity_id)" class="auth-badge">已授权</small>
+            </template>
+          </el-table-column>
+          <el-table-column prop="entity_id" label="实体 ID" min-width="240" />
+          <el-table-column label="区域" width="130">
+            <template #default="{ row }">
+              <el-tag v-if="row.area" size="small" type="info" effect="plain">{{ row.area }}</el-tag>
+              <span v-else class="muted">—</span>
+            </template>
+          </el-table-column>
+          <el-table-column label="类型" width="110">
+            <template #default="{ row }">
+              <el-tag size="small" effect="plain">{{ row.domain }}</el-tag>
+            </template>
+          </el-table-column>
+          <el-table-column prop="state" label="状态" width="100" />
+        </el-table>
+      </div>
+
       <div class="panel proactive-global">
         <div class="panel-head"><div><h2>主动感知总策略</h2><p>只主动发送建议和安全提醒，不会由 HA 事件自动控制设备。</p></div><div class="actions"><el-button :loading="testingProactive" @click="testProactive">发送测试提醒</el-button><el-switch v-model="ha.proactive_enabled" active-text="启用主动感知" /></div></div>
         <div class="form-grid">
@@ -328,16 +505,8 @@ onMounted(load);
         </div>
       </div>
 
-      <div v-if="testResult?.ok" class="panel discovery">
-        <div class="panel-head"><div><h2>发现的实体</h2><p>{{ testResult.message }} · {{ Math.round(testResult.latency_ms) }} ms</p></div><el-button type="primary" :disabled="!selected.length" @click="addSelected">加入授权（{{ selected.length }}）</el-button></div>
-        <el-input v-model="search" clearable placeholder="按名称、实体 ID 或类型搜索" />
-        <el-table :data="discovered" max-height="360" @selection-change="rows => selected = rows.map((row: DiscoveredEntity) => row.entity_id)">
-          <el-table-column type="selection" width="48" /><el-table-column prop="friendly_name" label="名称" min-width="180" /><el-table-column prop="entity_id" label="实体 ID" min-width="280" /><el-table-column prop="domain" label="类型" width="110" /><el-table-column prop="state" label="状态" width="120" />
-        </el-table>
-      </div>
-
       <div class="panel">
-        <div class="panel-head"><div><h2>实体权限白名单</h2><p>每个实体独立配置最小权限和主动规则。</p></div><el-tag effect="plain">{{ ha.entities.length }} 个实体</el-tag></div>
+        <div class="panel-head"><div><h2>实体权限白名单</h2><p>每个实体独立配置最小权限和主动规则。</p></div><div class="actions"><el-button size="small" type="danger" plain @click="clearWhitelist">清空白名单</el-button><el-button size="small" type="primary" @click="autoAuthorize">智能授权</el-button><el-tag effect="plain">{{ ha.entities.length }} 个实体</el-tag></div></div>
         <el-empty v-if="!ha.entities.length" description="请先同步 HA 并加入需要授权的实体" />
         <div v-for="(entity, index) in ha.entities" :key="entity.entity_id" class="entity-card">
           <div class="entity-head"><div><strong>{{ entity.display_name }}</strong><code>{{ entity.entity_id }}</code></div><div class="actions"><el-switch v-model="entity.read_allowed" active-text="允许读取" /><el-button size="small" type="danger" plain @click="removeEntity(index)">移除</el-button></div></div>
@@ -370,5 +539,5 @@ onMounted(load);
 </template>
 
 <style scoped>
-.ha-workspace{padding:20px 24px 28px;display:grid;gap:16px;align-content:start}.panel{background:#fff;border:1px solid var(--line);border-radius:14px;padding:18px}.hero,.panel-head,.entity-head,.rules-head,.actions{display:flex;align-items:center;justify-content:space-between;gap:14px}.hero{background:linear-gradient(135deg,#fff,#f1f5ff)}h2,p{margin:0}.hero h2,.panel h2{font-size:16px}.hero p,.panel-head p{margin-top:7px;color:var(--muted);font-size:12px}.eyebrow{margin-bottom:7px;color:var(--accent);font-size:11px;font-weight:700}.actions{justify-content:flex-end}.form-grid{display:grid;grid-template-columns:repeat(4,minmax(160px,1fr));gap:14px}.form-grid.three{grid-template-columns:repeat(3,minmax(180px,1fr))}.form-grid label,.rule-row label{display:grid;gap:6px;color:var(--muted);font-size:11px}.form-grid small,.rule-row small,.rules-head small{color:var(--muted);font-size:10px}.wide{grid-column:1/-1}.discovery{display:grid;gap:14px}.entity-card{display:grid;gap:16px;margin-top:14px;padding:16px;border:1px solid #e5e9f2;border-radius:12px;background:#fbfcff}.entity-head>div:first-child{display:grid;gap:5px}.entity-head code{color:var(--muted);font-size:10px}.rules{display:grid;gap:10px;padding-top:14px;border-top:1px dashed #dfe4ee}.rules-head>div{display:grid;gap:4px}.rule-row{display:grid;grid-template-columns:auto minmax(150px,1fr) repeat(3,minmax(105px,auto)) minmax(200px,1.4fr) auto;gap:10px;align-items:end;padding:11px;border:1px solid #e7ebf3;border-radius:9px;background:#fff}@media(max-width:1100px){.form-grid,.form-grid.three{grid-template-columns:repeat(2,minmax(160px,1fr))}.rule-row{grid-template-columns:repeat(2,minmax(0,1fr))}}@media(max-width:700px){.hero,.panel-head,.entity-head{align-items:flex-start;flex-direction:column}.form-grid,.form-grid.three,.rule-row{grid-template-columns:1fr}.wide{grid-column:auto}}
+.ha-workspace{padding:20px 24px 28px;display:grid;gap:16px;align-content:start}.panel{background:#fff;border:1px solid var(--line);border-radius:14px;padding:18px}.hero,.panel-head,.entity-head,.rules-head,.actions{display:flex;align-items:center;justify-content:space-between;gap:14px}.hero{background:linear-gradient(135deg,#fff,#f1f5ff)}h2,p{margin:0}.hero h2,.panel h2{font-size:16px}.hero p,.panel-head p{margin-top:7px;color:var(--muted);font-size:12px}.eyebrow{margin-bottom:7px;color:var(--accent);font-size:11px;font-weight:700}.actions{justify-content:flex-end}.form-grid{display:grid;grid-template-columns:repeat(4,minmax(160px,1fr));gap:14px}.form-grid.three{grid-template-columns:repeat(3,minmax(180px,1fr))}.form-grid label,.rule-row label{display:grid;gap:6px;color:var(--muted);font-size:11px}.form-grid small,.rule-row small,.rules-head small{color:var(--muted);font-size:10px}.wide{grid-column:1/-1}.discovery{display:grid;gap:14px}.filter-bar{display:flex;gap:10px;flex-wrap:wrap;align-items:center}.auth-badge{display:inline-block;margin-left:6px;padding:1px 6px;border-radius:4px;background:#e8f5e9;color:#2e7d32;font-size:10px;font-weight:600}.muted{color:var(--muted);font-size:12px}.entity-card{display:grid;gap:16px;margin-top:14px;padding:16px;border:1px solid #e5e9f2;border-radius:12px;background:#fbfcff}.entity-head>div:first-child{display:grid;gap:5px}.entity-head code{color:var(--muted);font-size:10px}.rules{display:grid;gap:10px;padding-top:14px;border-top:1px dashed #dfe4ee}.rules-head>div{display:grid;gap:4px}.rule-row{display:grid;grid-template-columns:auto minmax(150px,1fr) repeat(3,minmax(105px,auto)) minmax(200px,1.4fr) auto;gap:10px;align-items:end;padding:11px;border:1px solid #e7ebf3;border-radius:9px;background:#fff}@media(max-width:1100px){.form-grid,.form-grid.three{grid-template-columns:repeat(2,minmax(160px,1fr))}.rule-row{grid-template-columns:repeat(2,minmax(0,1fr))}}@media(max-width:700px){.hero,.panel-head,.entity-head{align-items:flex-start;flex-direction:column}.form-grid,.form-grid.three,.rule-row{grid-template-columns:1fr}.wide{grid-column:auto}.filter-bar{flex-direction:column;align-items:stretch}}
 </style>

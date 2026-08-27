@@ -71,6 +71,45 @@ class HomeAssistantClient:
                 states.append(state)
         return tuple(states)
 
+    async def fetch_entity_areas(self) -> dict[str, str]:
+        """通过 HA Template API 获取实体 ID 到区域名称的映射。"""
+        template = (
+            "{% set ns = namespace(areas={}) %}"
+            "{% for state in states %}"
+            "{% set area = area_name(state.entity_id) %}"
+            "{% if area %}"
+            "{% set _ = ns.areas.update({state.entity_id: area}) %}"
+            "{% endif %}"
+            "{% endfor %}"
+            "{{ ns.areas | tojson }}"
+        )
+        try:
+            response = await self._http.post(
+                "/api/template",
+                headers={**self._headers, "Content-Type": "application/json"},
+                json={"template": template},
+            )
+        except httpx.TimeoutException as error:
+            raise HomeAssistantError("ha_timeout") from error
+        except httpx.HTTPError as error:
+            raise HomeAssistantError("ha_offline") from error
+        _raise_for_status(response)
+        text = response.text.strip()
+        # HA template endpoint returns quoted JSON string inside HTML or plain text
+        # Remove surrounding quotes if present
+        if text.startswith('"') and text.endswith('"'):
+            try:
+                text = json.loads(text)
+            except ValueError:
+                pass
+        try:
+            payload = json.loads(text)
+        except ValueError as error:
+            raise HomeAssistantError("ha_response_invalid") from error
+        if not isinstance(payload, dict):
+            raise HomeAssistantError("ha_response_invalid")
+        return {str(k): str(v) for k, v in payload.items() if isinstance(k, str) and isinstance(v, str)}
+
     async def call_service(
         self,
         domain: str,
