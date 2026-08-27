@@ -23,7 +23,7 @@
 
 ### 0. 当前功能主线
 
-- [ ] **当前功能：macOS 系统内容选择器（代码闭环已完成，待原生真机验收）。** `capture_screen` 新增 `target=interactive`：Desktop 弹出系统选择器由用户当场框选/选窗（Esc 取消）；Hub 命令 TTL 放宽到 115s、终态等待 116s，设备端选择器 100s 超时自动终止；Rust 结构化错误码（picker_cancelled/picker_timeout 等）经 command.reason_code 透传到工具结果；幂等键纳入 target 支持同回合混用与取消后跨回合重试。TCC、锁屏、5 分钟单次授权与 consume-on-read 门禁全部复用。验收以一次真实聊天发起、系统选择窗口、视觉回答、原图销毁的真机全链为准。
+- [ ] **当前功能：macOS 系统内容选择器（代码闭环 + 隔离 E2E 已完成，剩真机人工环节）。** `capture_screen` 新增 `target=interactive`：Desktop 弹出系统选择器由用户当场框选/选窗（Esc 取消）；Hub 命令 TTL 115s、终态等待 116s，设备端选择器 100s 超时自动终止；Rust 结构化错误码（picker_cancelled/picker_timeout 等）经 command.reason_code 透传；幂等键纳入 target。已在隔离环境（8001 端口 + SQLite + 真实 GLM/视觉配置 + 虚拟桌面设备）完成两条 E2E：真实聊天 → interactive 命令（线上确认 TTL 115s 与幂等键）→ PNG 资产上传 → GLM 视觉准确描述合成图 → 回答回注；以及 picker_cancelled 透传 → 模型优雅解释并主动提出重试。剩余真机人工环节：Desktop 窗口点「允许下一次截图」、真实 `screencapture -i` 框选/取消、原图销毁现场确认（与 active_window 真机验收同批）。
 - [ ] **随后功能：ESP32 + LD2410 第一硬件闭环。** 单存在传感器接入现有 MQTT → `EphemeralSignal` → Perception → Proactive Pipeline，开始 7 天免打扰与误触发验收。
 - [ ] **暂不作为下一功能：Tauri 透明桌宠。** Live2D Web 最小壳已经可用，但桌宠仍需等待 M2 首音频和打断门槛达标；VRM、换装、AI 形象工厂和更多主题也继续后置。
 
@@ -50,7 +50,8 @@
 - [x] `capture_screen` 主显示器闭环：目标解析、签名命令、终态等待、临时图片 consume-on-read、视觉分析和文字结果回注；L1 使用支持工具调用的 dialogue 路由与当前 GLM 视觉，L2 仍强制本地工具模型与本地视觉。
 - [x] `capture_screen(active_window)` 代码闭环：Hub/LLM 契约、Desktop 双端参数校验、macOS 前台应用与 CoreGraphics 活动窗口解析、按窗口 ID 截图和原有隐私门禁复用已落地；Python/TypeScript 回归、`cargo check` 与原生链接通过。
 - [ ] `capture_screen(active_window)` 原生真机验收：在非 Aria 前台窗口上完成一次真实聊天工具全链，确认窗口定位、阴影剔除、临时资产销毁与视觉回答。
-- [x] 系统内容选择器代码闭环：`target=interactive` 复用 screen.capture 命令与 TCC/锁屏/临时授权门禁，`screencapture -i` 交互框选、100s 选择器超时、用户取消（Esc 无产物即 picker_cancelled）、命令 TTL 115s/等待 116s、结构化错误码透传与幂等键按 target 隔离均已落地；Python/TypeScript 回归、Desktop typecheck/build 与 `cargo check` 通过。原生真机验收待做（与 active_window 验收可同批进行）。
+- [x] 系统内容选择器代码闭环与隔离 E2E：`target=interactive` 复用 screen.capture 命令与 TCC/锁屏/临时授权门禁，`screencapture -i` 交互框选、100s 选择器超时、用户取消（Esc 无产物即 picker_cancelled）、命令 TTL 115s/等待 116s、结构化错误码透传与幂等键按 target 隔离均已落地。隔离 E2E（真实 GLM 对话 + 虚拟桌面设备 + 真实视觉端点）验证：模型正确选择 interactive 工具、线上 TTL 115s、资产上传与视觉回答回注、picker_cancelled 优雅透传；同时发现弱祈使句下模型可能只描述动作而不调用工具（提示词/模型行为，非代码缺陷，真机验收时注意话术）。原生真机人工环节待做（与 active_window 验收同批）。
+- [x] 修复迁移 SQLite 兼容 bug：`0020/bb15882faef4/0022` 迁移中 `server_default=sa.text("now()")` 在 SQLite 上插入即崩（PG 正常；单测走 `create_all` 未暴露），统一改为方言感知的 `sa.func.now()`；真实 PostgreSQL 已应用的迁移不受影响，SQLite 从空库升级 + 启动种子写入已实测通过。
 - [x] 浏览器扩展真机闭环：Chrome MV3 配对/签名长连接、`browser.current_tab.read/capture`、受限 JSON/图片临时上传与 Hub `inspect_webpage` 已接入；真 Chrome 已验证单一稳定连接、正文读取和当前页截图。
 - [ ] 隐私策略：当前按用户决定先允许 L1 屏幕截图交给 GLM 视觉；L2 仍强制本地视觉，浏览器读取仍保持 L2。Desktop 已实现锁屏自动拒绝和“5 分钟内仅下一次截图”的内存态临时授权，待 macOS 真机锁屏/解锁验收后勾选。
 - [x] Web 对话跨终端验收：L2 会话发起“看一下我的电脑网页”，Hub 调用本地 Qwen 的 `inspect_webpage`，Browser Bridge 读取当前页并把结果返回原会话。
@@ -140,6 +141,7 @@
 
 ## 4. 最新质量基线
 
+- 2026-08-27 选择器隔离 E2E 与迁移修复：迁移 `now()` 默认值修复后 Ruff、严格 mypy、Avatar/Theme/Jobs 定向 pytest 通过；隔离环境（8001 + SQLite + 复制的真实模型配置 + 虚拟桌面设备）两条 E2E 全部闭环——interactive 命令线上 TTL 115s、幂等键含 target、PNG 资产上传后 GLM 视觉准确描述、picker_cancelled 透传后模型优雅重试。已知观察：弱祈使句下模型可能只叙述不调用工具；Desktop 真机 .app 本次 WS 鉴权未完成（last_seen 不随连接推进，待用户查看窗口状态）。
 - 2026-08-27 系统内容选择器代码闭环：Ruff、严格 mypy、非 soak 全量 pytest **532 通过 / 0 失败**（含 4 个新增 interactive 回归）、Desktop vitest **9 通过**、Desktop typecheck/build、`cargo check` 与 `git diff --check` 全部通过；真机验收（真实聊天 → 系统选择器 → 视觉回答 → 原图销毁）待用户在场执行。
 - 2026-08-27 质量闸门恢复：在制批次分 9 个逻辑提交入库后，Ruff（含 `allowed-confusables` 白名单全角标点）、严格 mypy（132→214 source files）、Admin/Chat/Shared typecheck 与 production build 全部通过；非 soak 全量 pytest **532 通过 / 0 失败**（新增 conftest autouse fixture 修复 3 个既有全局 Admin token 状态污染失败；ruff/mypy 版本随本批次升级，TurnCoordinator `create_turn` 已对齐真实 `ChatService.start_turn` 契约，原 `input_message_id` 参数为运行时 TypeError 隐患）；Alembic 空库升级到单 head `0022_ui_theme`、`git diff --check` 通过。
 - 2026-08-27 当前在制分支：Avatar/Theme 定向 pytest **25 通过**；Shared 与 Chat TypeScript typecheck 通过；Alembic 为单 head `0022_ui_theme`；文档同步后 `git diff --check` 通过。发布闸门尚未恢复：全仓 Ruff 报 **163** 项，严格 mypy 报 **38** 项（5 个文件），Admin typecheck 报 **4** 项；因此此前“全量通过”只代表对应历史快照，不能作为当前分支结论。

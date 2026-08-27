@@ -41,7 +41,7 @@ def upgrade() -> None:
             "created_at",
             sa.DateTime(timezone=True),
             nullable=False,
-            server_default=sa.text("now()"),
+            server_default=sa.func.now(),
         ),
         sa.PrimaryKeyConstraint("lease_type"),
     )
@@ -58,7 +58,7 @@ def upgrade() -> None:
         sa.Column("confidence", sa.Float(), nullable=True),
         sa.Column("priority", sa.Integer(), nullable=False, server_default="50"),
         sa.Column(
-            "starts_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.text("now()")
+            "starts_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.func.now()
         ),
         sa.Column("expires_at", sa.DateTime(timezone=True), nullable=True),
         sa.Column("superseded_at", sa.DateTime(timezone=True), nullable=True),
@@ -66,7 +66,7 @@ def upgrade() -> None:
             "created_at",
             sa.DateTime(timezone=True),
             nullable=False,
-            server_default=sa.text("now()"),
+            server_default=sa.func.now(),
         ),
         sa.PrimaryKeyConstraint("id"),
     )
