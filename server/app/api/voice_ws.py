@@ -27,6 +27,7 @@ from app.chat import ChatService, PendingTurn, TurnCancelled
 from app.ids import uuid7
 from app.llm import LLMRouteExhausted
 from app.privacy import EgressBlocked
+from app.runtime import TurnCoordinator
 from app.schemas import PrivacyLevel
 from app.tools import ClientLocation, ClientLocationPayload
 from app.voice import (
@@ -94,6 +95,7 @@ class VoiceSession:
     collecting: bool = False
     utterance: bytearray = field(default_factory=bytearray)
     generation_id: UUID | None = None
+    turn_id: UUID | None = None
     turn_committed: bool = False
     turn_task: asyncio.Task[None] | None = None
     tts_unavailable_notified: bool = False
@@ -114,8 +116,10 @@ class VoiceWebSocketManager:
         service: ChatService,
         *,
         voice_source: VoiceProviderSource,
+        turn_coordinator: TurnCoordinator | None = None,
     ) -> None:
         self._service = service
+        self._turns = turn_coordinator
         self._voice_source = voice_source
         self._latency_metrics = VoiceLatencyMetrics()
         self._sessions: dict[int, VoiceSession] = {}
@@ -417,6 +421,7 @@ class VoiceWebSocketManager:
         started = time.perf_counter()
         transcript_at = first_token_at = first_audio_at = 0.0
         pending: PendingTurn | None = None
+        lease_device_id: UUID | None = None
         session.turn_committed = False
         try:
             try:
@@ -460,6 +465,17 @@ class VoiceWebSocketManager:
             )
             generation_id = pending.generation_id
             session.generation_id = generation_id
+            session.turn_id = pending.turn_id
+            # 状态机与音频租约
+            if self._turns is not None:
+                await self._turns.transition(pending.turn_id, 1, "thinking")
+                # 获取音频输出租约（device_id 临时生成，后续与设备注册表对齐）
+                lease_device_id = uuid7()
+                await self._turns.acquire_audio_lease(
+                    lease_device_id,
+                    generation_id,
+                    ttl_seconds=60,
+                )
             await self._send(
                 session,
                 "turn.accepted",
@@ -587,6 +603,9 @@ class VoiceWebSocketManager:
                     "content": turn.assistant_message.content,
                 },
             )
+            # 状态机：streaming -> completed
+            if self._turns is not None:
+                await self._turns.transition(pending.turn_id, 3, "completed")
             self._log_metrics(
                 session,
                 generation_id,
@@ -596,13 +615,18 @@ class VoiceWebSocketManager:
                 first_audio_at,
             )
         except (TurnCancelled, asyncio.CancelledError):
-            if pending is not None and not session.turn_committed:
-                await self._send(
-                    session,
-                    "turn.cancelled",
-                    {"generation_id": str(pending.generation_id)},
-                )
+            if pending is not None:
+                if self._turns is not None:
+                    await self._turns.transition(pending.turn_id, 2, "cancelled", reason="user_cancelled")
+                if not session.turn_committed:
+                    await self._send(
+                        session,
+                        "turn.cancelled",
+                        {"generation_id": str(pending.generation_id)},
+                    )
         except LLMRouteExhausted as error:
+            if pending is not None and self._turns is not None:
+                await self._turns.transition(pending.turn_id, 2, "failed")
             logger.error(
                 "voice turn model route failed generation_id=%s reason=%s",
                 pending.generation_id if pending else None,
@@ -610,6 +634,8 @@ class VoiceWebSocketManager:
             )
             await self._send_failure(session, pending, error.reason_code)
         except EgressBlocked as error:
+            if pending is not None and self._turns is not None:
+                await self._turns.transition(pending.turn_id, 2, "failed")
             logger.warning(
                 "voice turn egress blocked generation_id=%s reason=%s",
                 pending.generation_id if pending else None,
@@ -627,6 +653,9 @@ class VoiceWebSocketManager:
             session.generation_id = None
             session.turn_committed = False
             session.turn_task = None
+            # 释放音频租约
+            if self._turns is not None and lease_device_id is not None:
+                await self._turns.release_audio_lease(lease_device_id)
 
     async def _interrupt(self, session: VoiceSession, *, reason: str) -> None:
         started = time.perf_counter()
@@ -647,6 +676,13 @@ class VoiceWebSocketManager:
                 int((time.perf_counter() - started) * 1000)
             )
             return
+        # 若配置了 TurnCoordinator，优先走状态机驱动的打断
+        if self._turns is not None and session.turn_id is not None:
+            await self._turns.interrupt(
+                session.turn_id,
+                user_id=session.principal.user_id,
+                reason=reason,
+            )
         changed = await self._service.cancel_turn(
             generation_id, user_id=session.principal.user_id
         )
@@ -743,10 +779,13 @@ def create_voice_websocket_router(
     auth_service: AuthService,
     *,
     voice_source: VoiceProviderSource,
+    turn_coordinator: TurnCoordinator | None = None,
     wake_word_factory: Callable[[], WakeWordDetector | None] = create_default_wake_word,
 ) -> tuple[APIRouter, VoiceWebSocketManager]:
     router = APIRouter(tags=["voice-websocket"])
-    manager = VoiceWebSocketManager(service, voice_source=voice_source)
+    manager = VoiceWebSocketManager(
+        service, voice_source=voice_source, turn_coordinator=turn_coordinator
+    )
 
     @router.get("/api/v1/meta/voice/latency")
     async def voice_latency() -> dict[str, object]:

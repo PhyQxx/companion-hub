@@ -16,6 +16,7 @@ from app.chat import ChatService, MessageView, PendingTurn, TurnCancelled
 from app.ids import uuid7
 from app.llm import LLMRouteExhausted
 from app.privacy import EgressBlocked
+from app.runtime import TurnCoordinator
 from app.schemas import PrivacyLevel
 from app.schemas.common import StrictModel
 from app.tools import ClientLocation, ClientLocationPayload
@@ -73,8 +74,13 @@ class ChatConnection:
 
 
 class ChatWebSocketManager:
-    def __init__(self, service: ChatService) -> None:
+    def __init__(
+        self,
+        service: ChatService,
+        turn_coordinator: TurnCoordinator | None = None,
+    ) -> None:
         self._service = service
+        self._turns = turn_coordinator
         self._connections: dict[int, ChatConnection] = {}
         self._tasks: dict[UUID, asyncio.Task[None]] = {}
 
@@ -138,6 +144,9 @@ class ChatWebSocketManager:
             current_task = asyncio.current_task()
             if current_task is not None:
                 self._tasks[pending.generation_id] = current_task
+            # 状态机：accepted -> thinking
+            if self._turns is not None:
+                await self._turns.transition(pending.turn_id, 1, "thinking")
             await self.broadcast(
                 connection.principal.user_id,
                 frame.conversation_id,
@@ -186,6 +195,9 @@ class ChatWebSocketManager:
                     ),
                 )
 
+            # 状态机：thinking -> streaming
+            if self._turns is not None:
+                await self._turns.transition(pending.turn_id, 2, "streaming")
             turn = await self._service.run_stream(pending, on_delta, on_tool_event)
             reply_meta = (turn.assistant_message.decision_meta or {}).get("agent_reply")
             if isinstance(reply_meta, dict):
@@ -209,8 +221,13 @@ class ChatWebSocketManager:
                     generation_id=pending.generation_id,
                 ),
             )
+            # 状态机：streaming -> completed
+            if self._turns is not None:
+                await self._turns.transition(pending.turn_id, 3, "completed")
         except (TurnCancelled, asyncio.CancelledError):
             if pending is not None:
+                if self._turns is not None:
+                    await self._turns.transition(pending.turn_id, 2, "cancelled", reason="user_cancelled")
                 await self.broadcast(
                     connection.principal.user_id,
                     frame.conversation_id,
@@ -223,6 +240,8 @@ class ChatWebSocketManager:
                     ),
                 )
         except LLMRouteExhausted as error:
+            if pending is not None and self._turns is not None:
+                await self._turns.transition(pending.turn_id, 2, "failed")
             logger.error(
                 "chat websocket model route failed conversation_id=%s generation_id=%s "
                 "reason=%s failures=[%s]",
@@ -240,6 +259,8 @@ class ChatWebSocketManager:
                 error.reason_code,
             )
         except EgressBlocked as error:
+            if pending is not None and self._turns is not None:
+                await self._turns.transition(pending.turn_id, 2, "failed")
             logger.warning(
                 "chat websocket model egress blocked conversation_id=%s generation_id=%s reason=%s",
                 frame.conversation_id,
@@ -253,7 +274,8 @@ class ChatWebSocketManager:
                 str(error),
             )
         except Exception:
-            # 前端只拿通用 reason_code; 真实异常必须落日志, 否则线上无法定位.
+            if pending is not None and self._turns is not None:
+                await self._turns.transition(pending.turn_id, 2, "failed")
             logger.exception("chat generation failed for conversation %s", frame.conversation_id)
             await self._send_failure(connection, frame, pending, "generation_failed")
         finally:
@@ -313,10 +335,12 @@ class ChatWebSocketManager:
 
 
 def create_chat_websocket_router(
-    service: ChatService, auth_service: AuthService
+    service: ChatService,
+    auth_service: AuthService,
+    turn_coordinator: TurnCoordinator | None = None,
 ) -> tuple[APIRouter, ChatWebSocketManager]:
     router = APIRouter(tags=["chat-websocket"])
-    manager = ChatWebSocketManager(service)
+    manager = ChatWebSocketManager(service, turn_coordinator=turn_coordinator)
 
     @router.websocket("/ws/chat")
     async def chat_socket(websocket: WebSocket) -> None:
