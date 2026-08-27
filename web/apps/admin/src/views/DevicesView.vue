@@ -246,7 +246,18 @@ async function saveDevice() {
     emit("status", `${editForm.name} 已更新`);
     await loadDevices();
   } catch (error) {
-    emit("status", error instanceof Error ? error.message : "设备更新失败", true);
+    const message = error instanceof Error ? error.message : "设备更新失败";
+    if (/revision/i.test(message)) {
+      // 设备心跳期间能力声明可能变化导致版本冲突：刷新版本号但保留正在编辑的内容
+      await loadDevices();
+      const fresh = devices.value.find((item) => item.id === editing.value?.id);
+      if (fresh) {
+        editing.value = fresh;
+        emit("status", "设备心跳期间能力有更新，版本号已刷新，请再次点击保存", true);
+        return;
+      }
+    }
+    emit("status", message, true);
   }
 }
 
