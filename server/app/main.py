@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import os
 from collections.abc import AsyncIterator
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 from pathlib import Path
 from typing import cast
 
@@ -15,13 +15,17 @@ from app import __version__
 from app.adapters import AdapterRegistry
 from app.adapters.builtin import create_builtin_registry
 from app.api import (
+    create_admin_avatar_router,
     create_admin_config_router,
     create_admin_dashboard_router,
+    create_admin_jobs_router,
     create_admin_memory_router,
     create_admin_persona_router,
     create_admin_security_router,
+    create_admin_theme_router,
     create_admin_timeline_router,
     create_auth_router,
+    create_avatar_router,
     create_chat_router,
     create_chat_websocket_router,
     create_cognition_router,
@@ -30,10 +34,14 @@ from app.api import (
     create_device_routers,
     create_logs_stream_router,
     create_model_capability_router,
+    create_theme_router,
     create_voice_websocket_router,
 )
+from app.api.admin_config import set_runtime_admin_token
 from app.api.events import create_event_router
+from app.appearance import ThemeStore
 from app.auth import AuthService
+from app.avatar import AvatarAssetImporter, AvatarStore
 from app.bus import DispatcherWorker, EventPublisher, LocalEventPublisher
 from app.chat import ChatService, CompositeRuntimeCapabilityProvider, RuntimeCapabilityProvider
 from app.cognition import (
@@ -55,14 +63,15 @@ from app.home_assistant import (
     HomeGetHistoryTool,
     HomeGetStateTool,
 )
+from app.jobs import AssetStore, JobEngine
 from app.memory import LlmMemoryExtractor, MemoryExtractor, MemoryRetriever, MemoryStore
 from app.model_capabilities import CapabilityModelService
-from app.api.admin_config import set_runtime_admin_token
-from app.observability import apply_observability, configure_logging, get_log_broadcast_handler
+from app.observability import apply_observability, configure_logging
 from app.output import ProactiveDeliveryService
 from app.output.proactive import DesktopCommandGateway
 from app.perception import PerceptionPipeline, PerceptionStore, ProactivePolicy
 from app.persona import PersonaStore
+from app.runtime import TurnCoordinator
 from app.timeline import HistoryRecallService, TimelineStore
 from app.tools import ToolHandler
 from app.tools.browser import InspectWebpageTool
@@ -86,10 +95,8 @@ def create_app(
 
     broadcast_handler = configure_logging(os.getenv("ARIA_LOG_LEVEL", "INFO"))
     if broadcast_handler is not None:
-        try:
+        with suppress(RuntimeError):
             broadcast_handler.set_event_loop(asyncio.get_running_loop())
-        except RuntimeError:
-            pass
     database_url = os.getenv("ARIA_DATABASE_URL")
     runtime_database = database or (create_database(database_url) if database_url else None)
     owns_database = database is None and runtime_database is not None
@@ -139,6 +146,23 @@ def create_app(
     device_command_store = (
         DeviceCommandStore(runtime_database) if runtime_database is not None else None
     )
+    job_engine = JobEngine(runtime_database) if runtime_database is not None else None
+    asset_store = (
+        AssetStore(runtime_database, Path(os.getenv("ARIA_ASSET_DIR", "./assets")))
+        if runtime_database is not None
+        else None
+    )
+    avatar_store = AvatarStore(runtime_database) if runtime_database is not None else None
+    avatar_upload_root = Path(
+        os.getenv("ARIA_AVATAR_ASSET_DIR", "./assets/avatar-uploads")
+    ).resolve()
+    avatar_upload_root.mkdir(parents=True, exist_ok=True)
+    avatar_importer = (
+        AvatarAssetImporter(avatar_upload_root, avatar_store)
+        if avatar_store is not None
+        else None
+    )
+    theme_store = ThemeStore(runtime_database) if runtime_database is not None else None
     cognitive_store = CognitiveStore(runtime_database) if runtime_database is not None else None
     cognitive_cycle = (
         CognitiveCycle(
@@ -209,6 +233,10 @@ def create_app(
             await home_assistant_manager.start()
         if mqtt_client is not None:
             await mqtt_client.start()
+        if avatar_store is not None:
+            await avatar_store.load_builtin_packs()
+        if theme_store is not None:
+            await theme_store.load_builtin_themes()
         if runtime_chat_service is not None:
             await runtime_chat_service.recover_incomplete_turns()
         if config_watcher is not None:
@@ -252,6 +280,11 @@ def create_app(
     app.state.history_recall_service = history_recall
     app.state.capability_model_service = capability_models
     app.state.home_assistant_manager = home_assistant_manager
+    app.state.job_engine = job_engine
+    app.state.asset_store = asset_store
+    app.state.avatar_store = avatar_store
+    app.state.avatar_importer = avatar_importer
+    app.state.theme_store = theme_store
 
     admin_root = Path(__file__).parent / "admin"
     app.mount("/admin/legacy", StaticFiles(directory=admin_root), name="admin-legacy")
@@ -269,6 +302,38 @@ def create_app(
     chat_dist_assets = chat_dist / "assets"
     if chat_dist_assets.is_dir():
         app.mount("/chat/assets", StaticFiles(directory=chat_dist_assets), name="chat-assets")
+    avatar_assets_root = Path(__file__).parent / "avatar" / "assets"
+    app.mount(
+        "/api/v1/avatar-assets",
+        StaticFiles(directory=avatar_assets_root),
+        name="avatar-assets",
+    )
+    app.mount(
+        "/api/v1/avatar-user-assets",
+        StaticFiles(directory=avatar_upload_root),
+        name="avatar-user-assets",
+    )
+    # Resolve this at app startup so a newly installed runtime is served after restart/reload.
+    configured_live2d_runtime_dir = os.getenv("ARIA_LIVE2D_RUNTIME_DIR")
+    default_live2d_runtime_dir = (
+        Path.home()
+        / "Library"
+        / "Application Support"
+        / "AriaCompanionHub"
+        / "live2d-runtime"
+        / "current"
+    )
+    live2d_runtime_dir = (
+        Path(configured_live2d_runtime_dir).expanduser()
+        if configured_live2d_runtime_dir
+        else default_live2d_runtime_dir
+    )
+    if live2d_runtime_dir.is_dir():
+        app.mount(
+            "/api/v1/avatar-live2d-runtime",
+            StaticFiles(directory=live2d_runtime_dir.resolve()),
+            name="avatar-live2d-runtime",
+        )
 
     if admin_spa_ready:
 
@@ -385,6 +450,18 @@ def create_app(
                 "content_hash": persona_snapshot.content_hash,
                 "name": persona_snapshot.persona.name,
             }
+            if avatar_store is not None:
+                avatar = await avatar_store.get_default_for_persona(persona_snapshot.version)
+                if avatar is not None:
+                    pack = await avatar_store.get_pack(avatar.pack_id)
+                    result["avatar"] = {
+                        "instance_id": str(avatar.id),
+                        "pack_id": avatar.pack_id,
+                        "name": avatar.name,
+                        "engine": pack.engine if pack is not None else "static",
+                        "customization": avatar.customization,
+                        "assets": pack.manifest.get("assets", {}) if pack is not None else {},
+                    }
         return result
 
     @app.get("/api/v1/meta/adapters", tags=["system"])
@@ -485,6 +562,28 @@ def create_app(
                     admin_token=runtime_admin_token,
                 )
             )
+            if job_engine is not None:
+                app.include_router(
+                    create_admin_jobs_router(
+                        job_engine,
+                        admin_token=runtime_admin_token,
+                    )
+                )
+            if avatar_store is not None:
+                app.include_router(
+                    create_admin_avatar_router(
+                        avatar_store,
+                        admin_token=runtime_admin_token,
+                        asset_importer=avatar_importer,
+                    )
+                )
+            if theme_store is not None:
+                app.include_router(
+                    create_admin_theme_router(
+                        theme_store,
+                        admin_token=runtime_admin_token,
+                    )
+                )
             auth_service = AuthService(runtime_database)
             app.include_router(
                 create_admin_security_router(
@@ -559,19 +658,25 @@ def create_app(
                 capability_provider=capability_provider,
                 device_tools=device_tools,
                 cognitive_cycle=cognitive_cycle,
+                avatar_store=avatar_store,
             )
             app.state.auth_service = auth_service
             app.state.chat_service = runtime_chat_service
             app.include_router(create_auth_router(auth_service, admin_token=runtime_admin_token))
             app.include_router(create_chat_router(runtime_chat_service, auth_service))
+            if avatar_store is not None and persona_store is not None:
+                app.include_router(create_avatar_router(avatar_store, persona_store, auth_service))
+            if theme_store is not None:
+                app.include_router(create_theme_router(theme_store, auth_service))
             if cognitive_store is not None:
                 app.include_router(
                     create_cognition_router(cognitive_store, auth_service, perception_store)
                 )
             if capability_models is not None:
                 app.include_router(create_model_capability_router(capability_models, auth_service))
+            turn_coordinator = TurnCoordinator(runtime_database, runtime_chat_service)
             websocket_router, websocket_manager = create_chat_websocket_router(
-                runtime_chat_service, auth_service
+                runtime_chat_service, auth_service, turn_coordinator=turn_coordinator
             )
             app.state.chat_websocket_manager = websocket_manager
             app.include_router(websocket_router)
@@ -581,6 +686,7 @@ def create_app(
                     runtime_chat_service,
                     auth_service,
                     voice_source=ConfigVoiceSource(runtime_config),
+                    turn_coordinator=turn_coordinator,
                 )
                 app.state.voice_websocket_manager = voice_manager
                 app.include_router(voice_router)

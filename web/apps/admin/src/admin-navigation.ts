@@ -40,6 +40,24 @@ export const adminModules: AdminModule[] = [
     ],
   },
   {
+    key: "avatars",
+    path: "/avatars",
+    label: "形象中心",
+    group: "伴侣核心",
+    tabs: [
+      { key: "gallery", label: "形象库", description: "形象包、实例管理和人格绑定。", state: "ready" },
+    ],
+  },
+  {
+    key: "appearance",
+    path: "/appearance",
+    label: "外观与主题",
+    group: "伴侣核心",
+    tabs: [
+      { key: "themes", label: "主题中心", description: "选择账户主题并同步到聊天端。", state: "ready" },
+    ],
+  },
+  {
     key: "memory",
     path: "/memory",
     label: "记忆与历史",
@@ -117,6 +135,15 @@ export const adminModules: AdminModule[] = [
       { key: "observability", label: "可观测性", description: "日志、Trace、保留期和告警策略。" },
       { key: "storage", label: "存储与备份", description: "配额、备份和恢复演练。" },
       { key: "updates", label: "升级与信息", description: "版本、迁移、更新和系统信息。" },
+    ],
+  },
+  {
+    key: "jobs",
+    path: "/jobs",
+    label: "任务中心",
+    group: "运维治理",
+    tabs: [
+      { key: "list", label: "任务列表", description: "后台任务、租约和状态管理。", state: "ready" },
     ],
   },
 ];

@@ -19,3 +19,12 @@ desktop/src-tauri/target/
 desktop/src-tauri/gen/
 .pnpm-store/
 docs/history-session/
+
+# 本地设计 QA 产物与 agent 会话状态
+.design-qa/
+.zcode/
+design-qa*.png
+design-qa.md
+
+# 运行时资产存储（头像上传/对象/暂存），目录由代码创建
+server/assets/

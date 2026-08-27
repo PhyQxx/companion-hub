@@ -1,6 +1,6 @@
 # Aria 当前任务
 
-> 最后更新：2026-08-26
+> 最后更新：2026-08-27
 > 详细设计入口：[00-文档索引与架构总览.md](./00-文档索引与架构总览.md)
 
 本文件只维护当前执行队列、未完成门槛和最新质量基线。历史交付细节留在对应阶段文档，不在这里重复。
@@ -10,15 +10,28 @@
 | 阶段 | 状态 | 当前结论 |
 |---|---|---|
 | M0～M1 可信文字核心 | 已完成 | 事件、隐私、身份、聊天、Persona、Memory、Timeline 与删除闭环已落地 |
-| P5 文字稳定性闸门 | 使用期未开始 | 自动化通过；14 天从首条有效日志重新起算，见 `docs/32` |
+| P5 文字稳定性闸门 | 使用期未开始 | 14 天从首条有效日志重新起算；当前在制分支须先恢复全量质量闸门，见 `docs/32` |
 | P6 Batch A～C 语音 | 主链完成 | 真浏览器 ASR/LLM/TTS/viseme/打断已打通；延迟继续优化 |
 | M3A 地图/天气第一批 | 已完成 | 查询、定位、卡片、Admin 自检、200 条台账与延迟报告已落地，见 `docs/35` |
 | M3A 多终端与感知 | 进行中 | Browser Bridge 与 macOS Desktop 已通过真机验收；主动输出已接入 Web、macOS 通知和在线语音，活动窗口仍待原生真机验收 |
 | M3B 认知调度闭环 | 已完成（v1） | 被动对话与主动事件已统一进入 World State、Attention、结构化决策、反馈和审计闭环；自主写动作保持关闭 |
-| Admin 信息架构重整 | 进行中 | 领域分组、URL 可恢复二级 Tab 与既有页面映射已落地；待真实浏览器验收 |
-| P6 Batch D Live2D/桌宠 | 等待前置 | M2 延迟达标后再启动 |
+| 形象与主题底座 | 已完成（v1） | 形象包/实例/Persona 绑定、主题同步、自定义立绘与 Live2D 安全导入均已落地 |
+| Admin 信息架构重整 | 已完成（v1） | 领域分组、URL 可恢复二级 Tab、真实数据页与浏览器验收已完成 |
+| P6 Batch D Live2D/桌宠 | Web 最小壳完成 | Live2D Web 运行时、真实模型渲染和语音/情绪控制已接通；Tauri 透明桌宠仍受 M2 门槛约束 |
 
 ## 2. 当前执行队列
+
+### 0. 当前功能主线
+
+- [ ] **下一功能：macOS 系统内容选择器。** 新增用户明示触发的屏幕/窗口选择能力，复用现有 Desktop Command、TCC 权限、临时截图资产和视觉分析回注链；与可无人值守的 `active_window` 明确区分，并补齐用户取消、选择器超时、命令 TTL、锁屏/隐私暂停拒绝和图片 consume-on-read。验收以一次真实聊天发起、系统选择窗口、视觉回答、原图销毁的真机全链为准。
+- [ ] **随后功能：ESP32 + LD2410 第一硬件闭环。** 单存在传感器接入现有 MQTT → `EphemeralSignal` → Perception → Proactive Pipeline，开始 7 天免打扰与误触发验收。
+- [ ] **暂不作为下一功能：Tauri 透明桌宠。** Live2D Web 最小壳已经可用，但桌宠仍需等待 M2 首音频和打断门槛达标；VRM、换装、AI 形象工厂和更多主题也继续后置。
+
+### 0.1 并行收口项（不占用下一功能定义）
+
+- [ ] 恢复在制分支质量闸门：清零 Ruff **163** 项、mypy **38** 项和 Admin TypeScript **4** 项，复跑非 soak 全量 pytest、前端 typecheck/build、Alembic 单 head/空库升级和 `git diff --check`。
+- [ ] 收口当前实现批次：迁移链 `0019 → 0020 → 0021 → bb15882faef4 → 0022` 已确认单 head，空库/现有库升级复验待随质量闸门复跑；`.design-qa/`、`.zcode/`、本地截图、`server/assets/` 运行时上传与授权 SDK/Core 已入 `.gitignore`，在制批次已分 8 个逻辑提交入库。
+- [ ] 写入首条可核验每日日志，启动 P5 连续 14 天文字稳定性观察；M2 语音延迟优化作为并行性能专项推进。
 
 ### A. 多终端设备底座
 
@@ -73,7 +86,8 @@
 - [ ] P5：从首条可核验每日日志开始连续 14 天真实文字使用；期满复跑闸门并定稿 `docs/32`。
 - [ ] M2：评估流式 ASR 与低延迟语音专用 LLM，达到可行下限后重置窗口完成 20 个完整回合 + 20 个打断判卷。
 - [ ] 本地语音质量：校准“小艾/只回答”等音近词；需要时安装并验收 Silero 与 openWakeWord。
-- [ ] P6 Batch D：仅在 M2 首音频 P90 ≤1.8s、打断 P90 ≤300ms 后进入 OLV Live2D 最小壳与 Tauri 桌宠。
+- [x] P6 Batch D Web 最小壳：Live2D ZIP 安全导入、官方 Cubism Web Runtime 动态加载、聊天/Admin 真实模型渲染、viseme/说话/情绪/表情/动作控制与缺少运行时时安全降级均已接通。
+- [ ] P6 Batch D Tauri 桌宠：仅在 M2 首音频 P90 ≤1.8s、打断 P90 ≤300ms 后进入透明置顶窗口、点击穿透、拖拽、性能与多屏验收。
 
 ### F. Admin 信息架构重整
 
@@ -85,6 +99,8 @@
 
 ## 3. 最近完成
 
+- [x] Live2D Web 最小壳与形象导入：`AvatarAssetImporter` 支持静态图片净化和 Live2D ZIP 安全校验，发行包多 runtime 时优先 PRO 并忽略 `.cmo3`/`.can3` 等工程源文件；聊天端和 Admin 通过同源运行时加载真实模型，转发 TTS viseme、说话状态、回复情绪、显式表情和动作指令。官方 Cubism Core 不入库，由本机已授权运行时目录提供；Hiyori 真模型已在聊天三栏界面渲染并完成 1920/1024/720 px 视觉验收。
+- [x] 主题中心 v1：新增 `ui_theme`/`ui_preference` 与 `0022_ui_theme` 迁移，内置“纯净明亮”“静夜紫”和“跟随系统”选择；Admin 新增“外观与主题”工作区，账户偏好经 `/api/v1/admin/ui/*` 保存；聊天端经 `/api/v1/ui/preferences` 登录同步、本机回退、窗口聚焦刷新和同源 `BroadcastChannel` 即时切换；真实 PostgreSQL 已升级到 `0022`，浏览器验证 Admin 保存后 Chat 从浅色即时切到深色并可恢复。
 - [x] M3B 认知调度闭环 v1 文档补齐与 Action/Reflection 代码完善：新增 `docs/37-M3B认知调度闭环设计.md` 系统性阐述六层架构（Semantic Event、World State、Attention、Deliberation、Action、Reflection）数据契约、流程与安全边界；Action Engine 实现 A0～A3 分级执行与结果回读闭环，v1 仅开放 A0/A1，任何 `act` 均被阻断并记录 `blocked` 结果；Reflection Engine 实现确定性反馈分析，按 trigger_kind 聚合近 30 天反馈生成带证据、需确认的偏好候选；新增 `action_result` 与 `reflection_candidate` 表及 `0019` 迁移，扩展 API `/action-results` 与 `/reflection-candidates`，新增 8 个对应回归测试。
 - [x] 主动多终端输出 v1：Home Assistant/M3B 决策不再只进入 Web 调试台，可按后台热配置投递至 Web 私聊、macOS Desktop 系统通知和在线空闲语音会话；离线、锁屏、隐私暂停、能力未授权和云端 L2 TTS 均安全降级，每次实际尝试写入统一投递回执。真实 PostgreSQL 已从 `0014` 升级至 `0017`，Admin 主动测试接口返回成功；实测回执为 Web delivered、无空闲会话的 Voice failed，符合降级预期。
 - [x] Perception Pipeline 第一批：新增隐私安全的语义事件审计、全局主动门禁、稳定窗口和跨来源幂等合并；HA 人员/存在状态已能自动进入 M3B CognitiveCycle，主动 Web 投递绑定事件 owner。
@@ -116,9 +132,17 @@
 - [x] 管理后台实时日志：后端 `LogBroadcastHandler` + SSE 流 (`/api/v1/admin/logs/stream`) + 独立 `LiveLogsView` Tab；支持历史预加载、级别过滤、暂停/清空/重连。
 - [x] 管理后台安全设置：支持在 `system → 身份与会话` 中修改 Admin Token（运行时即时生效，无需重启）和重置聊天密码（自动撤销所有活跃会话，强制重新登录）。
 - [x] MQTT 设备接入、OutputRouter 收敛与 `read_sensors` 工具：新增 `app/devices/mqtt_client.py`、`app/output/adapter.py`、`app/output/protocols.py`、三个 `OutputAdapter` 实现、`app/tools/sensors.py`；修复 `SourceRef`/`EphemeralSignal` 构造以符合 schema 契约；新增 35 个单元测试全部通过。
+- [x] TurnCoordinator 运行状态机与多端同步骨架：`app/runtime/turn_coordinator.py` + `lease.py` + `turn_recovery.py` 实现 9 状态回合生命周期（CAS 转移、打断传播、generation 活性检查、stale 拒绝）、音频输出/麦克风租约仲裁、`UserMode` 优先级管理、重启后不安全回合自动恢复；集成到 `ChatWebSocketManager` 和 `VoiceWebSocketManager`，文本/语音回合在 `thinking → streaming → completed/failed/cancelled` 全链路上报状态；新增 22 个单元测试全部通过。
+- [x] Job System + Asset Store 长任务底座：`app/jobs/engine.py` 实现 Job 提交（幂等键）、Worker 领取/续约/释放/心跳/过期清理、Step 生命周期（开始/完成/失败与重试退避）、取消与确认、成功终态；9 状态转移图 + 幂等提交 + 租约仲裁；`app/jobs/asset_store.py` 实现内容寻址存储（SHA-256 去重）、引用计数生命周期（staging → active → unreferenced → deleted）、派生关系与 staging/未引用 GC；Admin 后台路由 `/api/v1/admin/jobs` 支持列表/详情/取消/过期租约清理；集成到 `main.py`；新增 `job`/`job_step`/`job_artifact`/`asset`/`asset_reference`/`asset_derivation` 表；新增 28 个单元测试全部通过。
+- [x] 伴侣形象与角色系统 v1 骨架：`app/avatar/store.py` 实现 AvatarStore（形象包管理、实例创建/更新/删除、人格绑定与默认形象查询）；内置 `warm-daily`（静态）与 `light-core`（抽象）两个种子形象包；新增 `avatar_pack`/`avatar_instance`/`persona_avatar_binding` 表；Admin 后台路由 `/api/v1/admin/avatars` 支持包列表/实例列表/创建/更新/删除/绑定/查询默认形象；`ChatService` 在 `decision_meta` 中注入当前人格默认形象的 `avatar_instance_id` 与 `avatar_pack_id`；新增 11 个单元测试全部通过。
 
 ## 4. 最新质量基线
 
+- 2026-08-27 当前在制分支：Avatar/Theme 定向 pytest **25 通过**；Shared 与 Chat TypeScript typecheck 通过；Alembic 为单 head `0022_ui_theme`；文档同步后 `git diff --check` 通过。发布闸门尚未恢复：全仓 Ruff 报 **163** 项，严格 mypy 报 **38** 项（5 个文件），Admin typecheck 报 **4** 项；因此此前“全量通过”只代表对应历史快照，不能作为当前分支结论。
+- 2026-08-26 主题中心 v1：新增主题 Store、Admin API 与 Chat 会话 API 的 4 个测试全部通过，OpenAPI 路由生成回归通过；Ruff、新 Store mypy、Shared typecheck、Chat production build、Admin production build、Alembic 单 head 与离线 SQL 生成通过；真实 PostgreSQL 已升级到 `0022_ui_theme`；全量 pytest 运行至 97% 时仍复现 3 个既有全局 Admin token 状态污染失败，并挂在既有语音 soak 用例；过程中发现的主题路由 OpenAPI 注解回归已修复并单独复测通过。
+- 2026-08-26 伴侣形象与角色系统 v1：Ruff、全量 mypy、pytest **430 通过 / 2 跳过**（新增 11 个测试）、`git diff --check` 全部通过；新增测试覆盖 `AvatarStore`（内置包加载/幂等、实例创建/更新/删除/查询、未知包拦截、状态过滤、人格绑定/解绑/默认查询/列表）；Admin Avatar API 已挂载到 `/api/v1/admin/avatars`；`ChatService.decision_meta` 已注入 `avatar_instance_id` 与 `avatar_pack_id`；
+- 2026-08-26 Job System + Asset Store：Ruff、全量 mypy、pytest **419 通过 / 2 跳过**（新增 28 个测试）、`git diff --check` 全部通过；新增测试覆盖 `JobEngine`（提交/幂等/领取/优先级/续约/释放/Step 生命周期/失败重试/最终失败/取消队列中/running 中/确认取消/成功/列表/Worker 心跳/租约过期清理）、`AssetStore`（存储/去重/提交/读取/引用生命周期/重新激活/派生/staging GC/未引用 GC）；Admin Jobs API 已挂载到 `/api/v1/admin/jobs`；
+- 2026-08-26 TurnCoordinator 与运行状态机：Ruff、全量 mypy、pytest **391 通过 / 2 跳过**、`git diff --check` 全部通过；新增 22 个单元测试覆盖 `LeaseManager`（获取/抢占/续约/释放/过期）、`TurnCoordinator`（文本/语音回合创建、CAS 状态转移、非法转移拦截、打断与非可打断状态、generation 活性检查、stale 拒绝、重启恢复、用户模式优先级/过期、音频租约与麦克风仲裁）；Chat/Voice WebSocket 全链路已接入状态机与租约管理；
 - 2026-08-26 MQTT/OutputRouter/传感器工具：Ruff、全量 mypy、pytest **369 通过 / 2 跳过**、`git diff --check` 全部通过；新增 35 个单元测试覆盖 `MqttTelemetryBuffer`（push/latest/freshness/信号转换）、`MqttDeviceClient`（生命周期/消息解析/错误恢复）、三个 `OutputAdapter`（Web/Desktop/Voice 成功与失败路径）和 `ReadSensorsTool`（HA/MQTT/混合查询/空 provider/参数校验）；
 - 2026-08-25 M3B 文档与 Action/Reflection 补齐：Ruff、全量 mypy（132 source files）、pytest **337 通过 / 2 跳过**、Alembic 从空库升级到 `0019_action_and_reflection`、单 head、`git diff --check` 全部通过；新增验收覆盖 Action Engine 分级映射、A2/A3 v1 阻断、结果回读持久化、Reflection Engine `_analyse` 单元、FeedbackSummary 聚合和候选生成；
 - 2026-08-25 主动多终端输出 v1：Ruff、全量 mypy、pytest **325 通过 / 2 跳过**、Alembic 从空库和真实 PostgreSQL 均升级到 `0017_proactive_delivery_receipts`、单 head、Admin/Chat/Desktop typecheck 与 production build、Desktop 协议测试 **7 通过**、`cargo check` 和 `git diff --check` 全部通过；真实 Admin 主动测试接口返回 `ok=true`，回执表写入 1 条 delivered 与 1 条预期内 failed；新增验收覆盖三通道仲裁、优先级、隐私/紧急门禁、持久化回执及 L2 语音禁止云 TTS；

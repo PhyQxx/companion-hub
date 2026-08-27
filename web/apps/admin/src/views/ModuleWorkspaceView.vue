@@ -2,11 +2,14 @@
 import { computed } from "vue";
 import { useRoute } from "vue-router";
 import ActivityView from "./ActivityView.vue";
+import AppearanceView from "./AppearanceView.vue";
+import AvatarsView from "./AvatarsView.vue";
 import ConflictsView from "./ConflictsView.vue";
 import DevicesView from "./DevicesView.vue";
 import DiagnosticsView from "./DiagnosticsView.vue";
 import HealthView from "./HealthView.vue";
 import HomeAssistantDevicesView from "./HomeAssistantDevicesView.vue";
+import JobsView from "./JobsView.vue";
 import LiveLogsView from "./LiveLogsView.vue";
 import MemoryView from "./MemoryView.vue";
 import ModelsView from "./ModelsView.vue";
@@ -48,10 +51,15 @@ const currentView = computed(() => {
   if (props.module === "logs") return LogsView;
   if (props.module === "privacy") return PrivacyView;
   if (props.module === "system") return SystemView;
+  if (props.module === "jobs") return JobsView;
+  if (props.module === "avatars") return AvatarsView;
+  if (props.module === "appearance") return AppearanceView;
   return PlaceholderView;
 });
 </script>
 
 <template>
-  <component :is="currentView" :module="module" :mode="activeTab" @status="(text: string, error?: boolean) => emit('status', text, error)" />
+  <KeepAlive>
+    <component :is="currentView" :module="module" :mode="activeTab" @status="(text: string, error?: boolean) => emit('status', text, error)" />
+  </KeepAlive>
 </template>
