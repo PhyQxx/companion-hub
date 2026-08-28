@@ -221,6 +221,9 @@ voice:
   #   language: zh
   #   device: cpu
   #   compute_type: int8
+  #   # 可选：给本地模型提供上下文和术语偏置，避免用全局替换误伤普通句子。
+  #   initial_prompt: 这是一段与智能伴侣小艾（Aria）的普通话对话。
+  #   hotwords: 小艾 Aria 只回答
   #   runs_local: true
   tts:
     - provider: edge_tts

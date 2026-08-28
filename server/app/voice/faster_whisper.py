@@ -13,6 +13,9 @@ from .mimo import wrap_wav
 
 logger = logging.getLogger(__name__)
 
+DEFAULT_INITIAL_PROMPT = "这是一段与智能伴侣小艾（Aria）的普通话对话。"
+DEFAULT_HOTWORDS = "小艾 Aria 只回答"
+
 
 class FasterWhisperRecognizer:
     """本地 faster-whisper 整段转写器；模型首次使用时才加载。"""
@@ -26,11 +29,15 @@ class FasterWhisperRecognizer:
         device: str = "auto",
         compute_type: str = "default",
         language: str = "auto",
+        initial_prompt: str | None = DEFAULT_INITIAL_PROMPT,
+        hotwords: str | None = DEFAULT_HOTWORDS,
     ) -> None:
         self._model_name = model
         self._device = device
         self._compute_type = compute_type
         self._language = language
+        self._initial_prompt = initial_prompt
+        self._hotwords = hotwords
         self._model: Any | None = None
         self._load_lock = asyncio.Lock()
 
@@ -47,6 +54,8 @@ class FasterWhisperRecognizer:
                 model,
                 wav,
                 requested_language,
+                self._initial_prompt,
+                self._hotwords,
             )
         except SpeechRecognitionUnavailable:
             raise
@@ -102,11 +111,19 @@ class FasterWhisperRecognizer:
             raise SpeechRecognitionUnavailable("model_load_failed") from error
 
     @staticmethod
-    def _transcribe_sync(model: Any, wav: bytes, language: str | None) -> str:
+    def _transcribe_sync(
+        model: Any,
+        wav: bytes,
+        language: str | None,
+        initial_prompt: str | None,
+        hotwords: str | None,
+    ) -> str:
         segments, _info = model.transcribe(
             BytesIO(wav),
             language=language,
             beam_size=1,
             vad_filter=False,
+            initial_prompt=initial_prompt,
+            hotwords=hotwords,
         )
         return "".join(str(segment.text) for segment in segments).strip()

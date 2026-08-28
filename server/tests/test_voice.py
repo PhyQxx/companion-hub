@@ -70,12 +70,16 @@ async def test_faster_whisper_adapter_lazy_loads_and_joins_segments(
             language: str | None,
             beam_size: int,
             vad_filter: bool,
+            initial_prompt: str | None,
+            hotwords: str | None,
         ) -> tuple[list[SimpleNamespace], object]:
             captured.update(
                 wav_header=audio.read(4),
                 language=language,
                 beam_size=beam_size,
                 vad_filter=vad_filter,
+                initial_prompt=initial_prompt,
+                hotwords=hotwords,
             )
             return [SimpleNamespace(text="你好"), SimpleNamespace(text="，世界")], object()
 
@@ -84,7 +88,12 @@ async def test_faster_whisper_adapter_lazy_loads_and_joins_segments(
         lambda name: SimpleNamespace(WhisperModel=FakeWhisperModel),
     )
     recognizer = FasterWhisperRecognizer(
-        model="small", device="cpu", compute_type="int8", language="zh"
+        model="small",
+        device="cpu",
+        compute_type="int8",
+        language="zh",
+        initial_prompt="这是与小艾的普通话对话。",
+        hotwords="小艾 Aria 只回答",
     )
 
     text = await recognizer.transcribe(loud_frames(5), sample_rate=16_000, language=None)
@@ -98,6 +107,8 @@ async def test_faster_whisper_adapter_lazy_loads_and_joins_segments(
         "language": "zh",
         "beam_size": 1,
         "vad_filter": False,
+        "initial_prompt": "这是与小艾的普通话对话。",
+        "hotwords": "小艾 Aria 只回答",
     }
 
 

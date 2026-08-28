@@ -109,12 +109,20 @@ def test_faster_whisper_asr_is_local_and_requires_no_secret() -> None:
         runs_local=True,
         device="cpu",
         compute_type="int8",
+        initial_prompt="这是与小艾的普通话对话。",
+        hotwords="小艾 Aria 只回答",
     )
     assert local.secret_ref is None
     assert local.secret_value is None
     assert local.runs_local is True
+    assert local.hotwords == "小艾 Aria 只回答"
     with pytest.raises(ValueError, match="must run locally"):
         VoiceAsrConfig(provider="faster_whisper", model="small", base_url=None)
+
+
+def test_mimo_asr_rejects_faster_whisper_bias_options() -> None:
+    with pytest.raises(ValueError, match="only supported by faster_whisper"):
+        VoiceAsrConfig(secret_value="k", hotwords="小艾")
 
 
 def test_voice_tts_provider_rules() -> None:
@@ -175,6 +183,8 @@ voice:
     runs_local: true
     device: cpu
     compute_type: int8
+    initial_prompt: 这是与小艾的普通话对话。
+    hotwords: 小艾 Aria 只回答
 """
     )
 
@@ -182,7 +192,29 @@ voice:
 
     assert isinstance(recognizer, FasterWhisperRecognizer)
     assert recognizer.runs_local is True
+    assert recognizer._initial_prompt == "这是与小艾的普通话对话。"
+    assert recognizer._hotwords == "小艾 Aria 只回答"
     assert chain is None
+
+
+def test_build_faster_whisper_applies_project_term_bias_by_default() -> None:
+    config = _config_with(
+        """
+voice:
+  asr:
+    provider: faster_whisper
+    model: base
+    base_url: null
+    language: zh
+    runs_local: true
+"""
+    )
+
+    recognizer, _ = build_voice_providers(config)
+
+    assert isinstance(recognizer, FasterWhisperRecognizer)
+    assert recognizer._initial_prompt == "这是一段与智能伴侣小艾（Aria）的普通话对话。"
+    assert recognizer._hotwords == "小艾 Aria 只回答"
 
 
 def test_build_voice_providers_skips_entries_with_unresolvable_secret(

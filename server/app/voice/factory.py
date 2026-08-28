@@ -16,6 +16,10 @@ from app.llm.provider import EnvSecretProvider, SecretNotFound
 
 from .contracts import SpeechRecognizer, SpeechSynthesizer
 from .failover import TtsProviderChain
+from .faster_whisper import DEFAULT_HOTWORDS as FASTER_WHISPER_DEFAULT_HOTWORDS
+from .faster_whisper import (
+    DEFAULT_INITIAL_PROMPT as FASTER_WHISPER_DEFAULT_INITIAL_PROMPT,
+)
 from .faster_whisper import FasterWhisperRecognizer
 from .mimo import MiMoAsrRecognizer, MiMoTtsSynthesizer
 from .tts import EdgeTtsSynthesizer
@@ -106,6 +110,10 @@ def build_voice_providers(
                 device=asr.device,
                 compute_type=asr.compute_type,
                 language=asr.language,
+                initial_prompt=(
+                    asr.initial_prompt or FASTER_WHISPER_DEFAULT_INITIAL_PROMPT
+                ),
+                hotwords=asr.hotwords or FASTER_WHISPER_DEFAULT_HOTWORDS,
             )
         else:
             api_key = _resolve_secret(asr.secret_value, asr.secret_ref)

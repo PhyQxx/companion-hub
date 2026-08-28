@@ -35,11 +35,17 @@ class VoiceAsrConfig(StrictModel):
     language: Literal["auto", "zh", "en"] = "auto"
     device: Literal["auto", "cpu", "cuda"] = "auto"
     compute_type: Annotated[str, Field(min_length=1, max_length=64)] = "default"
+    initial_prompt: Annotated[str, Field(min_length=1, max_length=500)] | None = None
+    hotwords: Annotated[str, Field(min_length=1, max_length=500)] | None = None
     runs_local: bool = False
 
     @model_validator(mode="after")
     def provider_requirements(self) -> VoiceAsrConfig:
         if self.provider == "mimo":
+            if self.initial_prompt is not None or self.hotwords is not None:
+                raise ValueError(
+                    "initial_prompt and hotwords are only supported by faster_whisper"
+                )
             if self.base_url is None:
                 raise ValueError("mimo voice asr requires base_url")
             if self.secret_value is None and self.secret_ref is None:
