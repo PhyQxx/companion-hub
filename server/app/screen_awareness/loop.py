@@ -433,9 +433,15 @@ class ScreenAwarenessLoop:
             summary=f"[显示器 {display}] {analysis.summary}"[:500],
             occurred_at=now,
             privacy_level=PrivacyLevel.L1,
-            confidence=0.7,
+            confidence=0.8,
             evidence_ids=[str(observation_id)],
-            attributes={"message": analysis.topic or analysis.summary, "display": display},
+            attributes={
+                "message": analysis.topic or analysis.summary,
+                "display": display,
+                # 视觉判定 notable 的自带显著性：让注意力引擎按内容重要性评分，
+                # 否则 screen.observed 只拿默认基础分永远到不了 deliberation 阈值
+                "salience": 0.75,
+            },
             expires_at=now + timedelta(minutes=5),
         )
 

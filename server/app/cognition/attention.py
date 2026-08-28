@@ -34,6 +34,15 @@ class AttentionEngine:
             "device_offline": 0.45,
         }.get(event.kind, 0.4)
         reasons = ["event_salience"]
+        # 事件源可自带显著性（如屏幕感知的视觉判定 notable）：只升不降，与表值取大
+        source_salience = event.attributes.get("salience")
+        if (
+            isinstance(source_salience, (int, float))
+            and 0.0 <= float(source_salience) <= 1.0
+            and float(source_salience) > base
+        ):
+            base = float(source_salience)
+            reasons.append("source_salience")
         score = base * event.confidence
         if event.expires_at is not None:
             reasons.append("time_sensitive")

@@ -114,10 +114,15 @@ async def test_arrival_respects_dnd_and_duplicate_frequency_reduction(
 
     first = await cognitive_cycle.evaluate(semantic_event(user_id, "user_arrived_home"))
     second = await cognitive_cycle.evaluate(semantic_event(user_id, "user_arrived_home"))
+    third = await cognitive_cycle.evaluate(semantic_event(user_id, "user_arrived_home"))
 
     assert first.decision == DecisionKind.SUGGEST
-    assert second.decision == DecisionKind.IGNORE
-    assert "duplicate_penalty" in second.reason_codes
+    # 重复惩罚只统计浮出水面的决策：一次 SUGGEST 后窗口内还有一次机会
+    # （0.7+0.05-0.15=0.60 ≥ 0.55），第二次 SUGGEST 后（-0.30）被压回 ignore。
+    # 高频事件源（屏幕感知）的 below-threshold 静默不再累积惩罚把通道永久压死。
+    assert second.decision == DecisionKind.SUGGEST
+    assert third.decision == DecisionKind.IGNORE
+    assert "duplicate_penalty" in third.reason_codes
 
 
 async def test_light_asks_and_water_leak_escalates_even_during_dnd(
@@ -453,3 +458,45 @@ async def test_model_deliberation_is_structured_and_cannot_enable_act(
     blocked = await safe_cycle.evaluate(semantic_event(user_id, "light_on_too_long"))
     assert blocked.decision == DecisionKind.ASK
     assert blocked.model_provider is None
+
+
+def test_attention_honors_source_salience_and_never_lowers() -> None:
+    from datetime import UTC, datetime, timedelta
+
+    from app.cognition.models import WorldState
+
+    engine = AttentionEngine()
+    now = datetime.now(UTC)
+    state = WorldState(built_at=now, timezone="UTC")
+
+    def event(**attributes: object) -> SemanticEvent:
+        return SemanticEvent(
+            event_id=uuid7(),
+            user_id=uuid7(),
+            kind="screen.observed",
+            summary="屏幕出现会议提醒",
+            occurred_at=now,
+            privacy_level=PrivacyLevel.L1,
+            confidence=0.8,
+            evidence_ids=["screen:test"],
+            attributes=attributes,
+            expires_at=now + timedelta(minutes=5),
+        )
+
+    # 默认基础分 0.4：不带 salience 到不了阈值
+    plain = engine.evaluate(event(message="hello"), state)
+    assert plain.should_deliberate is False
+    # 自带 salience 0.75：0.75*0.8+0.05=0.65 过阈值，reason 含 source_salience
+    notable = engine.evaluate(event(message="会议提醒", salience=0.75), state)
+    assert notable.should_deliberate is True
+    assert notable.score == pytest.approx(0.65)
+    assert "source_salience" in notable.reason_codes
+    # 显著性低于表值时不能反向压低（水浸 1.0 不受影响）
+    leak = semantic_event(uuid7(), "water_leak")
+    leak = leak.model_copy(update={"attributes": {"salience": 0.2}})
+    leak_result = engine.evaluate(leak, state)
+    assert leak_result.score >= 1.0 * leak.confidence - 0.001
+    assert "source_salience" not in leak_result.reason_codes
+    # 非法 salience（越界/非数值）被忽略
+    invalid = engine.evaluate(event(message="x", salience=1.5), state)
+    assert invalid.score == plain.score

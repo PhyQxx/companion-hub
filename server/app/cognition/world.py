@@ -69,11 +69,16 @@ class WorldStateBuilder:
                 )
                 or 0
             )
+            # 重复打扰惩罚只统计真正浮出水面的决策（record 及以上）；
+            # 高频事件源（如屏幕感知）的 below-threshold 静默判定不应累积惩罚，
+            # 否则活跃使用几分钟内通道就被结构性压死。同内容去重由上游
+            # dedupe_key 与感知管线窗口负责。
             same_count = int(
                 await session.scalar(
                     select(func.count(CognitiveDecisionRecord.id)).where(
                         CognitiveDecisionRecord.user_id == event.user_id,
                         CognitiveDecisionRecord.trigger_kind == event.kind,
+                        CognitiveDecisionRecord.decision != "ignore",
                         CognitiveDecisionRecord.created_at >= since,
                     )
                 )
