@@ -100,6 +100,7 @@
 
 ## 3. 最近完成
 
+- [x] 屏幕感知主动链路修复与真机全链验证：注意力引擎此前对 `screen.observed` 永远拿默认基础分 0.4，主动话题结构性不可能触发；新增事件源自带显著性 `attributes.salience`（只升不降），循环侧 notable 事件携带 0.75；同时修复高频事件源被重复惩罚永久压死的缺陷（below-threshold 静默不再计入 same_trigger 惩罚，浮出水面的决策仍全额计罚，到达降频顺延到第三枪）。真机验证：会议提醒页被识别→注意力 0.65 过阈→LLM 审议判 record（理由 user_likely_aware——用户看得见不打扰）→后续 notable 被降频压制，全链按设计工作。另发现隔夜 Mac 睡眠后 Desktop WS 僵尸连接（重启应用即恢复，连接自愈待做）。
 - [x] 屏幕感知 v1（用户显式推翻原「暂缓持续后台屏幕监控」决策，授权模型改为纯配置开关）：新增 `ScreenAwarenessLoop`（默认 60s、15~600s 可配、每 tick 热读配置）周期截取配置的各显示器 → Pillow 感知哈希变化检测（不变跳过分析）→ GLM 视觉输出结构化 JSON（summary/notable/memory_worthy/topic）→ Timeline 全量沉淀（`index_screen_observation`，event_type=screen.observed）+ memory_worthy 升级长期记忆（screen-v1）+ notable 经 Perception 管线走主动话题（DND/安静时段/预算/反馈降频全复用）；Desktop 新增 `screen.monitor` 命令（不消费单次授权，TCC/锁屏/隐私暂停三闸门保留）与能力声明；原图即焚（consume-on-read）；连续失败 10 分钟冷却；Admin 新增「屏幕感知」工作区（状态+观察记录）；12 个新回归全绿。详见 `docs/38`。
 - [x] 工具挂载改为能力就绪制、选择交给模型：`send_message` 不再用文本关键词预筛工具——设备工具按「在线能力满足（`DEVICE_TOOL_REQUIREMENTS`）+ 隐私/模型/视觉就绪」全量挂载，查询工具按配置开关挂载，何时调用由模型依据工具描述自行判断；关键词表仅保留给确定性 HA 读回退（`_deterministic_home_read_call`）与选择器单测。起因是真机验收中「圈选屏幕内容」未命中词表导致 `capture_screen` 缺席；已同步在上一提交补充词表作为确定性路径的覆盖。
 - [x] 修复撤销设备永久占用别名的缺陷：`device_client` 的 `(owner, alias)` 唯一约束改为部分唯一索引（仅约束 `revoked_at IS NULL` 的活跃行），撤销后别名自动释放、可用原别名重新配对，活跃设备之间仍强唯一；新增 `0023_device_alias_reuse` 迁移（batch 兼容 SQLite）并已应用到真实 PostgreSQL（现处 head），新增撤销重配与活跃冲突双向回归测试。
