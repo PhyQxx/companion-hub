@@ -37,6 +37,8 @@ input:focus { border-color: #7188ed; box-shadow: 0 0 0 3px #7188ed1c; }
 .form-actions { display: flex; gap: 8px; }
 dl { display: grid; grid-template-columns: 110px 1fr; gap: 9px 14px; margin: 0; font-size: 12px; }
 dd { margin: 0; }
+.inline-controls { display: flex; align-items: center; gap: 14px; }
+.switch-label { display: inline-flex; grid-auto-flow: column; align-items: center; gap: 7px; }
 code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
 .switch { display: inline-block; }
 .switch input { display: none; }

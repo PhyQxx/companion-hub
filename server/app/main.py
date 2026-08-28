@@ -324,6 +324,12 @@ def create_app(
         )
     chat_root = Path(__file__).parent / "chat_ui"
     app.mount("/chat/debug/assets", StaticFiles(directory=chat_root), name="chat-debug-assets")
+    pet_ui_root = Path(__file__).parent / "pet_ui"
+    app.mount(
+        "/desktop/pet",
+        StaticFiles(directory=pet_ui_root, html=True),
+        name="desktop-pet",
+    )
     chat_dist = Path(__file__).resolve().parents[2] / "web" / "apps" / "chat" / "dist"
     chat_dist_assets = chat_dist / "assets"
     if chat_dist_assets.is_dir():

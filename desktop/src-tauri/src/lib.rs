@@ -5,7 +5,7 @@ use std::process::Command;
 use tauri::{
     menu::{Menu, MenuItem},
     tray::TrayIconBuilder,
-    Manager,
+    Emitter, Manager,
 };
 
 const KEYRING_SERVICE: &str = "com.aria.companion.desktop";
@@ -600,8 +600,15 @@ pub fn run() {
         ))
         .setup(|app| {
             let show = MenuItem::with_id(app, "show", "显示 Aria Desktop", true, None::<&str>)?;
+            let show_pet = MenuItem::with_id(app, "show_pet", "显示桌宠", true, None::<&str>)?;
+            let hide_pet = MenuItem::with_id(app, "hide_pet", "隐藏桌宠", true, None::<&str>)?;
+            let interact_pet =
+                MenuItem::with_id(app, "interact_pet", "恢复桌宠交互", true, None::<&str>)?;
             let quit = MenuItem::with_id(app, "quit", "退出", true, None::<&str>)?;
-            let menu = Menu::with_items(app, &[&show, &quit])?;
+            let menu = Menu::with_items(
+                app,
+                &[&show, &show_pet, &hide_pet, &interact_pet, &quit],
+            )?;
             TrayIconBuilder::new()
                 .menu(&menu)
                 .show_menu_on_left_click(false)
@@ -610,6 +617,26 @@ pub fn run() {
                         if let Some(window) = app.get_webview_window("main") {
                             let _ = window.show();
                             let _ = window.set_focus();
+                        }
+                    }
+                    "show_pet" => {
+                        if let Some(window) = app.get_webview_window("pet") {
+                            let _ = window.show();
+                            let _ = app.emit("pet-visibility-changed", true);
+                        }
+                    }
+                    "hide_pet" => {
+                        if let Some(window) = app.get_webview_window("pet") {
+                            let _ = window.hide();
+                            let _ = app.emit("pet-visibility-changed", false);
+                        }
+                    }
+                    "interact_pet" => {
+                        if let Some(window) = app.get_webview_window("pet") {
+                            let _ = window.set_ignore_cursor_events(false);
+                            let _ = window.show();
+                            let _ = app.emit("pet-interaction-restored", ());
+                            let _ = app.emit("pet-visibility-changed", true);
                         }
                     }
                     "quit" => app.exit(0),

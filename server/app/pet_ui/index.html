@@ -1,0 +1,19 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="color-scheme" content="light" />
+    <title>Aria 桌宠舞台</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <main id="stage" aria-live="polite">
+      <canvas id="live2d" hidden aria-label="Live2D 形象"></canvas>
+      <img id="avatar" hidden alt="Aria 形象" />
+      <div id="orb" class="orb" aria-label="Aria 抽象形象"><i></i></div>
+      <small id="status">正在连接 Hub</small>
+    </main>
+    <script type="module" src="./app.js"></script>
+  </body>
+</html>

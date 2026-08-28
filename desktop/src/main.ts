@@ -1,4 +1,6 @@
 import { disable, enable, isEnabled } from "@tauri-apps/plugin-autostart";
+import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
+import { listen } from "@tauri-apps/api/event";
 import {
   DESKTOP_BASE_CAPABILITIES,
   DESKTOP_NOTIFICATION_CAPABILITY,
@@ -15,9 +17,13 @@ import {
   type ScreenCaptureGrant,
   type StoredClientConfig,
 } from "./client";
+import {
+  DESKTOP_CONFIG_KEY,
+  PET_CLICK_THROUGH_KEY,
+  PET_VISIBLE_KEY,
+} from "./pet-state";
 import "./style.css";
 
-const CONFIG_KEY = "ariaDesktopClientConfig";
 const PRIVACY_PAUSE_KEY = "ariaDesktopPrivacyPaused";
 const app = document.querySelector<HTMLElement>("#app");
 if (!app) throw new Error("missing app root");
@@ -36,7 +42,7 @@ app.innerHTML = `
     </form>
     <section class="panel status-panel">
       <div class="panel-head"><div><h2>运行状态</h2><p id="identity">尚未保存设备身份</p></div><button id="toggle-connection" type="button">连接</button></div>
-      <dl><dt>声明能力</dt><dd><code id="capabilities">device.ping</code></dd><dt>屏幕录制</dt><dd><button id="screen-permission" type="button">检查权限</button> <small id="screen-permission-state">尚未检查</small></dd><dt>会话状态</dt><dd><small id="screen-lock-state">正在检查锁屏状态</small></dd><dt>临时授权</dt><dd><button id="grant-screen-capture" type="button">允许下一次截图</button> <small id="screen-grant-state">未授权</small></dd><dt>隐私暂停</dt><dd><label class="switch"><input id="privacy-pause" type="checkbox" /><span></span></label></dd><dt>开机启动</dt><dd><label class="switch"><input id="autostart" type="checkbox" /><span></span></label></dd><dt>凭据位置</dt><dd>系统安全凭据库（不写入 localStorage）</dd></dl>
+      <dl><dt>声明能力</dt><dd><code id="capabilities">device.ping</code></dd><dt>屏幕录制</dt><dd><button id="screen-permission" type="button">检查权限</button> <small id="screen-permission-state">尚未检查</small></dd><dt>会话状态</dt><dd><small id="screen-lock-state">正在检查锁屏状态</small></dd><dt>临时授权</dt><dd><button id="grant-screen-capture" type="button">允许下一次截图</button> <small id="screen-grant-state">未授权</small></dd><dt>桌宠</dt><dd class="inline-controls"><button id="toggle-pet" type="button">显示桌宠</button><label class="switch-label"><span>鼠标穿透</span><span class="switch"><input id="pet-click-through" type="checkbox" /><span></span></span></label></dd><dt>隐私暂停</dt><dd><label class="switch"><input id="privacy-pause" type="checkbox" /><span></span></label></dd><dt>开机启动</dt><dd><label class="switch"><input id="autostart" type="checkbox" /><span></span></label></dd><dt>凭据位置</dt><dd>系统安全凭据库（不写入 localStorage）</dd></dl>
     </section>
     <section class="panel log-panel"><div class="panel-head"><div><h2>最近事件</h2><p>只记录协议状态，不记录令牌或命令参数。</p></div><button id="clear-log" type="button">清空</button></div><ol id="events"></ol></section>
   </section>
@@ -60,6 +66,8 @@ const lockState = document.querySelector<HTMLElement>("#screen-lock-state")!;
 const grantButton = document.querySelector<HTMLButtonElement>("#grant-screen-capture")!;
 const grantState = document.querySelector<HTMLElement>("#screen-grant-state")!;
 const capabilitiesLabel = document.querySelector<HTMLElement>("#capabilities")!;
+const togglePet = document.querySelector<HTMLButtonElement>("#toggle-pet")!;
+const petClickThrough = document.querySelector<HTMLInputElement>("#pet-click-through")!;
 
 let config = loadConfig();
 let connection: DeviceConnection | null = null;
@@ -68,6 +76,52 @@ let permissionGranted = false;
 let screenLocked = true;
 let screenGrant: ScreenCaptureGrant | null = null;
 privacyPause.checked = localStorage.getItem(PRIVACY_PAUSE_KEY) === "true";
+petClickThrough.checked = localStorage.getItem(PET_CLICK_THROUGH_KEY) === "true";
+
+async function refreshPetState() {
+  const pet = await WebviewWindow.getByLabel("pet");
+  const visible = pet ? await pet.isVisible() : false;
+  localStorage.setItem(PET_VISIBLE_KEY, String(visible));
+  togglePet.textContent = visible ? "隐藏桌宠" : "显示桌宠";
+}
+
+async function restorePetState() {
+  const pet = await WebviewWindow.getByLabel("pet");
+  if (!pet) return;
+  await pet.setIgnoreCursorEvents(petClickThrough.checked);
+  if (localStorage.getItem(PET_VISIBLE_KEY) === "true") await pet.show();
+  await refreshPetState();
+}
+
+togglePet.addEventListener("click", async () => {
+  const pet = await WebviewWindow.getByLabel("pet");
+  if (!pet) return addEvent("桌宠窗口不可用，请重启客户端");
+  if (await pet.isVisible()) {
+    await pet.hide();
+    addEvent("已隐藏桌宠");
+  } else {
+    await pet.show();
+    addEvent("已显示桌宠");
+  }
+  await refreshPetState();
+});
+
+petClickThrough.addEventListener("change", async () => {
+  const pet = await WebviewWindow.getByLabel("pet");
+  localStorage.setItem(PET_CLICK_THROUGH_KEY, String(petClickThrough.checked));
+  await pet?.setIgnoreCursorEvents(petClickThrough.checked);
+  addEvent(petClickThrough.checked ? "桌宠已开启鼠标穿透" : "桌宠已恢复鼠标交互");
+});
+
+void listen<boolean>("pet-visibility-changed", ({ payload }) => {
+  localStorage.setItem(PET_VISIBLE_KEY, String(payload));
+  togglePet.textContent = payload ? "隐藏桌宠" : "显示桌宠";
+});
+void listen("pet-interaction-restored", () => {
+  petClickThrough.checked = false;
+  localStorage.setItem(PET_CLICK_THROUGH_KEY, "false");
+  addEvent("已从托盘恢复桌宠交互");
+});
 
 function activeCapabilities(): string[] {
   const capabilities: string[] = [...DESKTOP_BASE_CAPABILITIES];
@@ -132,7 +186,7 @@ async function refreshScreenEnvironment() {
 
 function loadConfig(): StoredClientConfig | null {
   try {
-    const raw = localStorage.getItem(CONFIG_KEY);
+    const raw = localStorage.getItem(DESKTOP_CONFIG_KEY);
     return raw ? (JSON.parse(raw) as StoredClientConfig) : null;
   } catch {
     return null;
@@ -141,8 +195,8 @@ function loadConfig(): StoredClientConfig | null {
 
 function saveConfig(value: StoredClientConfig | null) {
   config = value;
-  if (value) localStorage.setItem(CONFIG_KEY, JSON.stringify(value));
-  else localStorage.removeItem(CONFIG_KEY);
+  if (value) localStorage.setItem(DESKTOP_CONFIG_KEY, JSON.stringify(value));
+  else localStorage.removeItem(DESKTOP_CONFIG_KEY);
   renderIdentity();
 }
 
@@ -275,6 +329,7 @@ document.querySelector("#clear-log")!.addEventListener("click", () => (events.in
 
 renderIdentity();
 renderCapabilities();
+void restorePetState();
 void isEnabled().then((enabled) => (autostart.checked = enabled));
 void refreshScreenEnvironment().then(() => {
   if (config && !privacyPause.checked) void startConnection();

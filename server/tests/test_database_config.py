@@ -141,6 +141,7 @@ async def test_admin_api_requires_token_and_manages_drafts(
         persona_page = await client.get("/admin/personas")
         chat_page = await client.get("/chat")
         chat_debug_page = await client.get("/chat/debug")
+        pet_page = await client.get("/desktop/pet/")
         module_pages = {
             path: await client.get(path)
             for path in (
@@ -162,6 +163,8 @@ async def test_admin_api_requires_token_and_manages_drafts(
     assert "聊天密码" in chat_debug_page.text
     assert 'id="text-reply-voice"' in chat_debug_page.text
     assert "文字回复播报" in chat_debug_page.text
+    assert pet_page.status_code == 200
+    assert 'id="live2d"' in pet_page.text
     # With web/apps/admin/dist present the admin routes serve the Vue SPA;
     # source-only checkouts fall back to the vanilla pages.
     spa_mode = '<div id="app"></div>' in page.text

@@ -1,0 +1,13 @@
+:root { background: transparent; font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", sans-serif; }
+* { box-sizing: border-box; }
+html, body, #stage { width: 100%; height: 100%; margin: 0; overflow: hidden; background: transparent; }
+#stage { position: relative; display: grid; place-items: end center; padding: 16px; }
+#live2d, #avatar { display: block; width: 100%; height: 100%; object-fit: contain; filter: drop-shadow(0 18px 22px #1d254933); }
+#live2d[hidden], #avatar[hidden], #orb[hidden] { display: none; }
+.orb { position: absolute; left: 50%; bottom: 13%; width: min(62vw, 230px); aspect-ratio: 1; transform: translateX(-50%); border-radius: 48% 52% 47% 53%; background: radial-gradient(circle at 34% 28%, #fff 0 4%, #b7c2ff 15%, #697aeb 46%, #30375f 76%); box-shadow: inset -18px -22px 35px #292f6755, 0 24px 45px #222a6040; animation: breathe 3.6s ease-in-out infinite; }
+.orb::before, .orb::after { content: ""; position: absolute; top: 43%; width: 9%; aspect-ratio: 1; border-radius: 50%; background: #fff; box-shadow: 0 0 12px #fff; }
+.orb::before { left: 31%; }.orb::after { right: 31%; }
+.orb i { position: absolute; left: 44%; top: 58%; width: 12%; height: 5%; border-bottom: 3px solid #fff; border-radius: 50%; }
+#status { position: absolute; left: 50%; bottom: 4%; max-width: 80%; transform: translateX(-50%); padding: 5px 10px; overflow: hidden; border: 1px solid #ffffff70; border-radius: 99px; color: #fff; background: #20274488; text-overflow: ellipsis; white-space: nowrap; font-size: 10px; backdrop-filter: blur(8px); }
+@keyframes breathe { 0%,100% { transform: translateX(-50%) translateY(0) scale(1); } 50% { transform: translateX(-50%) translateY(-8px) scale(1.025); } }
+@media (prefers-reduced-motion: reduce) { .orb { animation: none; } }

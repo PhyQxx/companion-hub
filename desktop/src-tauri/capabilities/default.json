@@ -2,6 +2,16 @@
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
   "description": "Capabilities required by the Aria Desktop main window",
-  "windows": ["main"],
-  "permissions": ["core:default", "autostart:default"]
+  "windows": ["main", "pet"],
+  "permissions": [
+    "core:default",
+    "core:window:allow-hide",
+    "core:window:allow-show",
+    "core:window:allow-is-visible",
+    "core:window:allow-outer-position",
+    "core:window:allow-set-ignore-cursor-events",
+    "core:window:allow-set-position",
+    "core:window:allow-start-dragging",
+    "autostart:default"
+  ]
 }
