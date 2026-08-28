@@ -343,7 +343,7 @@ class ChatWebSocketManager:
 
     async def submit_device_message(
         self, user_id: UUID, text: str, privacy_level: PrivacyLevel
-    ) -> dict[str, JsonValue]:
+    ) -> tuple[dict[str, JsonValue], str]:
         conversations = await self._service.list_conversations(user_id=user_id, limit=20)
         conversation = next(
             (item for item in conversations if item.status == "active"), None
@@ -374,10 +374,18 @@ class ChatWebSocketManager:
             control = with_reply_text(control, turn.assistant_message.content)
         if self._avatar_control is not None and control:
             await self._avatar_control.publish_avatar_control(user_id, control)
-        return {
-            "conversation_id": str(conversation.id),
-            "message_id": str(turn.assistant_message.id),
-        }
+        speech_text = turn.assistant_message.content
+        if isinstance(reply_meta, dict):
+            configured_tts = reply_meta.get("tts_text")
+            if isinstance(configured_tts, str) and configured_tts.strip():
+                speech_text = configured_tts.strip()
+        return (
+            {
+                "conversation_id": str(conversation.id),
+                "message_id": str(turn.assistant_message.id),
+            },
+            speech_text,
+        )
 
     def _discard_finished_task(self, task: asyncio.Task[None]) -> None:
         with suppress(asyncio.CancelledError):

@@ -21,6 +21,8 @@ iframe { display: block; width: 100%; height: 100%; border: 0; background: trans
 #pet-privacy, #send-pet-message { height:29px; border:1px solid #ffffff48; border-radius:8px; color:#fff; background:#ffffff14; font:600 11px/1 inherit; }
 #pet-privacy { padding:0 6px; }
 #pet-privacy option { color:#172033; background:#fff; }
+.voice-toggle { display:flex; align-items:center; gap:3px; flex:none; color:#e8ebfa; font:600 10px/1 inherit; cursor:pointer; white-space:nowrap; }
+.voice-toggle input { width:13px; height:13px; margin:0; accent-color:#7181f4; }
 #pet-message-status { flex:1; min-width:0; overflow:hidden; color:#d8dcf0; font:500 10px/1.2 inherit; text-overflow:ellipsis; white-space:nowrap; }
 #send-pet-message { padding:0 11px; background:#7181f4; cursor:pointer; }
 #send-pet-message:disabled { opacity:.55; cursor:wait; }

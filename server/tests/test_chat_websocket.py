@@ -230,14 +230,16 @@ async def test_device_message_uses_full_chat_service_and_hides_l2_reply(
         avatar_control_publisher=publisher,
     )
 
-    first = await manager.submit_device_message(
+    first, first_speech = await manager.submit_device_message(
         session.principal.user_id, "桌宠普通消息", PrivacyLevel.L1
     )
-    second = await manager.submit_device_message(
+    second, second_speech = await manager.submit_device_message(
         session.principal.user_id, "桌宠私密消息", PrivacyLevel.L2
     )
 
     assert first["conversation_id"] == second["conversation_id"]
+    assert first_speech == "hello world"
+    assert second_speech == "hello world"
     assert len(await service.list_conversations(user_id=session.principal.user_id)) == 1
     messages = await service.list_messages_after(
         UUID(str(first["conversation_id"])),

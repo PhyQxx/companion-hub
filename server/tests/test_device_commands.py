@@ -297,12 +297,15 @@ async def test_pet_message_uses_authorized_signed_lifecycle_frames(
 
     async def handle_message(
         user_id: UUID, text: str, privacy_level: PrivacyLevel
-    ) -> dict[str, JsonValue]:
+    ) -> tuple[dict[str, JsonValue], str]:
         assert user_id == owner_id
         assert text == "今天继续做什么?"
         assert privacy_level is PrivacyLevel.L2
         handled.set()
-        return {"conversation_id": str(uuid7()), "message_id": str(uuid7())}
+        return (
+            {"conversation_id": str(uuid7()), "message_id": str(uuid7())},
+            "今天继续做什么?",
+        )
 
     gateway.set_pet_message_handler(handle_message)
     await gateway.start_pet_message(
@@ -312,6 +315,7 @@ async def test_pet_message_uses_authorized_signed_lifecycle_frames(
             request_id=request_id,
             text=" 今天继续做什么? ",
             privacy_level="L2",
+            speak=False,
         ),
     )
     await asyncio.wait_for(handled.wait(), timeout=1)
@@ -390,14 +394,17 @@ async def test_replaced_device_connection_does_not_cancel_new_pet_turn(
 
     async def handle_message(
         user_id: UUID, text: str, privacy_level: PrivacyLevel
-    ) -> dict[str, JsonValue]:
+    ) -> tuple[dict[str, JsonValue], str]:
         del user_id, privacy_level
         if text == "old":
             old_started.set()
             await asyncio.Event().wait()
         new_started.set()
         await new_release.wait()
-        return {"conversation_id": str(uuid7()), "message_id": str(uuid7())}
+        return (
+            {"conversation_id": str(uuid7()), "message_id": str(uuid7())},
+            "new reply",
+        )
 
     gateway.set_pet_message_handler(handle_message)
     old_socket = FakeWebSocket()
@@ -418,7 +425,11 @@ async def test_replaced_device_connection_does_not_cancel_new_pet_turn(
     await gateway.start_pet_message(
         old_connection,
         PetMessageFrame(
-            type="pet.message.send", request_id=uuid7(), text="old", privacy_level="L1"
+            type="pet.message.send",
+            request_id=uuid7(),
+            text="old",
+            privacy_level="L1",
+            speak=False,
         ),
     )
     await asyncio.wait_for(old_started.wait(), timeout=1)
@@ -428,7 +439,11 @@ async def test_replaced_device_connection_does_not_cancel_new_pet_turn(
     await gateway.start_pet_message(
         new_connection,
         PetMessageFrame(
-            type="pet.message.send", request_id=uuid7(), text="new", privacy_level="L1"
+            type="pet.message.send",
+            request_id=uuid7(),
+            text="new",
+            privacy_level="L1",
+            speak=False,
         ),
     )
     await asyncio.wait_for(new_started.wait(), timeout=1)
@@ -444,6 +459,79 @@ async def test_replaced_device_connection_does_not_cancel_new_pet_turn(
         "pet.message.completed",
     ]
     gateway.disconnect(new_connection)
+    await database.close()
+
+
+async def test_pet_message_streams_signed_audio_before_completion(
+    tmp_path: Path,
+) -> None:
+    class FakeWebSocket:
+        def __init__(self) -> None:
+            self.frames: list[dict[str, object]] = []
+
+        async def send_json(self, frame: dict[str, object]) -> None:
+            self.frames.append(frame)
+
+    database = create_database(f"sqlite+aiosqlite:///{tmp_path / 'pet-audio.db'}")
+    gateway = DeviceCommandGateway(DeviceRegistry(database), DeviceCommandStore(database))
+    websocket = FakeWebSocket()
+    request_id = uuid7()
+    token = "aria-device-pet-audio-secret"
+    connection = DeviceCommandConnection(
+        websocket=cast(Any, websocket),
+        principal=DevicePrincipal(device_id=uuid7(), owner_user_id=uuid7()),
+        access_token=token,
+        capabilities=("avatar.chat",),
+    )
+
+    async def handle_message(
+        user_id: UUID, text: str, privacy_level: PrivacyLevel
+    ) -> tuple[dict[str, JsonValue], str]:
+        del user_id, text, privacy_level
+        return ({"message_id": str(uuid7())}, "桌宠聊天已连通")
+
+    async def handle_audio(
+        text: str, privacy_level: PrivacyLevel, emit: Any
+    ) -> bool:
+        assert text == "桌宠聊天已连通"
+        assert privacy_level is PrivacyLevel.L1
+        await emit(
+            "pet.audio.start",
+            {"mime": "audio/pcm;rate=24000", "sample_rate": 24_000},
+        )
+        await emit("pet.audio.chunk", {"index": 0, "data_b64": "AQI="})
+        await emit("pet.audio.end", {"chunks": 1, "bytes": 2})
+        return True
+
+    gateway.set_pet_message_handler(handle_message)
+    gateway.set_pet_audio_handler(handle_audio)
+    await gateway.start_pet_message(
+        connection,
+        PetMessageFrame(
+            type="pet.message.send",
+            request_id=request_id,
+            text="测试",
+            privacy_level="L1",
+            speak=True,
+        ),
+    )
+    for _ in range(20):
+        if any(frame["type"] == "pet.message.completed" for frame in websocket.frames):
+            break
+        await asyncio.sleep(0)
+
+    assert [frame["type"] for frame in websocket.frames] == [
+        "pet.message.accepted",
+        "pet.audio.start",
+        "pet.audio.chunk",
+        "pet.audio.end",
+        "pet.message.completed",
+    ]
+    assert all(verify_device_signature(token, frame) for frame in websocket.frames)
+    result = cast(dict[str, object], websocket.frames[-1]["result"])
+    assert result["audio_requested"] is True
+    assert result["audio_delivered"] is True
+    gateway.disconnect(connection)
     await database.close()
 
 

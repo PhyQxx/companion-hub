@@ -52,6 +52,19 @@ export interface PetMessageState {
   requestId: string;
   status: "accepted" | "completed" | "failed";
   reasonCode?: string;
+  audioDelivered?: boolean;
+}
+
+export interface PetAudioFrame {
+  requestId: string;
+  type: "start" | "chunk" | "end" | "failed";
+  mime?: string;
+  sampleRate?: number;
+  index?: number;
+  dataB64?: string;
+  chunks?: number;
+  bytes?: number;
+  reasonCode?: string;
 }
 
 export function parsePetMessageState(frame: SignedFrame): PetMessageState | null {
@@ -76,7 +89,68 @@ export function parsePetMessageState(frame: SignedFrame): PetMessageState | null
     requestId: frame.request_id,
     status,
     ...(typeof frame.reason_code === "string" ? { reasonCode: frame.reason_code } : {}),
+    ...(status === "completed" && frame.result && typeof frame.result === "object" &&
+        !Array.isArray(frame.result) &&
+        typeof (frame.result as Record<string, unknown>).audio_delivered === "boolean"
+      ? { audioDelivered: (frame.result as Record<string, unknown>).audio_delivered as boolean }
+      : {}),
   };
+}
+
+export function parsePetAudioFrame(frame: SignedFrame): PetAudioFrame | null {
+  if (
+    typeof frame.request_id !== "string" ||
+    !frame.request_id ||
+    frame.request_id.length > 80
+  ) return null;
+  const common = { requestId: frame.request_id };
+  if (frame.type === "pet.audio.start") {
+    if (
+      typeof frame.mime !== "string" || !frame.mime.startsWith("audio/") ||
+      frame.mime.length > 80 || !Number.isInteger(frame.sample_rate) ||
+      Number(frame.sample_rate) < 8_000 || Number(frame.sample_rate) > 192_000
+    ) return null;
+    return {
+      ...common,
+      type: "start",
+      mime: frame.mime,
+      sampleRate: Number(frame.sample_rate),
+    };
+  }
+  if (frame.type === "pet.audio.chunk") {
+    if (
+      !Number.isInteger(frame.index) || Number(frame.index) < 0 ||
+      typeof frame.data_b64 !== "string" || frame.data_b64.length > 40_000 ||
+      !/^[A-Za-z0-9+/]*={0,2}$/.test(frame.data_b64)
+    ) return null;
+    return {
+      ...common,
+      type: "chunk",
+      index: Number(frame.index),
+      dataB64: frame.data_b64,
+    };
+  }
+  if (frame.type === "pet.audio.end") {
+    if (
+      !Number.isInteger(frame.chunks) || Number(frame.chunks) < 0 ||
+      !Number.isInteger(frame.bytes) || Number(frame.bytes) < 0 ||
+      Number(frame.bytes) > 8 * 1024 * 1024
+    ) return null;
+    return {
+      ...common,
+      type: "end",
+      chunks: Number(frame.chunks),
+      bytes: Number(frame.bytes),
+    };
+  }
+  if (frame.type === "pet.audio.failed") {
+    if (
+      typeof frame.reason_code !== "string" || !frame.reason_code ||
+      frame.reason_code.length > 160
+    ) return null;
+    return { ...common, type: "failed", reasonCode: frame.reason_code };
+  }
+  return null;
 }
 
 export function parseAvatarControl(frame: SignedFrame): AvatarControl | null {
@@ -215,6 +289,7 @@ export interface ClientCallbacks {
   authorizeScreenCapture: () => "allowed" | "screen_locked" | "screen_capture_not_granted";
   onAvatarControl?: (control: AvatarControl) => void;
   onPetMessageState?: (state: PetMessageState) => void;
+  onPetAudio?: (frame: PetAudioFrame) => void;
 }
 
 export class DeviceConnection {
@@ -239,7 +314,11 @@ export class DeviceConnection {
     this.send({ type: "device.heartbeat", capabilities: this.capabilities });
   }
 
-  sendPetMessage(text: string, privacyLevel: "L0" | "L1" | "L2"): string | null {
+  sendPetMessage(
+    text: string,
+    privacyLevel: "L0" | "L1" | "L2",
+    speak = true,
+  ): string | null {
     const normalized = text.trim();
     if (
       this.socket?.readyState !== WebSocket.OPEN ||
@@ -252,6 +331,7 @@ export class DeviceConnection {
       request_id: requestId,
       text: normalized,
       privacy_level: privacyLevel,
+      speak,
     });
     return requestId;
   }
@@ -328,6 +408,11 @@ export class DeviceConnection {
     const petMessageState = parsePetMessageState(frame);
     if (petMessageState) {
       this.callbacks.onPetMessageState?.(petMessageState);
+      return;
+    }
+    const petAudio = parsePetAudioFrame(frame);
+    if (petAudio) {
+      this.callbacks.onPetAudio?.(petAudio);
       return;
     }
     if (isExecuteCommand(frame)) await this.execute(frame);

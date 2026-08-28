@@ -9,10 +9,11 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 import logging
 import time
-from collections.abc import Callable
+from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import suppress
 from dataclasses import dataclass, field
 from typing import Any
@@ -61,6 +62,8 @@ MAX_TEXT_LENGTH = 20_000
 # 语音回合只携带最近几轮消息：首响延迟对上下文长度极其敏感（lite 模型
 # 20 条历史时首句可达 14s），更早的上下文由记忆检索与历史召回按需补齐。
 VOICE_CONTEXT_MESSAGES = 8
+DEVICE_AUDIO_CHUNK_BYTES = 24 * 1024
+DEVICE_AUDIO_MAX_BYTES = 8 * 1024 * 1024
 
 
 @dataclass(slots=True)
@@ -142,6 +145,67 @@ class VoiceWebSocketManager:
     def reset_latency_metrics(self) -> dict[str, object]:
         self._latency_metrics.clear()
         return self._latency_metrics.snapshot()
+
+    async def stream_device_speech(
+        self,
+        text: str,
+        privacy_level: PrivacyLevel,
+        emit: Callable[[str, dict[str, JsonValue]], Awaitable[None]],
+    ) -> bool:
+        """通过设备签名帧投递一段 TTS；L2 仍由 provider chain 强制本地。"""
+        _, tts_chain = await self._voice_source.resolve()
+        if tts_chain is None:
+            await emit("pet.audio.failed", {"reason_code": "tts_not_configured"})
+            return False
+        try:
+            selection = await tts_chain.select(text, privacy_level=privacy_level)
+        except LocalOnlySynthesizerError:
+            await emit("pet.audio.failed", {"reason_code": "local_tts_required"})
+            return False
+        except Exception:
+            await emit("pet.audio.failed", {"reason_code": "tts_generation_failed"})
+            return False
+        provider = selection.provider
+        await emit(
+            "pet.audio.start",
+            {
+                "mime": provider.mime,
+                "sample_rate": provider.sample_rate,
+                "provider": type(provider).__name__,
+            },
+        )
+        index = 0
+        total_bytes = 0
+        try:
+            async for chunk in _prepend_audio_chunk(
+                selection.first_chunk, selection.stream
+            ):
+                for offset in range(0, len(chunk), DEVICE_AUDIO_CHUNK_BYTES):
+                    part = chunk[offset : offset + DEVICE_AUDIO_CHUNK_BYTES]
+                    if total_bytes + len(part) > DEVICE_AUDIO_MAX_BYTES:
+                        await emit(
+                            "pet.audio.failed",
+                            {"reason_code": "tts_audio_too_large"},
+                        )
+                        return False
+                    total_bytes += len(part)
+                    await emit(
+                        "pet.audio.chunk",
+                        {
+                            "index": index,
+                            "data_b64": base64.b64encode(part).decode("ascii"),
+                        },
+                    )
+                    index += 1
+        except Exception:
+            tts_chain.report_failure(provider)
+            await emit("pet.audio.failed", {"reason_code": "tts_stream_failed"})
+            return False
+        await emit(
+            "pet.audio.end",
+            {"chunks": index, "bytes": total_bytes},
+        )
+        return True
 
     async def run(self, session: VoiceSession) -> None:
         """连接主循环：JSON 控制 + 二进制音频。"""
@@ -980,6 +1044,14 @@ def create_voice_websocket_router(
             await manager.disconnect(session)
 
     return router, manager
+
+
+async def _prepend_audio_chunk(
+    first_chunk: bytes, stream: AsyncIterator[bytes]
+) -> AsyncIterator[bytes]:
+    yield first_chunk
+    async for chunk in stream:
+        yield chunk
 
 
 def _privacy_rank(level: PrivacyLevel) -> int:

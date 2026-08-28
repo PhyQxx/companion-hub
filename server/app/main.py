@@ -735,6 +735,10 @@ def create_app(
                     avatar_control_publisher=device_command_gateway,
                 )
                 app.state.voice_websocket_manager = voice_manager
+                if device_command_gateway is not None:
+                    device_command_gateway.set_pet_audio_handler(
+                        voice_manager.stream_device_speech
+                    )
                 app.include_router(voice_router)
             if home_assistant_manager is not None:
                 proactive_delivery = ProactiveDeliveryService(

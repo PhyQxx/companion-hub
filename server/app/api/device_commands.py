@@ -59,6 +59,7 @@ class PetMessageFrame(StrictModel):
     request_id: UUID
     text: Annotated[str, Field(min_length=1, max_length=2000)]
     privacy_level: Literal["L0", "L1", "L2"] = "L1"
+    speak: bool = True
 
 
 class CommandAckFrame(StrictModel):
@@ -123,7 +124,12 @@ class DeviceCommandConnection:
 
 
 PetMessageHandler = Callable[
-    [UUID, str, PrivacyLevel], Awaitable[dict[str, JsonValue]]
+    [UUID, str, PrivacyLevel],
+    Awaitable[tuple[dict[str, JsonValue], str]],
+]
+PetAudioEmitter = Callable[[str, dict[str, JsonValue]], Awaitable[None]]
+PetAudioHandler = Callable[
+    [str, PrivacyLevel, PetAudioEmitter], Awaitable[bool]
 ]
 
 
@@ -143,11 +149,15 @@ class DeviceCommandGateway:
         self._completion_events: dict[UUID, asyncio.Event] = {}
         self._avatar_sequences: dict[UUID, int] = {}
         self._pet_message_handler: PetMessageHandler | None = None
+        self._pet_audio_handler: PetAudioHandler | None = None
         self._pet_message_tasks: dict[tuple[UUID, UUID], asyncio.Task[None]] = {}
         self._pet_message_requests: set[tuple[UUID, UUID]] = set()
 
     def set_pet_message_handler(self, handler: PetMessageHandler) -> None:
         self._pet_message_handler = handler
+
+    def set_pet_audio_handler(self, handler: PetAudioHandler) -> None:
+        self._pet_audio_handler = handler
 
     def connection_for(self, device_id: UUID) -> DeviceCommandConnection | None:
         return self._connections.get(device_id)
@@ -241,17 +251,29 @@ class DeviceCommandGateway:
                     connection, frame.request_id, "pet_chat_unavailable"
                 )
                 return
-            result = await handler(
+            result, speech_text = await handler(
                 connection.principal.owner_user_id,
                 frame.text.strip(),
                 PrivacyLevel(frame.privacy_level),
             )
+            audio_delivered = False
+            if frame.speak:
+                audio_delivered = await self._stream_pet_audio(
+                    connection,
+                    frame.request_id,
+                    speech_text,
+                    PrivacyLevel(frame.privacy_level),
+                )
             await connection.send_signed(
                 {
                     "proto_version": 1,
                     "type": "pet.message.completed",
                     "request_id": str(frame.request_id),
-                    "result": result,
+                    "result": {
+                        **result,
+                        "audio_requested": frame.speak,
+                        "audio_delivered": audio_delivered,
+                    },
                     "sent_at": datetime.now(UTC).isoformat(),
                 }
             )
@@ -261,6 +283,42 @@ class DeviceCommandGateway:
             await self._send_pet_message_failure(
                 connection, frame.request_id, "generation_failed"
             )
+
+    async def _stream_pet_audio(
+        self,
+        connection: DeviceCommandConnection,
+        request_id: UUID,
+        text: str,
+        privacy_level: PrivacyLevel,
+    ) -> bool:
+        async def emit_audio(
+            frame_type: str, payload: dict[str, JsonValue]
+        ) -> None:
+            await connection.send_signed(
+                {
+                    "proto_version": 1,
+                    "type": frame_type,
+                    "request_id": str(request_id),
+                    **payload,
+                    "sent_at": datetime.now(UTC).isoformat(),
+                }
+            )
+
+        handler = self._pet_audio_handler
+        if handler is None:
+            await emit_audio(
+                "pet.audio.failed", {"reason_code": "tts_not_configured"}
+            )
+            return False
+        try:
+            return await handler(text, privacy_level, emit_audio)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            await emit_audio(
+                "pet.audio.failed", {"reason_code": "tts_generation_failed"}
+            )
+            return False
 
     async def _send_pet_message_failure(
         self, connection: DeviceCommandConnection, request_id: UUID, reason_code: str

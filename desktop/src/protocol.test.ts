@@ -6,6 +6,7 @@ import {
   createScreenCaptureGrant,
   parseNotificationRequest,
   parseAvatarControl,
+  parsePetAudioFrame,
   parsePetMessageState,
   parseScreenCaptureRequest,
   screenCaptureGrantActive,
@@ -66,10 +67,51 @@ describe("device command protocol", () => {
       status: "failed",
       reasonCode: "turn_in_progress",
     });
+    expect(parsePetMessageState({
+      type: "pet.message.completed",
+      request_id: "request-2",
+      result: { audio_requested: true, audio_delivered: true },
+    })).toEqual({
+      requestId: "request-2",
+      status: "completed",
+      audioDelivered: true,
+    });
     expect(parsePetMessageState({ type: "pet.message.completed", request_id: 3 }))
       .toBeNull();
     expect(parsePetMessageState({ type: "pet.message.failed", request_id: "x", reason_code: 3 }))
       .toBeNull();
+  });
+
+  it("accepts bounded signed pet audio frames", () => {
+    expect(parsePetAudioFrame({
+      type: "pet.audio.start",
+      request_id: "request-1",
+      mime: "audio/pcm;rate=24000",
+      sample_rate: 24_000,
+    })).toEqual({
+      requestId: "request-1",
+      type: "start",
+      mime: "audio/pcm;rate=24000",
+      sampleRate: 24_000,
+    });
+    expect(parsePetAudioFrame({
+      type: "pet.audio.chunk",
+      request_id: "request-1",
+      index: 0,
+      data_b64: "AQI=",
+    })).toEqual({ requestId: "request-1", type: "chunk", index: 0, dataB64: "AQI=" });
+    expect(parsePetAudioFrame({
+      type: "pet.audio.end",
+      request_id: "request-1",
+      chunks: 1,
+      bytes: 2,
+    })).toEqual({ requestId: "request-1", type: "end", chunks: 1, bytes: 2 });
+    expect(parsePetAudioFrame({
+      type: "pet.audio.chunk",
+      request_id: "request-1",
+      index: -1,
+      data_b64: "not base64!",
+    })).toBeNull();
   });
 
   it("accepts active-window and bounded explicit display capture targets", () => {

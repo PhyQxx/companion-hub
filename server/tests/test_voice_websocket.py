@@ -15,6 +15,7 @@ from uuid import UUID
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+from pydantic import JsonValue
 from starlette.websockets import WebSocket, WebSocketDisconnect
 
 from app.api import create_voice_websocket_router
@@ -141,8 +142,8 @@ class SlowLocalRecognizer:
 class FakeSynthesizer:
     """合成器替身：产出固定 PCM 分片，可选分片间隔制造打断窗口。"""
 
-    def __init__(self, *, delay_s: float = 0.0) -> None:
-        self.runs_local = False
+    def __init__(self, *, delay_s: float = 0.0, runs_local: bool = False) -> None:
+        self.runs_local = runs_local
         self.mime = "audio/pcm;rate=24000"
         self.sample_rate = 24_000
         self._delay_s = delay_s
@@ -193,6 +194,42 @@ class RecordingWebSocket:
 
     def close(self) -> None:
         self._closed.set()
+
+
+async def test_device_speech_streams_audio_and_keeps_l2_local_only() -> None:
+    cloud = VoiceWebSocketManager(
+        cast(ChatService, object()),
+        voice_source=StaticVoiceSource(None, TtsProviderChain([FakeSynthesizer()])),
+    )
+    local = VoiceWebSocketManager(
+        cast(ChatService, object()),
+        voice_source=StaticVoiceSource(
+            None, TtsProviderChain([FakeSynthesizer(runs_local=True)])
+        ),
+    )
+    emitted: list[tuple[str, dict[str, JsonValue]]] = []
+
+    async def emit(frame_type: str, payload: dict[str, JsonValue]) -> None:
+        emitted.append((frame_type, payload))
+
+    assert await cloud.stream_device_speech("你好", PrivacyLevel.L1, emit) is True
+    assert [frame_type for frame_type, _ in emitted] == [
+        "pet.audio.start",
+        "pet.audio.chunk",
+        "pet.audio.chunk",
+        "pet.audio.end",
+    ]
+    assert emitted[1][1]["data_b64"] == "AQACAA=="
+    emitted.clear()
+
+    assert await cloud.stream_device_speech("秘密", PrivacyLevel.L2, emit) is False
+    assert emitted == [
+        ("pet.audio.failed", {"reason_code": "local_tts_required"})
+    ]
+    emitted.clear()
+
+    assert await local.stream_device_speech("秘密", PrivacyLevel.L2, emit) is True
+    assert emitted[-1] == ("pet.audio.end", {"chunks": 2, "bytes": 8})
 
 
 async def test_proactive_voice_reaches_matching_session_and_blocks_cloud_l2_tts() -> None:

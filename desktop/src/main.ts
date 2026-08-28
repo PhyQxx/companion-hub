@@ -127,10 +127,14 @@ void listen<boolean>("pet-click-through-changed", ({ payload }) => {
   petClickThrough.checked = payload;
   localStorage.setItem(PET_CLICK_THROUGH_KEY, String(payload));
 });
-void listen<{ text: string; privacyLevel: "L0" | "L1" | "L2" }>(
+void listen<{ text: string; privacyLevel: "L0" | "L1" | "L2"; speak: boolean }>(
   "pet-message-submit",
   ({ payload }) => {
-    const requestId = connection?.sendPetMessage(payload.text, payload.privacyLevel);
+    const requestId = connection?.sendPetMessage(
+      payload.text,
+      payload.privacyLevel,
+      payload.speak,
+    );
     if (!requestId) {
       void emit("pet-message-state", {
         requestId: "local",
@@ -257,6 +261,7 @@ async function startConnection() {
     authorizeScreenCapture,
     onAvatarControl: (control) => void emit("avatar-control", control),
     onPetMessageState: (messageState) => void emit("pet-message-state", messageState),
+    onPetAudio: (audioFrame) => void emit("pet-audio", audioFrame),
   });
   connection.connect();
 }
