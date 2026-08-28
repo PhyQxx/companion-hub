@@ -1,4 +1,6 @@
 import { getCurrentWindow, PhysicalPosition } from "@tauri-apps/api/window";
+import { listen } from "@tauri-apps/api/event";
+import type { AvatarControl } from "./client";
 import {
   DESKTOP_CONFIG_KEY,
   PET_CLICK_THROUGH_KEY,
@@ -38,4 +40,13 @@ window.addEventListener("storage", (event) => {
   if (event.key === PET_CLICK_THROUGH_KEY) {
     void petWindow.setIgnoreCursorEvents(event.newValue === "true");
   }
+});
+
+void listen<AvatarControl>("avatar-control", ({ payload }) => {
+  const frame = document.querySelector<HTMLIFrameElement>("iframe");
+  const targetOrigin = stageUrl ? new URL(stageUrl).origin : "*";
+  frame?.contentWindow?.postMessage(
+    { type: "aria.avatar.control", ...payload },
+    targetOrigin,
+  );
 });

@@ -714,7 +714,10 @@ def create_app(
                 app.include_router(create_model_capability_router(capability_models, auth_service))
             turn_coordinator = TurnCoordinator(runtime_database, runtime_chat_service)
             websocket_router, websocket_manager = create_chat_websocket_router(
-                runtime_chat_service, auth_service, turn_coordinator=turn_coordinator
+                runtime_chat_service,
+                auth_service,
+                turn_coordinator=turn_coordinator,
+                avatar_control_publisher=device_command_gateway,
             )
             app.state.chat_websocket_manager = websocket_manager
             app.include_router(websocket_router)
@@ -725,6 +728,7 @@ def create_app(
                     auth_service,
                     voice_source=ConfigVoiceSource(runtime_config),
                     turn_coordinator=turn_coordinator,
+                    avatar_control_publisher=device_command_gateway,
                 )
                 app.state.voice_websocket_manager = voice_manager
                 app.include_router(voice_router)

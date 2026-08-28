@@ -11,7 +11,7 @@ use tauri::{
 const KEYRING_SERVICE: &str = "com.aria.companion.desktop";
 const KEYRING_ACCOUNT: &str = "device-access-token";
 const KEYRING_HUB_ACCOUNT: &str = "device-hub-url";
-const CLIENT_CAPABILITIES: [&str; 2] = ["device.ping", "notification.show"];
+const CLIENT_CAPABILITIES: [&str; 3] = ["device.ping", "notification.show", "avatar.render"];
 
 #[derive(Serialize)]
 struct PairResult {

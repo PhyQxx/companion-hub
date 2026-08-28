@@ -1,6 +1,6 @@
 import { disable, enable, isEnabled } from "@tauri-apps/plugin-autostart";
 import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
-import { listen } from "@tauri-apps/api/event";
+import { emit, listen } from "@tauri-apps/api/event";
 import {
   DESKTOP_BASE_CAPABILITIES,
   DESKTOP_NOTIFICATION_CAPABILITY,
@@ -237,6 +237,7 @@ async function startConnection() {
     onState: setState,
     onEvent: addEvent,
     authorizeScreenCapture,
+    onAvatarControl: (control) => void emit("avatar-control", control),
   });
   connection.connect();
 }

@@ -7,7 +7,7 @@ import {
   websocketUrl,
 } from "./protocol";
 
-export const DESKTOP_BASE_CAPABILITIES = ["device.ping"] as const;
+export const DESKTOP_BASE_CAPABILITIES = ["device.ping", "avatar.render"] as const;
 export const DESKTOP_NOTIFICATION_CAPABILITY = "notification.show" as const;
 
 export interface PairResult {
@@ -32,6 +32,47 @@ export interface ScreenCaptureEnvironment extends ScreenPermissionStatus {
 export interface ScreenCaptureGrant {
   expiresAt: number;
   remainingUses: number;
+}
+
+export interface AvatarControl {
+  sequence: number;
+  emotion?: string;
+  expression?: string;
+  motion?: string;
+  lipSync?: number;
+  speaking?: boolean;
+}
+
+export function parseAvatarControl(frame: SignedFrame): AvatarControl | null {
+  if (
+    frame.type !== "avatar.control" ||
+    !Number.isSafeInteger(frame.sequence) ||
+    Number(frame.sequence) < 1 ||
+    !frame.control ||
+    typeof frame.control !== "object" ||
+    Array.isArray(frame.control)
+  ) return null;
+  const value = frame.control as Record<string, unknown>;
+  const control: AvatarControl = { sequence: Number(frame.sequence) };
+  if (typeof value.emotion === "string" && value.emotion.length <= 80) {
+    control.emotion = value.emotion;
+  }
+  if (typeof value.expression === "string" && value.expression.length <= 160) {
+    control.expression = value.expression;
+  }
+  if (typeof value.motion === "string" && value.motion.length <= 160) {
+    control.motion = value.motion;
+  }
+  if (
+    typeof value.lipSyncMilli === "number" &&
+    Number.isInteger(value.lipSyncMilli) &&
+    value.lipSyncMilli >= 0 &&
+    value.lipSyncMilli <= 1000
+  ) {
+    control.lipSync = value.lipSyncMilli / 1000;
+  }
+  if (typeof value.speaking === "boolean") control.speaking = value.speaking;
+  return Object.keys(control).length > 1 ? control : null;
 }
 
 export function createScreenCaptureGrant(now = Date.now()): ScreenCaptureGrant {
@@ -133,6 +174,7 @@ export interface ClientCallbacks {
   onState: (state: ConnectionState, detail: string) => void;
   onEvent: (message: string) => void;
   authorizeScreenCapture: () => "allowed" | "screen_locked" | "screen_capture_not_granted";
+  onAvatarControl?: (control: AvatarControl) => void;
 }
 
 export class DeviceConnection {
@@ -143,6 +185,7 @@ export class DeviceConnection {
   private manuallyStopped = false;
   private completedKeys = new Set<string>();
   private cancelledCommands = new Set<string>();
+  private lastAvatarSequence = 0;
 
   constructor(
     private config: StoredClientConfig,
@@ -206,6 +249,7 @@ export class DeviceConnection {
       return;
     }
     if (frame.type === "device.accepted") {
+      this.lastAvatarSequence = 0;
       this.reconnectAttempt = 0;
       this.callbacks.onState("online", "已连接，等待命令");
       this.callbacks.onEvent("设备鉴权通过");
@@ -215,6 +259,13 @@ export class DeviceConnection {
     if (frame.type === "command.cancel" && typeof frame.command_id === "string") {
       this.cancelledCommands.add(frame.command_id);
       this.callbacks.onEvent(`命令 ${frame.command_id.slice(0, 8)} 已取消`);
+      return;
+    }
+    const avatarControl = parseAvatarControl(frame);
+    if (avatarControl) {
+      if (avatarControl.sequence <= this.lastAvatarSequence) return;
+      this.lastAvatarSequence = avatarControl.sequence;
+      this.callbacks.onAvatarControl?.(avatarControl);
       return;
     }
     if (isExecuteCommand(frame)) await this.execute(frame);

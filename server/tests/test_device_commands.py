@@ -4,6 +4,7 @@ import asyncio
 import json
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import Any, cast
 from uuid import UUID
 
 import pytest
@@ -16,9 +17,10 @@ from app.api import (
     create_device_command_routers,
     verify_device_signature,
 )
+from app.api.device_commands import DeviceCommandConnection
 from app.auth import AuthService
 from app.db import Base, DeviceCommandRecord, create_database
-from app.devices import DeviceCommandStore, DeviceRegistry
+from app.devices import DeviceCommandStore, DevicePrincipal, DeviceRegistry
 from app.ids import uuid7
 
 
@@ -219,6 +221,52 @@ def test_device_frame_signature_detects_tampering() -> None:
     assert verify_device_signature(token, frame)
     frame["args"] = {"target": "other_window"}
     assert not verify_device_signature(token, frame)
+
+
+async def test_avatar_control_uses_authorized_signed_ephemeral_frame(
+    tmp_path: Path,
+) -> None:
+    class FakeWebSocket:
+        def __init__(self) -> None:
+            self.frames: list[dict[str, object]] = []
+
+        async def send_json(self, frame: dict[str, object]) -> None:
+            self.frames.append(frame)
+
+        async def close(self, **_: object) -> None:
+            return None
+
+    database = create_database(f"sqlite+aiosqlite:///{tmp_path / 'avatar-control.db'}")
+    gateway = DeviceCommandGateway(DeviceRegistry(database), DeviceCommandStore(database))
+    owner_id = uuid7()
+    token = "aria-device-avatar-control-secret"
+    websocket = FakeWebSocket()
+    connection = DeviceCommandConnection(
+        websocket=cast(Any, websocket),
+        principal=DevicePrincipal(device_id=uuid7(), owner_user_id=owner_id),
+        access_token=token,
+        capabilities=("avatar.render",),
+    )
+    await gateway.connect(connection)
+
+    delivered = await gateway.publish_avatar_control(
+        owner_id, {"emotion": "happy", "speaking": True, "lipSyncMilli": 700}
+    )
+
+    assert delivered == 1
+    assert len(websocket.frames) == 1
+    frame = websocket.frames[0]
+    assert frame["type"] == "avatar.control"
+    assert frame["sequence"] == 1
+    assert frame["control"] == {
+        "emotion": "happy",
+        "speaking": True,
+        "lipSyncMilli": 700,
+    }
+    assert verify_device_signature(token, frame)
+    connection.capabilities = ()
+    assert await gateway.publish_avatar_control(owner_id, {"emotion": "sad"}) == 0
+    await database.close()
 
 
 async def test_sent_command_expires_as_timeout(tmp_path: Path) -> None:

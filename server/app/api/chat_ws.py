@@ -12,6 +12,7 @@ from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from pydantic import Field, ValidationError
 
 from app.auth import AuthService, ChatPrincipal, InvalidSession
+from app.avatar import AvatarControlPublisher, control_from_agent_reply
 from app.chat import ChatService, MessageView, PendingTurn, TurnCancelled
 from app.ids import uuid7
 from app.llm import LLMRouteExhausted
@@ -78,9 +79,11 @@ class ChatWebSocketManager:
         self,
         service: ChatService,
         turn_coordinator: TurnCoordinator | None = None,
+        avatar_control_publisher: AvatarControlPublisher | None = None,
     ) -> None:
         self._service = service
         self._turns = turn_coordinator
+        self._avatar_control = avatar_control_publisher
         self._connections: dict[int, ChatConnection] = {}
         self._tasks: dict[UUID, asyncio.Task[None]] = {}
 
@@ -212,6 +215,11 @@ class ChatWebSocketManager:
                         payload={"agent_reply": reply_meta},
                     ),
                 )
+                control = control_from_agent_reply(reply_meta)
+                if self._avatar_control is not None and control:
+                    await self._avatar_control.publish_avatar_control(
+                        connection.principal.user_id, control
+                    )
             await self.broadcast(
                 connection.principal.user_id,
                 frame.conversation_id,
@@ -340,9 +348,14 @@ def create_chat_websocket_router(
     service: ChatService,
     auth_service: AuthService,
     turn_coordinator: TurnCoordinator | None = None,
+    avatar_control_publisher: AvatarControlPublisher | None = None,
 ) -> tuple[APIRouter, ChatWebSocketManager]:
     router = APIRouter(tags=["chat-websocket"])
-    manager = ChatWebSocketManager(service, turn_coordinator=turn_coordinator)
+    manager = ChatWebSocketManager(
+        service,
+        turn_coordinator=turn_coordinator,
+        avatar_control_publisher=avatar_control_publisher,
+    )
 
     @router.websocket("/ws/chat")
     async def chat_socket(websocket: WebSocket) -> None:

@@ -33,6 +33,7 @@ const result = ref<PairingCodeResult | null>(null);
 
 const knownCapabilities = [
   "device.ping",
+  "avatar.render",
   "screen.capture",
   "notification.show",
   "browser.current_tab.read",

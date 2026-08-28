@@ -5,6 +5,7 @@ import {
   consumeScreenCaptureGrant,
   createScreenCaptureGrant,
   parseNotificationRequest,
+  parseAvatarControl,
   parseScreenCaptureRequest,
   screenCaptureGrantActive,
 } from "./client";
@@ -13,6 +14,23 @@ import { canonicalFrame, signFrame, verifyFrame, websocketUrl } from "./protocol
 Object.defineProperty(globalThis, "crypto", { value: webcrypto });
 
 describe("device command protocol", () => {
+  it("accepts bounded ephemeral avatar controls", () => {
+    expect(parseAvatarControl({
+      type: "avatar.control",
+      sequence: 7,
+      control: { emotion: "happy", speaking: true, lipSyncMilli: 1000, motion: "TapBody:0" },
+    })).toEqual({
+      sequence: 7,
+      emotion: "happy",
+      motion: "TapBody:0",
+      lipSync: 1,
+      speaking: true,
+    });
+    expect(parseAvatarControl({ type: "avatar.control", sequence: 0, control: {} }))
+      .toBeNull();
+    expect(parseAvatarControl({ type: "avatar.control", sequence: 1, control: {} }))
+      .toBeNull();
+  });
   it("accepts bounded proactive notification requests", () => {
     expect(
       parseNotificationRequest({ title: "Aria", body: "该回家了", privacy_level: "L1" }),
@@ -108,6 +126,19 @@ describe("device command protocol", () => {
     };
     expect(await signFrame("aria-device-test-secret-0123456789", frame)).toBe(
       "453be22a5a1be528b5b2d97f52ffbd9c02a274dafed88b8d084088f1692eebb5",
+    );
+  });
+
+  it("matches the Python signer for integer avatar lip sync", async () => {
+    const frame = {
+      proto_version: 1,
+      type: "avatar.control",
+      sequence: 7,
+      sent_at: "2026-08-28T06:00:00+00:00",
+      control: { emotion: "happy", lipSyncMilli: 700, speaking: true },
+    };
+    expect(await signFrame("aria-device-test-secret-0123456789", frame)).toBe(
+      "2152788d406cb1f572e03719f58b36f360422fb5eebf7d015a16dceadd4f9f9e",
     );
   });
 

@@ -32,6 +32,7 @@ from app.devices import (
     DeviceCredentialInvalid,
     DevicePrincipal,
     DeviceRegistry,
+    DeviceSnapshot,
     EphemeralDeviceAssetError,
     EphemeralDeviceAssetStore,
 )
@@ -102,6 +103,7 @@ class DeviceCommandConnection:
     websocket: WebSocket
     principal: DevicePrincipal
     access_token: str
+    capabilities: tuple[str, ...] = ()
     send_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
 
     async def send_signed(self, payload: dict[str, Any]) -> None:
@@ -125,6 +127,7 @@ class DeviceCommandGateway:
         self._connections: dict[UUID, DeviceCommandConnection] = {}
         self._timeout_tasks: dict[UUID, asyncio.Task[None]] = {}
         self._completion_events: dict[UUID, asyncio.Event] = {}
+        self._avatar_sequences: dict[UUID, int] = {}
 
     def connection_for(self, device_id: UUID) -> DeviceCommandConnection | None:
         return self._connections.get(device_id)
@@ -140,6 +143,40 @@ class DeviceCommandGateway:
         current = self._connections.get(connection.principal.device_id)
         if current is connection:
             self._connections.pop(connection.principal.device_id, None)
+
+    async def publish_avatar_control(
+        self, owner_user_id: UUID, control: dict[str, JsonValue]
+    ) -> int:
+        if not control:
+            return 0
+        connections = [
+            connection
+            for connection in self._connections.values()
+            if connection.principal.owner_user_id == owner_user_id
+            and "avatar.render" in connection.capabilities
+        ]
+        if not connections:
+            return 0
+        sequence = self._avatar_sequences.get(owner_user_id, 0) + 1
+        self._avatar_sequences[owner_user_id] = sequence
+        frame = {
+            "proto_version": 1,
+            "type": "avatar.control",
+            "sequence": sequence,
+            "sent_at": datetime.now(UTC).isoformat(),
+            "control": control,
+        }
+        results = await asyncio.gather(
+            *(connection.send_signed(frame) for connection in connections),
+            return_exceptions=True,
+        )
+        delivered = 0
+        for connection, result in zip(connections, results, strict=True):
+            if isinstance(result, Exception):
+                self.disconnect(connection)
+            else:
+                delivered += 1
+        return delivered
 
     async def issue(
         self,
@@ -278,8 +315,8 @@ class DeviceCommandGateway:
 
     async def heartbeat(
         self, principal: DevicePrincipal, capabilities: tuple[str, ...]
-    ) -> None:
-        await self._registry.heartbeat(principal, capabilities=capabilities)
+    ) -> DeviceSnapshot:
+        return await self._registry.heartbeat(principal, capabilities=capabilities)
 
     def _schedule_timeout(self, command: CommandSnapshot) -> None:
         self._cancel_timeout(command.id)
@@ -378,7 +415,7 @@ def create_device_command_routers(
                 raw_auth = await websocket.receive_json()
             auth = DeviceAuthenticateFrame.model_validate(raw_auth)
             principal = await registry.authenticate(auth.access_token)
-            await registry.heartbeat(
+            device = await registry.heartbeat(
                 principal, capabilities=tuple(auth.capabilities)
             )
         except WebSocketDisconnect:
@@ -391,6 +428,7 @@ def create_device_command_routers(
             websocket=websocket,
             principal=principal,
             access_token=auth.access_token,
+            capabilities=device.effective_capabilities,
         )
         await gateway.connect(connection)
         await connection.send_signed(
@@ -505,9 +543,10 @@ async def _handle_device_frame(
         frame_type = raw.get("type") if isinstance(raw, dict) else None
         if frame_type == "device.heartbeat":
             heartbeat_frame = DeviceHeartbeatFrame.model_validate(raw)
-            await gateway.heartbeat(
+            device = await gateway.heartbeat(
                 connection.principal, tuple(heartbeat_frame.capabilities)
             )
+            connection.capabilities = device.effective_capabilities
             await connection.send_signed(
                 {
                     "proto_version": 1,

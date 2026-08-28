@@ -19,9 +19,10 @@ from typing import Any
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, WebSocket, WebSocketDisconnect
-from pydantic import ValidationError
+from pydantic import JsonValue, ValidationError
 
 from app.auth import AuthService, ChatPrincipal, InvalidSession
+from app.avatar import AvatarControlPublisher, control_from_agent_reply
 from app.chat import ChatService, PendingTurn, TurnCancelled
 from app.ids import uuid7
 from app.llm import LLMRoute, LLMRouteExhausted
@@ -125,10 +126,13 @@ class VoiceWebSocketManager:
         *,
         voice_source: VoiceProviderSource,
         turn_coordinator: TurnCoordinator | None = None,
+        avatar_control_publisher: AvatarControlPublisher | None = None,
     ) -> None:
         self._service = service
         self._turns = turn_coordinator
         self._voice_source = voice_source
+        self._avatar_control = avatar_control_publisher
+        self._avatar_tasks: set[asyncio.Task[int]] = set()
         self._latency_metrics = VoiceLatencyMetrics()
         self._sessions: dict[int, VoiceSession] = {}
 
@@ -683,6 +687,10 @@ class VoiceWebSocketManager:
 
             turn = await self._service.run_stream(pending, on_delta, on_tool_event)
             session.turn_committed = True
+            reply_meta = (turn.assistant_message.decision_meta or {}).get("agent_reply")
+            self._schedule_avatar_control(
+                session.principal.user_id, control_from_agent_reply(reply_meta)
+            )
             remainder = buffer.flush()
             if remainder:
                 await speak(remainder)
@@ -832,6 +840,41 @@ class VoiceWebSocketManager:
         await session.websocket.send_text(
             json.dumps({"type": event_type, **payload}, ensure_ascii=False)
         )
+        control: dict[str, JsonValue] = {}
+        if event_type == "voice.sentence":
+            control = {"speaking": True, "lipSyncMilli": 0}
+        elif event_type == "voice.viseme":
+            amplitude = payload.get("amp")
+            if isinstance(amplitude, int | float):
+                control = {
+                    "speaking": True,
+                    "lipSyncMilli": round(max(0.0, min(1.0, amplitude)) * 1000),
+                }
+        elif event_type in {
+            "voice.sentence.end",
+            "voice.interrupted",
+            "turn.cancelled",
+            "turn.failed",
+        }:
+            control = {"speaking": False, "lipSyncMilli": 0}
+        self._schedule_avatar_control(session.principal.user_id, control)
+
+    def _schedule_avatar_control(
+        self, owner_user_id: UUID, control: dict[str, JsonValue]
+    ) -> None:
+        if self._avatar_control is None or not control:
+            return
+        task = asyncio.create_task(
+            self._avatar_control.publish_avatar_control(owner_user_id, control),
+            name="voice-avatar-control",
+        )
+        self._avatar_tasks.add(task)
+        task.add_done_callback(self._discard_avatar_task)
+
+    def _discard_avatar_task(self, task: asyncio.Task[int]) -> None:
+        self._avatar_tasks.discard(task)
+        with suppress(Exception):
+            task.result()
 
     def _log_metrics(
         self,
@@ -880,10 +923,14 @@ def create_voice_websocket_router(
     voice_source: VoiceProviderSource,
     turn_coordinator: TurnCoordinator | None = None,
     wake_word_factory: Callable[[], WakeWordDetector | None] = create_default_wake_word,
+    avatar_control_publisher: AvatarControlPublisher | None = None,
 ) -> tuple[APIRouter, VoiceWebSocketManager]:
     router = APIRouter(tags=["voice-websocket"])
     manager = VoiceWebSocketManager(
-        service, voice_source=voice_source, turn_coordinator=turn_coordinator
+        service,
+        voice_source=voice_source,
+        turn_coordinator=turn_coordinator,
+        avatar_control_publisher=avatar_control_publisher,
     )
 
     @router.get("/api/v1/meta/voice/latency")

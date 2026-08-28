@@ -7,7 +7,7 @@ const status = document.querySelector("#status");
 let mountedModel = null;
 let handle = null;
 let runtimeLoad = null;
-let control = { emotion: "neutral", expression: null, lipSync: 0, speaking: false };
+let control = { emotion: "neutral", expression: null, motion: null, lipSync: 0, speaking: false };
 
 function setMode(mode) {
   canvas.hidden = mode !== "live2d";
@@ -36,6 +36,12 @@ function applyControl() {
   handle.setSpeaking?.(control.speaking);
   handle.setEmotion?.(control.emotion);
   if (control.expression) handle.setExpression?.(control.expression);
+  if (control.motion) {
+    const match = control.motion.match(/^(.*?)(?::(\d+))?$/);
+    const group = match?.[1]?.trim();
+    if (group) handle.playMotion?.(group, match?.[2] == null ? undefined : Number(match[2]));
+    control.motion = null;
+  }
   if (control.speaking || control.lipSync > 0) handle.setLipSync?.(control.lipSync);
 }
 
@@ -68,6 +74,7 @@ async function renderAvatar(avatar) {
   } else {
     setMode("orb");
   }
+  control.motion = null;
   status.textContent = avatar?.name ?? "Aria";
 }
 
@@ -91,6 +98,7 @@ function receiveControl(value) {
   control = {
     emotion: typeof value.emotion === "string" ? value.emotion : control.emotion,
     expression: typeof value.expression === "string" ? value.expression : null,
+    motion: typeof value.motion === "string" ? value.motion : null,
     lipSync: Number.isFinite(value.lipSync) ? Math.max(0, Math.min(1, value.lipSync)) : control.lipSync,
     speaking: typeof value.speaking === "boolean" ? value.speaking : control.speaking,
   };

@@ -39,6 +39,8 @@ pnpm --dir desktop tauri dev
 5. Admin 中设备只有在系统权限已授予、未锁屏、隐私暂停关闭且临时授权有效时才会实时声明 `screen.capture`。
 6. 在运行状态中点击“显示桌宠”。开启鼠标穿透后，可从主窗口关闭穿透，或从托盘选择“恢复桌宠交互”。
 
-桌宠内嵌的是已配对配置中的 Hub 页面 `/desktop/pet/`；Live2D 模型仍须来自 Hub 的 `/api/v1/avatar-user-assets/` 同源端点，不会放宽模型资源白名单。当前版本会跟随 Hub 的默认形象，语音与情绪跨窗口实时同步仍是下一阶段。
+桌宠内嵌的是已配对配置中的 Hub 页面 `/desktop/pet/`；Live2D 模型仍须来自 Hub 的 `/api/v1/avatar-user-assets/` 同源端点，不会放宽模型资源白名单。当前版本会跟随 Hub 的默认形象。
+
+实时表情、动作、说话状态和口型通过现有设备 WebSocket 的 HMAC 签名临时帧同步，不写命令台账。设备需在 Admin 获授 `avatar.render`；旧设备可在“设备”页补授权，无需重新配对。
 
 忘记设备只清除本机凭据。若需要使旧令牌立即失效，还要在 Admin 中撤销对应设备。
