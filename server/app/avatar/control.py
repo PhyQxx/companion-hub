@@ -33,3 +33,12 @@ def control_from_agent_reply(value: object) -> dict[str, JsonValue]:
                 control["motion"] = action["value"][:160]
                 break
     return control
+
+
+def with_reply_text(
+    control: dict[str, JsonValue], content: str, *, limit: int = 280
+) -> dict[str, JsonValue]:
+    compact = " ".join(content.split())
+    if not compact:
+        return control
+    return {**control, "text": compact[:limit]}

@@ -22,7 +22,7 @@ from fastapi import APIRouter, Depends, WebSocket, WebSocketDisconnect
 from pydantic import JsonValue, ValidationError
 
 from app.auth import AuthService, ChatPrincipal, InvalidSession
-from app.avatar import AvatarControlPublisher, control_from_agent_reply
+from app.avatar import AvatarControlPublisher, control_from_agent_reply, with_reply_text
 from app.chat import ChatService, PendingTurn, TurnCancelled
 from app.ids import uuid7
 from app.llm import LLMRoute, LLMRouteExhausted
@@ -189,6 +189,10 @@ class VoiceWebSocketManager:
         privacy_level: PrivacyLevel,
     ) -> bool:
         generation_id = uuid7()
+        if privacy_level in {PrivacyLevel.L0, PrivacyLevel.L1}:
+            self._schedule_avatar_control(
+                session.principal.user_id, with_reply_text({}, text)
+            )
         await self._send(
             session,
             "proactive.committed",
@@ -688,9 +692,12 @@ class VoiceWebSocketManager:
             turn = await self._service.run_stream(pending, on_delta, on_tool_event)
             session.turn_committed = True
             reply_meta = (turn.assistant_message.decision_meta or {}).get("agent_reply")
-            self._schedule_avatar_control(
-                session.principal.user_id, control_from_agent_reply(reply_meta)
-            )
+            avatar_control = control_from_agent_reply(reply_meta)
+            if session.privacy_level in {PrivacyLevel.L0, PrivacyLevel.L1}:
+                avatar_control = with_reply_text(
+                    avatar_control, turn.assistant_message.content
+                )
+            self._schedule_avatar_control(session.principal.user_id, avatar_control)
             remainder = buffer.flush()
             if remainder:
                 await speak(remainder)

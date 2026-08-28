@@ -2,12 +2,14 @@ const canvas = document.querySelector("#live2d");
 const image = document.querySelector("#avatar");
 const orb = document.querySelector("#orb");
 const status = document.querySelector("#status");
+const speech = document.querySelector("#speech");
 
 let mountedModel = null;
 let handle = null;
 let runtimeLoad = null;
 let suspended = document.hidden;
 let refreshVersion = 0;
+let speechTimer = null;
 let control = { emotion: "neutral", expression: null, motion: null, lipSync: 0, speaking: false };
 
 function setMode(mode) {
@@ -44,6 +46,16 @@ function applyControl() {
     control.motion = null;
   }
   if (control.speaking || control.lipSync > 0) handle.setLipSync?.(control.lipSync);
+}
+
+function showSpeech(text) {
+  if (speechTimer !== null) window.clearTimeout(speechTimer);
+  speech.textContent = text;
+  speech.hidden = false;
+  speechTimer = window.setTimeout(() => {
+    speech.hidden = true;
+    speechTimer = null;
+  }, 12_000);
 }
 
 async function renderAvatar(avatar, version) {
@@ -128,9 +140,28 @@ function receiveControl(value) {
     lipSync: Number.isFinite(value.lipSync) ? Math.max(0, Math.min(1, value.lipSync)) : control.lipSync,
     speaking: typeof value.speaking === "boolean" ? value.speaking : control.speaking,
   };
+  if (typeof value.text === "string" && value.text.trim()) showSpeech(value.text.trim());
   applyControl();
   if (!handle && !suspended) void refresh();
 }
+
+speech.addEventListener("click", () => {
+  speech.hidden = true;
+  if (speechTimer !== null) window.clearTimeout(speechTimer);
+  speechTimer = null;
+});
+
+canvas.addEventListener("click", () => {
+  handle?.playMotion?.("TapBody", 0);
+});
+image.addEventListener("click", () => image.animate(
+  [{ transform: "scale(1)" }, { transform: "scale(1.025)" }, { transform: "scale(1)" }],
+  { duration: 260, easing: "ease-out" },
+));
+orb.addEventListener("click", () => orb.animate(
+  [{ filter: "brightness(1)" }, { filter: "brightness(1.2)" }, { filter: "brightness(1)" }],
+  { duration: 320, easing: "ease-out" },
+));
 
 window.addEventListener("message", (event) => receiveControl(event.data));
 try {

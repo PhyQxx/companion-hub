@@ -12,7 +12,7 @@ from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from pydantic import Field, ValidationError
 
 from app.auth import AuthService, ChatPrincipal, InvalidSession
-from app.avatar import AvatarControlPublisher, control_from_agent_reply
+from app.avatar import AvatarControlPublisher, control_from_agent_reply, with_reply_text
 from app.chat import ChatService, MessageView, PendingTurn, TurnCancelled
 from app.ids import uuid7
 from app.llm import LLMRouteExhausted
@@ -215,11 +215,13 @@ class ChatWebSocketManager:
                         payload={"agent_reply": reply_meta},
                     ),
                 )
-                control = control_from_agent_reply(reply_meta)
-                if self._avatar_control is not None and control:
-                    await self._avatar_control.publish_avatar_control(
-                        connection.principal.user_id, control
-                    )
+            control = control_from_agent_reply(reply_meta)
+            if frame.privacy_level != "L2":
+                control = with_reply_text(control, turn.assistant_message.content)
+            if self._avatar_control is not None and control:
+                await self._avatar_control.publish_avatar_control(
+                    connection.principal.user_id, control
+                )
             await self.broadcast(
                 connection.principal.user_id,
                 frame.conversation_id,

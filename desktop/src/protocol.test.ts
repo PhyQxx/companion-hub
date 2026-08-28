@@ -18,11 +18,18 @@ describe("device command protocol", () => {
     expect(parseAvatarControl({
       type: "avatar.control",
       sequence: 7,
-      control: { emotion: "happy", speaking: true, lipSyncMilli: 1000, motion: "TapBody:0" },
+      control: {
+        emotion: "happy",
+        speaking: true,
+        lipSyncMilli: 1000,
+        motion: "TapBody:0",
+        text: "你好呀",
+      },
     })).toEqual({
       sequence: 7,
       emotion: "happy",
       motion: "TapBody:0",
+      text: "你好呀",
       lipSync: 1,
       speaking: true,
     });

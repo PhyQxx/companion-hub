@@ -123,6 +123,10 @@ void listen("pet-interaction-restored", () => {
   localStorage.setItem(PET_CLICK_THROUGH_KEY, "false");
   addEvent("已从托盘恢复桌宠交互");
 });
+void listen<boolean>("pet-click-through-changed", ({ payload }) => {
+  petClickThrough.checked = payload;
+  localStorage.setItem(PET_CLICK_THROUGH_KEY, String(payload));
+});
 
 function activeCapabilities(): string[] {
   const capabilities: string[] = [...DESKTOP_BASE_CAPABILITIES];

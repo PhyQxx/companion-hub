@@ -39,6 +39,7 @@ export interface AvatarControl {
   emotion?: string;
   expression?: string;
   motion?: string;
+  text?: string;
   lipSync?: number;
   speaking?: boolean;
 }
@@ -62,6 +63,9 @@ export function parseAvatarControl(frame: SignedFrame): AvatarControl | null {
   }
   if (typeof value.motion === "string" && value.motion.length <= 160) {
     control.motion = value.motion;
+  }
+  if (typeof value.text === "string" && value.text.length <= 280) {
+    control.text = value.text;
   }
   if (
     typeof value.lipSyncMilli === "number" &&
