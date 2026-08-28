@@ -84,6 +84,7 @@ class VoiceConfig(StrictModel):
 
     asr: VoiceAsrConfig | None = None
     tts: Annotated[list[VoiceTtsProviderConfig], Field(max_length=4)] = Field(default_factory=list)
+    first_tts_chunk_chars: Annotated[int, Field(ge=8, le=60)] = 24
 
 
 class QueryToolConfig(StrictModel):

@@ -144,6 +144,7 @@ export interface VoiceLatencySummary {
   first_audio_ms: VoiceLatencyMetricSummary;
   total_ms: VoiceLatencyMetricSummary;
   interrupt_ms: VoiceLatencyMetricSummary;
+  asr_prefetched_count: number;
   targets: {
     completed_turns: number;
     first_audio_samples: number;
@@ -172,6 +173,7 @@ export interface VoiceControlEvent {
   content?: string;
   delta?: string;
   is_final?: boolean;
+  asr_prefetched?: boolean;
   index?: number;
   mime?: string;
   sample_rate?: number;

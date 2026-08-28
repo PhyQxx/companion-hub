@@ -62,6 +62,14 @@ MAX_TEXT_LENGTH = 20_000
 VOICE_CONTEXT_MESSAGES = 8
 
 
+@dataclass(slots=True)
+class AsrPrefetch:
+    """VAD hangover 期间提前执行的整段 ASR；恢复说话后立即作废。"""
+
+    recognizer: SpeechRecognizer
+    task: asyncio.Task[str]
+
+
 class SubmittedTextRecognizer:
     """Adapt trusted text input to the existing streamed reply + TTS turn pipeline."""
 
@@ -97,6 +105,7 @@ class VoiceSession:
     turn_id: UUID | None = None
     turn_committed: bool = False
     turn_task: asyncio.Task[None] | None = None
+    asr_prefetch: AsrPrefetch | None = None
     tts_unavailable_notified: bool = False
 
     def resolve_location(self, payload: object) -> ClientLocation | None:
@@ -235,6 +244,7 @@ class VoiceWebSocketManager:
             case "voice.hello":
                 await self._on_hello(session, frame)
             case "utterance.begin":
+                self._discard_asr_prefetch(session)
                 session.ptt_active = True
                 session.wake_armed = True
                 session.collecting = True
@@ -340,6 +350,8 @@ class VoiceWebSocketManager:
         if session.generation_id is not None and session.vad.is_voiced(pcm):
             await self._interrupt(session, reason="barge_in")
             return
+        was_speaking = session.vad.speaking
+        voiced = session.vad.is_voiced(pcm)
         if session.collecting:
             session.utterance.extend(pcm)
         if session.ptt_active:
@@ -372,10 +384,19 @@ class VoiceWebSocketManager:
                     {"backend": "openwakeword"},
                 )
                 return
+        # 自动断句会等待约 450ms 静音。首个静音帧到达后立刻预取 ASR，
+        # 把这段本来纯等待的 hangover 与识别耗时重叠起来；若用户继续说，
+        # 预取结果立即作废，最终仍走完整音频转写。
+        if session.collecting and was_speaking:
+            if voiced:
+                self._discard_asr_prefetch(session)
+            elif session.asr_prefetch is None:
+                await self._start_asr_prefetch(session)
         event = session.vad.feed(pcm)
         if event is None:
             return
         if event.kind == "utterance_started":
+            self._discard_asr_prefetch(session)
             session.collecting = True
             session.utterance.clear()
             session.utterance.extend(pcm)
@@ -391,6 +412,7 @@ class VoiceWebSocketManager:
         pcm = bytes(session.utterance)
         session.utterance.clear()
         if len(pcm) < MIN_UTTERANCE_BYTES:
+            self._discard_asr_prefetch(session)
             return
         # 每条话语解析一次提供方：管理端改语音配置即时生效，无需重启
         recognizer, tts_chain = await self._voice_source.resolve()
@@ -399,14 +421,72 @@ class VoiceWebSocketManager:
             return
         # 隐私闸门：L2 音频禁止交给云端识别器出站
         if session.privacy_level is PrivacyLevel.L2 and not recognizer.runs_local:
+            self._discard_asr_prefetch(session)
             await self._send(session, "voice.asr_unavailable", {"reason": "local_asr_required"})
             return
         if session.conversation_id is None or session.turn_task is not None:
+            self._discard_asr_prefetch(session)
             return
+        prefetched_transcript = await self._consume_asr_prefetch(session, recognizer)
         session.turn_task = asyncio.create_task(
-            self._run_utterance(session, pcm, recognizer, tts_chain),
+            self._run_utterance(
+                session,
+                pcm,
+                recognizer,
+                tts_chain,
+                prefetched_transcript=prefetched_transcript,
+            ),
             name="voice-utterance",
         )
+
+    async def _start_asr_prefetch(self, session: VoiceSession) -> None:
+        if len(session.utterance) < MIN_UTTERANCE_BYTES:
+            return
+        recognizer, _ = await self._voice_source.resolve()
+        if recognizer is None:
+            return
+        if session.privacy_level is PrivacyLevel.L2 and not recognizer.runs_local:
+            return
+        pcm = bytes(session.utterance)
+        task = asyncio.create_task(
+            recognizer.transcribe(
+                pcm,
+                sample_rate=SUPPORTED_SAMPLE_RATE,
+                language=None,
+            ),
+            name="voice-asr-prefetch",
+        )
+        session.asr_prefetch = AsrPrefetch(recognizer=recognizer, task=task)
+
+    async def _consume_asr_prefetch(
+        self,
+        session: VoiceSession,
+        recognizer: SpeechRecognizer,
+    ) -> str | None:
+        prefetch, session.asr_prefetch = session.asr_prefetch, None
+        if prefetch is None:
+            return None
+        if prefetch.recognizer is not recognizer:
+            prefetch.task.cancel()
+            return None
+        try:
+            transcript = await prefetch.task
+        except asyncio.CancelledError:
+            return None
+        except Exception:
+            logger.warning("voice ASR prefetch failed; falling back", exc_info=True)
+            return None
+        return transcript if transcript.strip() else None
+
+    @staticmethod
+    def _discard_asr_prefetch(session: VoiceSession) -> None:
+        prefetch, session.asr_prefetch = session.asr_prefetch, None
+        if prefetch is not None:
+            if prefetch.task.done():
+                with suppress(asyncio.CancelledError, Exception):
+                    prefetch.task.result()
+            else:
+                prefetch.task.cancel()
 
     async def _run_utterance(
         self,
@@ -414,6 +494,8 @@ class VoiceWebSocketManager:
         pcm: bytes,
         recognizer: SpeechRecognizer,
         tts_chain: TtsProviderChain | None,
+        *,
+        prefetched_transcript: str | None = None,
     ) -> None:
         if session.conversation_id is None:
             return
@@ -424,9 +506,11 @@ class VoiceWebSocketManager:
         session.turn_committed = False
         try:
             try:
-                transcript = await recognizer.transcribe(
-                    pcm, sample_rate=SUPPORTED_SAMPLE_RATE, language=None
-                )
+                transcript = prefetched_transcript
+                if transcript is None:
+                    transcript = await recognizer.transcribe(
+                        pcm, sample_rate=SUPPORTED_SAMPLE_RATE, language=None
+                    )
             except SpeechRecognitionUnavailable as error:
                 logger.warning(
                     "voice asr unavailable provider=%s reason=%s",
@@ -452,7 +536,13 @@ class VoiceWebSocketManager:
             if not transcript.strip():
                 return
             await self._send(
-                session, "voice.transcript", {"text": transcript, "is_final": True}
+                session,
+                "voice.transcript",
+                {
+                    "text": transcript,
+                    "is_final": True,
+                    "asr_prefetched": prefetched_transcript is not None,
+                },
             )
             pending = await self._service.start_turn(
                 session.conversation_id,
@@ -485,7 +575,9 @@ class VoiceWebSocketManager:
                     "privacy_level": session.privacy_level.value,
                 },
             )
-            buffer = SentenceBuffer()
+            buffer = SentenceBuffer(
+                first_chunk_chars=pending.config.voice.first_tts_chunk_chars
+            )
             sentence_index = 0
 
             async def speak(sentence: str) -> None:
@@ -613,6 +705,7 @@ class VoiceWebSocketManager:
                 transcript_at,
                 first_token_at,
                 first_audio_at,
+                prefetched_transcript is not None,
             )
         except (TurnCancelled, asyncio.CancelledError):
             if pending is not None:
@@ -710,6 +803,7 @@ class VoiceWebSocketManager:
         )
 
     async def disconnect(self, session: VoiceSession) -> None:
+        self._discard_asr_prefetch(session)
         task = session.turn_task
         if task is not None:
             task.cancel()
@@ -747,6 +841,7 @@ class VoiceWebSocketManager:
         transcript_at: float,
         first_token_at: float,
         first_audio_at: float,
+        asr_prefetched: bool,
     ) -> None:
         """docs/03 M2.7 打点：ASR / 首 token / 首音频分段耗时（毫秒）。"""
 
@@ -763,16 +858,18 @@ class VoiceWebSocketManager:
                 first_token_ms=first_token_ms,
                 first_audio_ms=first_audio_ms,
                 total_ms=total_ms,
+                asr_prefetched=asr_prefetched,
             )
         )
         logger.info(
             "voice turn metrics generation_id=%s asr_ms=%s first_token_ms=%s "
-            "first_audio_ms=%s total_ms=%s",
+            "first_audio_ms=%s total_ms=%s asr_prefetched=%s",
             generation_id,
             asr_ms,
             first_token_ms,
             first_audio_ms,
             total_ms,
+            asr_prefetched,
         )
 
 

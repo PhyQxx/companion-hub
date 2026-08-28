@@ -79,6 +79,7 @@ onMounted(async () => {
         <el-tag :type="voiceLatency?.acceptance.completed_turns_ready ? 'success' : 'info'">
           完成回合 {{ voiceLatency?.count ?? 0 }}/{{ voiceLatency?.targets.completed_turns ?? 20 }}
         </el-tag>
+        <el-tag type="info">ASR 预取 {{ voiceLatency?.asr_prefetched_count ?? 0 }} 次</el-tag>
         <el-tag :type="voiceLatency?.acceptance.first_audio_samples_ready ? 'success' : 'info'">
           首音频样本 {{ voiceLatency?.first_audio_ms.count ?? 0 }}/{{ voiceLatency?.targets.first_audio_samples ?? 20 }}
         </el-tag>

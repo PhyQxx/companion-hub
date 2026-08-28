@@ -6,6 +6,8 @@ from __future__ import annotations
 from app.voice.vad import pcm16_rms
 
 SENTENCE_TERMINATORS = ("。", "！", "？", "!", "?", "\n")
+SOFT_TERMINATORS = ("，", ",", "；", ";", "：", ":", "、")
+FIRST_AUDIO_CHARS = 24
 MAX_SENTENCE_CHARS = 60
 VISEME_WINDOW_MS = 50
 
@@ -13,9 +15,18 @@ VISEME_WINDOW_MS = 50
 class SentenceBuffer:
     """累积流式 delta，遇到句末标点或达到长度上限时产出完整句子。"""
 
-    def __init__(self, *, max_chars: int = MAX_SENTENCE_CHARS) -> None:
+    def __init__(
+        self,
+        *,
+        first_chunk_chars: int = FIRST_AUDIO_CHARS,
+        max_chars: int = MAX_SENTENCE_CHARS,
+    ) -> None:
+        if first_chunk_chars <= 0 or max_chars <= 0:
+            raise ValueError("sentence buffer limits must be positive")
         self._pending = ""
+        self._first_chunk_chars = min(first_chunk_chars, max_chars)
         self._max_chars = max_chars
+        self._emitted = False
 
     def push(self, delta: str) -> list[str]:
         self._pending += delta
@@ -31,10 +42,25 @@ class SentenceBuffer:
             self._pending = self._pending[cut + 1 :]
             if sentence:
                 sentences.append(sentence)
+                self._emitted = True
+        if not self._emitted and len(self._pending) >= self._first_chunk_chars:
+            cut = self._first_chunk_cut()
+            sentence = self._pending[:cut].strip()
+            self._pending = self._pending[cut:]
+            if sentence:
+                sentences.append(sentence)
+                self._emitted = True
         while len(self._pending) > self._max_chars:
             sentences.append(self._pending[: self._max_chars])
             self._pending = self._pending[self._max_chars :]
+            self._emitted = True
         return sentences
+
+    def _first_chunk_cut(self) -> int:
+        prefix = self._pending[: self._first_chunk_chars]
+        soft_cut = max((prefix.rfind(mark) for mark in SOFT_TERMINATORS), default=-1)
+        # 太早的逗号会生成一两个字的碎片；至少积累 8 字再按软标点切。
+        return soft_cut + 1 if soft_cut >= 7 else self._first_chunk_chars
 
     def flush(self) -> str:
         """回合结束时取走残余文本（无标点收尾的尾巴句）。"""

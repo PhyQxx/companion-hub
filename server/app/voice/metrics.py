@@ -13,6 +13,7 @@ class VoiceLatencySample:
     first_token_ms: int | None
     first_audio_ms: int | None
     total_ms: int
+    asr_prefetched: bool = False
 
 
 class VoiceLatencyMetrics:
@@ -63,6 +64,7 @@ class VoiceLatencyMetrics:
             "first_audio_ms": first_audio,
             "total_ms": _summary(sample.total_ms for sample in samples),
             "interrupt_ms": interrupt,
+            "asr_prefetched_count": sum(sample.asr_prefetched for sample in samples),
             "targets": {
                 "completed_turns": 20,
                 "first_audio_samples": 20,

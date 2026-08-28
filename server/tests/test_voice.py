@@ -218,6 +218,7 @@ def test_voice_latency_metrics_reports_sliding_window_percentiles() -> None:
 
     assert report["count"] == 3
     assert report["window_size"] == 3
+    assert report["asr_prefetched_count"] == 0
     assert report["asr_ms"] == {"count": 2, "p50": 400, "p90": 400, "max": 400}
     assert report["total_ms"] == {"count": 3, "p50": 700, "p90": 800, "max": 800}
 
@@ -274,6 +275,14 @@ def test_voice_latency_metrics_requires_twenty_real_first_audio_samples() -> Non
     assert acceptance["first_audio_samples_ready"] is False
     assert acceptance["first_audio_p90_pass"] is False
     assert acceptance["overall_pass"] is False
+
+
+def test_voice_latency_metrics_counts_asr_prefetch_usage() -> None:
+    metrics = VoiceLatencyMetrics()
+    metrics.record(VoiceLatencySample(0, 500, 900, 1200, asr_prefetched=True))
+    metrics.record(VoiceLatencySample(300, 800, 1300, 1800))
+
+    assert metrics.snapshot()["asr_prefetched_count"] == 1
 
 
 def test_silero_barge_in_probe_uses_energy_without_consuming_probability() -> None:
@@ -338,6 +347,18 @@ def test_sentence_buffer_splits_on_terminators_and_length_cap() -> None:
     sentences = buffer.push(long_text)
     assert [len(sentence) for sentence in sentences] == [60, 60]
     assert buffer.flush() == "数" * 10
+
+
+def test_sentence_buffer_emits_short_first_tts_chunk_without_strong_punctuation() -> None:
+    buffer = SentenceBuffer(first_chunk_chars=12)
+
+    assert buffer.push("我先给你一个简短回答，然后再补充细节") == ["我先给你一个简短回答，"]
+    assert buffer.flush() == "然后再补充细节"
+
+
+def test_sentence_buffer_rejects_non_positive_limits() -> None:
+    with pytest.raises(ValueError, match="limits must be positive"):
+        SentenceBuffer(first_chunk_chars=0)
 
 
 def test_wrap_wav_roundtrips_pcm() -> None:

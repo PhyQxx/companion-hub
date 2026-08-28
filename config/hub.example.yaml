@@ -211,6 +211,8 @@ capability_models:
 # asr 为空表示语音识别未启用；tts 按顺序做故障转移（MiMo 为主、edge-tts 兜底）。
 # MiMo 密钥建议直接在管理后台填 secret_value，无需写进本文件。
 voice:
+  # 首句没有强标点时，累计到该长度就提前送 TTS；用于缩短首音频等待。
+  first_tts_chunk_chars: 24
   asr: null
   # asr:
   #   provider: mimo

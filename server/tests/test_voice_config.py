@@ -52,6 +52,7 @@ def test_voice_section_defaults_to_disabled() -> None:
     config = _config_with("")
     assert config.voice.asr is None
     assert config.voice.tts == []
+    assert config.voice.first_tts_chunk_chars == 24
     recognizer, chain = build_voice_providers(config)
     assert recognizer is None
     assert chain is None

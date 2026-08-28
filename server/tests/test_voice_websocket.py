@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import time
 from collections.abc import AsyncIterator, Awaitable, Callable
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -107,10 +108,12 @@ class FakeRecognizer:
         self.runs_local = False
         self._transcript = transcript
         self._delay_s = delay_s
+        self.calls = 0
 
     async def transcribe(
         self, pcm: bytes, *, sample_rate: int, language: str | None
     ) -> str:
+        self.calls += 1
         if self._delay_s:
             await asyncio.sleep(self._delay_s)
         return self._transcript
@@ -419,6 +422,38 @@ def test_voice_websocket_full_loop_with_sentences_and_audio(tmp_path: Path) -> N
     assert unauthorized.status_code == 401
     assert reset.status_code == 200
     assert reset.json()["count"] == 0
+
+
+def test_voice_websocket_prefetches_asr_during_vad_silence(tmp_path: Path) -> None:
+    recognizer = FakeRecognizer("提前完成的转写", delay_s=0.01)
+    app, token, conversation_id = _build(tmp_path, recognizer=recognizer)
+
+    with TestClient(app) as client, client.websocket_connect("/ws/voice") as websocket:
+        websocket.send_json({"type": "authenticate", "access_token": token})
+        websocket.send_json(
+            {
+                "type": "voice.hello",
+                "conversation_id": conversation_id,
+                "privacy_level": "L1",
+                "format": "pcm_s16le",
+                "sample_rate": 16000,
+                "channels": 1,
+            }
+        )
+        _receive_until(websocket, "voice.ready")
+        websocket.send_bytes(loud_frames(12))
+        websocket.send_bytes(silent_frames(1))
+        time.sleep(0.03)
+        websocket.send_bytes(silent_frames(14))
+
+        events, _ = _receive_until(websocket, "reply.committed")
+        report = client.get("/api/v1/meta/voice/latency").json()
+
+    transcript = next(event for event in events if event["type"] == "voice.transcript")
+    assert transcript["text"] == "提前完成的转写"
+    assert transcript["asr_prefetched"] is True
+    assert recognizer.calls == 1
+    assert report["asr_ms"]["p90"] <= 2
 
 
 def test_voice_websocket_accepts_text_and_replies_with_audio(tmp_path: Path) -> None:
