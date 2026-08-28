@@ -622,6 +622,7 @@ pub fn run() {
                     "show_pet" => {
                         if let Some(window) = app.get_webview_window("pet") {
                             let _ = window.show();
+                            let _ = app.emit("pet-ensure-visible", ());
                             let _ = app.emit("pet-visibility-changed", true);
                         }
                     }
@@ -635,6 +636,7 @@ pub fn run() {
                         if let Some(window) = app.get_webview_window("pet") {
                             let _ = window.set_ignore_cursor_events(false);
                             let _ = window.show();
+                            let _ = app.emit("pet-ensure-visible", ());
                             let _ = app.emit("pet-interaction-restored", ());
                             let _ = app.emit("pet-visibility-changed", true);
                         }

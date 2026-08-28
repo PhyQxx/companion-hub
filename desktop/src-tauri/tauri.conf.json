@@ -36,6 +36,7 @@
         "alwaysOnTop": true,
         "shadow": false,
         "skipTaskbar": true,
+        "backgroundThrottling": "suspend",
         "visible": false
       }
     ],

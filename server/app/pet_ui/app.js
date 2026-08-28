@@ -1,4 +1,3 @@
-const stage = document.querySelector("#stage");
 const canvas = document.querySelector("#live2d");
 const image = document.querySelector("#avatar");
 const orb = document.querySelector("#orb");
@@ -7,6 +6,8 @@ const status = document.querySelector("#status");
 let mountedModel = null;
 let handle = null;
 let runtimeLoad = null;
+let suspended = document.hidden;
+let refreshVersion = 0;
 let control = { emotion: "neutral", expression: null, motion: null, lipSync: 0, speaking: false };
 
 function setMode(mode) {
@@ -45,7 +46,7 @@ function applyControl() {
   if (control.speaking || control.lipSync > 0) handle.setLipSync?.(control.lipSync);
 }
 
-async function renderAvatar(avatar) {
+async function renderAvatar(avatar, version) {
   const assets = avatar?.assets ?? {};
   const model = typeof assets.model === "string" ? assets.model : null;
   if (avatar?.engine === "live2d" && model) {
@@ -57,7 +58,12 @@ async function renderAvatar(avatar) {
     status.textContent = `正在加载 ${avatar.name}`;
     const runtime = await loadRuntime();
     if (!runtime) throw new Error("未安装 Live2D 运行时");
-    handle = await runtime.mount(canvas, { modelUrl: model, transparent: true });
+    const mounted = await runtime.mount(canvas, { modelUrl: model, transparent: true });
+    if (suspended || version !== refreshVersion) {
+      mounted?.destroy?.();
+      return;
+    }
+    handle = mounted;
     applyControl();
     status.textContent = avatar.name;
     return;
@@ -79,11 +85,14 @@ async function renderAvatar(avatar) {
 }
 
 async function refresh() {
+  if (suspended) return;
+  const version = ++refreshVersion;
   try {
     const response = await fetch("/api/v1/meta/runtime", { cache: "no-store" });
     if (!response.ok) throw new Error(`Hub 返回 ${response.status}`);
     const runtime = await response.json();
-    await renderAvatar(runtime.avatar ?? null);
+    if (suspended || version !== refreshVersion) return;
+    await renderAvatar(runtime.avatar ?? null, version);
   } catch (error) {
     handle?.destroy?.();
     handle = null;
@@ -93,8 +102,25 @@ async function refresh() {
   }
 }
 
+function setSuspended(value) {
+  suspended = value;
+  if (value) {
+    refreshVersion += 1;
+    handle?.destroy?.();
+    handle = null;
+    mountedModel = null;
+    return;
+  }
+  void refresh();
+}
+
 function receiveControl(value) {
-  if (!value || typeof value !== "object" || value.type !== "aria.avatar.control") return;
+  if (!value || typeof value !== "object") return;
+  if (value.type === "aria.pet.visibility") {
+    if (typeof value.visible === "boolean") setSuspended(!value.visible);
+    return;
+  }
+  if (value.type !== "aria.avatar.control") return;
   control = {
     emotion: typeof value.emotion === "string" ? value.emotion : control.emotion,
     expression: typeof value.expression === "string" ? value.expression : null,
@@ -103,7 +129,7 @@ function receiveControl(value) {
     speaking: typeof value.speaking === "boolean" ? value.speaking : control.speaking,
   };
   applyControl();
-  if (!handle) void refresh();
+  if (!handle && !suspended) void refresh();
 }
 
 window.addEventListener("message", (event) => receiveControl(event.data));
@@ -113,7 +139,7 @@ try {
 } catch { /* BroadcastChannel is optional in older webviews. */ }
 
 document.addEventListener("visibilitychange", () => {
-  if (!document.hidden) void refresh();
+  setSuspended(document.hidden);
 });
-void refresh();
-window.setInterval(() => { if (!document.hidden) void refresh(); }, 30_000);
+if (!suspended) void refresh();
+window.setInterval(() => { if (!suspended) void refresh(); }, 30_000);

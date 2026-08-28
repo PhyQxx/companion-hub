@@ -101,6 +101,7 @@ togglePet.addEventListener("click", async () => {
     addEvent("已隐藏桌宠");
   } else {
     await pet.show();
+    await emit("pet-ensure-visible");
     addEvent("已显示桌宠");
   }
   await refreshPetState();
