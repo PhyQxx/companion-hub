@@ -245,16 +245,35 @@ def test_voice_latency_metrics_tracks_m2_acceptance() -> None:
     }
     assert report["targets"] == {
         "completed_turns": 20,
+        "first_audio_samples": 20,
         "interrupt_samples": 20,
         "first_audio_p90_ms": 1800,
         "interrupt_p90_ms": 300,
     }
     assert report["acceptance"] == {
         "completed_turns_ready": True,
+        "first_audio_samples_ready": True,
         "interrupt_samples_ready": True,
         "first_audio_p90_pass": True,
         "interrupt_p90_pass": True,
+        "overall_pass": True,
     }
+
+
+def test_voice_latency_metrics_requires_twenty_real_first_audio_samples() -> None:
+    metrics = VoiceLatencyMetrics(max_samples=40)
+    metrics.record(VoiceLatencySample(300, 800, 1500, 2200))
+    for _ in range(19):
+        metrics.record(VoiceLatencySample(300, 800, None, 2200))
+    for _ in range(20):
+        metrics.record_interrupt(180)
+
+    acceptance = cast(dict[str, Any], metrics.snapshot()["acceptance"])
+
+    assert acceptance["completed_turns_ready"] is True
+    assert acceptance["first_audio_samples_ready"] is False
+    assert acceptance["first_audio_p90_pass"] is False
+    assert acceptance["overall_pass"] is False
 
 
 def test_silero_barge_in_probe_uses_energy_without_consuming_probability() -> None:

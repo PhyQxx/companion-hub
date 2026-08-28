@@ -439,6 +439,7 @@ async def test_start_turn_supports_smaller_context_window_for_voice(
         text="语音输入",
         privacy_level=PrivacyLevel.L1,
         max_context_messages=2,
+        llm_route=LLMRoute.VOICE,
     )
 
     # 3 轮 send_message + 本条语音输入共 7 条历史; 语音窗口只保留最近 2 条
@@ -448,6 +449,7 @@ async def test_start_turn_supports_smaller_context_window_for_voice(
         "user",
     ]
     assert pending.request.messages[-1].content == "语音输入"
+    assert pending.request.route == LLMRoute.VOICE
 
     full = await service.start_turn(
         conversation.id,

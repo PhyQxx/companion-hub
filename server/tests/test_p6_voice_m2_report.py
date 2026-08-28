@@ -21,6 +21,7 @@ def test_p6_voice_m2_report_requires_all_acceptance_checks() -> None:
         {
             "acceptance": {
                 "completed_turns_ready": True,
+                "first_audio_samples_ready": True,
                 "interrupt_samples_ready": True,
                 "first_audio_p90_pass": True,
                 "interrupt_p90_pass": True,
@@ -34,6 +35,7 @@ def test_p6_voice_m2_report_requires_all_acceptance_checks() -> None:
         {
             "acceptance": {
                 "completed_turns_ready": True,
+                "first_audio_samples_ready": True,
                 "interrupt_samples_ready": False,
                 "first_audio_p90_pass": True,
                 "interrupt_p90_pass": False,

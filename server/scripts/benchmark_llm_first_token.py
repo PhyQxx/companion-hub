@@ -51,7 +51,7 @@ def _fetch_config(base_url: str, token: str) -> HubConfig:
     return HubConfig.model_validate(payload["config"])
 
 
-def _benchmark_request() -> CompletionRequest:
+def _benchmark_request(route: LLMRoute) -> CompletionRequest:
     messages = [
         LLMMessage(role="system", content="你是小艾。用简短自然的中文回答。"),
         LLMMessage(role="user", content="你好"),
@@ -66,7 +66,7 @@ def _benchmark_request() -> CompletionRequest:
         trace_id=uuid4(),
         messages=messages,
         privacy_level=PrivacyLevel.L1,
-        route=LLMRoute.DIALOGUE,
+        route=route,
         max_tokens=64,
         temperature=0,
     )
@@ -76,6 +76,7 @@ async def _benchmark_endpoint(
     name: str,
     config: HubConfig,
     *,
+    route: LLMRoute,
     timeout_seconds: float,
 ) -> dict[str, object]:
     endpoint = config.models[name]
@@ -90,7 +91,7 @@ async def _benchmark_endpoint(
 
     try:
         async with asyncio.timeout(timeout_seconds):
-            result = await provider.stream(_benchmark_request(), on_delta)
+            result = await provider.stream(_benchmark_request(route), on_delta)
     except Exception as error:
         return {
             "endpoint": name,
@@ -128,10 +129,18 @@ async def main() -> int:
         print(json.dumps({"ok": False, "reason": "admin_token_unavailable"}))
         return 2
     config = await asyncio.to_thread(_fetch_config, args.base_url, token)
-    route = config.routes[LLMRoute.DIALOGUE]
+    route_name = (
+        LLMRoute.VOICE if LLMRoute.VOICE in config.routes else LLMRoute.DIALOGUE
+    )
+    route = config.routes[route_name]
     names = list(dict.fromkeys([route.primary, *route.fallbacks]))
     reports = [
-        await _benchmark_endpoint(name, config, timeout_seconds=args.timeout_seconds)
+        await _benchmark_endpoint(
+            name,
+            config,
+            route=route_name,
+            timeout_seconds=args.timeout_seconds,
+        )
         for name in names
         if name in config.models and config.models[name].enabled
     ]
@@ -143,7 +152,13 @@ async def main() -> int:
             else sys.maxsize,
         )
     )
-    print(json.dumps({"ok": True, "results": reports}, ensure_ascii=False, indent=2))
+    print(
+        json.dumps(
+            {"ok": True, "route": route_name.value, "results": reports},
+            ensure_ascii=False,
+            indent=2,
+        )
+    )
     return 0
 
 

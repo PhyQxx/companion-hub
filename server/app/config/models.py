@@ -379,7 +379,8 @@ class HubConfig(StrictModel):
         invalid_names = [name for name in self.models if _TOKEN.fullmatch(name) is None]
         if invalid_names:
             raise ValueError("model endpoint names must be tokens")
-        if set(self.routes) != set(LLMRoute):
+        required_routes = {LLMRoute.DIALOGUE, LLMRoute.UTILITY, LLMRoute.PRIVATE}
+        if not required_routes.issubset(self.routes):
             raise ValueError("dialogue, utility and private routes are required")
         for route, policy in self.routes.items():
             for endpoint_name in [policy.primary, *policy.fallbacks]:
@@ -389,7 +390,7 @@ class HubConfig(StrictModel):
                 if not endpoint.enabled:
                     raise ValueError(f"route references disabled model endpoint: {endpoint_name}")
                 if ModelKind(endpoint.kind) is not ModelKind.TEXT:
-                    raise ValueError("dialogue, utility and private routes require text models")
+                    raise ValueError("LLM routes require text models")
                 if route == LLMRoute.PRIVATE and not endpoint.runs_local:
                     raise ValueError("private route cannot reference cloud models")
 

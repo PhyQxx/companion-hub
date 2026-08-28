@@ -16,6 +16,7 @@ def evaluate_report(report: dict[str, Any]) -> tuple[bool, list[str]]:
 
     checks = {
         "completed_turns_ready": acceptance.get("completed_turns_ready") is True,
+        "first_audio_samples_ready": acceptance.get("first_audio_samples_ready") is True,
         "interrupt_samples_ready": acceptance.get("interrupt_samples_ready") is True,
         "first_audio_p90_pass": acceptance.get("first_audio_p90_pass") is True,
         "interrupt_p90_pass": acceptance.get("interrupt_p90_pass") is True,

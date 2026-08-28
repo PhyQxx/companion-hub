@@ -79,11 +79,15 @@ onMounted(async () => {
         <el-tag :type="voiceLatency?.acceptance.completed_turns_ready ? 'success' : 'info'">
           完成回合 {{ voiceLatency?.count ?? 0 }}/{{ voiceLatency?.targets.completed_turns ?? 20 }}
         </el-tag>
+        <el-tag :type="voiceLatency?.acceptance.first_audio_samples_ready ? 'success' : 'info'">
+          首音频样本 {{ voiceLatency?.first_audio_ms.count ?? 0 }}/{{ voiceLatency?.targets.first_audio_samples ?? 20 }}
+        </el-tag>
         <el-tag :type="voiceLatency?.acceptance.first_audio_p90_pass ? 'success' : 'warning'">首音频 P90</el-tag>
         <el-tag :type="voiceLatency?.acceptance.interrupt_samples_ready ? 'success' : 'info'">
           打断样本 {{ voiceLatency?.interrupt_ms.count ?? 0 }}/{{ voiceLatency?.targets.interrupt_samples ?? 20 }}
         </el-tag>
         <el-tag :type="voiceLatency?.acceptance.interrupt_p90_pass ? 'success' : 'warning'">打断 P90</el-tag>
+        <el-tag :type="voiceLatency?.acceptance.overall_pass ? 'success' : 'danger'">M2 总判定</el-tag>
       </div>
     </el-card>
     <div class="links">

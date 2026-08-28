@@ -146,15 +146,18 @@ export interface VoiceLatencySummary {
   interrupt_ms: VoiceLatencyMetricSummary;
   targets: {
     completed_turns: number;
+    first_audio_samples: number;
     interrupt_samples: number;
     first_audio_p90_ms: number;
     interrupt_p90_ms: number;
   };
   acceptance: {
     completed_turns_ready: boolean;
+    first_audio_samples_ready: boolean;
     interrupt_samples_ready: boolean;
     first_audio_p90_pass: boolean;
     interrupt_p90_pass: boolean;
+    overall_pass: boolean;
   };
 }
 

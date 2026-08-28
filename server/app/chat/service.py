@@ -91,15 +91,15 @@ def _local_tool_model_ready(config: HubConfig) -> bool:
     )
 
 
-def _dialogue_tool_model_ready(config: HubConfig) -> bool:
-    dialogue_route = config.routes[LLMRoute.DIALOGUE]
-    dialogue_candidates = (dialogue_route.primary, *dialogue_route.fallbacks)
+def _cloud_tool_model_ready(config: HubConfig, llm_route: LLMRoute) -> bool:
+    policy = config.routes.get(llm_route) or config.routes[LLMRoute.DIALOGUE]
+    candidates = (policy.primary, *policy.fallbacks)
     return any(
         (candidate := config.models.get(name)) is not None
         and candidate.enabled
         and candidate.supports_tool_calling
         and PrivacyLevel(candidate.max_privacy_level) in {PrivacyLevel.L1, PrivacyLevel.L2}
-        for name in dialogue_candidates
+        for name in candidates
     )
 
 
@@ -121,11 +121,17 @@ def _vision_ready(config: HubConfig, privacy_level: PrivacyLevel) -> bool:
     }
 
 
-def _enabled_query_tools(config: HubConfig, privacy_level: PrivacyLevel) -> tuple[str, ...]:
+def _enabled_query_tools(
+    config: HubConfig,
+    privacy_level: PrivacyLevel,
+    llm_route: LLMRoute,
+) -> tuple[str, ...]:
     """查询类工具按配置开关与隐私等级挂载；具体调不调用由模型判断。"""
     if privacy_level not in {PrivacyLevel.L0, PrivacyLevel.L1}:
         return ()
     if not config.tools.enabled or not config.tools.query.enabled:
+        return ()
+    if not _cloud_tool_model_ready(config, llm_route):
         return ()
     query = config.tools.query
     selected: list[str] = []
@@ -142,19 +148,20 @@ def _device_tool_ready(
     name: str,
     config: HubConfig,
     privacy_level: PrivacyLevel,
+    llm_route: LLMRoute,
 ) -> bool:
     if name in {"home_get_state", "home_get_history", "home_control"}:
         if not config.integrations.home_assistant.enabled:
             return False
         if privacy_level in {PrivacyLevel.L0, PrivacyLevel.L1}:
-            return _dialogue_tool_model_ready(config)
+            return _cloud_tool_model_ready(config, llm_route)
         if privacy_level is PrivacyLevel.L2:
             return _local_tool_model_ready(config)
         return False
     if privacy_level is PrivacyLevel.L1:
         return bool(
             name == "capture_screen"
-            and _dialogue_tool_model_ready(config)
+            and _cloud_tool_model_ready(config, llm_route)
             and _vision_ready(config, privacy_level)
         )
     if privacy_level is PrivacyLevel.L2:
@@ -489,6 +496,7 @@ class ChatService:
         privacy_level: PrivacyLevel,
         max_context_messages: int | None = None,
         client_location: ClientLocation | None = None,
+        llm_route: LLMRoute = LLMRoute.DIALOGUE,
     ) -> PendingTurn:
         if privacy_level is PrivacyLevel.L3:
             raise ValueError("L3 durable chat is not allowed")
@@ -638,7 +646,9 @@ class ChatService:
             except Exception:
                 # 历史索引是增强路径，故障不能让普通聊天不可用。
                 logger.warning("history recall failed for turn %s", turn_id, exc_info=True)
-        query_tool_names = _enabled_query_tools(snapshot.config, privacy_level)
+        query_tool_names = _enabled_query_tools(
+            snapshot.config, privacy_level, llm_route
+        )
         # 工具挂载只看在线能力与配置就绪；选哪个、何时调用由模型根据工具描述自行判断。
         device_tool_names = tuple(
             name
@@ -646,7 +656,7 @@ class ChatService:
             if supports_device_capability(
                 name, (item.capability_id for item in runtime_capabilities)
             )
-            and _device_tool_ready(name, snapshot.config, privacy_level)
+            and _device_tool_ready(name, snapshot.config, privacy_level, llm_route)
         )
         tool_names = (*query_tool_names, *device_tool_names)
         definition_builders = {
@@ -676,7 +686,7 @@ class ChatService:
                 ],
             ],
             privacy_level=privacy_level,
-            route=LLMRoute.DIALOGUE,
+            route=llm_route,
             temperature=0.7,
             tools=tool_definitions,
         )

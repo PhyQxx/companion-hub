@@ -25,7 +25,7 @@
 
 - [x] **macOS 系统内容选择器。** `capture_screen(target=interactive)` 的系统框选/取消、视觉回答、结构化错误码、临时授权与原图销毁已经完成代码、隔离 E2E 和用户确认的真机验收。
 - [ ] **硬件到位后恢复：ESP32 + LD2410 第一硬件闭环。** Hub 侧 MQTT → L3 `EphemeralSignal` → 5 秒稳定窗 → L1 `presence.changed` → Perception → Proactive Pipeline 已接通，ESPHome 固件样例与单设备 topic ACL 已落地；因暂时没有硬件，剩余刷写真机与 7 天验收不阻塞软件主线。
-- [ ] **当前功能：M2 语音延迟与识别质量。** 先完成无需硬件的本地 ASR 术语偏置、低延迟语音专用 LLM 路由和自动判卷完善，再恢复 20+20 真人计样。
+- [ ] **当前功能：M2 语音延迟与识别质量。** 本地 ASR 术语偏置和可选低延迟 `voice` LLM 路由已完成；下一步选择并实测低延迟端点、完善自动判卷，再恢复 20+20 真人计样。
 - [ ] **暂不作为下一功能：Tauri 透明桌宠。** Live2D Web 最小壳已经可用，但桌宠仍需等待 M2 首音频和打断门槛达标；VRM、换装、AI 形象工厂和更多主题也继续后置。
 
 ### 0.1 并行收口项（不占用下一功能定义）
@@ -101,6 +101,8 @@
 
 ## 3. 最近完成
 
+- [x] 低延迟语音专用 LLM 路由：新增可选 `voice` route，L1 语音回合优先使用该路由，未配置时无缝继承 `dialogue`，L2 仍强制 `private`；文字聊天保持 `dialogue`。独立路由可在旧版 Admin 中选择，首 token 基准脚本会优先测试它；若语音端点不支持工具调用，该回合不挂载工具，避免整条路由因工具契约不兼容而失败。
+- [x] M2 自动判卷加固：完成回合数与真实首音频样本数分开计数，必须同时具备 20 个完成回合、20 个非空首音频和 20 个打断样本才可能通过；新增 `overall_pass`，Admin 显示首音频有效样本与总判定，修复少量有效音频被 20 个无音频回合“凑够样本”的漏洞。
 - [x] 本地 ASR 术语偏置：`VoiceAsrConfig` 新增 faster-whisper 专用 `initial_prompt` / `hotwords`，配置热更新会重建识别器；默认注入“小艾 / Aria / 只回答”上下文并直接透传模型原生参数，不使用可能误伤普通语句的全局文本替换。
 - [x] ESP32 + LD2410 Hub 侧代码闭环：修复 `MqttDeviceClient` 未设置 `on_signal` 导致遥测只进缓存、不进 Perception 的断链；新增 `MqttPresenceBridge`，启动 retained 值只建基线，状态翻转经 5 秒稳定窗派生 L1 `presence.changed`，再进入认知与主动多终端投递；原始 MQTT 信号改为 L3。补充 ESPHome 固件样例、独立设备凭据与单 topic Mosquitto ACL、Compose 启用开关、重连存活修复和端到端回归。剩余为真机刷写与 7 天验收。
 - [x] 屏幕事件专用聚合回顾：聊天识别“今天上午/过去 N 小时在电脑上做了什么”等意图，按时间窗只检索 `DEVICE/screen.observed`，合并连续相似观察并注入受控证据上下文；无记录时禁止用长期记忆猜测，审计记录 `recall.mode=screen_activity`。

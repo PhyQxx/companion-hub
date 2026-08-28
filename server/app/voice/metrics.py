@@ -40,7 +40,21 @@ class VoiceLatencyMetrics:
         interrupt_p90 = interrupt["p90"]
         interrupt_count = interrupt["count"]
         completed_enough = len(samples) >= 20
+        first_audio_count = first_audio["count"]
+        first_audio_enough = (
+            isinstance(first_audio_count, int) and first_audio_count >= 20
+        )
         interrupts_enough = isinstance(interrupt_count, int) and interrupt_count >= 20
+        first_audio_pass = (
+            first_audio_enough
+            and isinstance(first_audio_p90, int)
+            and first_audio_p90 <= 1800
+        )
+        interrupt_pass = (
+            interrupts_enough
+            and isinstance(interrupt_p90, int)
+            and interrupt_p90 <= 300
+        )
         return {
             "count": len(samples),
             "window_size": self._samples.maxlen,
@@ -51,23 +65,20 @@ class VoiceLatencyMetrics:
             "interrupt_ms": interrupt,
             "targets": {
                 "completed_turns": 20,
+                "first_audio_samples": 20,
                 "interrupt_samples": 20,
                 "first_audio_p90_ms": 1800,
                 "interrupt_p90_ms": 300,
             },
             "acceptance": {
                 "completed_turns_ready": completed_enough,
+                "first_audio_samples_ready": first_audio_enough,
                 "interrupt_samples_ready": interrupts_enough,
-                "first_audio_p90_pass": (
-                    completed_enough
-                    and isinstance(first_audio_p90, int)
-                    and first_audio_p90 <= 1800
-                ),
-                "interrupt_p90_pass": (
-                    interrupts_enough
-                    and isinstance(interrupt_p90, int)
-                    and interrupt_p90 <= 300
-                ),
+                "first_audio_p90_pass": first_audio_pass,
+                "interrupt_p90_pass": interrupt_pass,
+                "overall_pass": completed_enough
+                and first_audio_pass
+                and interrupt_pass,
             },
         }
 

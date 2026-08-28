@@ -75,7 +75,7 @@ class LLMRouter:
         privacy = PrivacyLevel(request.privacy_level)
         if privacy is PrivacyLevel.L3:
             raise EgressBlocked("l3_egress_blocked")
-        selected_route = LLMRoute.PRIVATE if privacy is PrivacyLevel.L2 else LLMRoute(request.route)
+        selected_route = self._select_route(request, privacy)
         routed_request = CompletionRequest.model_validate(
             {**request.model_dump(mode="python"), "route": selected_route}
         )
@@ -197,7 +197,7 @@ class LLMRouter:
         privacy = PrivacyLevel(request.privacy_level)
         if privacy is PrivacyLevel.L3:
             raise EgressBlocked("l3_egress_blocked")
-        selected_route = LLMRoute.PRIVATE if privacy is PrivacyLevel.L2 else LLMRoute(request.route)
+        selected_route = self._select_route(request, privacy)
         routed_request = CompletionRequest.model_validate(
             {**request.model_dump(mode="python"), "route": selected_route}
         )
@@ -374,7 +374,8 @@ class LLMRouter:
         )
 
     def _validate_configuration(self) -> None:
-        missing_routes = set(LLMRoute) - self._routes.keys()
+        required_routes = {LLMRoute.DIALOGUE, LLMRoute.UTILITY, LLMRoute.PRIVATE}
+        missing_routes = required_routes - self._routes.keys()
         if missing_routes:
             raise ValueError("dialogue, utility and private routes are required")
         for route, policy in self._routes.items():
@@ -384,6 +385,16 @@ class LLMRouter:
                 endpoint = self._endpoints[endpoint_name]
                 if route == LLMRoute.PRIVATE and not endpoint.runs_local:
                     raise ValueError("private route cannot reference a cloud endpoint")
+
+    def _select_route(
+        self, request: CompletionRequest, privacy: PrivacyLevel
+    ) -> LLMRoute:
+        if privacy is PrivacyLevel.L2:
+            return LLMRoute.PRIVATE
+        requested = LLMRoute(request.route)
+        if requested is LLMRoute.VOICE and requested not in self._routes:
+            return LLMRoute.DIALOGUE
+        return requested
 
     @staticmethod
     def _apply_endpoint_max_tokens(

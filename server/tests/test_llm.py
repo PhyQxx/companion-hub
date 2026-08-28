@@ -130,6 +130,43 @@ async def test_l2_is_forced_to_private_route_without_cloud_egress() -> None:
     assert private.requests[0].route == "private"
 
 
+async def test_voice_route_falls_back_to_dialogue_when_not_configured() -> None:
+    cloud = FakeProvider("cloud")
+
+    result = await router(cloud=cloud).complete(request("L1", route="voice"))
+
+    assert result.endpoint == "cloud"
+    assert result.route == "dialogue"
+    assert cloud.requests[0].route == "dialogue"
+
+
+async def test_voice_route_uses_dedicated_policy_when_configured() -> None:
+    dialogue = FakeProvider("dialogue")
+    voice = FakeProvider("voice-fast")
+    private = FakeProvider("private")
+    instance = LLMRouter(
+        endpoints={
+            "dialogue": endpoint(local=False),
+            "voice-fast": endpoint(local=False),
+            "private": endpoint(local=True, max_privacy="L2"),
+        },
+        routes={
+            LLMRoute.DIALOGUE: RoutePolicy(primary="dialogue"),
+            LLMRoute.VOICE: RoutePolicy(primary="voice-fast"),
+            LLMRoute.UTILITY: RoutePolicy(primary="dialogue"),
+            LLMRoute.PRIVATE: RoutePolicy(primary="private"),
+        },
+        providers={"dialogue": dialogue, "voice-fast": voice, "private": private},
+    )
+
+    result = await instance.complete(request("L1", route="voice"))
+
+    assert result.endpoint == "voice-fast"
+    assert result.route == "voice"
+    assert dialogue.requests == []
+    assert voice.requests[0].route == "voice"
+
+
 async def test_l3_is_blocked_before_any_provider_call() -> None:
     cloud = FakeProvider("cloud")
     private = FakeProvider("private")

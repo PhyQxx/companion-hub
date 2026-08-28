@@ -23,7 +23,7 @@ from app.chat import ChatService, PendingTurn
 from app.config import DatabaseConfigStore
 from app.db import Base, Database, create_database
 from app.ids import uuid7
-from app.llm import CompletionRequest, CompletionResult, ModelUsage
+from app.llm import CompletionRequest, CompletionResult, LLMRoute, ModelUsage
 from app.schemas import PrivacyLevel
 from app.tools import ClientLocation
 from app.voice import SpeechRecognitionUnavailable, StaticVoiceSource, TtsProviderChain
@@ -466,8 +466,10 @@ def test_voice_websocket_limits_turn_context_window(tmp_path: Path) -> None:
             privacy_level: PrivacyLevel,
             max_context_messages: int | None = None,
             client_location: ClientLocation | None = None,
+            llm_route: LLMRoute = LLMRoute.DIALOGUE,
         ) -> PendingTurn:
             self.seen_context_windows.append(max_context_messages)
+            assert llm_route is LLMRoute.VOICE
             return await super().start_turn(
                 conversation_id,
                 user_id=user_id,
@@ -475,6 +477,7 @@ def test_voice_websocket_limits_turn_context_window(tmp_path: Path) -> None:
                 privacy_level=privacy_level,
                 max_context_messages=max_context_messages,
                 client_location=client_location,
+                llm_route=llm_route,
             )
 
     def spy_factory(
@@ -686,9 +689,11 @@ def test_voice_websocket_m2_soak_20_complete_and_20_interrupts(tmp_path: Path) -
     assert body["interrupt_ms"]["count"] == 20
     assert body["acceptance"] == {
         "completed_turns_ready": True,
+        "first_audio_samples_ready": True,
         "interrupt_samples_ready": True,
         "first_audio_p90_pass": True,
         "interrupt_p90_pass": True,
+        "overall_pass": True,
     }
 
 

@@ -9,6 +9,7 @@ from httpx import ASGITransport, AsyncClient
 from app.config import ConfigStore, ConfigWatcher
 from app.config.models import HubConfig
 from app.config.store import load_config_file
+from app.llm import LLMRoute
 from app.main import create_app
 
 
@@ -119,6 +120,21 @@ async def test_private_route_cannot_publish_cloud_model(tmp_path: Path) -> None:
     path.write_text(yaml_config(private_local=False), encoding="utf-8")
     with pytest.raises(ValueError, match="private route cannot reference cloud"):
         await ConfigStore(path).load()
+
+
+async def test_optional_voice_route_is_accepted_without_changing_required_routes(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "hub.yaml"
+    configured = yaml_config().replace(
+        "  utility: {primary: cloud}",
+        "  voice: {primary: cloud}\n  utility: {primary: cloud}",
+    )
+    path.write_text(configured, encoding="utf-8")
+
+    snapshot = await ConfigStore(path).load()
+
+    assert snapshot.config.routes[LLMRoute.VOICE].primary == "cloud"
 
 
 async def test_app_exposes_payload_free_config_metadata(tmp_path: Path) -> None:

@@ -128,6 +128,12 @@ routes:
     # （语音回复已播出的部分无法收回，模型持续出字时掐断只会毁掉整个回合）。
     timeout_ms: 12000
     stream_idle_timeout_ms: 8000
+  # 可选：语音回合优先走首 token 更快的模型；省略时自动继承 dialogue。
+  # voice:
+  #   primary: <支持工具调用的低延迟模型端点>
+  #   fallbacks: [sensenova_dialogue]
+  #   timeout_ms: 5000
+  #   stream_idle_timeout_ms: 5000
   utility:
     primary: sensenova_utility
     fallbacks: [sensenova_dialogue, zhipu_text_free]

@@ -9,6 +9,7 @@ const statusLabels = {
   draft: "草稿",
   superseded: "已废止",
 };
+const routeNames = ["dialogue", "voice", "utility", "private"];
 
 async function request(path, options = {}) {
   const response = await fetch(`${api}${path}`, { ...options, headers: {"Content-Type":"application/json", "Authorization": `Bearer ${token}`, ...(options.headers || {})} });
@@ -45,7 +46,7 @@ function renderRoutes() {
   const models = currentModels();
   const eligibleNames = route => models.filter(model => model.enabled && (route !== "private" || model.local)).map(model => model.name);
   const options = (names, selected) => names.map(name => `<option ${name === selected ? "selected" : ""}>${escapeHtml(name)}</option>`).join("");
-  $("#routes").innerHTML = ["dialogue", "utility", "private"].map(route => { const names = eligibleNames(route); const policy = config.routes[route] || {primary:names[0] || "", fallbacks:[], timeout_ms:null}; return `<article class="route-card ${route}"><h3>${route}</h3><div class="fields"><div class="field wide"><label>主模型</label><select data-route="${route}" data-route-field="primary">${options(names, policy.primary)}</select></div>${field("降级链（逗号分隔）", `fallbacks-${route}`, (policy.fallbacks || []).join(", "), "text", true)}${field("路由超时 (ms)", `timeout-${route}`, policy.timeout_ms || "", "number", true)}</div></article>`; }).join("");
+  $("#routes").innerHTML = routeNames.map(route => { const names = eligibleNames(route); const optional = route === "voice"; const policy = config.routes[route] || {primary:optional ? "" : names[0] || "", fallbacks:[], timeout_ms:null}; const inherit = optional ? `<option value="" ${policy.primary ? "" : "selected"}>继承 dialogue</option>` : ""; return `<article class="route-card ${route}"><h3>${route}${optional ? "（可选）" : ""}</h3><div class="fields"><div class="field wide"><label>主模型</label><select data-route="${route}" data-route-field="primary">${inherit}${options(names, policy.primary)}</select></div>${field("降级链（逗号分隔）", `fallbacks-${route}`, (policy.fallbacks || []).join(", "), "text", true)}${field("路由超时 (ms)", `timeout-${route}`, policy.timeout_ms || "", "number", true)}</div></article>`; }).join("");
 }
 
 function collectConfig() {
@@ -56,7 +57,7 @@ function collectConfig() {
     models[name] = {enabled:get("enabled").checked, provider:get("provider").value.trim(), model:get("model").value.trim(), supports_json_mode:get("supports_json_mode").checked, supports_tool_calling:get("supports_tool_calling").checked, base_url:get("base_url").value.trim(), secret_ref:get("secret_ref").value.trim() || null, runs_local:get("runs_local").checked, max_privacy_level:get("max_privacy_level").value.trim(), timeout_ms:Number(get("timeout_ms").value), max_retries:Number(get("max_retries").value), max_context_tokens:Number(get("max_context_tokens").value), input_cost_per_million:Number(get("input_cost_per_million").value), output_cost_per_million:Number(get("output_cost_per_million").value)};
   });
   const routes = {};
-  ["dialogue", "utility", "private"].forEach(route => { const timeout = document.querySelector(`[data-field=timeout-${route}]`).value; routes[route] = {primary:document.querySelector(`[data-route=${route}]`).value, fallbacks:document.querySelector(`[data-field=fallbacks-${route}]`).value.split(",").map(v => v.trim()).filter(Boolean), timeout_ms:timeout ? Number(timeout) : null}; });
+  routeNames.forEach(route => { const primary = document.querySelector(`[data-route=${route}]`).value; if (!primary && route === "voice") return; const timeout = document.querySelector(`[data-field=timeout-${route}]`).value; routes[route] = {primary, fallbacks:document.querySelector(`[data-field=fallbacks-${route}]`).value.split(",").map(v => v.trim()).filter(Boolean), timeout_ms:timeout ? Number(timeout) : null}; });
   return {schema_version:1, models, routes, capability_models:config.capability_models, voice:config.voice, tools:config.tools, observability:config.observability};
 }
 

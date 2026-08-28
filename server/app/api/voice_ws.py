@@ -24,7 +24,7 @@ from pydantic import ValidationError
 from app.auth import AuthService, ChatPrincipal, InvalidSession
 from app.chat import ChatService, PendingTurn, TurnCancelled
 from app.ids import uuid7
-from app.llm import LLMRouteExhausted
+from app.llm import LLMRoute, LLMRouteExhausted
 from app.privacy import EgressBlocked
 from app.runtime import TurnCoordinator
 from app.schemas import PrivacyLevel
@@ -461,6 +461,7 @@ class VoiceWebSocketManager:
                 privacy_level=session.privacy_level,
                 max_context_messages=VOICE_CONTEXT_MESSAGES,
                 client_location=session.location,
+                llm_route=LLMRoute.VOICE,
             )
             generation_id = pending.generation_id
             session.generation_id = generation_id

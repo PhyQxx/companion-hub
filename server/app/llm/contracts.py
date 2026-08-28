@@ -12,6 +12,7 @@ from app.schemas.common import StrictModel, TokenName
 
 class LLMRoute(StrEnum):
     DIALOGUE = "dialogue"
+    VOICE = "voice"
     UTILITY = "utility"
     PRIVATE = "private"
 
