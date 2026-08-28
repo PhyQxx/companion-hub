@@ -1,9 +1,10 @@
 <script setup lang="ts">
-import { inject, onMounted, ref } from "vue";
+import { inject, onMounted, ref, watch } from "vue";
 import { AdminApi } from "@aria/shared";
 
 const api = inject("adminApi") as AdminApi;
 const emit = defineEmits<{ status: [text: string, error?: boolean] }>();
+const props = withDefaults(defineProps<{ mode?: string }>(), { mode: "status" });
 
 interface DisplayState {
   display: number;
@@ -72,15 +73,26 @@ async function loadObservations() {
 }
 
 async function refresh() {
-  await Promise.all([loadStatus(), loadObservations()]);
+  if (props.mode === "observations") await loadObservations();
+  else await loadStatus();
   emit("status", "屏幕感知状态已刷新");
 }
+
+// KeepAlive 缓存组件：切 Tab 不重挂载，按 mode 变化拉取对应数据
+watch(
+  () => props.mode,
+  async (mode) => {
+    if (mode === "observations") await loadObservations();
+    else await loadStatus();
+  },
+);
 
 onMounted(refresh);
 </script>
 
 <template>
   <section class="content">
+    <template v-if="props.mode !== 'observations'">
     <div class="hero panel">
       <div>
         <div class="eyebrow">屏幕感知 · SCREEN AWARENESS</div>
@@ -121,7 +133,9 @@ onMounted(refresh);
         <el-table-column label="冷却至" width="170"><template #default="{ row }">{{ fmt(row.cooldown_until) }}</template></el-table-column>
       </el-table>
     </div>
+    </template>
 
+    <template v-else>
     <div class="panel">
       <div class="panel-head">
         <div><h2>观察记录</h2><p>最近 50 条屏幕观察摘要（来源：时间线 screen.observed）。</p></div>
@@ -134,6 +148,7 @@ onMounted(refresh);
         <el-table-column label="重要度" width="90"><template #default="{ row }">{{ row.importance.toFixed(2) }}</template></el-table-column>
       </el-table>
     </div>
+    </template>
   </section>
 </template>
 
