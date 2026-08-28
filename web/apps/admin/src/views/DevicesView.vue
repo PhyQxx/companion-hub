@@ -51,6 +51,7 @@ const emit = defineEmits<{ status: [text: string, error?: boolean] }>();
 const knownCapabilities = [
   "device.ping",
   "avatar.render",
+  "avatar.chat",
   "screen.capture",
   "screen.monitor",
   "notification.show",

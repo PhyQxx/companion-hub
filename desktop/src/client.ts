@@ -7,7 +7,11 @@ import {
   websocketUrl,
 } from "./protocol";
 
-export const DESKTOP_BASE_CAPABILITIES = ["device.ping", "avatar.render"] as const;
+export const DESKTOP_BASE_CAPABILITIES = [
+  "device.ping",
+  "avatar.render",
+  "avatar.chat",
+] as const;
 export const DESKTOP_NOTIFICATION_CAPABILITY = "notification.show" as const;
 
 export interface PairResult {
@@ -42,6 +46,37 @@ export interface AvatarControl {
   text?: string;
   lipSync?: number;
   speaking?: boolean;
+}
+
+export interface PetMessageState {
+  requestId: string;
+  status: "accepted" | "completed" | "failed";
+  reasonCode?: string;
+}
+
+export function parsePetMessageState(frame: SignedFrame): PetMessageState | null {
+  const status = {
+    "pet.message.accepted": "accepted",
+    "pet.message.completed": "completed",
+    "pet.message.failed": "failed",
+  }[frame.type] as PetMessageState["status"] | undefined;
+  if (
+    !status ||
+    typeof frame.request_id !== "string" ||
+    !frame.request_id ||
+    frame.request_id.length > 80
+  ) {
+    return null;
+  }
+  if (
+    frame.reason_code !== undefined &&
+    (typeof frame.reason_code !== "string" || frame.reason_code.length > 160)
+  ) return null;
+  return {
+    requestId: frame.request_id,
+    status,
+    ...(typeof frame.reason_code === "string" ? { reasonCode: frame.reason_code } : {}),
+  };
 }
 
 export function parseAvatarControl(frame: SignedFrame): AvatarControl | null {
@@ -179,6 +214,7 @@ export interface ClientCallbacks {
   onEvent: (message: string) => void;
   authorizeScreenCapture: () => "allowed" | "screen_locked" | "screen_capture_not_granted";
   onAvatarControl?: (control: AvatarControl) => void;
+  onPetMessageState?: (state: PetMessageState) => void;
 }
 
 export class DeviceConnection {
@@ -201,6 +237,23 @@ export class DeviceConnection {
   setCapabilities(capabilities: string[]): void {
     this.capabilities = capabilities;
     this.send({ type: "device.heartbeat", capabilities: this.capabilities });
+  }
+
+  sendPetMessage(text: string, privacyLevel: "L0" | "L1" | "L2"): string | null {
+    const normalized = text.trim();
+    if (
+      this.socket?.readyState !== WebSocket.OPEN ||
+      !normalized ||
+      normalized.length > 2000
+    ) return null;
+    const requestId = crypto.randomUUID();
+    this.send({
+      type: "pet.message.send",
+      request_id: requestId,
+      text: normalized,
+      privacy_level: privacyLevel,
+    });
+    return requestId;
   }
 
   connect(): void {
@@ -270,6 +323,11 @@ export class DeviceConnection {
       if (avatarControl.sequence <= this.lastAvatarSequence) return;
       this.lastAvatarSequence = avatarControl.sequence;
       this.callbacks.onAvatarControl?.(avatarControl);
+      return;
+    }
+    const petMessageState = parsePetMessageState(frame);
+    if (petMessageState) {
+      this.callbacks.onPetMessageState?.(petMessageState);
       return;
     }
     if (isExecuteCommand(frame)) await this.execute(frame);

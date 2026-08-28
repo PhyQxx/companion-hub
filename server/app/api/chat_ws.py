@@ -9,7 +9,7 @@ from typing import Annotated, Any, Literal
 from uuid import UUID
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
-from pydantic import Field, ValidationError
+from pydantic import Field, JsonValue, ValidationError
 
 from app.auth import AuthService, ChatPrincipal, InvalidSession
 from app.avatar import AvatarControlPublisher, control_from_agent_reply, with_reply_text
@@ -340,6 +340,44 @@ class ChatWebSocketManager:
             message.conversation_id,
             _message_event(message, event_type="proactive.committed"),
         )
+
+    async def submit_device_message(
+        self, user_id: UUID, text: str, privacy_level: PrivacyLevel
+    ) -> dict[str, JsonValue]:
+        conversations = await self._service.list_conversations(user_id=user_id, limit=20)
+        conversation = next(
+            (item for item in conversations if item.status == "active"), None
+        )
+        if conversation is None:
+            conversation = await self._service.create_conversation(
+                user_id=user_id, title="桌宠对话"
+            )
+        turn = await self._service.send_message(
+            conversation.id,
+            user_id=user_id,
+            text=text,
+            privacy_level=privacy_level,
+        )
+        await self.broadcast(
+            user_id,
+            conversation.id,
+            _message_event(turn.user_message),
+        )
+        await self.broadcast(
+            user_id,
+            conversation.id,
+            _message_event(turn.assistant_message, event_type="reply.committed"),
+        )
+        reply_meta = (turn.assistant_message.decision_meta or {}).get("agent_reply")
+        control = control_from_agent_reply(reply_meta)
+        if privacy_level in {PrivacyLevel.L0, PrivacyLevel.L1}:
+            control = with_reply_text(control, turn.assistant_message.content)
+        if self._avatar_control is not None and control:
+            await self._avatar_control.publish_avatar_control(user_id, control)
+        return {
+            "conversation_id": str(conversation.id),
+            "message_id": str(turn.assistant_message.id),
+        }
 
     def _discard_finished_task(self, task: asyncio.Task[None]) -> None:
         with suppress(asyncio.CancelledError):

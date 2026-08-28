@@ -6,6 +6,7 @@ import {
   createScreenCaptureGrant,
   parseNotificationRequest,
   parseAvatarControl,
+  parsePetMessageState,
   parseScreenCaptureRequest,
   screenCaptureGrantActive,
 } from "./client";
@@ -45,6 +46,29 @@ describe("device command protocol", () => {
     expect(parseNotificationRequest({ title: "", body: "hello", privacy_level: "L1" }))
       .toBeNull();
     expect(parseNotificationRequest({ title: "Aria", body: "hello", privacy_level: "L3" }))
+      .toBeNull();
+  });
+
+  it("accepts only bounded pet message lifecycle frames", () => {
+    expect(parsePetMessageState({
+      type: "pet.message.accepted",
+      request_id: "018f5f61-2a65-7a21-a835-1a2b3c4d5e6f",
+    })).toEqual({
+      requestId: "018f5f61-2a65-7a21-a835-1a2b3c4d5e6f",
+      status: "accepted",
+    });
+    expect(parsePetMessageState({
+      type: "pet.message.failed",
+      request_id: "request-1",
+      reason_code: "turn_in_progress",
+    })).toEqual({
+      requestId: "request-1",
+      status: "failed",
+      reasonCode: "turn_in_progress",
+    });
+    expect(parsePetMessageState({ type: "pet.message.completed", request_id: 3 }))
+      .toBeNull();
+    expect(parsePetMessageState({ type: "pet.message.failed", request_id: "x", reason_code: 3 }))
       .toBeNull();
   });
 

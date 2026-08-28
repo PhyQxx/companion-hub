@@ -4,6 +4,7 @@ import asyncio
 import hashlib
 import hmac
 import json
+from collections.abc import Awaitable, Callable
 from contextlib import suppress
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -36,6 +37,7 @@ from app.devices import (
     EphemeralDeviceAssetError,
     EphemeralDeviceAssetStore,
 )
+from app.schemas import PrivacyLevel
 from app.schemas.common import NamespacedName, StrictModel
 
 from .admin_config import AdminTokenGuard
@@ -50,6 +52,13 @@ class DeviceAuthenticateFrame(StrictModel):
 class DeviceHeartbeatFrame(StrictModel):
     type: Literal["device.heartbeat"]
     capabilities: list[NamespacedName] = Field(default_factory=list, max_length=64)
+
+
+class PetMessageFrame(StrictModel):
+    type: Literal["pet.message.send"]
+    request_id: UUID
+    text: Annotated[str, Field(min_length=1, max_length=2000)]
+    privacy_level: Literal["L0", "L1", "L2"] = "L1"
 
 
 class CommandAckFrame(StrictModel):
@@ -113,6 +122,11 @@ class DeviceCommandConnection:
             await self.websocket.send_json(frame)
 
 
+PetMessageHandler = Callable[
+    [UUID, str, PrivacyLevel], Awaitable[dict[str, JsonValue]]
+]
+
+
 class DeviceCommandGateway:
     def __init__(
         self,
@@ -128,12 +142,20 @@ class DeviceCommandGateway:
         self._timeout_tasks: dict[UUID, asyncio.Task[None]] = {}
         self._completion_events: dict[UUID, asyncio.Event] = {}
         self._avatar_sequences: dict[UUID, int] = {}
+        self._pet_message_handler: PetMessageHandler | None = None
+        self._pet_message_tasks: dict[tuple[UUID, UUID], asyncio.Task[None]] = {}
+        self._pet_message_requests: set[tuple[UUID, UUID]] = set()
+
+    def set_pet_message_handler(self, handler: PetMessageHandler) -> None:
+        self._pet_message_handler = handler
 
     def connection_for(self, device_id: UUID) -> DeviceCommandConnection | None:
         return self._connections.get(device_id)
 
     async def connect(self, connection: DeviceCommandConnection) -> None:
         previous = self._connections.get(connection.principal.device_id)
+        if previous is not None and previous is not connection:
+            self._cancel_pet_messages(connection.principal.device_id)
         self._connections[connection.principal.device_id] = connection
         if previous is not None and previous is not connection:
             with suppress(WebSocketDisconnect, RuntimeError):
@@ -143,6 +165,116 @@ class DeviceCommandGateway:
         current = self._connections.get(connection.principal.device_id)
         if current is connection:
             self._connections.pop(connection.principal.device_id, None)
+            self._cancel_pet_messages(connection.principal.device_id)
+
+    def _cancel_pet_messages(self, device_id: UUID) -> None:
+        for key, task in list(self._pet_message_tasks.items()):
+            if key[0] == device_id:
+                task.cancel()
+                self._pet_message_tasks.pop(key, None)
+        self._pet_message_requests = {
+            key for key in self._pet_message_requests if key[0] != device_id
+        }
+
+    async def start_pet_message(
+        self, connection: DeviceCommandConnection, frame: PetMessageFrame
+    ) -> None:
+        key = (connection.principal.device_id, frame.request_id)
+        if "avatar.chat" not in connection.capabilities:
+            await self._send_pet_message_failure(
+                connection, frame.request_id, "capability_not_authorized"
+            )
+            return
+        if self._pet_message_handler is None:
+            await self._send_pet_message_failure(
+                connection, frame.request_id, "pet_chat_unavailable"
+            )
+            return
+        if key in self._pet_message_requests:
+            await self._send_pet_message_failure(
+                connection, frame.request_id, "duplicate_request"
+            )
+            return
+        if any(device_id == key[0] for device_id, _ in self._pet_message_tasks):
+            await self._send_pet_message_failure(
+                connection, frame.request_id, "turn_in_progress"
+            )
+            return
+        previous_requests = [
+            request_key
+            for request_key in self._pet_message_requests
+            if request_key[0] == key[0] and request_key != key
+        ]
+        if len(previous_requests) >= 200:
+            self._pet_message_requests.discard(previous_requests[0])
+        self._pet_message_requests.add(key)
+        await connection.send_signed(
+            {
+                "proto_version": 1,
+                "type": "pet.message.accepted",
+                "request_id": str(frame.request_id),
+                "sent_at": datetime.now(UTC).isoformat(),
+            }
+        )
+        task = asyncio.create_task(
+            self._run_pet_message(connection, frame),
+            name=f"pet-message-{frame.request_id}",
+        )
+        self._pet_message_tasks[key] = task
+        task.add_done_callback(
+            lambda finished: self._finish_pet_message(key, finished)
+        )
+
+    def _finish_pet_message(
+        self, key: tuple[UUID, UUID], task: asyncio.Task[None]
+    ) -> None:
+        if self._pet_message_tasks.get(key) is task:
+            self._pet_message_tasks.pop(key, None)
+
+    async def _run_pet_message(
+        self, connection: DeviceCommandConnection, frame: PetMessageFrame
+    ) -> None:
+        try:
+            handler = self._pet_message_handler
+            if handler is None:
+                await self._send_pet_message_failure(
+                    connection, frame.request_id, "pet_chat_unavailable"
+                )
+                return
+            result = await handler(
+                connection.principal.owner_user_id,
+                frame.text.strip(),
+                PrivacyLevel(frame.privacy_level),
+            )
+            await connection.send_signed(
+                {
+                    "proto_version": 1,
+                    "type": "pet.message.completed",
+                    "request_id": str(frame.request_id),
+                    "result": result,
+                    "sent_at": datetime.now(UTC).isoformat(),
+                }
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            await self._send_pet_message_failure(
+                connection, frame.request_id, "generation_failed"
+            )
+
+    async def _send_pet_message_failure(
+        self, connection: DeviceCommandConnection, request_id: UUID, reason_code: str
+    ) -> None:
+        with suppress(Exception):
+            await connection.send_signed(
+                {
+                    "proto_version": 1,
+                    "type": "pet.message.failed",
+                    "request_id": str(request_id),
+                    "reason_code": reason_code,
+                    "sent_at": datetime.now(UTC).isoformat(),
+                }
+            )
 
     async def publish_avatar_control(
         self, owner_user_id: UUID, control: dict[str, JsonValue]
@@ -553,6 +685,10 @@ async def _handle_device_frame(
                     "type": "heartbeat.accepted",
                     "sent_at": datetime.now(UTC).isoformat(),
                 }
+            )
+        elif frame_type == "pet.message.send":
+            await gateway.start_pet_message(
+                connection, PetMessageFrame.model_validate(raw)
             )
         elif frame_type == "command.ack":
             ack_frame = CommandAckFrame.model_validate(raw)

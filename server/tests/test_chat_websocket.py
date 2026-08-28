@@ -9,6 +9,7 @@ from uuid import UUID
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+from pydantic import JsonValue
 from sqlalchemy import select
 from starlette.websockets import WebSocketDisconnect
 
@@ -18,6 +19,7 @@ from app.chat import ChatService
 from app.config import DatabaseConfigStore
 from app.db import Base, InteractionTurnRecord, create_database
 from app.llm import CompletionRequest, CompletionResult, LLMRoute, ModelUsage
+from app.schemas import PrivacyLevel
 
 
 def config_yaml() -> str:
@@ -193,6 +195,62 @@ def test_websocket_stream_cancel_and_cursor_catchup(tmp_path: Path) -> None:
         await database.close()
 
     asyncio.run(inspect())
+
+
+async def test_device_message_uses_full_chat_service_and_hides_l2_reply(
+    tmp_path: Path,
+) -> None:
+    class AvatarPublisher:
+        def __init__(self) -> None:
+            self.controls: list[dict[str, JsonValue]] = []
+
+        async def publish_avatar_control(
+            self, owner_user_id: UUID, control: dict[str, JsonValue]
+        ) -> int:
+            del owner_user_id
+            self.controls.append(control)
+            return 1
+
+    database = create_database(f"sqlite+aiosqlite:///{tmp_path / 'pet-chat.db'}")
+    config_path = tmp_path / "hub.yaml"
+    config_path.write_text(config_yaml(), encoding="utf-8")
+    store = DatabaseConfigStore(database, config_path)
+    auth = AuthService(database)
+    service = ChatService(database, store, router_builder=lambda config: StreamingBackend())
+    async with database.engine.begin() as connection:
+        await connection.run_sync(Base.metadata.create_all)
+    await store.load()
+    session = await auth.setup(
+        display_name="Owner", password="correct horse battery staple"
+    )
+    publisher = AvatarPublisher()
+    _, manager = create_chat_websocket_router(
+        service,
+        auth,
+        avatar_control_publisher=publisher,
+    )
+
+    first = await manager.submit_device_message(
+        session.principal.user_id, "桌宠普通消息", PrivacyLevel.L1
+    )
+    second = await manager.submit_device_message(
+        session.principal.user_id, "桌宠私密消息", PrivacyLevel.L2
+    )
+
+    assert first["conversation_id"] == second["conversation_id"]
+    assert len(await service.list_conversations(user_id=session.principal.user_id)) == 1
+    messages = await service.list_messages_after(
+        UUID(str(first["conversation_id"])),
+        user_id=session.principal.user_id,
+        after_seq=0,
+    )
+    assert [message.content for message in messages if message.role == "user"] == [
+        "桌宠普通消息",
+        "桌宠私密消息",
+    ]
+    assert publisher.controls[0]["text"] == "hello world"
+    assert "text" not in publisher.controls[1]
+    await database.close()
 
 
 def _receive_until(websocket: Any, target_type: str) -> list[dict[str, Any]]:

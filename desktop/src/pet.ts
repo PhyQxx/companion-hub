@@ -8,7 +8,7 @@ import {
 } from "@tauri-apps/api/window";
 import { emit, listen } from "@tauri-apps/api/event";
 import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
-import type { AvatarControl } from "./client";
+import type { AvatarControl, PetMessageState } from "./client";
 import {
   DESKTOP_CONFIG_KEY,
   PET_CLICK_THROUGH_KEY,
@@ -27,7 +27,7 @@ if (!shell) throw new Error("missing pet shell");
 
 const stageUrl = petStageUrl(localStorage.getItem(DESKTOP_CONFIG_KEY));
 shell.innerHTML = stageUrl
-  ? `<iframe title="Aria 桌宠舞台" allow="autoplay" src="${stageUrl}"></iframe><div class="pet-tools"><button id="drag" aria-label="拖动桌宠" title="拖动桌宠">⋮⋮</button><button id="menu-toggle" aria-label="桌宠菜单" title="桌宠菜单">•••</button><nav id="pet-menu" hidden><button id="open-main" type="button">打开控制台</button><button id="enable-click-through" type="button">开启鼠标穿透</button><button id="hide-pet" type="button">隐藏桌宠</button></nav></div>`
+  ? `<iframe title="Aria 桌宠舞台" allow="autoplay" src="${stageUrl}"></iframe><div class="pet-tools"><button id="drag" aria-label="拖动桌宠" title="拖动桌宠">⋮⋮</button><button id="menu-toggle" aria-label="桌宠菜单" title="桌宠菜单">•••</button><nav id="pet-menu" hidden><button id="quick-chat" type="button">快速聊天</button><button id="open-main" type="button">打开控制台</button><button id="enable-click-through" type="button">开启鼠标穿透</button><button id="hide-pet" type="button">隐藏桌宠</button></nav></div><form id="pet-composer" hidden><textarea id="pet-message" rows="2" maxlength="2000" placeholder="跟 Aria 说点什么…" aria-label="给 Aria 发消息"></textarea><div class="composer-row"><select id="pet-privacy" aria-label="消息隐私级别"><option value="L1">普通 L1</option><option value="L2">私密 L2</option></select><small id="pet-message-status" aria-live="polite"></small><button id="send-pet-message" type="submit">发送</button></div></form>`
   : `<section class="pet-error"><strong>还没有连接 Hub</strong><small>请先在 Aria Desktop 主窗口完成设备配对。</small></section>`;
 
 const petWindow = getCurrentWindow();
@@ -94,8 +94,25 @@ document.querySelector<HTMLButtonElement>("#drag")?.addEventListener("mousedown"
 });
 
 const petMenu = document.querySelector<HTMLElement>("#pet-menu");
+const petComposer = document.querySelector<HTMLFormElement>("#pet-composer");
+const petMessage = document.querySelector<HTMLTextAreaElement>("#pet-message");
+const petPrivacy = document.querySelector<HTMLSelectElement>("#pet-privacy");
+const petMessageStatus = document.querySelector<HTMLElement>("#pet-message-status");
+const sendPetMessage = document.querySelector<HTMLButtonElement>("#send-pet-message");
+let submittedPrivacy: "L1" | "L2" = "L1";
+
+function closeComposer() {
+  if (petComposer) petComposer.hidden = true;
+}
+
 document.querySelector<HTMLButtonElement>("#menu-toggle")?.addEventListener("click", () => {
   if (petMenu) petMenu.hidden = !petMenu.hidden;
+});
+document.querySelector<HTMLButtonElement>("#quick-chat")?.addEventListener("click", () => {
+  if (!petComposer || !petMessage) return;
+  petComposer.hidden = false;
+  if (petMenu) petMenu.hidden = true;
+  petMessage.focus();
 });
 document.querySelector<HTMLButtonElement>("#open-main")?.addEventListener("click", async () => {
   const main = await WebviewWindow.getByLabel("main");
@@ -108,14 +125,38 @@ document.querySelector<HTMLButtonElement>("#enable-click-through")?.addEventList
   async () => {
     localStorage.setItem(PET_CLICK_THROUGH_KEY, "true");
     if (petMenu) petMenu.hidden = true;
+    closeComposer();
     await petWindow.setIgnoreCursorEvents(true);
     await emit("pet-click-through-changed", true);
   },
 );
 document.querySelector<HTMLButtonElement>("#hide-pet")?.addEventListener("click", async () => {
   localStorage.setItem(PET_VISIBLE_KEY, "false");
+  closeComposer();
   await emit("pet-visibility-changed", false);
   await petWindow.hide();
+});
+
+petComposer?.addEventListener("submit", (event) => {
+  event.preventDefault();
+  const text = petMessage?.value.trim() ?? "";
+  const privacyLevel = petPrivacy?.value === "L2" ? "L2" : "L1";
+  if (!text || !sendPetMessage || !petMessageStatus) return;
+  submittedPrivacy = privacyLevel;
+  sendPetMessage.disabled = true;
+  petMessageStatus.textContent = "正在发送…";
+  void emit("pet-message-submit", { text, privacyLevel });
+});
+
+petMessage?.addEventListener("keydown", (event) => {
+  if (event.key === "Escape") {
+    closeComposer();
+    return;
+  }
+  if (event.key === "Enter" && !event.shiftKey && !event.isComposing) {
+    event.preventDefault();
+    petComposer?.requestSubmit();
+  }
 });
 
 void ensurePetVisible().finally(() => {
@@ -137,6 +178,31 @@ void listen<AvatarControl>("avatar-control", ({ payload }) => {
     { type: "aria.avatar.control", ...payload },
     targetOrigin,
   );
+});
+
+void listen<PetMessageState>("pet-message-state", ({ payload }) => {
+  if (!petMessageStatus || !sendPetMessage) return;
+  if (payload.status === "accepted") {
+    petMessageStatus.textContent = "正在回复…";
+    return;
+  }
+  sendPetMessage.disabled = false;
+  if (payload.status === "completed") {
+    if (petMessage) petMessage.value = "";
+    petMessageStatus.textContent = submittedPrivacy === "L2"
+      ? "私密回复已保存到主聊天"
+      : "已回复";
+    return;
+  }
+  const reason = {
+    capability_not_authorized: "请先在 Admin 授权 avatar.chat",
+    device_offline: "设备连接已断开",
+    duplicate_request: "这条消息已提交",
+    generation_failed: "回复生成失败，请重试",
+    pet_chat_unavailable: "聊天服务暂不可用",
+    turn_in_progress: "上一条还在回复",
+  }[payload.reasonCode ?? ""];
+  petMessageStatus.textContent = reason ?? "发送失败，请重试";
 });
 
 void listen("pet-ensure-visible", () => void ensurePetVisible());

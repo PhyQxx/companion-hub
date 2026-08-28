@@ -10,6 +10,7 @@ from uuid import UUID
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+from pydantic import JsonValue
 from starlette.websockets import WebSocketDisconnect
 
 from app.api import (
@@ -17,11 +18,12 @@ from app.api import (
     create_device_command_routers,
     verify_device_signature,
 )
-from app.api.device_commands import DeviceCommandConnection
+from app.api.device_commands import DeviceCommandConnection, PetMessageFrame
 from app.auth import AuthService
 from app.db import Base, DeviceCommandRecord, create_database
 from app.devices import DeviceCommandStore, DevicePrincipal, DeviceRegistry
 from app.ids import uuid7
+from app.schemas import PrivacyLevel
 
 
 def test_signed_command_websocket_ack_result_cancel_and_idempotency(
@@ -266,6 +268,182 @@ async def test_avatar_control_uses_authorized_signed_ephemeral_frame(
     assert verify_device_signature(token, frame)
     connection.capabilities = ()
     assert await gateway.publish_avatar_control(owner_id, {"emotion": "sad"}) == 0
+    await database.close()
+
+
+async def test_pet_message_uses_authorized_signed_lifecycle_frames(
+    tmp_path: Path,
+) -> None:
+    class FakeWebSocket:
+        def __init__(self) -> None:
+            self.frames: list[dict[str, object]] = []
+
+        async def send_json(self, frame: dict[str, object]) -> None:
+            self.frames.append(frame)
+
+    database = create_database(f"sqlite+aiosqlite:///{tmp_path / 'pet-message.db'}")
+    gateway = DeviceCommandGateway(DeviceRegistry(database), DeviceCommandStore(database))
+    owner_id = uuid7()
+    request_id = uuid7()
+    token = "aria-device-pet-message-secret"
+    websocket = FakeWebSocket()
+    connection = DeviceCommandConnection(
+        websocket=cast(Any, websocket),
+        principal=DevicePrincipal(device_id=uuid7(), owner_user_id=owner_id),
+        access_token=token,
+        capabilities=("avatar.chat",),
+    )
+    handled = asyncio.Event()
+
+    async def handle_message(
+        user_id: UUID, text: str, privacy_level: PrivacyLevel
+    ) -> dict[str, JsonValue]:
+        assert user_id == owner_id
+        assert text == "今天继续做什么?"
+        assert privacy_level is PrivacyLevel.L2
+        handled.set()
+        return {"conversation_id": str(uuid7()), "message_id": str(uuid7())}
+
+    gateway.set_pet_message_handler(handle_message)
+    await gateway.start_pet_message(
+        connection,
+        PetMessageFrame(
+            type="pet.message.send",
+            request_id=request_id,
+            text=" 今天继续做什么? ",
+            privacy_level="L2",
+        ),
+    )
+    await asyncio.wait_for(handled.wait(), timeout=1)
+    for _ in range(10):
+        if len(websocket.frames) == 2:
+            break
+        await asyncio.sleep(0)
+
+    assert [frame["type"] for frame in websocket.frames] == [
+        "pet.message.accepted",
+        "pet.message.completed",
+    ]
+    assert all(verify_device_signature(token, frame) for frame in websocket.frames)
+    assert websocket.frames[1]["request_id"] == str(request_id)
+    assert "message_id" in cast(dict[str, object], websocket.frames[1]["result"])
+    gateway.disconnect(connection)
+    await database.close()
+
+
+async def test_pet_message_rejects_missing_capability(tmp_path: Path) -> None:
+    class FakeWebSocket:
+        def __init__(self) -> None:
+            self.frames: list[dict[str, object]] = []
+
+        async def send_json(self, frame: dict[str, object]) -> None:
+            self.frames.append(frame)
+
+    database = create_database(f"sqlite+aiosqlite:///{tmp_path / 'pet-denied.db'}")
+    gateway = DeviceCommandGateway(DeviceRegistry(database), DeviceCommandStore(database))
+    websocket = FakeWebSocket()
+    token = "aria-device-pet-message-denied"
+    connection = DeviceCommandConnection(
+        websocket=cast(Any, websocket),
+        principal=DevicePrincipal(device_id=uuid7(), owner_user_id=uuid7()),
+        access_token=token,
+        capabilities=("avatar.render",),
+    )
+
+    await gateway.start_pet_message(
+        connection,
+        PetMessageFrame(
+            type="pet.message.send",
+            request_id=uuid7(),
+            text="你好",
+            privacy_level="L1",
+        ),
+    )
+
+    assert len(websocket.frames) == 1
+    assert websocket.frames[0]["type"] == "pet.message.failed"
+    assert websocket.frames[0]["reason_code"] == "capability_not_authorized"
+    assert verify_device_signature(token, websocket.frames[0])
+    await database.close()
+
+
+async def test_replaced_device_connection_does_not_cancel_new_pet_turn(
+    tmp_path: Path,
+) -> None:
+    class FakeWebSocket:
+        def __init__(self) -> None:
+            self.frames: list[dict[str, object]] = []
+
+        async def send_json(self, frame: dict[str, object]) -> None:
+            self.frames.append(frame)
+
+        async def close(self, **_: object) -> None:
+            return None
+
+    database = create_database(f"sqlite+aiosqlite:///{tmp_path / 'pet-reconnect.db'}")
+    gateway = DeviceCommandGateway(DeviceRegistry(database), DeviceCommandStore(database))
+    owner_id = uuid7()
+    device_id = uuid7()
+    old_started = asyncio.Event()
+    new_started = asyncio.Event()
+    new_release = asyncio.Event()
+
+    async def handle_message(
+        user_id: UUID, text: str, privacy_level: PrivacyLevel
+    ) -> dict[str, JsonValue]:
+        del user_id, privacy_level
+        if text == "old":
+            old_started.set()
+            await asyncio.Event().wait()
+        new_started.set()
+        await new_release.wait()
+        return {"conversation_id": str(uuid7()), "message_id": str(uuid7())}
+
+    gateway.set_pet_message_handler(handle_message)
+    old_socket = FakeWebSocket()
+    new_socket = FakeWebSocket()
+    old_connection = DeviceCommandConnection(
+        websocket=cast(Any, old_socket),
+        principal=DevicePrincipal(device_id=device_id, owner_user_id=owner_id),
+        access_token="aria-device-old-connection-token",
+        capabilities=("avatar.chat",),
+    )
+    new_connection = DeviceCommandConnection(
+        websocket=cast(Any, new_socket),
+        principal=DevicePrincipal(device_id=device_id, owner_user_id=owner_id),
+        access_token="aria-device-new-connection-token",
+        capabilities=("avatar.chat",),
+    )
+    await gateway.connect(old_connection)
+    await gateway.start_pet_message(
+        old_connection,
+        PetMessageFrame(
+            type="pet.message.send", request_id=uuid7(), text="old", privacy_level="L1"
+        ),
+    )
+    await asyncio.wait_for(old_started.wait(), timeout=1)
+
+    await gateway.connect(new_connection)
+    await asyncio.sleep(0)
+    await gateway.start_pet_message(
+        new_connection,
+        PetMessageFrame(
+            type="pet.message.send", request_id=uuid7(), text="new", privacy_level="L1"
+        ),
+    )
+    await asyncio.wait_for(new_started.wait(), timeout=1)
+    gateway.disconnect(old_connection)
+    new_release.set()
+    for _ in range(10):
+        if any(frame["type"] == "pet.message.completed" for frame in new_socket.frames):
+            break
+        await asyncio.sleep(0)
+
+    assert [frame["type"] for frame in new_socket.frames] == [
+        "pet.message.accepted",
+        "pet.message.completed",
+    ]
+    gateway.disconnect(new_connection)
     await database.close()
 
 

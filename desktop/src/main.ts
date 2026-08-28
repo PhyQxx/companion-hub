@@ -127,6 +127,19 @@ void listen<boolean>("pet-click-through-changed", ({ payload }) => {
   petClickThrough.checked = payload;
   localStorage.setItem(PET_CLICK_THROUGH_KEY, String(payload));
 });
+void listen<{ text: string; privacyLevel: "L0" | "L1" | "L2" }>(
+  "pet-message-submit",
+  ({ payload }) => {
+    const requestId = connection?.sendPetMessage(payload.text, payload.privacyLevel);
+    if (!requestId) {
+      void emit("pet-message-state", {
+        requestId: "local",
+        status: "failed",
+        reasonCode: "device_offline",
+      });
+    }
+  },
+);
 
 function activeCapabilities(): string[] {
   const capabilities: string[] = [...DESKTOP_BASE_CAPABILITIES];
@@ -243,6 +256,7 @@ async function startConnection() {
     onEvent: addEvent,
     authorizeScreenCapture,
     onAvatarControl: (control) => void emit("avatar-control", control),
+    onPetMessageState: (messageState) => void emit("pet-message-state", messageState),
   });
   connection.connect();
 }

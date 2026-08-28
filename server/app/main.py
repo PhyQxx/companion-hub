@@ -720,6 +720,10 @@ def create_app(
                 avatar_control_publisher=device_command_gateway,
             )
             app.state.chat_websocket_manager = websocket_manager
+            if device_command_gateway is not None:
+                device_command_gateway.set_pet_message_handler(
+                    websocket_manager.submit_device_message
+                )
             app.include_router(websocket_router)
             voice_manager = None
             if runtime_config is not None:
