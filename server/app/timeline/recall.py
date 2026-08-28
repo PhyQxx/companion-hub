@@ -21,6 +21,8 @@ _HISTORY_MARKERS = re.compile(
     r"(刚才|之前|以前|昨天|昨晚|前几天|上周|上周末|这个月|上个月|去年|那次|上次|曾经)"
 )
 
+_RECENT_DURATION = re.compile(r"(?:过去|最近)\s*(\d{1,3})\s*(分钟|小时|天)")
+
 
 def has_history_intent(query: str) -> bool:
     return bool(_HISTORY_MARKERS.search(query))
@@ -41,29 +43,59 @@ class TemporalQueryParser:
         moment = (now or datetime.now(UTC)).astimezone(self._timezone)
         today = moment.date()
 
+        recent = _RECENT_DURATION.search(query)
+        if recent is not None:
+            amount = int(recent.group(1))
+            unit = recent.group(2)
+            delta = {
+                "分钟": timedelta(minutes=amount),
+                "小时": timedelta(hours=amount),
+                "天": timedelta(days=amount),
+            }[unit]
+            return TemporalRange(
+                moment - delta,
+                moment + timedelta(seconds=1),
+                recent.group(0),
+            )
+
         if "刚才" in query:
             return TemporalRange(
                 moment - timedelta(minutes=45),
                 moment + timedelta(seconds=1),
                 "刚才",
             )
-        if "今天早上" in query or "今早" in query:
+        if any(marker in query for marker in ("今天早上", "今天上午", "今早", "今上午")):
             return TemporalRange(
                 _local(today, time(5), self._timezone),
-                _local(today, time(12), self._timezone),
-                "今天早上",
+                min(
+                    _local(today, time(12), self._timezone),
+                    moment + timedelta(seconds=1),
+                ),
+                "今天上午",
             )
         if "今天下午" in query or "今下午" in query:
             return TemporalRange(
                 _local(today, time(12), self._timezone),
-                _local(today, time(18), self._timezone),
+                min(
+                    _local(today, time(18), self._timezone),
+                    moment + timedelta(seconds=1),
+                ),
                 "今天下午",
             )
         if "今天晚上" in query or "今晚" in query:
             return TemporalRange(
                 _local(today, time(18), self._timezone),
-                _local(today + timedelta(days=1), time(0), self._timezone),
+                min(
+                    _local(today + timedelta(days=1), time(0), self._timezone),
+                    moment + timedelta(seconds=1),
+                ),
                 "今天晚上",
+            )
+        if "今天" in query:
+            return TemporalRange(
+                _local(today, time(0), self._timezone),
+                moment + timedelta(seconds=1),
+                "今天",
             )
         if "昨晚" in query:
             yesterday = today - timedelta(days=1)

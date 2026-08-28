@@ -44,6 +44,8 @@ from app.timeline import (
     HistoryRecallResult,
     HistoryRecallService,
     RecallMode,
+    ScreenActivityRecallResult,
+    ScreenActivityRecallService,
     TimelineStore,
     has_history_intent,
 )
@@ -236,6 +238,7 @@ class PendingTurn:
     persona_version: int
     memory_retrieval: RetrievalResult | None = None
     history_recall: HistoryRecallResult | None = None
+    screen_activity_recall: ScreenActivityRecallResult | None = None
     runtime_capabilities: tuple[RuntimeActionCapability, ...] = ()
     tool_names: tuple[str, ...] = ()
     # 连接级临时位置(L2 原始信号): 仅随轮次存活于内存, 不写入任何持久化记录。
@@ -259,6 +262,7 @@ class ChatService:
         memory_extractor: MemoryExtractor | None = None,
         timeline_store: TimelineStore | None = None,
         history_recall_service: HistoryRecallService | None = None,
+        screen_activity_recall_service: ScreenActivityRecallService | None = None,
         capability_provider: RuntimeCapabilityProvider | None = None,
         device_tool: ToolHandler | None = None,
         device_tools: Iterable[ToolHandler] = (),
@@ -272,6 +276,9 @@ class ChatService:
         self._timeline_store = timeline_store
         self._history_recall = history_recall_service or (
             HistoryRecallService(timeline_store) if timeline_store is not None else None
+        )
+        self._screen_activity_recall = screen_activity_recall_service or (
+            ScreenActivityRecallService(timeline_store) if timeline_store is not None else None
         )
         self._capability_provider = capability_provider
         self._cognitive_cycle = cognitive_cycle
@@ -593,7 +600,31 @@ class ChatService:
             )
         history_recall: HistoryRecallResult | None = None
         history_block = ""
-        if self._history_recall is not None and history_intent:
+        screen_activity_recall: ScreenActivityRecallResult | None = None
+        screen_activity_block = ""
+        if self._screen_activity_recall is not None:
+            try:
+                screen_activity_recall = await self._screen_activity_recall.recall(
+                    text,
+                    user_id=user_id,
+                    privacy_level=privacy_level,
+                    now=now,
+                    timezone_name=user_timezone,
+                )
+                if screen_activity_recall is not None:
+                    screen_activity_block = ScreenActivityRecallService.render_context(
+                        screen_activity_recall,
+                        timezone_name=user_timezone,
+                    )
+            except Exception:
+                logger.warning(
+                    "screen activity recall failed for turn %s", turn_id, exc_info=True
+                )
+        if (
+            screen_activity_recall is None
+            and self._history_recall is not None
+            and history_intent
+        ):
             try:
                 history_recall = await self._history_recall.recall(
                     text,
@@ -635,6 +666,7 @@ class ChatService:
                     + f"\n\n{time_block}"
                     + f"\n\n{reality_block}"
                     + (f"\n\n{memory_block}" if memory_block else "")
+                    + (f"\n\n{screen_activity_block}" if screen_activity_block else "")
                     + (f"\n\n{history_block}" if history_block else ""),
                 ),
                 *[
@@ -662,6 +694,7 @@ class ChatService:
             persona_version=persona_snapshot.version if persona_snapshot else 0,
             memory_retrieval=memory_retrieval,
             history_recall=history_recall,
+            screen_activity_recall=screen_activity_recall,
             runtime_capabilities=runtime_capabilities,
             tool_names=tool_names,
             client_location=client_location,
@@ -1122,7 +1155,21 @@ class ChatService:
                     for hit in pending.memory_retrieval.hits
                 ],
             }
-        if pending.history_recall is not None:
+        if pending.screen_activity_recall is not None:
+            screen_recall = pending.screen_activity_recall
+            decision_meta["recall"] = {
+                "mode": "screen_activity",
+                "timeline_ids": [item.id for item in screen_recall.events],
+                "source_ids": [item.source_id for item in screen_recall.events],
+                "time_range": {
+                    "start_at": screen_recall.temporal_range.start_at.isoformat(),
+                    "end_at": screen_recall.temporal_range.end_at.isoformat(),
+                },
+                "candidate_count": screen_recall.candidate_count,
+                "segment_count": len(screen_recall.segments),
+                "truncated": screen_recall.truncated,
+            }
+        elif pending.history_recall is not None:
             recall_mode = pending.history_recall.mode.value
             if pending.history_recall.mode is RecallMode.NONE and grounded_memory_hits:
                 recall_mode = RecallMode.MEMORY.value

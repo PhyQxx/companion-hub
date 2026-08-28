@@ -34,6 +34,7 @@ from app.memory.models import (
     MemorySourceRef,
     MemoryType,
 )
+from app.perception.models import PerceptionResult
 from app.schemas.common import PrivacyLevel
 from app.timeline.store import TimelineStore
 
@@ -445,8 +446,8 @@ class ScreenAwarenessLoop:
             expires_at=now + timedelta(minutes=5),
         )
 
-        async def handler(event: SemanticEvent, result: Any) -> None:
-            await self._deliver_event(event, result)
+        async def handler(event: SemanticEvent, result: PerceptionResult) -> None:
+            await self._deliver_event(event, result.decision)
 
         if self._perception is not None:
             self._perception.submit(

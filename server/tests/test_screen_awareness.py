@@ -10,10 +10,12 @@ from uuid import UUID
 import pytest
 from PIL import Image
 
+from app.cognition.models import CognitiveDecision, DecisionKind, Urgency
 from app.config.models import HubConfig
 from app.db import Base, Database, create_database
 from app.ids import uuid7
 from app.memory.models import MemoryOriginKind, MemoryType
+from app.perception.models import PerceptionDisposition, PerceptionResult
 from app.schemas.common import PrivacyLevel
 from app.screen_awareness import (
     ScreenAwarenessError,
@@ -320,6 +322,51 @@ async def test_changed_screen_writes_timeline_memory_and_proactive(migrated: Dat
     assert event.evidence_ids
     assert stable == pytest.approx(10.0)
     assert handler is not None
+
+
+async def test_perception_handler_unwraps_cognitive_decision(migrated: Database) -> None:
+    perception = FakePerception()
+    delivered: list[dict[str, Any]] = []
+
+    async def proactive_deliver(message: str, **kwargs: Any) -> None:
+        delivered.append({"message": message, **kwargs})
+
+    loop, owner = make_loop(
+        migrated,
+        make_config(displays=[1]),
+        FakeGateway(make_png((100, 150, 200))),
+        FakeAnalyzer(ANALYSIS_JSON),
+        perception=perception,
+    )
+    loop._proactive_deliver = proactive_deliver
+    await loop._tick(make_config(displays=[1]).screen_awareness)
+    event, _stable, handler = perception.submitted[0]
+    now = datetime.now(UTC)
+    decision = CognitiveDecision(
+        id=uuid7(),
+        event_id=event.event_id,
+        user_id=owner,
+        trigger_kind=event.kind,
+        decision=DecisionKind.SUGGEST,
+        reason_codes=["screen_notable"],
+        evidence_ids=event.evidence_ids,
+        confidence=0.8,
+        urgency=Urgency.NORMAL,
+        attention_score=0.75,
+        policy_version="test",
+        message="可以提供帮助",
+        created_at=now,
+    )
+    result = PerceptionResult(
+        event_id=event.event_id,
+        disposition=PerceptionDisposition.PROCESSED,
+        decision=decision,
+    )
+
+    await handler(event, result)
+
+    assert len(delivered) == 1
+    assert delivered[0]["cognitive_decision"] is decision
 
 
 async def test_unchanged_screen_skips_analysis(migrated: Database) -> None:

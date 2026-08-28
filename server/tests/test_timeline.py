@@ -38,10 +38,12 @@ from app.schemas.common import SourceRef
 from app.timeline import (
     HistoryRecallService,
     RecallMode,
+    ScreenActivityRecallService,
     TemporalQueryParser,
     TimelineActor,
     TimelineSourceType,
     TimelineStore,
+    has_screen_activity_intent,
 )
 
 
@@ -115,6 +117,120 @@ def test_temporal_query_parser_resolves_relative_ranges() -> None:
 
     invalid = TemporalQueryParser("Mars/Olympus")
     assert invalid.timezone_name == "Asia/Shanghai"
+
+
+def test_screen_activity_intent_and_time_range_cover_natural_summary_request() -> None:
+    timezone = ZoneInfo("Asia/Shanghai")
+    now = datetime(2026, 8, 28, 9, 42, tzinfo=timezone)
+    query = "总结我今天上午在电脑上做了什么。"
+
+    assert has_screen_activity_intent(query) is True
+    temporal = TemporalQueryParser("Asia/Shanghai").parse(query, now=now)
+    assert temporal is not None
+    assert temporal.start_at == datetime(2026, 8, 28, 5, 0, tzinfo=timezone)
+    assert temporal.end_at == now + timedelta(seconds=1)
+
+    recent = TemporalQueryParser("Asia/Shanghai").parse(
+        "总结过去2小时的电脑活动", now=now
+    )
+    assert recent is not None
+    assert recent.start_at == now - timedelta(hours=2)
+    assert recent.end_at == now + timedelta(seconds=1)
+
+
+async def test_screen_activity_recall_filters_and_aggregates_observations(
+    database: Database, user: AppUserRecord
+) -> None:
+    timezone = ZoneInfo("Asia/Shanghai")
+    now = datetime(2026, 8, 28, 10, 0, tzinfo=timezone)
+    timeline = TimelineStore(database)
+    await timeline.index_screen_observation(
+        user_id=user.id,
+        observation_id=uuid7(),
+        display=1,
+        summary="正在使用浏览器查看 companion-hub 项目代码",
+        privacy_level=PrivacyLevel.L1,
+        occurred_at=datetime(2026, 8, 28, 8, 0, tzinfo=timezone),
+    )
+    await timeline.index_screen_observation(
+        user_id=user.id,
+        observation_id=uuid7(),
+        display=1,
+        summary="正在使用浏览器查看 companion-hub 项目的代码",
+        privacy_level=PrivacyLevel.L1,
+        occurred_at=datetime(2026, 8, 28, 8, 5, tzinfo=timezone),
+    )
+    await timeline.index_screen_observation(
+        user_id=user.id,
+        observation_id=uuid7(),
+        display=1,
+        summary="正在企业微信回复工作消息",
+        privacy_level=PrivacyLevel.L1,
+        occurred_at=datetime(2026, 8, 28, 9, 0, tzinfo=timezone),
+    )
+    # 同一时间窗内的普通聊天消息不能混入屏幕活动总结。
+    await timeline.index_message(
+        user_id=user.id,
+        conversation_id=uuid7(),
+        message_id=uuid7(),
+        actor=TimelineActor.USER,
+        text="这是一条不应进入屏幕总结的聊天消息",
+        privacy_level=PrivacyLevel.L1,
+        occurred_at=datetime(2026, 8, 28, 8, 30, tzinfo=timezone),
+    )
+
+    recalled = await ScreenActivityRecallService(timeline).recall(
+        "总结我今天上午在电脑上做了什么。",
+        user_id=user.id,
+        privacy_level=PrivacyLevel.L1,
+        now=now,
+        timezone_name="Asia/Shanghai",
+    )
+
+    assert recalled is not None
+    assert len(recalled.events) == 3
+    assert len(recalled.segments) == 2
+    assert recalled.segments[0].observation_count == 2
+    assert recalled.segments[1].summaries == ("正在企业微信回复工作消息",)
+    context = ScreenActivityRecallService.render_context(
+        recalled, timezone_name="Asia/Shanghai"
+    )
+    assert "【屏幕活动回顾】" in context
+    assert "companion-hub" in context
+    assert "不应进入屏幕总结" not in context
+
+
+async def test_chat_injects_screen_activity_recall_and_records_meta(
+    database: Database, user: AppUserRecord, tmp_path: Path
+) -> None:
+    requests: list[CompletionRequest] = []
+    service, timeline = await _chat_service(database, tmp_path, requests)
+    observed_at = datetime.now(UTC) - timedelta(minutes=30)
+    await timeline.index_screen_observation(
+        user_id=user.id,
+        observation_id=uuid7(),
+        display=1,
+        summary="正在 IDE 中修改屏幕事件聚合检索代码",
+        privacy_level=PrivacyLevel.L1,
+        occurred_at=observed_at,
+    )
+    conversation = await service.create_conversation(user_id=user.id, title="screen-recall")
+
+    turn = await service.send_message(
+        conversation.id,
+        user_id=user.id,
+        text="总结我过去2小时在电脑上做了什么。",
+        privacy_level=PrivacyLevel.L1,
+    )
+
+    system_prompt = requests[-1].messages[0].content
+    assert "【屏幕活动回顾】" in system_prompt
+    assert "修改屏幕事件聚合检索代码" in system_prompt
+    recall_meta = (turn.assistant_message.decision_meta or {})["recall"]
+    assert isinstance(recall_meta, dict)
+    assert recall_meta["mode"] == "screen_activity"
+    assert recall_meta["timeline_ids"]
+    assert recall_meta["segment_count"] == 1
 
 
 async def test_yesterday_evening_recall_finds_original_message_source(
