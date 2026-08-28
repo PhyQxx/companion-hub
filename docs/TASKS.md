@@ -1,6 +1,6 @@
 # Aria 当前任务
 
-> 最后更新：2026-08-27
+> 最后更新：2026-08-28
 > 详细设计入口：[00-文档索引与架构总览.md](./00-文档索引与架构总览.md)
 
 本文件只维护当前执行队列、未完成门槛和最新质量基线。历史交付细节留在对应阶段文档，不在这里重复。
@@ -10,10 +10,10 @@
 | 阶段 | 状态 | 当前结论 |
 |---|---|---|
 | M0～M1 可信文字核心 | 已完成 | 事件、隐私、身份、聊天、Persona、Memory、Timeline 与删除闭环已落地 |
-| P5 文字稳定性闸门 | 使用期未开始 | 14 天从首条有效日志重新起算；当前在制分支须先恢复全量质量闸门，见 `docs/32` |
+| P5 文字稳定性闸门 | 已完成，待归档证据索引 | 用户已确认 14 天观察完成；仓库报告保留外部日志索引回填项，见 `docs/32` |
 | P6 Batch A～C 语音 | 主链完成 | 真浏览器 ASR/LLM/TTS/viseme/打断已打通；延迟继续优化 |
 | M3A 地图/天气第一批 | 已完成 | 查询、定位、卡片、Admin 自检、200 条台账与延迟报告已落地，见 `docs/35` |
-| M3A 多终端与感知 | 进行中 | Browser Bridge 与 macOS Desktop 已通过真机验收；主动输出已接入 Web、macOS 通知和在线语音，活动窗口仍待原生真机验收 |
+| M3A 多终端与感知 | 进行中 | Browser Bridge、macOS Desktop 活动窗口/交互选择器与隐私门禁已通过真机验收；主动输出已接入 Web、macOS 通知和在线语音 |
 | M3B 认知调度闭环 | 已完成（v1） | 被动对话与主动事件已统一进入 World State、Attention、结构化决策、反馈和审计闭环；自主写动作保持关闭 |
 | 形象与主题底座 | 已完成（v1） | 形象包/实例/Persona 绑定、主题同步、自定义立绘与 Live2D 安全导入均已落地 |
 | Admin 信息架构重整 | 已完成（v1） | 领域分组、URL 可恢复二级 Tab、真实数据页与浏览器验收已完成 |
@@ -23,15 +23,15 @@
 
 ### 0. 当前功能主线
 
-- [x] **macOS 系统内容选择器（代码闭环 + 隔离 E2E 已完成，剩真机人工环节）。** `capture_screen` 新增 `target=interactive`：Desktop 弹出系统选择器由用户当场框选/选窗（Esc 取消）；Hub 命令 TTL 115s、终态等待 116s，设备端选择器 100s 超时自动终止；Rust 结构化错误码（picker_cancelled/picker_timeout 等）经 command.reason_code 透传；幂等键纳入 target。已在隔离环境完成两条 E2E：真实聊天 → interactive 命令 → PNG 资产上传 → GLM 视觉准确描述 → 回答回注；以及 picker_cancelled 透传 → 模型优雅解释并主动提出重试。剩余真机人工环节：Desktop 窗口点「允许下一次截图」、真实 `screencapture -i` 框选/取消、原图销毁现场确认（与 active_window 真机验收同批）。
-- [ ] **当前功能：ESP32 + LD2410 第一硬件闭环。** 单存在传感器接入现有 MQTT → `EphemeralSignal` → Perception → Proactive Pipeline，开始 7 天免打扰与误触发验收。
+- [x] **macOS 系统内容选择器。** `capture_screen(target=interactive)` 的系统框选/取消、视觉回答、结构化错误码、临时授权与原图销毁已经完成代码、隔离 E2E 和用户确认的真机验收。
+- [ ] **当前功能：ESP32 + LD2410 第一硬件闭环。** Hub 侧 MQTT → L3 `EphemeralSignal` → 5 秒稳定窗 → L1 `presence.changed` → Perception → Proactive Pipeline 已接通，ESPHome 固件样例与单设备 topic ACL 已落地；剩余刷写真机并开始 7 天免打扰与误触发验收。
 - [ ] **暂不作为下一功能：Tauri 透明桌宠。** Live2D Web 最小壳已经可用，但桌宠仍需等待 M2 首音频和打断门槛达标；VRM、换装、AI 形象工厂和更多主题也继续后置。
 
 ### 0.1 并行收口项（不占用下一功能定义）
 
 - [x] 恢复在制分支质量闸门：Ruff **163** 项、mypy **38** 项和 Admin TypeScript **4** 项已清零；非 soak 全量 pytest **532 通过 / 0 失败**（3 个既有全局 Admin token 状态污染失败已用 conftest autouse 重置 fixture 修复）；Chat/Admin/Shared typecheck 与 production build、Alembic 空库升级到 `0022` 单 head 和 `git diff --check` 全部通过。
 - [x] 收口当前实现批次：迁移链 `0019 → 0020 → 0021 → bb15882faef4 → 0022 → 0023` 已确认单 head，空库升级复验通过；`.design-qa/`、`.zcode/`、本地截图、`server/assets/` 运行时上传与授权 SDK/Core 已入 `.gitignore`，在制批次已分 9 个逻辑提交入库。
-- [ ] 写入首条可核验每日日志，启动 P5 连续 14 天文字稳定性观察；M2 语音延迟优化作为并行性能专项推进；设备真机人工验收批次同步推进。
+- [x] P5 连续 14 天文字稳定性观察已由用户确认完成；外部每日记录的仓库证据索引仍需回填到 `docs/32`。M2 语音延迟优化作为并行性能专项推进。
 
 ### A. 多终端设备底座
 
@@ -49,11 +49,11 @@
 - [x] macOS 屏幕录制授权、隐私暂停与临时截图销毁闭环：原生 `.app` 已完成配对、钥匙串、TCC 授权和真实截图上传验收。
 - [x] `capture_screen` 主显示器闭环：目标解析、签名命令、终态等待、临时图片 consume-on-read、视觉分析和文字结果回注；L1 使用支持工具调用的 dialogue 路由与当前 GLM 视觉，L2 仍强制本地工具模型与本地视觉。
 - [x] `capture_screen(active_window)` 代码闭环：Hub/LLM 契约、Desktop 双端参数校验、macOS 前台应用与 CoreGraphics 活动窗口解析、按窗口 ID 截图和原有隐私门禁复用已落地；Python/TypeScript 回归、`cargo check` 与原生链接通过。
-- [ ] `capture_screen(active_window)` 原生真机验收：在非 Aria 前台窗口上完成一次真实聊天工具全链，确认窗口定位、阴影剔除、临时资产销毁与视觉回答（与 interactive 真机验收同批）。
-- [x] 系统内容选择器代码闭环与隔离 E2E：`target=interactive` 复用 screen.capture 命令与 TCC/锁屏/临时授权门禁，`screencapture -i` 交互框选、100s 选择器超时、用户取消（Esc 无产物即 picker_cancelled）、命令 TTL 115s/等待 116s、结构化错误码透传与幂等键按 target 隔离均已落地。隔离 E2E（真实 GLM 对话 + 虚拟桌面设备 + 真实视觉端点）验证：模型正确选择 interactive 工具、线上 TTL 115s、资产上传与视觉回答回注、picker_cancelled 优雅透传；同时发现弱祈使句下模型可能只描述动作而不调用工具（提示词/模型行为，非代码缺陷，真机验收时注意话术）。原生真机人工环节待做（与 active_window 验收同批）。
+- [x] `capture_screen(active_window)` 原生真机验收：用户确认非 Aria 前台窗口真实聊天工具全链、临时资产销毁与视觉回答已完成。
+- [x] 系统内容选择器代码闭环、隔离 E2E 与原生真机验收：`target=interactive` 复用 screen.capture 命令与 TCC/锁屏/临时授权门禁，交互框选、超时、Esc 取消、结构化错误码、资产上传、视觉回答与原图销毁均已验证。
 - [x] 修复迁移 SQLite 兼容 bug：`0020/bb15882faef4/0022` 迁移中 `server_default=sa.text("now()")` 在 SQLite 上插入即崩（PG 正常；单测走 `create_all` 未暴露），统一改为方言感知的 `sa.func.now()`；真实 PostgreSQL 已应用的迁移不受影响，SQLite 从空库升级 + 启动种子写入已实测通过。
 - [x] 浏览器扩展真机闭环：Chrome MV3 配对/签名长连接、`browser.current_tab.read/capture`、受限 JSON/图片临时上传与 Hub `inspect_webpage` 已接入；真 Chrome 已验证单一稳定连接、正文读取和当前页截图。
-- [ ] 隐私策略：当前按用户决定先允许 L1 屏幕截图交给 GLM 视觉；L2 仍强制本地视觉，浏览器读取仍保持 L2。Desktop 已实现锁屏自动拒绝和“5 分钟内仅下一次截图”的内存态临时授权，待 macOS 真机锁屏/解锁验收后勾选。
+- [x] 隐私策略：L1 屏幕截图交给 GLM 视觉；L2 强制本地视觉，浏览器读取保持 L2。Desktop 锁屏自动拒绝、“5 分钟内仅下一次截图”的内存态临时授权及 macOS 锁屏/解锁已完成真机验收。
 - [x] Web 对话跨终端验收：L2 会话发起“看一下我的电脑网页”，Hub 调用本地 Qwen 的 `inspect_webpage`，Browser Bridge 读取当前页并把结果返回原会话。
 
 ### C. 传感器与主动感知
@@ -84,7 +84,7 @@
 
 ### E. 并行门槛与优化
 
-- [ ] P5：从首条可核验每日日志开始连续 14 天真实文字使用；期满复跑闸门并定稿 `docs/32`。
+- [x] P5：连续 14 天真实文字使用已由用户确认完成；`docs/32` 尚需补入外部每日记录索引与期末闸门结果。
 - [ ] M2：评估流式 ASR 与低延迟语音专用 LLM，达到可行下限后重置窗口完成 20 个完整回合 + 20 个打断判卷。
 - [ ] 本地语音质量：校准“小艾/只回答”等音近词；需要时安装并验收 Silero 与 openWakeWord。
 - [x] P6 Batch D Web 最小壳：Live2D ZIP 安全导入、官方 Cubism Web Runtime 动态加载、聊天/Admin 真实模型渲染、viseme/说话/情绪/表情/动作控制与缺少运行时时安全降级均已接通。
@@ -100,7 +100,9 @@
 
 ## 3. 最近完成
 
-- [x] 屏幕感知主动链路修复与真机全链验证：注意力引擎此前对 `screen.observed` 永远拿默认基础分 0.4，主动话题结构性不可能触发；新增事件源自带显著性 `attributes.salience`（只升不降），循环侧 notable 事件携带 0.75；同时修复高频事件源被重复惩罚永久压死的缺陷（below-threshold 静默不再计入 same_trigger 惩罚，浮出水面的决策仍全额计罚，到达降频顺延到第三枪）。真机验证：会议提醒页被识别→注意力 0.65 过阈→LLM 审议判 record（理由 user_likely_aware——用户看得见不打扰）→后续 notable 被降频压制，全链按设计工作。另发现隔夜 Mac 睡眠后 Desktop WS 僵尸连接（重启应用即恢复，连接自愈待做）。
+- [x] ESP32 + LD2410 Hub 侧代码闭环：修复 `MqttDeviceClient` 未设置 `on_signal` 导致遥测只进缓存、不进 Perception 的断链；新增 `MqttPresenceBridge`，启动 retained 值只建基线，状态翻转经 5 秒稳定窗派生 L1 `presence.changed`，再进入认知与主动多终端投递；原始 MQTT 信号改为 L3。补充 ESPHome 固件样例、独立设备凭据与单 topic Mosquitto ACL、Compose 启用开关、重连存活修复和端到端回归。剩余为真机刷写与 7 天验收。
+- [x] 屏幕事件专用聚合回顾：聊天识别“今天上午/过去 N 小时在电脑上做了什么”等意图，按时间窗只检索 `DEVICE/screen.observed`，合并连续相似观察并注入受控证据上下文；无记录时禁止用长期记忆猜测，审计记录 `recall.mode=screen_activity`。
+- [x] 屏幕感知主动链路修复与真机全链验证：注意力显著性、重复惩罚、会议提醒审议和主动降频均按设计工作；用户后续确认 Desktop 睡眠/唤醒连接可靠性收口已完成。
 - [x] 屏幕感知 v1（用户显式推翻原「暂缓持续后台屏幕监控」决策，授权模型改为纯配置开关）：新增 `ScreenAwarenessLoop`（默认 60s、15~600s 可配、每 tick 热读配置）周期截取配置的各显示器 → Pillow 感知哈希变化检测（不变跳过分析）→ GLM 视觉输出结构化 JSON（summary/notable/memory_worthy/topic）→ Timeline 全量沉淀（`index_screen_observation`，event_type=screen.observed）+ memory_worthy 升级长期记忆（screen-v1）+ notable 经 Perception 管线走主动话题（DND/安静时段/预算/反馈降频全复用）；Desktop 新增 `screen.monitor` 命令（不消费单次授权，TCC/锁屏/隐私暂停三闸门保留）与能力声明；原图即焚（consume-on-read）；连续失败 10 分钟冷却；Admin 新增「屏幕感知」工作区（状态+观察记录）；12 个新回归全绿。详见 `docs/38`。
 - [x] 工具挂载改为能力就绪制、选择交给模型：`send_message` 不再用文本关键词预筛工具——设备工具按「在线能力满足（`DEVICE_TOOL_REQUIREMENTS`）+ 隐私/模型/视觉就绪」全量挂载，查询工具按配置开关挂载，何时调用由模型依据工具描述自行判断；关键词表仅保留给确定性 HA 读回退（`_deterministic_home_read_call`）与选择器单测。起因是真机验收中「圈选屏幕内容」未命中词表导致 `capture_screen` 缺席；已同步在上一提交补充词表作为确定性路径的覆盖。
 - [x] 修复撤销设备永久占用别名的缺陷：`device_client` 的 `(owner, alias)` 唯一约束改为部分唯一索引（仅约束 `revoked_at IS NULL` 的活跃行），撤销后别名自动释放、可用原别名重新配对，活跃设备之间仍强唯一；新增 `0023_device_alias_reuse` 迁移（batch 兼容 SQLite）并已应用到真实 PostgreSQL（现处 head），新增撤销重配与活跃冲突双向回归测试。
@@ -149,7 +151,7 @@
 - 2026-08-27 屏幕感知上线运行验证：配置 v63 开启（60s×三屏）、设备声明+授权 `screen.monitor`、修复上传白名单后（`8d80ebb`）三屏截图与 GLM 视觉分析实测成功（微信/文件系统/编程界面三份摘要入 Timeline），循环无错误；感知哈希变化检测、即焚与降频待长期观察。
 - 2026-08-27 设备别名释放修复：Ruff、严格 mypy、非 soak 全量 pytest 通过（含新增撤销重配回归）；`0023_device_alias_reuse` 已在 SQLite 空库与真实 PostgreSQL 双端验证，真实库现处 head `0023`。同批 Admin 交互修复：设备设置保存遇 revision 冲突自动刷新版本号并提示重试（`a9ab560`）、设备注册表行级配对码按钮（`249eae7`）、Desktop debug bundle 过期问题（`ef0420e`，`bundle.active` 已启用）。
 - 2026-08-27 选择器隔离 E2E 与迁移修复：迁移 `now()` 默认值修复后 Ruff、严格 mypy、Avatar/Theme/Jobs 定向 pytest 通过；隔离环境（8001 + SQLite + 复制的真实模型配置 + 虚拟桌面设备）两条 E2E 全部闭环——interactive 命令线上 TTL 115s、幂等键含 target、PNG 资产上传后 GLM 视觉准确描述、picker_cancelled 透传后模型优雅重试。已知观察：弱祈使句下模型可能只叙述不调用工具。
-- 2026-08-27 系统内容选择器代码闭环：Ruff、严格 mypy、非 soak 全量 pytest **532 通过 / 0 失败**（含 4 个新增 interactive 回归）、Desktop vitest **9 通过**、Desktop typecheck/build、`cargo check` 与 `git diff --check` 全部通过；真机验收（真实聊天 → 系统选择器 → 视觉回答 → 原图销毁）待用户在场执行。
+- 2026-08-27 系统内容选择器代码闭环：Ruff、严格 mypy、非 soak 全量 pytest **532 通过 / 0 失败**（含 4 个新增 interactive 回归）、Desktop vitest **9 通过**、Desktop typecheck/build、`cargo check` 与 `git diff --check` 全部通过；2026-08-28 用户确认真机验收完成。
 - 2026-08-26 主题中心 v1：新增主题 Store、Admin API 与 Chat 会话 API 的 4 个测试全部通过，OpenAPI 路由生成回归通过；Ruff、新 Store mypy、Shared typecheck、Chat production build、Admin production build、Alembic 单 head 与离线 SQL 生成通过；真实 PostgreSQL 已升级到 `0022_ui_theme`；全量 pytest 运行至 97% 时仍复现 3 个既有全局 Admin token 状态污染失败，并挂在既有语音 soak 用例；过程中发现的主题路由 OpenAPI 注解回归已修复并单独复测通过。
 - 2026-08-26 伴侣形象与角色系统 v1：Ruff、全量 mypy、pytest **430 通过 / 2 跳过**（新增 11 个测试）、`git diff --check` 全部通过；新增测试覆盖 `AvatarStore`（内置包加载/幂等、实例创建/更新/删除/查询、未知包拦截、状态过滤、人格绑定/解绑/默认查询/列表）；Admin Avatar API 已挂载到 `/api/v1/admin/avatars`；`ChatService.decision_meta` 已注入 `avatar_instance_id` 与 `avatar_pack_id`；
 - 2026-08-26 Job System + Asset Store：Ruff、全量 mypy、pytest **419 通过 / 2 跳过**（新增 28 个测试）、`git diff --check` 全部通过；新增测试覆盖 `JobEngine`（提交/幂等/领取/优先级/续约/释放/Step 生命周期/失败重试/最终失败/取消队列中/running 中/确认取消/成功/列表/Worker 心跳/租约过期清理）、`AssetStore`（存储/去重/提交/读取/引用生命周期/重新激活/派生/staging GC/未引用 GC）；Admin Jobs API 已挂载到 `/api/v1/admin/jobs`；

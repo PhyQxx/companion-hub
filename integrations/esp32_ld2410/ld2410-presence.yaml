@@ -1,0 +1,96 @@
+substitutions:
+  device_id: ld2410_bedroom
+  friendly_name: Aria Bedroom Presence
+
+esphome:
+  name: ${device_id}
+  friendly_name: ${friendly_name}
+
+esp32:
+  board: esp32dev
+  framework:
+    type: esp-idf
+
+logger:
+  level: INFO
+
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+  ap:
+    ssid: "${device_id}-fallback"
+    password: !secret fallback_ap_password
+
+captive_portal:
+
+ota:
+  - platform: esphome
+    password: !secret ota_password
+
+time:
+  - platform: sntp
+    id: network_time
+    timezone: Asia/Shanghai
+
+mqtt:
+  broker: !secret mqtt_host
+  port: !secret mqtt_port
+  username: !secret mqtt_username
+  password: !secret mqtt_password
+  discovery: false
+
+uart:
+  id: ld2410_uart
+  tx_pin: GPIO17
+  rx_pin: GPIO16
+  baud_rate: 256000
+  parity: NONE
+  stop_bits: 1
+
+ld2410:
+  uart_id: ld2410_uart
+
+script:
+  - id: publish_presence
+    mode: restart
+    parameters:
+      present: bool
+    then:
+      - mqtt.publish_json:
+          topic: hub/devices/${device_id}/telemetry
+          qos: 1
+          retain: true
+          payload: |-
+            root["sensor_type"] = "presence";
+            root["value"] = present;
+            auto now = id(network_time).now();
+            if (now.is_valid()) {
+              root["timestamp"] = now.strftime("%Y-%m-%dT%H:%M:%S%z");
+            }
+
+binary_sensor:
+  - platform: ld2410
+    has_target:
+      id: stable_presence
+      name: "${friendly_name}"
+      device_class: occupancy
+      filters:
+        - delayed_on: 2s
+        - delayed_off: 10s
+      on_press:
+        - script.execute:
+            id: publish_presence
+            present: true
+      on_release:
+        - script.execute:
+            id: publish_presence
+            present: false
+
+button:
+  - platform: restart
+    name: "${friendly_name} Restart"
+
+sensor:
+  - platform: wifi_signal
+    name: "${friendly_name} WiFi Signal"
+    update_interval: 60s

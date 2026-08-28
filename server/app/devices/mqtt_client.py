@@ -5,6 +5,7 @@ import json
 import logging
 from collections import deque
 from collections.abc import Awaitable, Callable
+from contextlib import suppress
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -102,7 +103,7 @@ class MqttTelemetryBuffer:
                         ),
                         channel=sensor_type,
                         occurred_at=ts,
-                        privacy_level=PrivacyLevel.L2,
+                        privacy_level=PrivacyLevel.L3,
                         content={
                             "type": "telemetry",
                             "channel": sensor_type,
@@ -140,6 +141,12 @@ class MqttDeviceClient:
     def buffer(self) -> MqttTelemetryBuffer:
         return self._buffer
 
+    def set_signal_handler(
+        self,
+        handler: Callable[[EphemeralSignal], Awaitable[None] | None] | None,
+    ) -> None:
+        self._on_signal = handler
+
     async def start(self) -> None:
         if aiomqtt is None:
             logger.warning("aiomqtt is not installed; MQTT device channel is disabled")
@@ -153,7 +160,9 @@ class MqttDeviceClient:
         self._stop.set()
         task, self._task = self._task, None
         if task is not None:
-            await task
+            task.cancel()
+            with suppress(asyncio.CancelledError):
+                await task
 
     async def _run(self) -> None:
         while not self._stop.is_set():
@@ -172,10 +181,12 @@ class MqttDeviceClient:
                         await self._handle(message)
             except aiomqtt.MqttError as error:
                 logger.warning("MQTT connection error: %s; retry in 5s", error)
-                await asyncio.wait_for(self._stop.wait(), timeout=5.0)
+                with suppress(asyncio.TimeoutError):
+                    await asyncio.wait_for(self._stop.wait(), timeout=5.0)
             except Exception:
                 logger.exception("MQTT unexpected error; retry in 5s")
-                await asyncio.wait_for(self._stop.wait(), timeout=5.0)
+                with suppress(asyncio.TimeoutError):
+                    await asyncio.wait_for(self._stop.wait(), timeout=5.0)
 
     async def _handle(self, message: aiomqtt.Message) -> None:
         try:
@@ -208,7 +219,7 @@ class MqttDeviceClient:
                     ),
                     channel=sensor_type,
                     occurred_at=timestamp if timestamp < now else now - timedelta(milliseconds=1),
-                    privacy_level=PrivacyLevel.L2,
+                    privacy_level=PrivacyLevel.L3,
                     content={"type": "telemetry", "channel": sensor_type, "value": value},
                     expires_at=now + timedelta(seconds=1),
                 )

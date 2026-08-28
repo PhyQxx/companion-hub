@@ -16,6 +16,7 @@ from .commands import (
     DeviceCommandStore,
     IssuedCommand,
 )
+from .presence import MqttPresenceBridge
 from .resolver import (
     GENERIC_DESKTOP_TARGETS,
     DeviceTargetAmbiguous,
@@ -71,6 +72,7 @@ __all__ = [
     "EphemeralDeviceAssetNotFound",
     "EphemeralDeviceAssetStore",
     "IssuedCommand",
+    "MqttPresenceBridge",
     "PairedDevice",
     "PairingCodeInvalid",
     "PairingSecret",

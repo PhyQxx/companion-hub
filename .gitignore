@@ -28,3 +28,7 @@ design-qa.md
 
 # 运行时资产存储（头像上传/对象/暂存），目录由代码创建
 server/assets/
+
+# ESPHome local credentials and build cache
+integrations/esp32_ld2410/secrets.yaml
+integrations/esp32_ld2410/.esphome/

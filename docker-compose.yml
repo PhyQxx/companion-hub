@@ -21,6 +21,9 @@ services:
     environment:
       MQTT_USERNAME: ${MQTT_USERNAME:-aria}
       MQTT_PASSWORD: ${MQTT_PASSWORD:?set MQTT_PASSWORD in .env}
+      MQTT_DEVICE_ID: ${MQTT_DEVICE_ID:-ld2410_bedroom}
+      MQTT_DEVICE_USERNAME: ${MQTT_DEVICE_USERNAME:-aria_ld2410_bedroom}
+      MQTT_DEVICE_PASSWORD: ${MQTT_DEVICE_PASSWORD:-${MQTT_PASSWORD:?set MQTT_PASSWORD in .env}}
     entrypoint: ["/mosquitto/config/entrypoint.sh"]
     healthcheck:
       test:
@@ -49,6 +52,7 @@ services:
       ARIA_MQTT_PORT: "1883"
       ARIA_MQTT_USERNAME: ${MQTT_USERNAME:-aria}
       ARIA_MQTT_PASSWORD: ${MQTT_PASSWORD}
+      ARIA_MQTT_ENABLED: ${ARIA_MQTT_ENABLED:-false}
       ARIA_LOG_LEVEL: ${ARIA_LOG_LEVEL:-INFO}
       ARIA_CONFIG_PATH: ${ARIA_CONFIG_PATH:-config/hub.example.yaml}
       ARIA_WATCH_CONFIG: ${ARIA_WATCH_CONFIG:-true}

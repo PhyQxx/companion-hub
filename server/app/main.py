@@ -54,7 +54,12 @@ from app.cognition import (
 )
 from app.config import ConfigStore, ConfigWatcher, DatabaseConfigStore
 from app.db import Database, create_database
-from app.devices import DeviceCommandStore, DeviceRegistry, DeviceTargetResolver
+from app.devices import (
+    DeviceCommandStore,
+    DeviceRegistry,
+    DeviceTargetResolver,
+    MqttPresenceBridge,
+)
 from app.devices.mqtt_client import MqttDeviceClient, MqttTelemetryBuffer
 from app.home_assistant import (
     HomeAssistantManager,
@@ -147,6 +152,7 @@ def create_app(
     home_assistant_proactive: HomeAssistantProactiveEngine | None = None
     screen_awareness_loop: ScreenAwarenessLoop | None = None
     proactive_delivery: ProactiveDeliveryService | None = None
+    mqtt_presence_bridge: MqttPresenceBridge | None = None
 
     async def test_home_assistant_proactive() -> bool:
         if home_assistant_proactive is None:
@@ -266,10 +272,12 @@ def create_app(
                 await screen_awareness_loop.stop()
             if home_assistant_proactive is not None:
                 await home_assistant_proactive.stop()
-            if perception_pipeline is not None:
-                await perception_pipeline.stop()
             if mqtt_client is not None:
                 await mqtt_client.stop()
+            if mqtt_presence_bridge is not None:
+                await mqtt_presence_bridge.stop()
+            if perception_pipeline is not None:
+                await perception_pipeline.stop()
             if runtime_chat_service is not None:
                 # 等待仍在执行的后台记忆沉淀收尾，避免丢最后一轮的事实
                 await runtime_chat_service.drain_background_work()
@@ -742,6 +750,17 @@ def create_app(
                     home_assistant_proactive.on_state_change
                 )
                 app.state.home_assistant_proactive_engine = home_assistant_proactive
+
+            if mqtt_client is not None and perception_pipeline is not None:
+                mqtt_presence_bridge = MqttPresenceBridge(
+                    runtime_database,
+                    perception_pipeline,
+                    proactive_deliver=(
+                        proactive_delivery.deliver if proactive_delivery is not None else None
+                    ),
+                )
+                mqtt_client.set_signal_handler(mqtt_presence_bridge.handle)
+                app.state.mqtt_presence_bridge = mqtt_presence_bridge
 
             if (
                 runtime_database is not None
