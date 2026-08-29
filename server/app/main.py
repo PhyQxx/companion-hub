@@ -331,9 +331,13 @@ def create_app(
         name="desktop-pet",
     )
     chat_dist = Path(__file__).resolve().parents[2] / "web" / "apps" / "chat" / "dist"
+    chat_spa_ready = (chat_dist / "index.html").is_file()
     chat_dist_assets = chat_dist / "assets"
     if chat_dist_assets.is_dir():
         app.mount("/chat/assets", StaticFiles(directory=chat_dist_assets), name="chat-assets")
+    chat_dist_icons = chat_dist / "icons"
+    if chat_dist_icons.is_dir():
+        app.mount("/chat/icons", StaticFiles(directory=chat_dist_icons), name="chat-icons")
     avatar_assets_root = Path(__file__).parent / "avatar" / "assets"
     app.mount(
         "/api/v1/avatar-assets",
@@ -396,9 +400,31 @@ def create_app(
         async def memory_admin() -> FileResponse:
             return FileResponse(admin_root / "memory.html")
 
+    if chat_spa_ready:
+
+        @app.get("/chat/manifest.webmanifest", include_in_schema=False)
+        async def chat_manifest() -> FileResponse:
+            return FileResponse(
+                chat_dist / "manifest.webmanifest",
+                media_type="application/manifest+json",
+            )
+
+        @app.get("/chat/sw.js", include_in_schema=False)
+        async def chat_service_worker() -> FileResponse:
+            return FileResponse(
+                chat_dist / "sw.js",
+                media_type="application/javascript",
+                headers={"Cache-Control": "no-cache"},
+            )
+
+        @app.get("/chat/offline.html", include_in_schema=False)
+        async def chat_offline() -> FileResponse:
+            return FileResponse(chat_dist / "offline.html")
+
     @app.get("/chat", include_in_schema=False)
+    @app.get("/chat/", include_in_schema=False)
     async def chat_entry() -> FileResponse:
-        if (chat_dist / "index.html").is_file():
+        if chat_spa_ready:
             return FileResponse(chat_dist / "index.html")
         return FileResponse(chat_root / "index.html")
 

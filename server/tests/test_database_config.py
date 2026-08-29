@@ -140,7 +140,12 @@ async def test_admin_api_requires_token_and_manages_drafts(
         page = await client.get("/admin/models")
         persona_page = await client.get("/admin/personas")
         chat_page = await client.get("/chat")
+        chat_slash_page = await client.get("/chat/")
         chat_debug_page = await client.get("/chat/debug")
+        chat_manifest = await client.get("/chat/manifest.webmanifest")
+        chat_service_worker = await client.get("/chat/sw.js")
+        chat_offline_page = await client.get("/chat/offline.html")
+        chat_icon = await client.get("/chat/icons/aria-192.png")
         pet_page = await client.get("/desktop/pet/")
         module_pages = {
             path: await client.get(path)
@@ -180,11 +185,21 @@ async def test_admin_api_requires_token_and_manages_drafts(
     assert 'href="#"' not in page.text
     assert 'href="#"' not in persona_page.text
     assert chat_page.status_code == 200
+    assert chat_slash_page.status_code == 200
     # /chat serves the Vue build when web/apps/chat/dist exists and falls
     # back to the vanilla debug page in source-only checkouts.
     assert (
         '<div id="app"></div>' in chat_page.text or "文字聊天调试台" in chat_page.text
     )
+    if spa_mode and '<div id="app"></div>' in chat_page.text:
+        assert chat_manifest.status_code == 200
+        assert chat_manifest.headers["content-type"].startswith(
+            "application/manifest+json"
+        )
+        assert chat_service_worker.status_code == 200
+        assert chat_service_worker.headers["cache-control"] == "no-cache"
+        assert chat_offline_page.status_code == 200
+        assert chat_icon.status_code == 200
 
 
 async def test_admin_model_connection_uses_lm_studio_native_model_list(
