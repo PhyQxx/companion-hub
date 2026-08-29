@@ -33,12 +33,19 @@ import ToolResultCard from "./ToolResultCard.vue";
 import Live2DStage from "./Live2DStage.vue";
 
 // 聊天前端主组件：登录 → 会话侧栏 → 流式消息区 → 发送区。
-// 令牌持久化在 localStorage；WS 断线自动重连（最多 3 次）。
+// 普通 Web 保留既有本地会话；安装后的 PWA 只在当前会话存储令牌。
 const api = new ChatApi();
 const TOKEN_KEY = "ariaChatToken";
 const TEXT_REPLY_VOICE_KEY = "ariaTextReplyVoice";
 const LOCATION_ENABLED_KEY = "ariaLocationEnabled";
 const themePreference = ref<ThemePreference>(readThemePreference());
+const isStandalone =
+  window.matchMedia("(display-mode: standalone)").matches ||
+  (navigator as Navigator & { standalone?: boolean }).standalone === true;
+const isIos =
+  /iPad|iPhone|iPod/.test(navigator.userAgent) ||
+  (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
+const authStorage: Storage = isStandalone ? sessionStorage : localStorage;
 // 与服务端 tools/location.py 的 LOCATION_TTL(15 分钟)保持一致。
 const LOCATION_TTL_MS = 15 * 60 * 1000;
 
@@ -87,6 +94,16 @@ const voiceViseme = ref(0);
 const avatarMotion = ref<{ value: string; sequence: number } | null>(null);
 const textReplyVoice = ref(localStorage.getItem(TEXT_REPLY_VOICE_KEY) === "1");
 const voiceTtsConfigured = ref<boolean | null>(null);
+const mobileConversationsOpen = ref(false);
+const mobileCompanionOpen = ref(false);
+const installPrompt = ref<BeforeInstallPromptEvent | null>(null);
+const networkOnline = ref(navigator.onLine);
+let resumePromise: Promise<void> | null = null;
+
+interface BeforeInstallPromptEvent extends Event {
+  prompt(): Promise<void>;
+  userChoice: Promise<{ outcome: "accepted" | "dismissed"; platform: string }>;
+}
 
 // 终端定位：命中位置类查询时才请求/附带(惰性授权)，坐标只随帧内存传输。
 const locationEnabled = ref(localStorage.getItem(LOCATION_ENABLED_KEY) !== "0");
@@ -674,7 +691,7 @@ function emotionOf(message: ChatMessage): string | null {
 function rememberSession(session: AuthSession) {
   token.value = session.access_token;
   displayName.value = session.user.display_name;
-  localStorage.setItem(TOKEN_KEY, session.access_token);
+  authStorage.setItem(TOKEN_KEY, session.access_token);
 }
 
 async function submitAuth() {
@@ -701,7 +718,7 @@ async function logout() {
   await closeVoice();
   token.value = "";
   displayName.value = "";
-  localStorage.removeItem(TOKEN_KEY);
+  authStorage.removeItem(TOKEN_KEY);
   conversations.value = [];
   activeId.value = null;
   messagesByConversation.clear();
@@ -751,6 +768,7 @@ async function loadConversations() {
 async function openConversation(id: string) {
   if (activeId.value !== id) await closeVoice();
   activeId.value = id;
+  mobileConversationsOpen.value = false;
   if (!messagesByConversation.has(id)) {
     try {
       const messages = await api.listMessages(token.value, id);
@@ -807,20 +825,32 @@ async function removeConversation(id: string) {
 /** 建立实时连接；失败时保留基础 REST 可用性并提示 */
 function connectSocket() {
   closeSocket();
-  socket = new ChatSocket(
+  let nextSocket: ChatSocket;
+  nextSocket = new ChatSocket(
     (location.protocol === "https:" ? "wss://" : "ws://") + location.host + "/ws/chat",
     token.value,
-    { onEvent: handleEvent, onClose: handleClose },
+    {
+      onEvent: (event) => {
+        if (socket === nextSocket) handleEvent(event);
+      },
+      onClose: (code) => {
+        if (socket === nextSocket) handleClose(code);
+      },
+    },
   );
-  socket
+  socket = nextSocket;
+  nextSocket
     .connect()
     .then(() => {
+      if (socket !== nextSocket) return;
       socketReady.value = true;
       reconnectAttempts = 0;
       setStatus("已连接");
       if (activeId.value) socket?.sync(activeId.value, lastSeqOf(activeId.value));
     })
-    .catch(() => setStatus("实时连接失败，仍可基础使用", true));
+    .catch(() => {
+      if (socket === nextSocket) setStatus("实时连接失败，仍可基础使用", true);
+    });
 }
 
 function handleClose(code: number) {
@@ -832,6 +862,54 @@ function handleClose(code: number) {
   }
   reconnectAttempts += 1;
   reconnectTimer = window.setTimeout(connectSocket, 3000);
+}
+
+async function resumeSession() {
+  if (!token.value || document.hidden || !navigator.onLine) return;
+  if (resumePromise) return resumePromise;
+  resumePromise = (async () => {
+    reconnectAttempts = 0;
+    await syncThemePreference();
+    const conversationId = activeId.value;
+    if (conversationId) {
+      try {
+        const messages = await api.listMessages(token.value, conversationId);
+        messagesByConversation.set(conversationId, messages);
+        await scrollToEnd();
+      } catch (error) {
+        if (error instanceof ApiError && error.status === 401) {
+          await logout();
+          setStatus("会话已过期，请重新登录", true);
+          return;
+        }
+      }
+    }
+    if (!socketReady.value) connectSocket();
+    else if (conversationId) socket?.sync(conversationId, lastSeqOf(conversationId));
+  })().finally(() => {
+    resumePromise = null;
+  });
+  return resumePromise;
+}
+
+function handleVisibilityChange() {
+  if (document.hidden) {
+    if (voiceRecording.value || voiceBusy.value || voiceReady.value) void closeVoice();
+    return;
+  }
+  void resumeSession();
+}
+
+function handleOnline() {
+  networkOnline.value = true;
+  setStatus("网络已恢复，正在同步…");
+  void resumeSession();
+}
+
+function handleOffline() {
+  networkOnline.value = false;
+  closeSocket();
+  setStatus("当前离线，消息不会发送", true);
 }
 
 /** WS 事件分发：delta 流式拼接、control 情绪标签、committed 落定 */
@@ -942,6 +1020,10 @@ function cancelStreaming() {
 
 onMounted(async () => {
   window.addEventListener("focus", syncThemePreference);
+  window.addEventListener("beforeinstallprompt", handleBeforeInstallPrompt);
+  window.addEventListener("online", handleOnline);
+  window.addEventListener("offline", handleOffline);
+  document.addEventListener("visibilitychange", handleVisibilityChange);
   if (typeof BroadcastChannel !== "undefined") {
     themeChannel = new BroadcastChannel(THEME_CHANNEL_NAME);
     themeChannel.onmessage = (event: MessageEvent<{ selection?: ThemePreference }>) => {
@@ -951,7 +1033,7 @@ onMounted(async () => {
       saveThemePreference(selection);
     };
   }
-  const saved = localStorage.getItem(TOKEN_KEY);
+  const saved = authStorage.getItem(TOKEN_KEY);
   if (!saved) {
     void loadRuntimeMeta();
     try {
@@ -966,7 +1048,7 @@ onMounted(async () => {
     const session = await api.me(token.value);
     displayName.value = session.user.display_name;
   } catch {
-    localStorage.removeItem(TOKEN_KEY);
+    authStorage.removeItem(TOKEN_KEY);
     token.value = "";
     setupRequired.value = (await api.authStatus().catch(() => ({ setup_required: false })))
       .setup_required;
@@ -977,12 +1059,29 @@ onMounted(async () => {
 
 onBeforeUnmount(() => {
   window.removeEventListener("focus", syncThemePreference);
+  window.removeEventListener("beforeinstallprompt", handleBeforeInstallPrompt);
+  window.removeEventListener("online", handleOnline);
+  window.removeEventListener("offline", handleOffline);
+  document.removeEventListener("visibilitychange", handleVisibilityChange);
   themeChannel?.close();
   themeChannel = null;
   closeSocket();
   void closeVoice();
   void playback.close();
 });
+
+function handleBeforeInstallPrompt(event: Event) {
+  event.preventDefault();
+  installPrompt.value = event as BeforeInstallPromptEvent;
+}
+
+async function installPwa() {
+  const prompt = installPrompt.value;
+  if (!prompt) return;
+  await prompt.prompt();
+  await prompt.userChoice;
+  installPrompt.value = null;
+}
 </script>
 
 <template>
@@ -1003,12 +1102,21 @@ onBeforeUnmount(() => {
       <button class="primary" type="submit" :disabled="authBusy">
         {{ setupRequired ? "创建并登录" : "登录" }}
       </button>
+      <button v-if="installPrompt && !isStandalone" class="ghost" type="button" @click="installPwa">安装到手机</button>
+      <p v-else-if="isIos && !isStandalone" class="install-hint">iPhone：点 Safari“分享”→“添加到主屏幕”</p>
       <p v-if="statusText" class="status" :class="{ error: statusError }">{{ statusText }}</p>
     </form>
   </div>
 
   <div v-else class="shell">
-    <aside class="conversation-sidebar">
+    <button
+      v-if="mobileConversationsOpen || mobileCompanionOpen"
+      class="mobile-backdrop"
+      type="button"
+      aria-label="关闭面板"
+      @click="mobileConversationsOpen = false; mobileCompanionOpen = false"
+    ></button>
+    <aside class="conversation-sidebar" :class="{ 'mobile-open': mobileConversationsOpen }">
       <header class="conversation-heading">
         <strong>会话</strong>
         <small>{{ conversations.length }} 个</small>
@@ -1040,6 +1148,17 @@ onBeforeUnmount(() => {
     </aside>
 
     <main>
+      <header class="mobile-topbar">
+        <button class="mobile-icon-button" type="button" aria-label="打开会话列表" @click="mobileConversationsOpen = true">☰</button>
+        <div class="mobile-title">
+          <strong>{{ personaMeta?.name ?? '助手' }}</strong>
+          <small :class="{ offline: !networkOnline }">{{ !networkOnline ? '离线' : socketReady ? '在线' : '连接中' }}</small>
+        </div>
+        <button class="mobile-avatar-button" type="button" aria-label="打开伴侣形象" @click="mobileCompanionOpen = true">
+          <img v-if="avatarImageUrl" :src="avatarImageUrl" alt="" />
+          <span v-else>{{ personaMeta?.name?.[0] ?? 'A' }}</span>
+        </button>
+      </header>
       <div ref="messagesRoot" class="messages">
         <div v-if="!activeMessages.length && activeId" class="empty">这个会话还没有消息。</div>
         <template v-for="message in activeMessages" :key="message.id">
@@ -1128,7 +1247,7 @@ onBeforeUnmount(() => {
       </footer>
     </main>
 
-    <aside class="avatar-sidebar">
+    <aside class="avatar-sidebar" :class="{ 'mobile-open': mobileCompanionOpen }">
       <header class="companion-heading">
         <div>
           <strong>{{ personaMeta?.name ?? '助手' }}</strong>
@@ -1136,6 +1255,7 @@ onBeforeUnmount(() => {
         </div>
         <div class="aside-meta">
           <span>{{ displayName }}</span>
+          <button v-if="installPrompt && !isStandalone" class="ghost" type="button" @click="installPwa">安装</button>
           <button class="ghost" type="button" @click="logout">退出</button>
         </div>
       </header>
@@ -1172,6 +1292,7 @@ onBeforeUnmount(() => {
 .card { display: grid; gap: 12px; width: min(360px, 90vw); background: var(--panel); border: 1px solid var(--line); border-radius: 16px; padding: 28px; box-shadow: var(--shadow); }
 .card h1 { margin: 0; font-size: 22px; }
 .hint { color: var(--muted); margin: 0; font-size: 13px; }
+.install-hint { margin:0; color:var(--muted); font-size:12px; line-height:1.5; text-align:center; }
 .status { color: var(--muted); font-size: 12px; margin: 0; }
 .status.error { color: var(--danger); }
 
@@ -1208,6 +1329,7 @@ aside header strong { font-size:16px; }
 .aside-footer .debug-link { flex:none; padding:8px 2px; }
 
 main { grid-area:chat; display:grid; grid-template-rows:minmax(0,1fr) auto; min-width:0; min-height:0; background:var(--bg); }
+.mobile-topbar,.mobile-backdrop { display:none; }
 .messages { overflow-y: auto; padding: 20px; }
 .empty { height: 100%; display: grid; place-items: center; color: var(--muted); }
 .message { max-width: 80%; margin-bottom: 14px; }
@@ -1242,17 +1364,42 @@ main { grid-area:chat; display:grid; grid-template-rows:minmax(0,1fr) auto; min-
 }
 
 @media (max-width: 760px) {
-  .shell { grid-template-columns:1fr; grid-template-rows:auto auto minmax(0,1fr); grid-template-areas:"avatar" "conversations" "chat"; }
-  aside { border-right:none; border-left:none; border-bottom:1px solid var(--line); }
-  .avatar-sidebar { display:grid; grid-template-columns:minmax(0,1fr); max-height:360px; padding:12px; }
-  .avatar-stage { flex:none; height:220px; min-height:220px; }
-  .avatar-image { min-height:220px; }
-  .conversation-sidebar { max-height:160px; }
-  .conversation-heading { display:none; }
-  .conversation-list { display: flex; overflow-x: auto; overflow-y:hidden; gap: 6px; scrollbar-width:none; }
-  .conversation-list::-webkit-scrollbar { display:none; }
-  .conversation-item { flex:0 0 min(210px,72vw); }
-  .aside-footer { display:none; }
-  .message { max-width: 95%; }
+  .shell { position:relative; display:block; height:100dvh; overflow:hidden; }
+  main { height:100%; grid-template-rows:auto minmax(0,1fr) auto; }
+  .mobile-topbar { display:grid; grid-template-columns:44px minmax(0,1fr) 44px; align-items:center; gap:10px; min-height:calc(56px + env(safe-area-inset-top)); padding:env(safe-area-inset-top) 10px 0; border-bottom:1px solid var(--line); background:color-mix(in srgb,var(--panel) 94%,transparent); backdrop-filter:blur(18px); z-index:3; }
+  .mobile-icon-button,.mobile-avatar-button { display:grid; place-items:center; width:44px; height:44px; padding:0; border-color:transparent; background:transparent; font-size:20px; }
+  .mobile-avatar-button { overflow:hidden; border-color:var(--line); border-radius:50%; color:#fff; background:linear-gradient(135deg,#f2b6aa,#8d79cf); font-size:15px; font-weight:700; }
+  .mobile-avatar-button img { width:100%; height:100%; object-fit:cover; }
+  .mobile-title { display:grid; min-width:0; text-align:center; }
+  .mobile-title strong { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:15px; }
+  .mobile-title small { color:var(--success); font-size:10px; }
+  .mobile-title small.offline { color:var(--danger); }
+  .mobile-backdrop { position:fixed; display:block; inset:0; z-index:9; width:100%; height:100%; padding:0; border:0; border-radius:0; background:rgba(18,24,39,.34); backdrop-filter:blur(2px); }
+  .conversation-sidebar,.avatar-sidebar { position:fixed; top:0; bottom:0; z-index:10; width:min(86vw,360px); max-height:none; padding-top:calc(16px + env(safe-area-inset-top)); padding-bottom:calc(16px + env(safe-area-inset-bottom)); border:0; box-shadow:0 20px 60px rgba(17,24,39,.22); transition:transform 220ms ease; }
+  .conversation-sidebar { left:0; transform:translateX(-105%); }
+  .avatar-sidebar { right:0; transform:translateX(105%); }
+  .conversation-sidebar.mobile-open,.avatar-sidebar.mobile-open { transform:translateX(0); }
+  .conversation-heading { display:flex; }
+  .conversation-list { display:grid; overflow-x:hidden; overflow-y:auto; gap:6px; }
+  .conversation-item { flex:initial; }
+  .aside-footer { display:flex; }
+  .avatar-stage { flex:1 1 auto; height:auto; min-height:260px; }
+  .avatar-image { min-height:260px; }
+  .messages { padding:14px 12px 20px; overscroll-behavior:contain; }
+  .message { max-width:92%; margin-bottom:10px; }
+  .bubble { padding:10px 12px; border-radius:16px; }
+  .composer { gap:7px; padding:9px 10px calc(9px + env(safe-area-inset-bottom)); }
+  .composer-meta { gap:8px; overflow-x:auto; padding-bottom:1px; scrollbar-width:none; }
+  .composer-meta::-webkit-scrollbar { display:none; }
+  .composer-meta > * { flex:none; }
+  .composer-meta .status { flex:1 0 100%; }
+  .tts-toggle { white-space:nowrap; }
+  .voice-row { flex-wrap:nowrap; overflow-x:auto; scrollbar-width:none; }
+  .voice-row::-webkit-scrollbar { display:none; }
+  .voice-row > * { flex:none; }
+  .voice-transcript { flex:1 0 160px; }
+  .composer-row { grid-template-columns:minmax(0,1fr) 56px; gap:8px; }
+  .composer textarea { min-height:44px; max-height:112px; padding:10px 11px; }
+  .composer-row button { min-width:56px; padding-inline:8px; }
 }
 </style>

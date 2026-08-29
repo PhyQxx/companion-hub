@@ -1,6 +1,6 @@
 # Aria 当前任务
 
-> 最后更新：2026-08-28
+> 最后更新：2026-08-29
 > 详细设计入口：[00-文档索引与架构总览.md](./00-文档索引与架构总览.md)
 
 本文件只维护当前执行队列、未完成门槛和最新质量基线。历史交付细节留在对应阶段文档，不在这里重复。
@@ -18,15 +18,21 @@
 | 形象与主题底座 | 已完成（v1） | 形象包/实例/Persona 绑定、主题同步、自定义立绘与 Live2D 安全导入均已落地 |
 | Admin 信息架构重整 | 已完成（v1） | 领域分组、URL 可恢复二级 Tab、真实数据页与浏览器验收已完成 |
 | P6 Batch D Live2D/桌宠 | 联动代码完成 | 透明窗口、拖拽、穿透、位置恢复、Hub 同源舞台及签名情绪/动作/口型同步已接通；M2 与真机性能仍是发布门槛 |
+| M4B 手机 PWA | 进行中 | Batch A 已完成可安装壳、离线降级、移动抽屉布局与安全区适配；待 iOS/Android 真机验收 |
 
 ## 2. 当前执行队列
 
 ### 0. 当前功能主线
 
+**当前主线：手机 PWA。** 用户于 2026-08-29 明确将移动端提前；先完成可安装、可聊天、可恢复连接的第一批，再做通知与多端会话漫游。桌宠真机性能和 M2 20+20 计样保留为并行发布门槛，不阻塞移动端开发。
+
 - [x] **macOS 系统内容选择器。** `capture_screen(target=interactive)` 的系统框选/取消、视觉回答、结构化错误码、临时授权与原图销毁已经完成代码、隔离 E2E 和用户确认的真机验收。
 - [ ] **硬件到位后恢复：ESP32 + LD2410 第一硬件闭环。** Hub 侧 MQTT → L3 `EphemeralSignal` → 5 秒稳定窗 → L1 `presence.changed` → Perception → Proactive Pipeline 已接通，ESPHome 固件样例与单设备 topic ACL 已落地；因暂时没有硬件，剩余刷写真机与 7 天验收不阻塞软件主线。
-- [ ] **当前功能：M2 语音延迟与识别质量。** 按用户决定暂时忽略新低延迟模型端点；本地 ASR 术语偏置、VAD 静音窗 ASR 预取、首段 TTS 短切分、可选 `voice` 路由和自动判卷加固已完成，下一步恢复 20+20 真人计样。
-- [ ] **当前功能：Tauri 透明桌宠。** 透明窗口、点击动作、快捷菜单、迷你文字输入与可选 TTS 播报、隐私分级回复气泡、签名联动、多屏恢复与隐藏资源释放已完成；下一步做 macOS 热插拔、60fps、常驻内存 <300MB 和长时间运行验收。M2 仍作为发布门槛。
+- [x] **手机 PWA Batch A：可安装移动壳。** 现有 Chat 已增加 manifest、多尺寸/可遮罩图标、Service Worker 与离线降级页；窄屏改为顶部导航 + 会话/形象双抽屉，补齐刘海屏安全区、44px 触摸目标和输入法友好字号。安装后模式的访问令牌只进入 `sessionStorage`，不写长期 `localStorage`。
+- [ ] **手机 PWA Batch B：真机聊天闭环。** 前后台恢复逻辑已完成：回到前台会补拉当前会话并重连/同步 WebSocket，进入后台会释放语音会话，离线时停止发送并在网络恢复后自动同步。剩余是在 iOS Safari 和 Android Chrome 完成添加到主屏、登录、文字/streaming、麦克风/定位权限与异常降级真机验收。
+- [ ] **手机 PWA Batch C：通知与会话漫游。** 接入受授权的移动通知 endpoint、消息去重/点击回流、会话游标补拉和多端音频租约；L2 文本不进入系统通知。
+- [ ] **并行门槛：Tauri 透明桌宠真机收口。** 待验收 macOS 热插拔、60fps、常驻内存 <300MB 和长时间运行。
+- [ ] **并行门槛：M2 语音延迟与识别质量。** 重置统计窗口后完成 20 个完整回合 + 20 个打断样本，新低延迟模型端点继续暂缓。
 
 ### 0.1 并行收口项（不占用下一功能定义）
 
@@ -101,6 +107,8 @@
 
 ## 3. 最近完成
 
+- [x] 手机 PWA Batch A：复用 Vue Chat 主链而非新建分叉应用；增加 standalone manifest、180/192/512 图标与 maskable 图标、生产环境 Service Worker、不缓存 API/WS 的运行时策略和明确离线页。移动端使用顶部导航和左右抽屉，会话区保留整屏高度；安装模式令牌改用会话级存储。
+- [x] 手机前后台恢复底座：监听 `visibilitychange` / `online` / `offline`；后台时立即停止录音与播放并释放语音连接，回到前台后 REST 补拉当前会话、重置重连次数并恢复 WebSocket `sync`；断网时关闭实时连接和发送入口，恢复后自动同步。登录页增加 Android 安装按钮和 iOS Safari 添加到主屏指引。
 - [x] 桌宠文字回复播报：迷你输入新增可持久化“播报”开关，回复复用现有 TTS provider chain 和 `agent_reply.tts_text`；L2 仍只选择本地 TTS，无本地提供方时安全降级文字。音频不创建公开 URL，按 24 KiB 分块、8 MiB 总上限经 `/ws/devices` HMAC 签名帧投递，Desktop 主窗口验签后仅把音频帧转给桌宠 WebView；桌宠校验请求、顺序、分块数和总字节后用 AudioContext 解码 PCM/MP3，隐藏时立即中断并清空缓存。
 - [x] 桌宠迷你文字输入：快捷菜单可展开输入框并选择 L1/L2，Enter 发送、Shift+Enter 换行；输入经 Tauri 事件交给持有系统凭据的主窗口，再通过已鉴权 `/ws/devices` 提交，桌宠 WebView 不接触设备令牌。Hub 独立校验 `avatar.chat` 授权、UUID/长度/隐私级别并异步运行完整 `ChatService`，回复进入最近活动会话；L2 只提示已保存到主聊天，不下发桌面文本气泡。accepted/completed/failed 均为签名帧，一台设备同时只运行一条桌宠消息。旧配对设备须在 Admin 明确授权新能力。
 - [x] 桌宠第一批交互层：点击 Live2D 形象尝试播放 `TapBody:0`，静态/抽象形象提供轻量点击反馈；本地快捷菜单支持打开主控制台、开启鼠标穿透和隐藏桌宠。聊天与语音回复通过既有签名 `avatar.control` 帧携带压缩后的前 280 字，桌面气泡 12 秒自动关闭；L2 严禁发送文本气泡，只同步非文本情绪/口型。真实 Tauri 窗口已完成菜单视觉检查。
@@ -158,6 +166,7 @@
 
 ## 4. 最新质量基线
 
+- 2026-08-29 手机 PWA Batch A：Chat `vue-tsc --noEmit` 与 production build 通过，Service Worker 语法检查和 `git diff --check` 通过；生产包已输出 manifest、offline shell、180/192/512 图标与 maskable 图标。Codex 内置浏览器以 390×844 视口完成登录页 DOM 与视觉验收；鉴权后聊天与 iOS/Android 安装仍待真机。
 - 2026-08-27 全量质量闸门已恢复：在制批次分 9 个逻辑提交入库后，Ruff（含 `allowed-confusables` 白名单全角标点）、严格 mypy（214 source files）、Admin/Chat/Shared typecheck 与 production build 全部通过；非 soak 全量 pytest **532 通过 / 0 失败**（新增 conftest autouse fixture 修复 3 个既有全局 Admin token 状态污染失败；TurnCoordinator `create_turn` 已对齐真实 `ChatService.start_turn` 契约）；Alembic 空库升级到单 head `0023_device_alias_reuse`、`git diff --check` 通过。
 - 2026-08-27 屏幕感知上线运行验证：配置 v63 开启（60s×三屏）、设备声明+授权 `screen.monitor`、修复上传白名单后（`8d80ebb`）三屏截图与 GLM 视觉分析实测成功（微信/文件系统/编程界面三份摘要入 Timeline），循环无错误；感知哈希变化检测、即焚与降频待长期观察。
 - 2026-08-27 设备别名释放修复：Ruff、严格 mypy、非 soak 全量 pytest 通过（含新增撤销重配回归）；`0023_device_alias_reuse` 已在 SQLite 空库与真实 PostgreSQL 双端验证，真实库现处 head `0023`。同批 Admin 交互修复：设备设置保存遇 revision 冲突自动刷新版本号并提示重试（`a9ab560`）、设备注册表行级配对码按钮（`249eae7`）、Desktop debug bundle 过期问题（`ef0420e`，`bundle.active` 已启用）。

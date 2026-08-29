@@ -25,6 +25,8 @@ body {
   background: var(--bg);
   color: var(--text);
   height: 100dvh;
+  overflow: hidden;
+  overscroll-behavior: none;
   transition: background-color 180ms ease, color 180ms ease;
 }
 
@@ -56,6 +58,11 @@ input, select, textarea {
   outline: none;
 }
 input:focus, select:focus, textarea:focus { border-color: var(--accent); box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 14%, transparent); }
+
+@media (max-width: 760px) {
+  button, select, input { min-height: 44px; }
+  textarea { font-size: 16px; }
+}
 
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { transition-duration: 0.01ms !important; animation-duration: 0.01ms !important; }
