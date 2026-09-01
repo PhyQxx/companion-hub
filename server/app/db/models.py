@@ -1362,3 +1362,39 @@ class DailyBriefRecord(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now()
     )
+
+
+class DailyReviewRecord(Base):
+    """REVIEW-01 晚间回顾：完成/未完成/新承诺/明日重点四区块，逐项可修正。
+
+    (user_id, review_date) 唯一约束保证每晚 exactly-once；items 持久化每条
+    的来源引用与用户修正动作（confirmed/removed/note）。回顾只读事实、
+    记录修正，绝不直接改写 Persona 或记忆。
+    """
+
+    __tablename__ = "daily_review"
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('pending','delivered')",
+            name="ck_daily_review_status",
+        ),
+        UniqueConstraint("user_id", "review_date", name="uq_daily_review_user_date"),
+        Index("ix_daily_review_user_created", "user_id", "created_at"),
+    )
+
+    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True)
+    user_id: Mapped[UUID] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("app_user.id", ondelete="CASCADE"), nullable=False
+    )
+    review_date: Mapped[date] = mapped_column(Date, nullable=False)
+    items: Mapped[list[dict[str, Any]]] = mapped_column(JSON, nullable=False)
+    text: Mapped[str] = mapped_column(Text, nullable=False)
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="pending")
+    delivered_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    channels: Mapped[list[dict[str, Any]] | None] = mapped_column(JSON)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now()
+    )

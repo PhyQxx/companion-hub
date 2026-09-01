@@ -19,7 +19,7 @@
 | Admin 信息架构重整 | 已完成（v1） | 领域分组、URL 可恢复二级 Tab、真实数据页与浏览器验收已完成 |
 | P6 Batch D Live2D/桌宠 | 联动代码完成 | 透明窗口、拖拽、穿透、位置恢复、Hub 同源舞台及签名情绪/动作/口型同步已接通；M2 与真机性能仍是发布门槛 |
 | M4B 手机 PWA | 进行中 | 可安装壳、离线降级、移动布局、前后台恢复、移动音频解锁及游标分页补拉/去重底座已完成；待真机验收、通知与多端租约 |
-| 个人管家闭环 J1～J8 | J1 主体完成，J2 收尾中 | ACT-01～03 已完成、ACT-04 进行中；TASK-01/GOAL-01/BRIEF-01 代码闭环（待真实验收），仅剩 REVIEW-01 与 J3～J8 未启动，见 `docs/39` |
+| 个人管家闭环 J1～J8 | J1 主体完成，J2 代码闭环完成 | ACT-01～03 已完成、ACT-04 进行中；TASK-01/GOAL-01/BRIEF-01/REVIEW-01 全部代码闭环（合计 50 项新回归，待真实多通道投递与模型识别验收），J3～J8 未启动，见 `docs/39` |
 
 ## 2. 当前执行队列
 
@@ -57,7 +57,7 @@
 - [x] `TASK-01` 提醒与计划任务（代码闭环，待真实投递验收）：新增 `task_item` 表与 `0026_task_reminder` 迁移、`TaskStore`/`TaskScheduler` 与用户 API `/api/v1/tasks`（创建/列表/详情/完成/取消/稍后）。时间触发支持一次性与 daily/weekdays/weekly/interval 周期，错过的周期不补发；事件触发精确匹配 Perception 语义事件（如 `user_arrived_home`）并受 cooldown 限制。exactly-once 由 claim 的 `status+fire_count` 乐观守卫保证；一次性任务触发期短暂处于 firing，投递结束转 done，进程中断遗留的 firing 重启后直接判完成不重复投递。投递复用 `ProactiveDeliveryService`（Web 私聊/桌面通知/在线语音按通道配置仲裁），提醒为用户显式请求不消耗主动每日预算，通道启停与隐私上限仍生效；调度器默认 15s 轮询（`ARIA_TASK_SCHEDULER_INTERVAL` 可调），首个 tick 前等待一个完整间隔。位置触发以 HA person 实体派生的到家/离家事件先行覆盖；聊天端自然语言创建提醒、Admin 任务可视化与真实多通道投递验收尚未完成。
 - [x] `GOAL-01` 承诺跟踪（代码闭环，待真实验收）：`cognitive_goal` 新增提醒状态列（`0027_goal_reminders` 迁移）；到期前 24h 与到期后各提醒一次，时间戳列即乐观守卫保证 exactly-once；`GoalReminderScheduler`（默认 60s，`ARIA_GOAL_REMINDER_INTERVAL` 可调）经 `ProactiveDeliveryService` 投递，完成/取消/过期目标不再打扰。`GoalTracker` 在聊天后台用 utility 路由识别第一人称明确承诺（置信度 ≥0.7、疑问/假设/愿望/转述一律不提取、无后端或坏输出不提取、不做规则兜底），以消息 ID 为证据建目标且天然幂等；完成仍只能由用户显式 PATCH，不擅自标记。忽略降频：`POST /api/v1/cognition/goals/{id}/reminder-feedback`（ignored 顺延一天并计数 / snoozed 推迟指定分钟）。
 - [x] `BRIEF-01` 每日智能简报（代码闭环，待真实验收）：`daily_brief` 表（`0028_daily_brief` 迁移，`(user_id, brief_date)` 唯一保证每日 exactly-once）+ `DailyBriefService`/`DailyBriefScheduler`。事实采集确定性：天气（高德实时+当日预报，默认城市取 `config.tools.query.default_city` 或 `ARIA_BRIEF_CITY`，失败仅少一条事实）、当日会触发的时间任务（`task:{id}`）、当日到期/已过期承诺（`goal:{id}`，过期标注）；正文用确定性模板拼装而非 LLM——任务/目标标题是用户文本，进模型提示词既有注入面又不可溯源。每条事实持久化来源引用满足"结论可查看来源"；无任务与承诺时正文一行短句。本地时区（`ARIA_DEFAULT_TIMEZONE`）到 `ARIA_BRIEF_TIME`（默认 08:00）后为每个活跃用户投递一次，经 `ProactiveDeliveryService` 走 Web/桌面/语音通道；用户 API `GET /api/v1/briefs(/latest)` 与 `POST /api/v1/briefs/generate`（幂等预览不投递）。日程/家庭状态/通勤待 J4 日历与对应真源接入后扩展，不伪造数据。
-- [ ] `REVIEW-01` 晚间回顾：完成事项、未完成计划、新承诺和次日重点，用户确认后再沉淀。
+- [x] `REVIEW-01` 晚间回顾（代码闭环，待真实验收）：`daily_review` 表（`0029_daily_review` 迁移，`(user_id, review_date)` 唯一保证每晚 exactly-once）+ `DailyReviewService`/`DailyReviewScheduler`。四区块确定性采集（各带来源引用）：完成事项（当日完成的任务与承诺）、未完成计划（到期未完成，逾期标注）、新承诺（当日新建）、明日重点（明天触发的任务/到期承诺）；全部为空时一行短句。逐项修正：`PATCH /api/v1/reviews/{id}/items/{index}` 支持 confirm/remove/附注 note，修正只改回顾条目并重渲染正文，不触碰任务/目标真源状态，也绝不改写 Persona 或记忆。本地时区到 `ARIA_REVIEW_TIME`（默认 21:30）经主动通道投递一次；`GET /api/v1/reviews/latest` 与幂等 `POST /generate` 预览。
 
 #### J3 全屋语音卫星
 
@@ -153,6 +153,7 @@
 
 ## 3. 最近完成
 
+- [x] 个人管家 `REVIEW-01` 晚间回顾：`DailyReviewService` 四区块采集（完成/未完成/新承诺/明日重点，各带来源引用）+ 逐项修正（confirm/remove/note 只作用于回顾自身并重渲染正文）+ `(user_id, review_date)` 唯一约束每晚一次；`DailyReviewScheduler` 本地时区 21:30（`ARIA_REVIEW_TIME` 可调）经主动通道投递；`/api/v1/reviews` 查看与幂等预览。`CognitiveStore.create_goal/set_goal_status` 补可注入时钟，`goals_created_between/goals_completed_between` 支撑回顾查询。J2 四项（TASK/GOAL/BRIEF/REVIEW）代码闭环全部完成。
 - [x] 个人管家 `BRIEF-01` 每日智能简报：`DailyBriefService` 确定性事实采集（天气/当日任务/到期承诺，各带来源引用）+ 模板拼装（无重要内容一行短句）+ `(user_id, brief_date)` 唯一约束每日一次；`DailyBriefScheduler` 本地时区时间门后为活跃用户投递；`/api/v1/briefs` 查看与幂等预览。main.py 完成天气闭包（按需构建高德运行时、任何失败静默降级）与调度器生命周期接线。
 - [x] 个人管家 `GOAL-01` 承诺跟踪：目标提醒 pre_due/due 各一次的乐观认领、稍后/忽略降频闸门与反馈 API；`GoalTracker` 聊天后台承诺识别（消息证据 + 幂等 + 宁缺勿滥）；`GoalReminderScheduler` 复用主动通道投递。`ChatService` 新增 `goal_tracker` 参数与后台提取任务，`main.py` 完成 scheduler 生命周期与投递接线。
 - [x] 个人管家 `TASK-01` 提醒与计划任务：`TaskStore` 支持一次性/周期（daily/weekdays/weekly/interval）时间触发与事件触发（精确匹配语义事件 + cooldown），稍后/完成/取消全状态守卫；`TaskScheduler` 15s 轮询到期认领并经 `ProactiveDeliveryService` 投递，重启恢复把中断 firing 判完成保证 exactly-once；PerceptionPipeline 新增事件观察口（processed/merged 才通知，异常不外溢）；`/api/v1/tasks` 用户 API 覆盖 CRUD 与稍后。发现并修复调度器启动即写库导致 SQLite :memory: 测试连接分裂的问题（首个 tick 延迟一个间隔）。
@@ -221,6 +222,8 @@
 - [x] 伴侣形象与角色系统 v1 骨架：`app/avatar/store.py` 实现 AvatarStore（形象包管理、实例创建/更新/删除、人格绑定与默认形象查询）；内置 `warm-daily`（静态）与 `light-core`（抽象）两个种子形象包；新增 `avatar_pack`/`avatar_instance`/`persona_avatar_binding` 表；Admin 后台路由 `/api/v1/admin/avatars` 支持包列表/实例列表/创建/更新/删除/绑定/查询默认形象；`ChatService` 在 `decision_meta` 中注入当前人格默认形象的 `avatar_instance_id` 与 `avatar_pack_id`；新增 11 个单元测试全部通过。
 
 ## 4. 最新质量基线
+
+- 2026-09-01 `REVIEW-01` 晚间回顾（J2 收口）：新增 `tests/test_review.py` **7 通过**（四区块采集、空/移除/附注拼装、幂等不覆盖修正、修正不改任务真源状态、每晚投递一次、时间门、API 含 401/404/422）；非 soak 全量 pytest **571 通过 / 0 失败**；Ruff、严格 mypy（app 181 files）与 `git diff --check` 通过；Alembic SQLite 空库升级到单 head `0029_daily_review`。真实 PostgreSQL 尚未应用 `0024～0029`；真实多通道投递待验收。
 
 - 2026-09-01 `BRIEF-01` 每日智能简报：新增 `tests/test_brief.py` **11 通过**（任务/目标/天气事实采集与来源、天气失败降级、空内容短句、分区拼装、过期标注、按日幂等、投递一次与通道记录、投递失败不重复、时间门与 run_once、API 含 401）；非 soak 全量 pytest **564 通过 / 0 失败**；Ruff、严格 mypy（app 178 files）与 `git diff --check` 通过；Alembic SQLite 空库升级到单 head `0028_daily_brief`。真实 PostgreSQL 尚未应用 `0024～0028`；真实高德天气与多通道投递待验收。
 - 2026-09-01 `GOAL-01` 承诺跟踪：新增 `tests/test_goal_tracking.py` **11 通过**（pre_due/due 各一次、窗口未达不发、推迟闸门、忽略降频计数、完成不打扰、按证据去重、低置信/坏输出/无后端/L3 不建目标、幂等、调度器投递与 trigger_kind、反馈 API 含 401/404）；非 soak 全量 pytest **553 通过 / 0 失败**；Ruff、严格 mypy（app 175 files）与 `git diff --check` 通过；Alembic SQLite 空库升级到单 head `0027_goal_reminders`。真实 PostgreSQL 尚未应用 `0024～0027`；真实 utility 模型承诺识别效果与多通道投递待验收。

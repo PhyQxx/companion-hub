@@ -37,6 +37,7 @@ from app.api import (
     create_device_routers,
     create_logs_stream_router,
     create_model_capability_router,
+    create_reviews_router,
     create_tasks_router,
     create_theme_router,
     create_voice_websocket_router,
@@ -104,6 +105,8 @@ from app.tasks import TaskScheduler, TaskStore
 from app.tasks.brief import BriefWeather, DailyBriefService
 from app.tasks.brief_scheduler import DailyBriefScheduler
 from app.tasks.goal_scheduler import GoalReminderScheduler
+from app.tasks.review import DailyReviewService
+from app.tasks.review_scheduler import DailyReviewScheduler
 from app.timeline import HistoryRecallService, TimelineStore
 from app.tools import (
     DesktopNotifyTool,
@@ -120,6 +123,11 @@ from app.voice import ConfigVoiceSource
 
 
 def _parse_brief_time(raw: str) -> dt_time:
+    hour, minute = raw.split(":", 1)
+    return dt_time(int(hour), int(minute))
+
+
+def _parse_review_time(raw: str) -> dt_time:
     hour, minute = raw.split(":", 1)
     return dt_time(int(hour), int(minute))
 
@@ -183,6 +191,7 @@ def create_app(
     task_scheduler: TaskScheduler | None = None
     goal_reminder_scheduler: GoalReminderScheduler | None = None
     daily_brief_scheduler: DailyBriefScheduler | None = None
+    daily_review_scheduler: DailyReviewScheduler | None = None
 
     async def test_home_assistant_proactive() -> bool:
         if home_assistant_proactive is None:
@@ -333,6 +342,25 @@ def create_app(
         if daily_brief_service is not None
         else None
     )
+    daily_review_service = (
+        DailyReviewService(
+            runtime_database,
+            task_store,
+            cognitive_store,
+            timezone_name=os.getenv("ARIA_DEFAULT_TIMEZONE", "Asia/Shanghai"),
+        )
+        if runtime_database is not None and task_store is not None and cognitive_store is not None
+        else None
+    )
+    daily_review_scheduler = (
+        DailyReviewScheduler(
+            daily_review_service,
+            timezone_name=os.getenv("ARIA_DEFAULT_TIMEZONE", "Asia/Shanghai"),
+            review_time=_parse_review_time(os.getenv("ARIA_REVIEW_TIME", "21:30")),
+        )
+        if daily_review_service is not None
+        else None
+    )
 
     async def deliver_task_reminder(
         text: str,
@@ -434,9 +462,13 @@ def create_app(
             goal_reminder_scheduler.start()
         if daily_brief_scheduler is not None:
             daily_brief_scheduler.start()
+        if daily_review_scheduler is not None:
+            daily_review_scheduler.start()
         try:
             yield
         finally:
+            if daily_review_scheduler is not None:
+                await daily_review_scheduler.stop()
             if daily_brief_scheduler is not None:
                 await daily_brief_scheduler.stop()
             if goal_reminder_scheduler is not None:
@@ -940,6 +972,10 @@ def create_app(
                 app.include_router(create_briefs_router(daily_brief_service, auth_service))
                 app.state.daily_brief_service = daily_brief_service
                 app.state.daily_brief_scheduler = daily_brief_scheduler
+            if daily_review_service is not None:
+                app.include_router(create_reviews_router(daily_review_service, auth_service))
+                app.state.daily_review_service = daily_review_service
+                app.state.daily_review_scheduler = daily_review_scheduler
             if capability_models is not None:
                 app.include_router(create_model_capability_router(capability_models, auth_service))
             turn_coordinator = TurnCoordinator(runtime_database, runtime_chat_service)
@@ -1012,6 +1048,31 @@ def create_app(
                         return list(result.delivered_channels)
 
                     daily_brief_scheduler.set_deliverer(deliver_daily_brief)
+                if daily_review_scheduler is not None:
+
+                    async def deliver_daily_review(
+                        text: str,
+                        *,
+                        user_id: UUID,
+                        review_id: UUID,
+                        privacy_level: PrivacyLevel,
+                        trigger_kind: str,
+                    ) -> list[str] | None:
+                        if proactive_delivery is None:
+                            return None
+                        result = await proactive_delivery.deliver(
+                            text,
+                            entity_id="review",
+                            rule_id=f"review:{review_id}",
+                            trigger_kind=trigger_kind,
+                            privacy_level=privacy_level,
+                            target_user_id=user_id,
+                        )
+                        if result is None:
+                            return None
+                        return list(result.delivered_channels)
+
+                    daily_review_scheduler.set_deliverer(deliver_daily_review)
 
                 home_assistant_proactive = HomeAssistantProactiveEngine(
                     runtime_database,

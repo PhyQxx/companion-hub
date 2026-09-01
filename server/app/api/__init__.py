@@ -23,6 +23,7 @@ from .device_commands import (
 )
 from .devices import DeviceCredentialGuard, create_device_routers
 from .model_capabilities import create_model_capability_router
+from .reviews import create_reviews_router
 from .tasks import create_tasks_router
 from .theme import create_admin_theme_router, create_theme_router
 from .voice_ws import VoiceWebSocketManager, create_voice_websocket_router
@@ -54,6 +55,7 @@ __all__ = [
     "create_device_routers",
     "create_logs_stream_router",
     "create_model_capability_router",
+    "create_reviews_router",
     "create_tasks_router",
     "create_theme_router",
     "create_voice_websocket_router",

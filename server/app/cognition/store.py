@@ -112,6 +112,7 @@ class CognitiveStore:
         source_id: str,
         due_at: datetime | None = None,
         expires_at: datetime | None = None,
+        now: datetime | None = None,
     ) -> GoalView:
         if kind in {GoalKind.USER, GoalKind.SHARED} and source_kind not in {
             "message",
@@ -137,7 +138,7 @@ class CognitiveStore:
                 )
             if evidence is None:
                 raise ValueError("goal message evidence does not belong to the user")
-        now = datetime.now(UTC)
+        moment = now or datetime.now(UTC)
         record = CognitiveGoalRecord(
             id=uuid7(),
             user_id=user_id,
@@ -148,8 +149,8 @@ class CognitiveStore:
             source_id=source_id,
             due_at=due_at,
             expires_at=expires_at,
-            created_at=now,
-            updated_at=now,
+            created_at=moment,
+            updated_at=moment,
         )
         async with self.database.sessions.begin() as session:
             session.add(record)
@@ -173,15 +174,66 @@ class CognitiveStore:
             )
         return _goal(record) if record is not None else None
 
+    async def goals_created_between(
+        self,
+        user_id: UUID,
+        *,
+        start: datetime,
+        end: datetime,
+        limit: int = 50,
+    ) -> list[GoalView]:
+        """REVIEW-01 晚间回顾用：某时间窗内新建的承诺（含已完成/取消）。"""
+        async with self.database.sessions() as session:
+            rows = list(
+                await session.scalars(
+                    select(CognitiveGoalRecord)
+                    .where(
+                        CognitiveGoalRecord.user_id == user_id,
+                        CognitiveGoalRecord.created_at >= start,
+                        CognitiveGoalRecord.created_at < end,
+                    )
+                    .order_by(CognitiveGoalRecord.created_at)
+                    .limit(limit)
+                )
+            )
+        return [_goal(row) for row in rows]
+
+    async def goals_completed_between(
+        self,
+        user_id: UUID,
+        *,
+        start: datetime,
+        end: datetime,
+        limit: int = 50,
+    ) -> list[GoalView]:
+        """REVIEW-01 晚间回顾用：某时间窗内完成的承诺（按状态转移时间近似）。"""
+        async with self.database.sessions() as session:
+            rows = list(
+                await session.scalars(
+                    select(CognitiveGoalRecord)
+                    .where(
+                        CognitiveGoalRecord.user_id == user_id,
+                        CognitiveGoalRecord.status == GoalStatus.COMPLETED.value,
+                        CognitiveGoalRecord.updated_at >= start,
+                        CognitiveGoalRecord.updated_at < end,
+                    )
+                    .order_by(CognitiveGoalRecord.updated_at)
+                    .limit(limit)
+                )
+            )
+        return [_goal(row) for row in rows]
+
     async def set_goal_status(
         self,
         *,
         user_id: UUID,
         goal_id: UUID,
         status: GoalStatus,
+        now: datetime | None = None,
     ) -> GoalView:
         if status not in {GoalStatus.COMPLETED, GoalStatus.CANCELLED}:
             raise ValueError("goal status can only be completed or cancelled explicitly")
+        moment = now or datetime.now(UTC)
         async with self.database.sessions.begin() as session:
             record = await session.get(CognitiveGoalRecord, goal_id)
             if record is None or record.user_id != user_id:
@@ -189,7 +241,7 @@ class CognitiveStore:
             if record.status != GoalStatus.ACTIVE.value:
                 raise ValueError("only active goals can change status")
             record.status = status.value
-            record.updated_at = datetime.now(UTC)
+            record.updated_at = moment
         return _goal(record)
 
     async def active_goals(self, user_id: UUID, *, now: datetime) -> list[GoalView]:
