@@ -485,7 +485,7 @@ onMounted(load);
 <template>
   <section v-loading="loading" class="ha-workspace">
     <div class="hero panel">
-      <div><div class="eyebrow">设备与授权 · Home Assistant</div><h2>HA 实体授权</h2><p>统一管理实体发现、读取、历史、控制、确认和主动感知。未授权能力默认拒绝。</p></div>
+      <div><div class="eyebrow">设备与感知 · Home Assistant</div><h2>HA 实体授权</h2><p>统一管理实体发现、读取、历史、控制、确认和主动感知。未授权能力默认拒绝。</p></div>
       <div class="actions"><el-button :loading="fetchingAll" @click="() => fetchAllEntities()">刷新设备列表</el-button><el-button type="primary" :loading="saving" @click="save">保存并生效</el-button></div>
     </div>
 

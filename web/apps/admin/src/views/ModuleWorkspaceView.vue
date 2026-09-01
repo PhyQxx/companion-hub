@@ -47,14 +47,14 @@ const currentView = computed(() => {
   if (props.module === "devices" && activeTab.value === "pairing") return PairingView;
   if (props.module === "devices" && activeTab.value === "channels") return ProactiveChannelsView;
   if (props.module === "devices" && activeTab.value === "home_assistant") return HomeAssistantDevicesView;
+  if (props.module === "devices" && ["status", "observations"].includes(activeTab.value)) return ScreenAwarenessView;
   if (props.module === "devices" && activeTab.value === "diagnostics") return DiagnosticsView;
   if (props.module === "logs" && activeTab.value === "live") return LiveLogsView;
   if (props.module === "logs") return LogsView;
   if (props.module === "privacy") return PrivacyView;
+  if (props.module === "system" && activeTab.value === "jobs") return JobsView;
   if (props.module === "system") return SystemView;
-  if (props.module === "jobs") return JobsView;
-  if (props.module === "screen_awareness") return ScreenAwarenessView;
-  if (props.module === "avatars") return AvatarsView;
+  if (props.module === "appearance" && activeTab.value === "gallery") return AvatarsView;
   if (props.module === "appearance") return AppearanceView;
   return PlaceholderView;
 });

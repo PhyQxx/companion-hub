@@ -40,20 +40,12 @@ export const adminModules: AdminModule[] = [
     ],
   },
   {
-    key: "avatars",
-    path: "/avatars",
-    label: "形象中心",
+    key: "appearance",
+    path: "/appearance",
+    label: "形象与外观",
     group: "伴侣核心",
     tabs: [
       { key: "gallery", label: "形象库", description: "形象包、实例管理和人格绑定。", state: "ready" },
-    ],
-  },
-  {
-    key: "appearance",
-    path: "/appearance",
-    label: "外观与主题",
-    group: "伴侣核心",
-    tabs: [
       { key: "themes", label: "主题中心", description: "选择账户主题并同步到聊天端。", state: "ready" },
     ],
   },
@@ -86,13 +78,15 @@ export const adminModules: AdminModule[] = [
   {
     key: "devices",
     path: "/devices",
-    label: "设备与授权",
+    label: "设备与感知",
     group: "能力接入",
     tabs: [
       { key: "registry", label: "设备列表", description: "设备状态、配对和授权策略。", state: "ready" },
       { key: "pairing", label: "配对授权", description: "配对码、权限确认和身份撤销。" },
       { key: "channels", label: "主动输出通道", description: "控制 Web、Desktop 与 Voice 主动推送策略。", state: "ready" },
       { key: "home_assistant", label: "HA 实体授权", description: "HA 实体发现、读写权限、历史和主动感知。", state: "ready" },
+      { key: "status", label: "屏幕感知", description: "周期截屏循环健康与各屏分析进度。", state: "ready" },
+      { key: "observations", label: "观察记录", description: "屏幕观察摘要的时间线检索。", state: "ready" },
       { key: "commands", label: "命令记录", description: "设备命令、结果和脱敏台账。", state: "ready" },
       { key: "diagnostics", label: "健康诊断", description: "心跳、网络、版本和消息异常。" },
     ],
@@ -134,26 +128,8 @@ export const adminModules: AdminModule[] = [
       { key: "identity", label: "身份与会话", description: "管理员认证、会话和访问边界。" },
       { key: "observability", label: "可观测性", description: "日志、Trace、保留期和告警策略。" },
       { key: "storage", label: "存储与备份", description: "配额、备份和恢复演练。" },
+      { key: "jobs", label: "任务中心", description: "后台任务、租约和状态管理。", state: "ready" },
       { key: "updates", label: "升级与信息", description: "版本、迁移、更新和系统信息。" },
-    ],
-  },
-  {
-    key: "jobs",
-    path: "/jobs",
-    label: "任务中心",
-    group: "运维治理",
-    tabs: [
-      { key: "list", label: "任务列表", description: "后台任务、租约和状态管理。", state: "ready" },
-    ],
-  },
-  {
-    key: "screen_awareness",
-    path: "/screen-awareness",
-    label: "屏幕感知",
-    group: "能力接入",
-    tabs: [
-      { key: "status", label: "运行状态", description: "周期截屏循环健康与各屏分析进度。", state: "ready" },
-      { key: "observations", label: "观察记录", description: "屏幕观察摘要的时间线检索。", state: "ready" },
     ],
   },
 ];

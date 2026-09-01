@@ -221,7 +221,7 @@ onMounted(loadData);
 <template>
   <section class="content" v-loading="loading">
     <div class="hero">
-      <div><p class="eyebrow">AVATAR CENTER</p><h2>形象中心</h2><p class="hint">形象与人格、记忆彼此独立。切换外观不会改变关系和对话历史。</p></div>
+      <div><p class="eyebrow">AVATAR CENTER</p><h2>形象库</h2><p class="hint">形象与人格、记忆彼此独立。切换外观不会改变关系和对话历史。</p></div>
       <div class="current-card"><span>当前人格</span><strong>{{ currentPersona?.persona.name ?? "—" }}</strong><small>Persona v{{ currentPersona?.version ?? "—" }}</small></div>
     </div>
 
