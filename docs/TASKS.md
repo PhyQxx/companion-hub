@@ -19,7 +19,7 @@
 | Admin 信息架构重整 | 已完成（v1） | 领域分组、URL 可恢复二级 Tab、真实数据页与浏览器验收已完成 |
 | P6 Batch D Live2D/桌宠 | 联动代码完成 | 透明窗口、拖拽、穿透、位置恢复、Hub 同源舞台及签名情绪/动作/口型同步已接通；M2 与真机性能仍是发布门槛 |
 | M4B 手机 PWA | 进行中 | 可安装壳、离线降级、移动布局、前后台恢复、移动音频解锁及游标分页补拉/去重底座已完成；待真机验收、通知与多端租约 |
-| 个人管家闭环 J1～J8 | 已规划，未启动 | 安全行动、任务简报、全屋语音、个人连接器、受控电脑操作、原生入口和家庭守护已拆为可验收批次，见 `docs/39` |
+| 个人管家闭环 J1～J8 | J1 主体完成，J2 已启动 | ACT-01～03 已完成、ACT-04 进行中；TASK-01 代码闭环（待真实投递验收），TASK/BRIEF/GOAL/REVIEW 其余项与 J3～J8 未启动，见 `docs/39` |
 
 ## 2. 当前执行队列
 
@@ -54,7 +54,7 @@
 
 #### J2 任务与主动管家
 
-- [ ] `TASK-01` 提醒与计划任务：一次性/周期任务、时间/位置/事件触发、稍后/完成/取消和重启恢复。
+- [x] `TASK-01` 提醒与计划任务（代码闭环，待真实投递验收）：新增 `task_item` 表与 `0026_task_reminder` 迁移、`TaskStore`/`TaskScheduler` 与用户 API `/api/v1/tasks`（创建/列表/详情/完成/取消/稍后）。时间触发支持一次性与 daily/weekdays/weekly/interval 周期，错过的周期不补发；事件触发精确匹配 Perception 语义事件（如 `user_arrived_home`）并受 cooldown 限制。exactly-once 由 claim 的 `status+fire_count` 乐观守卫保证；一次性任务触发期短暂处于 firing，投递结束转 done，进程中断遗留的 firing 重启后直接判完成不重复投递。投递复用 `ProactiveDeliveryService`（Web 私聊/桌面通知/在线语音按通道配置仲裁），提醒为用户显式请求不消耗主动每日预算，通道启停与隐私上限仍生效；调度器默认 15s 轮询（`ARIA_TASK_SCHEDULER_INTERVAL` 可调），首个 tick 前等待一个完整间隔。位置触发以 HA person 实体派生的到家/离家事件先行覆盖；聊天端自然语言创建提醒、Admin 任务可视化与真实多通道投递验收尚未完成。
 - [ ] `BRIEF-01` 每日智能简报：天气、日程、任务、承诺、家庭状态和通勤，结论可追溯来源。
 - [ ] `GOAL-01` 承诺跟踪：明确承诺识别、到期提醒、完成确认和忽略降频。
 - [ ] `REVIEW-01` 晚间回顾：完成事项、未完成计划、新承诺和次日重点，用户确认后再沉淀。
@@ -153,6 +153,7 @@
 
 ## 3. 最近完成
 
+- [x] 个人管家 `TASK-01` 提醒与计划任务：`TaskStore` 支持一次性/周期（daily/weekdays/weekly/interval）时间触发与事件触发（精确匹配语义事件 + cooldown），稍后/完成/取消全状态守卫；`TaskScheduler` 15s 轮询到期认领并经 `ProactiveDeliveryService` 投递，重启恢复把中断 firing 判完成保证 exactly-once；PerceptionPipeline 新增事件观察口（processed/merged 才通知，异常不外溢）；`/api/v1/tasks` 用户 API 覆盖 CRUD 与稍后。发现并修复调度器启动即写库导致 SQLite :memory: 测试连接分裂的问题（首个 tick 延迟一个间隔）。
 - [x] 个人管家 `ACT-04` 首批动作第二批：新增 `desktop.notification.show` 和本地 `DesktopNotifyTool`，Action Registry 当前共 10 个受控动作。通知标题/正文分别限制 80/500 字，只接受 L0/L1 和可选的明确桌面目标；Runner 将持久步骤幂等键交给设备命令网关，设备须具备 `notification.show`、在线并返回 `succeeded` 终态，才把最小 `command_id/device_id/status` 回执记为 `verified`。L2 在 Registry 参数层被拒绝，设备不可用或失败回执不会描述为成功。
 - [x] 个人管家 `ACT-04` 首批动作第一批：Action Registry 从 5 个 HA 动作扩展到 9 个，新增 `home.light.set_brightness`、`home.media.play/pause/set_volume`。Home Assistant 配置白名单和工具参数新增 `set_brightness/play/pause/volume_set`，语义动作确定性映射到 `turn_on/media_play/media_pause/volume_set` 服务；亮度限制 1～100%，音量限制 0～1。Runner 分别核对 HA `brightness`、播放状态与 `volume_level`，不匹配继续按 ACT-03 记为 `unknown_outcome`。
 - [x] 个人管家 `ACT-03` 结果回读与撤销：新增 `ActionRunResult` 和 `pending/not_required/verified/inconclusive` 验证状态，HA 灯光/开关按最终 `on/off`、空调按目标温度容差回读；工具成功但状态不匹配时步骤转 `unknown_outcome`，保留执行回执与最小回读证据并停止后续步骤。新增 `0025_action_verification` 保存验证证据、原计划/补偿计划和原步骤/补偿步骤关联；撤销只选择已完成且声明可逆的步骤，按逆序创建独立、需确认、不可递归的补偿计划。
@@ -219,6 +220,7 @@
 
 ## 4. 最新质量基线
 
+- 2026-09-01 `TASK-01` 提醒与计划任务：新增 `tests/test_tasks.py` **21 通过**（触发纯函数、创建校验、状态守卫、exactly-once、周期跳过错过、事件 cooldown、重启恢复、调度器投递/异常不重触发、API 全链与非鉴权拒绝）；非 soak 全量 pytest **542 通过 / 0 失败**；Ruff、严格 mypy（app 173 files + 新测试）与 `git diff --check` 通过；Alembic SQLite 空库升级到单 head `0026_task_reminder`。真实 PostgreSQL 尚未应用 `0024/0025/0026`；多通道真实投递与聊天端自然语言建提醒待验收。
 - 2026-09-01 `ACT-04` L0/L1 桌面通知：Action Plan/Registry/Cognition/HA/Config/Device Command/Output/API/Schema 扩展回归 **91 通过**；Ruff、严格 mypy 和 `git diff --check` 通过，Alembic 保持单 head `0025_action_verification`。验收覆盖 L2 参数拒绝、步骤幂等键透传、设备能力选择、成功终态回执和验证证据持久化；真实桌面系统通知仍需联机验收。
 - 2026-09-01 `ACT-04` HA 动作扩展第一批：Registry/Action Plan/Home Assistant 定向测试 **35 通过**，扩展 Cognition/Config/API/Schema 回归 **69 通过**；覆盖参数越界、领域动作白名单、语义服务映射、服务参数、音量确认以及亮度/播放/音量真实 Runner 回读。Ruff、严格 mypy、Admin typecheck/production build 和 `git diff --check` 通过，Alembic 仍为单 head `0025_action_verification`；尚未做真实 HA 设备场景验收。Admin 构建仅有既有的 VueUse pure annotation 与大 chunk 警告。
 - 2026-09-01 `ACT-03` 回读与撤销：新增验证成功、状态不一致、真实 ToolActionRunner 回读、HA 服务响应刷新缓存、逆序补偿和撤销 API 验收；Action Plan/Registry/HA 定向测试 **30 通过**，扩展 Cognition/API/Schema 回归 **56 通过**，Ruff、严格 mypy和 `git diff --check` 通过；Alembic 已验证 SQLite 从 `0024` 升级到单 head `0025_action_verification`，并用既有计划/步骤样本确认数据保留，历史未验证写步骤回填为 `inconclusive`。真实 PostgreSQL 尚未应用 `0024/0025`。

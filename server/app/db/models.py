@@ -1259,3 +1259,62 @@ class UiPreferenceRecord(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now()
     )
+
+
+class TaskItemRecord(Base):
+    """TASK-01 提醒与计划任务：持久化用户任务/提醒及其触发与投递状态。
+
+    exactly-once 语义由 claim 时的乐观守卫（status + next_fire_at/last_fired_at 等值）
+    保证；一次性任务触发期短暂处于 firing，投递结束后转 done。
+    """
+
+    __tablename__ = "task_item"
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('active','firing','done','cancelled')",
+            name="ck_task_item_status",
+        ),
+        CheckConstraint(
+            "kind IN ('reminder','task')",
+            name="ck_task_item_kind",
+        ),
+        CheckConstraint(
+            "trigger_type IN ('time','event')",
+            name="ck_task_item_trigger_type",
+        ),
+        CheckConstraint(
+            "privacy_level IN ('L0','L1')",
+            name="ck_task_item_privacy_level",
+        ),
+        Index("ix_task_item_user_status_created", "user_id", "status", "created_at"),
+        Index("ix_task_item_due", "status", "trigger_type", "next_fire_at"),
+        Index("ix_task_item_event", "status", "trigger_type", "event_type"),
+    )
+
+    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True)
+    user_id: Mapped[UUID] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("app_user.id", ondelete="CASCADE"), nullable=False
+    )
+    kind: Mapped[str] = mapped_column(
+        String(16), nullable=False, default="reminder", server_default="reminder"
+    )
+    title: Mapped[str] = mapped_column(String(320), nullable=False)
+    notes: Mapped[str | None] = mapped_column(Text)
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="active")
+    trigger_type: Mapped[str] = mapped_column(String(16), nullable=False)
+    trigger_config: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    event_type: Mapped[str | None] = mapped_column(String(64))
+    next_fire_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_fired_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    fire_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
+    last_delivery: Mapped[dict[str, Any] | None] = mapped_column(JSON)
+    privacy_level: Mapped[str] = mapped_column(String(2), nullable=False, default="L1")
+    source: Mapped[str] = mapped_column(String(16), nullable=False, default="manual")
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    cancelled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now()
+    )

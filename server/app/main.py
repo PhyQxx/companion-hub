@@ -5,6 +5,7 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager, suppress
 from pathlib import Path
 from typing import cast
+from uuid import UUID
 
 from fastapi import FastAPI
 from fastapi.responses import FileResponse
@@ -34,6 +35,7 @@ from app.api import (
     create_device_routers,
     create_logs_stream_router,
     create_model_capability_router,
+    create_tasks_router,
     create_theme_router,
     create_voice_websocket_router,
 )
@@ -84,14 +86,17 @@ from app.observability import apply_observability, configure_logging
 from app.output import ProactiveDeliveryService
 from app.output.proactive import DesktopCommandGateway
 from app.perception import PerceptionPipeline, PerceptionStore, ProactivePolicy
+from app.perception.pipeline import EventObserver
 from app.persona import PersonaStore
 from app.runtime import TurnCoordinator
+from app.schemas.common import PrivacyLevel
 from app.screen_awareness import (
     ScreenAwarenessAnalyzer,
     ScreenAwarenessGateway,
     ScreenAwarenessLoop,
     ScreenAwarenessResolver,
 )
+from app.tasks import TaskScheduler, TaskStore
 from app.timeline import HistoryRecallService, TimelineStore
 from app.tools import DesktopNotifyTool, ToolExecutor, ToolHandler, ToolRegistry
 from app.tools.browser import InspectWebpageTool
@@ -156,6 +161,7 @@ def create_app(
     screen_awareness_loop: ScreenAwarenessLoop | None = None
     proactive_delivery: ProactiveDeliveryService | None = None
     mqtt_presence_bridge: MqttPresenceBridge | None = None
+    task_scheduler: TaskScheduler | None = None
 
     async def test_home_assistant_proactive() -> bool:
         if home_assistant_proactive is None:
@@ -222,6 +228,39 @@ def create_app(
         and perception_store is not None
         else None
     )
+    task_store = TaskStore(runtime_database) if runtime_database is not None else None
+    if task_store is not None:
+        task_scheduler = TaskScheduler(
+            task_store,
+            interval_seconds=float(os.getenv("ARIA_TASK_SCHEDULER_INTERVAL", "15")),
+        )
+        if perception_pipeline is not None:
+            perception_pipeline.set_event_observer(
+                cast(EventObserver, task_scheduler.on_semantic_event)
+            )
+
+    async def deliver_task_reminder(
+        text: str,
+        *,
+        user_id: UUID,
+        task_id: UUID,
+        privacy_level: PrivacyLevel,
+        trigger_kind: str,
+    ) -> list[str] | None:
+        if proactive_delivery is None:
+            return None
+        result = await proactive_delivery.deliver(
+            text,
+            entity_id="task",
+            rule_id=f"task:{task_id}",
+            trigger_kind=trigger_kind,
+            privacy_level=privacy_level,
+            target_user_id=user_id,
+        )
+        if result is None:
+            return None
+        return list(result.delivered_channels)
+
     history_recall = (
         HistoryRecallService(
             timeline_store,
@@ -272,9 +311,13 @@ def create_app(
             await worker.start()
         if screen_awareness_loop is not None:
             screen_awareness_loop.start()
+        if task_scheduler is not None:
+            task_scheduler.start()
         try:
             yield
         finally:
+            if task_scheduler is not None:
+                await task_scheduler.stop()
             if screen_awareness_loop is not None:
                 await screen_awareness_loop.stop()
             if home_assistant_proactive is not None:
@@ -762,6 +805,10 @@ def create_app(
                         action_plan_service,
                     )
                 )
+            if task_store is not None:
+                app.include_router(create_tasks_router(task_store, auth_service))
+                app.state.task_store = task_store
+                app.state.task_scheduler = task_scheduler
             if capability_models is not None:
                 app.include_router(create_model_capability_router(capability_models, auth_service))
             turn_coordinator = TurnCoordinator(runtime_database, runtime_chat_service)
@@ -805,6 +852,8 @@ def create_app(
                     voice_broadcaster=voice_manager,
                 )
                 app.state.proactive_delivery_service = proactive_delivery
+                if task_scheduler is not None:
+                    task_scheduler.set_deliverer(deliver_task_reminder)
 
                 home_assistant_proactive = HomeAssistantProactiveEngine(
                     runtime_database,

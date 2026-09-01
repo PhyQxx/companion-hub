@@ -15,6 +15,7 @@ from .store import PerceptionStore
 
 ValidateEvent = Callable[[], bool | Awaitable[bool]]
 HandleResult = Callable[[SemanticEvent, PerceptionResult], Awaitable[None]]
+EventObserver = Callable[[SemanticEvent], Awaitable[None]]
 logger = logging.getLogger(__name__)
 
 
@@ -33,6 +34,11 @@ class PerceptionPipeline:
         self._tasks: dict[tuple[UUID, str], asyncio.Task[None]] = {}
         self._locks: dict[tuple[UUID, str], asyncio.Lock] = {}
         self._recent: dict[tuple[UUID, str], tuple[UUID, datetime]] = {}
+        self._event_observer: EventObserver | None = None
+
+    def set_event_observer(self, observer: EventObserver | None) -> None:
+        """注册语义事件观察者（如任务调度器的事件触发）；异常不外溢到主管线。"""
+        self._event_observer = observer
 
     async def stop(self) -> None:
         tasks = tuple(self._tasks.values())
@@ -72,7 +78,16 @@ class PerceptionPipeline:
         key = (event.user_id, self._dedupe_key(event))
         lock = self._locks.setdefault(key, asyncio.Lock())
         async with lock:
-            return await self._process_locked(event, key=key)
+            result = await self._process_locked(event, key=key)
+        if self._event_observer is not None and result.disposition in {
+            PerceptionDisposition.PROCESSED,
+            PerceptionDisposition.MERGED,
+        }:
+            try:
+                await self._event_observer(event)
+            except Exception:
+                logger.exception("event observer failed: %s", event.event_id)
+        return result
 
     async def _process_locked(
         self,
