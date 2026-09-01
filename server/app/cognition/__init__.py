@@ -22,12 +22,14 @@ from .action_runner import ToolActionRunner
 from .attention import ATTENTION_POLICY_VERSION, AttentionEngine
 from .cycle import CognitiveCycle
 from .deliberation import COGNITIVE_POLICY_VERSION, RouterDeliberator, RuleBasedDeliberator
+from .goal_tracker import GoalTracker
 from .models import (
     ActionLevel,
     ActionOutcome,
     ActionPlan,
     ActionResult,
     AttentionResult,
+    ClaimedGoalReminder,
     CognitiveDecision,
     CognitiveDecisionView,
     DecisionKind,
@@ -65,6 +67,7 @@ __all__ = [
     "ActionVerificationStatus",
     "AttentionEngine",
     "AttentionResult",
+    "ClaimedGoalReminder",
     "CognitiveCycle",
     "CognitiveDecision",
     "CognitiveDecisionView",
@@ -75,6 +78,7 @@ __all__ = [
     "FeedbackKind",
     "GoalKind",
     "GoalStatus",
+    "GoalTracker",
     "GoalView",
     "ReflectionCandidate",
     "ReflectionEngine",

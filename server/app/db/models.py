@@ -507,6 +507,14 @@ class CognitiveGoalRecord(Base):
     source_id: Mapped[str] = mapped_column(String(200), nullable=False)
     due_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # GOAL-01 提醒状态：pre_due/due 各提醒一次（时间戳非空即已提醒），
+    # reminder_defer_until 为稍后/忽略降频的统一推迟闸门，ignored_count 记录忽略次数。
+    pre_due_reminded_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    due_reminded_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    reminder_defer_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    ignored_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default="0"
+    )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 

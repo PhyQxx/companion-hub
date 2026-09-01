@@ -9,9 +9,7 @@ from .models import ReflectionCandidate
 
 
 class ReflectionStore(Protocol):
-    async def distinct_trigger_kinds(
-        self, user_id: UUID, *, since: datetime
-    ) -> list[str]: ...
+    async def distinct_trigger_kinds(self, user_id: UUID, *, since: datetime) -> list[str]: ...
 
     async def feedback_summary(
         self,

@@ -275,6 +275,7 @@ class ChatService:
         device_tools: Iterable[ToolHandler] = (),
         cognitive_cycle: CognitiveCycle | None = None,
         avatar_store: Any | None = None,
+        goal_tracker: Any | None = None,
     ) -> None:
         self._database = database
         self._config_store = config_store
@@ -290,6 +291,7 @@ class ChatService:
         self._capability_provider = capability_provider
         self._cognitive_cycle = cognitive_cycle
         self._avatar_store = avatar_store
+        self._goal_tracker = goal_tracker
         handlers = list(device_tools)
         if device_tool is not None:
             handlers.append(device_tool)
@@ -1258,7 +1260,35 @@ class ChatService:
                 backend=backend,
             )
         )
+        # 承诺识别同样走后台 utility 路由；失败静默不影响回合
+        self._spawn_background(
+            self._extract_commitments(
+                pending,
+                backend=backend,
+            )
+        )
         return turn_result
+
+    async def _extract_commitments(
+        self,
+        pending: PendingTurn,
+        *,
+        backend: Any | None = None,
+    ) -> None:
+        if self._goal_tracker is None:
+            return
+        try:
+            await self._goal_tracker.ingest_message(
+                user_id=pending.user_id,
+                message_id=pending.user_message.id,
+                text=pending.user_message.content,
+                privacy_level=pending.request.privacy_level,
+                backend=backend,
+            )
+        except Exception:
+            logger.warning(
+                "commitment extraction failed for turn %s", pending.turn_id, exc_info=True
+            )
 
     async def _index_timeline(
         self,

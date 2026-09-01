@@ -1,4 +1,4 @@
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Annotated, Literal
 from uuid import UUID
 
@@ -43,6 +43,11 @@ class FeedbackRequest(StrictModel):
 
 class UpdateGoalRequest(StrictModel):
     status: Literal["completed", "cancelled"]
+
+
+class GoalReminderFeedbackRequest(StrictModel):
+    kind: Literal["ignored", "snoozed"]
+    minutes: Annotated[int, Field(ge=1, le=10_080)] | None = None
 
 
 class CreateActionPlanRequest(StrictModel):
@@ -109,6 +114,30 @@ def create_cognition_router(
                 user_id=principal.user_id,
                 goal_id=goal_id,
                 status=GoalStatus(body.status),
+            )
+        except LookupError as error:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, detail=str(error)) from error
+        except ValueError as error:
+            raise HTTPException(status.HTTP_409_CONFLICT, detail=str(error)) from error
+
+    @router.post("/goals/{goal_id}/reminder-feedback", response_model=GoalView)
+    async def goal_reminder_feedback(
+        goal_id: UUID,
+        body: GoalReminderFeedbackRequest,
+        principal: Annotated[ChatPrincipal, Depends(guard)],
+    ) -> GoalView:
+        """GOAL-01 忽略降频 / 稍后：忽略顺延一天并计数，稍后推迟到指定时间。"""
+        try:
+            if body.kind == "ignored":
+                return await store.ignore_goal_reminder(
+                    user_id=principal.user_id,
+                    goal_id=goal_id,
+                )
+            until = datetime.now(UTC) + timedelta(minutes=body.minutes or 60)
+            return await store.defer_goal_reminders(
+                user_id=principal.user_id,
+                goal_id=goal_id,
+                until=until,
             )
         except LookupError as error:
             raise HTTPException(status.HTTP_404_NOT_FOUND, detail=str(error)) from error

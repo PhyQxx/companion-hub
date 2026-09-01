@@ -66,10 +66,7 @@ class ActionDefinition(StrictModel):
             raise ValueError("reversible actions require a compensation action")
         if self.verification_policy is VerificationPolicy.NONE and self.verifier_id is not None:
             raise ValueError("verifier requires a verification policy")
-        if (
-            self.verification_policy is not VerificationPolicy.NONE
-            and self.verifier_id is None
-        ):
+        if self.verification_policy is not VerificationPolicy.NONE and self.verifier_id is None:
             raise ValueError("verification policy requires a verifier")
         return self
 
@@ -103,8 +100,7 @@ class ActionRegistry:
         collisions = dynamic_fields.intersection(definition.bound_arguments)
         if collisions:
             raise ValueError(
-                "bound arguments collide with dynamic arguments: "
-                + ", ".join(sorted(collisions))
+                "bound arguments collide with dynamic arguments: " + ", ".join(sorted(collisions))
             )
         if definition.arguments_schema != arguments_model.model_json_schema():
             raise ValueError("action arguments schema does not match arguments model")

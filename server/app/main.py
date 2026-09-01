@@ -51,6 +51,7 @@ from app.cognition import (
     AttentionEngine,
     CognitiveCycle,
     CognitiveStore,
+    GoalTracker,
     RouterDeliberator,
     RuleBasedDeliberator,
     ToolActionRunner,
@@ -97,6 +98,7 @@ from app.screen_awareness import (
     ScreenAwarenessResolver,
 )
 from app.tasks import TaskScheduler, TaskStore
+from app.tasks.goal_scheduler import GoalReminderScheduler
 from app.timeline import HistoryRecallService, TimelineStore
 from app.tools import DesktopNotifyTool, ToolExecutor, ToolHandler, ToolRegistry
 from app.tools.browser import InspectWebpageTool
@@ -162,6 +164,7 @@ def create_app(
     proactive_delivery: ProactiveDeliveryService | None = None
     mqtt_presence_bridge: MqttPresenceBridge | None = None
     task_scheduler: TaskScheduler | None = None
+    goal_reminder_scheduler: GoalReminderScheduler | None = None
 
     async def test_home_assistant_proactive() -> bool:
         if home_assistant_proactive is None:
@@ -238,6 +241,15 @@ def create_app(
             perception_pipeline.set_event_observer(
                 cast(EventObserver, task_scheduler.on_semantic_event)
             )
+    goal_tracker = GoalTracker(cognitive_store) if cognitive_store is not None else None
+    goal_reminder_scheduler = (
+        GoalReminderScheduler(
+            cognitive_store,
+            interval_seconds=float(os.getenv("ARIA_GOAL_REMINDER_INTERVAL", "60")),
+        )
+        if cognitive_store is not None
+        else None
+    )
 
     async def deliver_task_reminder(
         text: str,
@@ -255,6 +267,28 @@ def create_app(
             rule_id=f"task:{task_id}",
             trigger_kind=trigger_kind,
             privacy_level=privacy_level,
+            target_user_id=user_id,
+        )
+        if result is None:
+            return None
+        return list(result.delivered_channels)
+
+    async def deliver_goal_reminder(
+        text: str,
+        *,
+        user_id: UUID,
+        goal_id: UUID,
+        privacy_level: str,
+        trigger_kind: str,
+    ) -> list[str] | None:
+        if proactive_delivery is None:
+            return None
+        result = await proactive_delivery.deliver(
+            text,
+            entity_id="goal",
+            rule_id=f"goal:{goal_id}",
+            trigger_kind=trigger_kind,
+            privacy_level=PrivacyLevel(privacy_level),
             target_user_id=user_id,
         )
         if result is None:
@@ -313,9 +347,13 @@ def create_app(
             screen_awareness_loop.start()
         if task_scheduler is not None:
             task_scheduler.start()
+        if goal_reminder_scheduler is not None:
+            goal_reminder_scheduler.start()
         try:
             yield
         finally:
+            if goal_reminder_scheduler is not None:
+                await goal_reminder_scheduler.stop()
             if task_scheduler is not None:
                 await task_scheduler.stop()
             if screen_awareness_loop is not None:
@@ -786,6 +824,7 @@ def create_app(
                 device_tools=device_tools,
                 cognitive_cycle=cognitive_cycle,
                 avatar_store=avatar_store,
+                goal_tracker=goal_tracker,
             )
             app.state.auth_service = auth_service
             app.state.chat_service = runtime_chat_service
@@ -809,6 +848,7 @@ def create_app(
                 app.include_router(create_tasks_router(task_store, auth_service))
                 app.state.task_store = task_store
                 app.state.task_scheduler = task_scheduler
+                app.state.goal_reminder_scheduler = goal_reminder_scheduler
             if capability_models is not None:
                 app.include_router(create_model_capability_router(capability_models, auth_service))
             turn_coordinator = TurnCoordinator(runtime_database, runtime_chat_service)
@@ -854,6 +894,8 @@ def create_app(
                 app.state.proactive_delivery_service = proactive_delivery
                 if task_scheduler is not None:
                     task_scheduler.set_deliverer(deliver_task_reminder)
+                if goal_reminder_scheduler is not None:
+                    goal_reminder_scheduler.set_deliverer(deliver_goal_reminder)
 
                 home_assistant_proactive = HomeAssistantProactiveEngine(
                     runtime_database,

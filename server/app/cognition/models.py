@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from enum import StrEnum
-from typing import Annotated
+from typing import Annotated, Literal
 from uuid import UUID
 
 from pydantic import Field, JsonValue, model_validator
@@ -109,6 +109,19 @@ class GoalView(StrictModel):
     source_id: str
     due_at: datetime | None = None
     expires_at: datetime | None = None
+    pre_due_reminded_at: datetime | None = None
+    due_reminded_at: datetime | None = None
+    reminder_defer_until: datetime | None = None
+    ignored_count: int = 0
+
+
+class ClaimedGoalReminder(StrictModel):
+    """已被调度器原子认领的一次目标提醒；投递结果由调度器记录。"""
+
+    user_id: UUID
+    goal: GoalView
+    phase: Literal["pre_due", "due"]
+    due_at: datetime
 
 
 class WorldState(StrictModel):
@@ -156,12 +169,16 @@ class CognitiveDecision(StrictModel):
     def safe_first_version(self) -> CognitiveDecision:
         if self.decision == DecisionKind.ACT:
             raise ValueError("autonomous act is disabled in cognitive policy v1")
-        if self.decision in {
-            DecisionKind.INFORM,
-            DecisionKind.ASK,
-            DecisionKind.SUGGEST,
-            DecisionKind.ESCALATE,
-        } and not self.message:
+        if (
+            self.decision
+            in {
+                DecisionKind.INFORM,
+                DecisionKind.ASK,
+                DecisionKind.SUGGEST,
+                DecisionKind.ESCALATE,
+            }
+            and not self.message
+        ):
             raise ValueError("visible decisions require a message")
         return self
 
