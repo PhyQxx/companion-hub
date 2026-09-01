@@ -209,12 +209,34 @@ class HomeAssistantEntityConfig(StrictModel):
     history_allowed: bool = False
     history_max_hours: Annotated[int, Field(ge=1, le=168)] = 24
     allowed_actions: Annotated[
-        list[Literal["turn_on", "turn_off", "toggle", "set_temperature"]],
-        Field(max_length=4),
+        list[
+            Literal[
+                "turn_on",
+                "turn_off",
+                "toggle",
+                "set_temperature",
+                "set_brightness",
+                "play",
+                "pause",
+                "volume_set",
+            ]
+        ],
+        Field(max_length=8),
     ] = Field(default_factory=list)
     confirmation_required_actions: Annotated[
-        list[Literal["turn_on", "turn_off", "toggle", "set_temperature"]],
-        Field(max_length=4),
+        list[
+            Literal[
+                "turn_on",
+                "turn_off",
+                "toggle",
+                "set_temperature",
+                "set_brightness",
+                "play",
+                "pause",
+                "volume_set",
+            ]
+        ],
+        Field(max_length=8),
     ] = Field(default_factory=list)
     proactive_rules: Annotated[list[HomeAssistantProactiveRuleConfig], Field(max_length=16)] = (
         Field(default_factory=_default_home_assistant_proactive_rules)
@@ -248,9 +270,10 @@ class HomeAssistantEntityConfig(StrictModel):
             raise ValueError("home assistant proactive rule ids must be unique per entity")
         domain = self.entity_id.split(".", 1)[0]
         domain_actions = {
-            "light": {"turn_on", "turn_off", "toggle"},
+            "light": {"turn_on", "turn_off", "toggle", "set_brightness"},
             "switch": {"turn_on", "turn_off", "toggle"},
             "climate": {"turn_on", "turn_off", "set_temperature"},
+            "media_player": {"turn_on", "turn_off", "play", "pause", "volume_set"},
         }
         if not set(self.allowed_actions).issubset(domain_actions.get(domain, set())):
             raise ValueError("home assistant action is not valid for entity domain")

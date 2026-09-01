@@ -407,7 +407,7 @@ HA 在线
 | `fan` | turn_on/turn_off/set_percentage | `fan.turn_on/turn_off/set_percentage` |
 | `climate` | turn_on/turn_off/set_temperature/set_hvac_mode | 对应 `climate.*` |
 | `cover` | open/close/stop/set_position | 对应 `cover.*` |
-| `media_player` | play/pause/volume_set | 对应 `media_player.*` |
+| `media_player` | play/pause/volume_set（已接入 Action Engine v2） | 对应 `media_player.media_play/media_pause/volume_set` |
 | `scene` | activate | `scene.turn_on` |
 
 风险基线：

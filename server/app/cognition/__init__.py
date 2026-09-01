@@ -1,4 +1,24 @@
 from .action import ActionEngine
+from .action_plan import (
+    ActionInvocation,
+    ActionPlanService,
+    ActionPlanStatus,
+    ActionPlanView,
+    ActionRunResult,
+    ActionStepStatus,
+    ActionStepView,
+    ActionVerificationStatus,
+)
+from .action_registry import (
+    ActionDefinition,
+    ActionRegistry,
+    ActionRisk,
+    CompiledAction,
+    ConfirmationPolicy,
+    VerificationPolicy,
+    build_builtin_action_registry,
+)
+from .action_runner import ToolActionRunner
 from .attention import ATTENTION_POLICY_VERSION, AttentionEngine
 from .cycle import CognitiveCycle
 from .deliberation import COGNITIVE_POLICY_VERSION, RouterDeliberator, RuleBasedDeliberator
@@ -27,17 +47,30 @@ from .world import WorldStateBuilder
 __all__ = [
     "ATTENTION_POLICY_VERSION",
     "COGNITIVE_POLICY_VERSION",
+    "ActionDefinition",
     "ActionEngine",
+    "ActionInvocation",
     "ActionLevel",
     "ActionOutcome",
     "ActionPlan",
+    "ActionPlanService",
+    "ActionPlanStatus",
+    "ActionPlanView",
+    "ActionRegistry",
     "ActionResult",
+    "ActionRisk",
+    "ActionRunResult",
+    "ActionStepStatus",
+    "ActionStepView",
+    "ActionVerificationStatus",
     "AttentionEngine",
     "AttentionResult",
     "CognitiveCycle",
     "CognitiveDecision",
     "CognitiveDecisionView",
     "CognitiveStore",
+    "CompiledAction",
+    "ConfirmationPolicy",
     "DecisionKind",
     "FeedbackKind",
     "GoalKind",
@@ -48,7 +81,10 @@ __all__ = [
     "RouterDeliberator",
     "RuleBasedDeliberator",
     "SemanticEvent",
+    "ToolActionRunner",
     "Urgency",
+    "VerificationPolicy",
     "WorldState",
     "WorldStateBuilder",
+    "build_builtin_action_registry",
 ]

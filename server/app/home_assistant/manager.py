@@ -24,6 +24,15 @@ StateChangeHandler = Callable[
 ]
 
 
+def home_assistant_service_for_action(action: str) -> str:
+    """Translate the bounded semantic action catalog to a Home Assistant service."""
+    return {
+        "set_brightness": "turn_on",
+        "play": "media_play",
+        "pause": "media_pause",
+    }.get(action, action)
+
+
 class HomeAssistantManager:
     """Lazy runtime wrapper so HA failure never prevents Hub startup."""
 
@@ -159,7 +168,8 @@ class HomeAssistantManager:
         policy = self._bridge.resolve(target)
         if action not in policy.allowed_actions:
             raise HomeAssistantError("ha_action_denied")
-        await self._bridge.call_service(policy.entity_id, action, service_data)
+        service = home_assistant_service_for_action(action)
+        await self._bridge.call_service(policy.entity_id, service, service_data)
         return policy
 
     async def history(

@@ -1,5 +1,6 @@
 from .amap import AmapProvider, AmapProviderError, wgs84_to_gcj02
 from .contracts import ToolContext, ToolExecution, ToolHandler, ToolResult
+from .desktop import DesktopNotifyArgs, DesktopNotifyTool
 from .executor import ToolExecutor
 from .factory import QueryToolRuntime, build_query_tool_runtime
 from .intent import select_device_tools, select_query_tools, supports_device_capability
@@ -15,6 +16,8 @@ __all__ = [
     "AmapProviderError",
     "ClientLocation",
     "ClientLocationPayload",
+    "DesktopNotifyArgs",
+    "DesktopNotifyTool",
     "GetWeatherArgs",
     "LocationSource",
     "NearbyTool",

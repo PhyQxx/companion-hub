@@ -160,7 +160,12 @@ class HomeAssistantBridge:
         service_data: dict[str, Any] | None = None,
     ) -> tuple[HomeAssistantState, ...]:
         domain = entity_id.split(".", 1)[0]
-        return await self._gateway.call_service(domain, service, entity_id, service_data)
+        states = await self._gateway.call_service(domain, service, entity_id, service_data)
+        now = monotonic()
+        for state in states:
+            if self._is_read_allowed(state.entity_id):
+                self._cache[state.entity_id] = _CachedState(state, now)
+        return states
 
     async def fetch_history(
         self, entity_id: str, start: datetime, end: datetime

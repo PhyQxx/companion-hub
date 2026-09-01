@@ -113,14 +113,25 @@ class HomeControlArgs(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     target: Annotated[str, Field(min_length=1, max_length=255)]
-    action: Literal["turn_on", "turn_off", "toggle", "set_temperature"]
+    action: Literal[
+        "turn_on",
+        "turn_off",
+        "toggle",
+        "set_temperature",
+        "set_brightness",
+        "play",
+        "pause",
+        "volume_set",
+    ]
     temperature_c: Annotated[float, Field(ge=16, le=30)] | None = None
+    brightness_pct: Annotated[int, Field(ge=1, le=100)] | None = None
+    volume_level: Annotated[float, Field(ge=0, le=1)] | None = None
 
 
 class HomeControlTool:
     name = "home_control"
     description = (
-        "控制已授权的 Home Assistant 灯、开关或空调。仅可使用后台为该实体开放的动作。"
+        "控制已授权的 Home Assistant 灯、开关、空调或媒体播放器。仅可使用后台为该实体开放的动作。"
         "空调等需要确认的动作只有在用户当前消息明确包含 `确认` 或 `确定` 时才会执行。"
     )
     arguments_model: type[BaseModel] = HomeControlArgs
@@ -149,6 +160,10 @@ class HomeControlTool:
                 return _failure(self.name, "ha_action_denied", started)
             if args.action == "set_temperature" and args.temperature_c is None:
                 return _failure(self.name, "ha_temperature_required", started)
+            if args.action == "set_brightness" and args.brightness_pct is None:
+                return _failure(self.name, "ha_brightness_required", started)
+            if args.action == "volume_set" and args.volume_level is None:
+                return _failure(self.name, "ha_volume_required", started)
             if (
                 args.action in policy.confirmation_required_actions
                 and not _has_explicit_confirmation(context.user_text)
@@ -162,12 +177,18 @@ class HomeControlTool:
                         "target": policy.display_name,
                         "action": args.action,
                         "temperature_c": args.temperature_c,
+                        "brightness_pct": args.brightness_pct,
+                        "volume_level": args.volume_level,
                     },
                     latency_ms=(perf_counter() - started) * 1_000,
                 )
             service_data: dict[str, object] | None = None
             if args.action == "set_temperature":
                 service_data = {"temperature": args.temperature_c}
+            elif args.action == "set_brightness":
+                service_data = {"brightness_pct": args.brightness_pct}
+            elif args.action == "volume_set":
+                service_data = {"volume_level": args.volume_level}
             await self._provider.control(
                 policy.entity_id,
                 args.action,
@@ -184,6 +205,8 @@ class HomeControlTool:
                 "name": policy.display_name,
                 "action": args.action,
                 "temperature_c": args.temperature_c,
+                "brightness_pct": args.brightness_pct,
+                "volume_level": args.volume_level,
             },
             latency_ms=(perf_counter() - started) * 1_000,
         )

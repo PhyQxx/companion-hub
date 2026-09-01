@@ -1,6 +1,7 @@
 <script setup lang="ts">
-import { inject, onMounted, ref, watch } from "vue";
+import { computed, inject, onActivated, onDeactivated, ref, watch } from "vue";
 import { AdminApi } from "@aria/shared";
+import { ElMessage } from "element-plus";
 
 const api = inject("adminApi") as AdminApi;
 const emit = defineEmits<{ status: [text: string, error?: boolean] }>();
@@ -38,10 +39,67 @@ interface ObservationItem {
   metadata: Record<string, unknown>;
 }
 
+interface DeviceItem {
+  id: string;
+  name: string;
+  alias: string | null;
+  client_type: string;
+  effective_capabilities: string[];
+  revoked_at: string | null;
+  online: boolean;
+}
+
+interface ScreenAwarenessConfig {
+  enabled: boolean;
+  interval_seconds: number;
+  displays: number[];
+  analysis_prompt: string;
+  memory_enabled: boolean;
+  proactive_enabled: boolean;
+  unchanged_skip_threshold: number;
+}
+
+interface CurrentConfig {
+  version: number;
+  config: Record<string, unknown> & { screen_awareness?: ScreenAwarenessConfig };
+}
+
 const status = ref<StatusResponse | null>(null);
 const observations = ref<ObservationItem[]>([]);
+const devices = ref<DeviceItem[]>([]);
 const loading = ref(false);
 const observationLoading = ref(false);
+const deviceLoading = ref(false);
+const savingConfig = ref(false);
+let statusRefreshTimer: ReturnType<typeof window.setInterval> | null = null;
+const displayOptions = Array.from({ length: 32 }, (_, index) => index + 1);
+
+const onlineDesktopDevices = computed(() =>
+  devices.value.filter(
+    (device) => device.client_type === "desktop" && device.online && !device.revoked_at,
+  ),
+);
+const screenMonitorDevices = computed(() =>
+  onlineDesktopDevices.value.filter((device) =>
+    device.effective_capabilities.includes("screen.monitor"),
+  ),
+);
+const screenDeviceLabel = computed(() => {
+  if (screenMonitorDevices.value.length) return `${screenMonitorDevices.value.length} 台就绪`;
+  if (onlineDesktopDevices.value.length) return "在线但未就绪";
+  return "未连接";
+});
+const screenDeviceHint = computed(() => {
+  if (screenMonitorDevices.value.length) {
+    return screenMonitorDevices.value
+      .map((device) => device.alias || device.name)
+      .join("、");
+  }
+  if (onlineDesktopDevices.value.length) {
+    return "检查屏幕录制权限、锁屏或隐私暂停";
+  }
+  return "等待 Aria Desktop 连接 Hub";
+});
 
 function fmt(value: string | null) {
   return value ? new Date(value).toLocaleString() : "—";
@@ -72,9 +130,75 @@ async function loadObservations() {
   }
 }
 
+async function loadDevices() {
+  deviceLoading.value = true;
+  try {
+    devices.value = await api.request<DeviceItem[]>("/api/v1/admin/devices");
+  } catch (error) {
+    emit("status", error instanceof Error ? error.message : "桌面设备状态加载失败", true);
+  } finally {
+    deviceLoading.value = false;
+  }
+}
+
+async function updateScreenAwareness(
+  patch: Partial<ScreenAwarenessConfig>,
+  successMessage: string,
+) {
+  savingConfig.value = true;
+  try {
+    const current = await api.request<CurrentConfig>("/api/v1/admin/config/current");
+    const config = structuredClone(current.config);
+    const existing = config.screen_awareness;
+    if (!existing) throw new Error("当前配置缺少 screen_awareness");
+    config.screen_awareness = { ...existing, ...patch };
+    const saved = await api.request<CurrentConfig>("/api/v1/admin/config/current", {
+      method: "PUT",
+      body: JSON.stringify(config),
+    });
+    await loadStatus();
+    emit("status", `${successMessage}，配置版本 ${saved.version}`);
+    ElMessage.success(successMessage);
+  } catch (error) {
+    emit("status", error instanceof Error ? error.message : "屏幕感知配置保存失败", true);
+    ElMessage.error("屏幕感知配置保存失败");
+    await loadStatus();
+  } finally {
+    savingConfig.value = false;
+  }
+}
+
+async function toggleEnabled(value: string | number | boolean) {
+  const enabled = Boolean(value);
+  await updateScreenAwareness(
+    { enabled },
+    enabled ? "屏幕感知已开启，最多等待一个采集周期" : "屏幕感知已关闭",
+  );
+}
+
+async function updateDisplays(value: unknown) {
+  const displays = Array.isArray(value)
+    ? [...new Set(value.map(Number).filter((item) => Number.isInteger(item) && item >= 1 && item <= 32))]
+    : [];
+  if (!displays.length) {
+    ElMessage.warning("至少选择一块显示器");
+    await loadStatus();
+    return;
+  }
+  if (displays.length > 8) {
+    ElMessage.warning("最多选择 8 块显示器");
+    await loadStatus();
+    return;
+  }
+  await updateScreenAwareness(
+    { displays: displays.sort((left, right) => left - right) },
+    `采集显示器已更新为 ${displays.join("、")}`,
+  );
+}
+
 async function refresh() {
   if (props.mode === "observations") await loadObservations();
-  else await loadStatus();
+  else await Promise.all([loadStatus(), loadDevices()]);
   emit("status", "屏幕感知状态已刷新");
 }
 
@@ -83,11 +207,21 @@ watch(
   () => props.mode,
   async (mode) => {
     if (mode === "observations") await loadObservations();
-    else await loadStatus();
+    else await Promise.all([loadStatus(), loadDevices()]);
   },
 );
 
-onMounted(refresh);
+onActivated(() => {
+  void refresh();
+  statusRefreshTimer = window.setInterval(() => {
+    if (props.mode !== "observations") void Promise.all([loadStatus(), loadDevices()]);
+  }, 15_000);
+});
+
+onDeactivated(() => {
+  if (statusRefreshTimer !== null) window.clearInterval(statusRefreshTimer);
+  statusRefreshTimer = null;
+});
 </script>
 
 <template>
@@ -102,15 +236,41 @@ onMounted(refresh);
           原图即焚不落盘；设备端 TCC / 锁屏 / 隐私暂停随时可停。
         </p>
       </div>
-      <el-button :loading="loading" @click="refresh">刷新</el-button>
+      <el-button :loading="loading || deviceLoading" @click="refresh">刷新</el-button>
     </div>
 
     <div class="stats">
-      <article><span>配置开关</span><strong>{{ status?.configured_enabled ? "开启" : "关闭" }}</strong><small>config.screen_awareness</small></article>
-      <article><span>采集间隔</span><strong>{{ status?.interval_seconds ?? "—" }}s</strong><small>显示器 {{ status?.displays?.join(" / ") ?? "—" }}</small></article>
+      <article class="switch-stat">
+        <div><span>配置开关</span><el-switch :model-value="status?.configured_enabled ?? false" :loading="savingConfig" :disabled="!status || savingConfig" @change="toggleEnabled" /></div>
+        <strong>{{ status?.configured_enabled ? "开启" : "关闭" }}</strong>
+        <small>保存后立即热生效</small>
+      </article>
+      <article class="display-stat">
+        <span>采集显示器</span>
+        <el-select :model-value="status?.displays ?? []" multiple collapse-tags collapse-tags-tooltip :max-collapse-tags="3" placeholder="选择显示器" :disabled="!status || savingConfig" @change="updateDisplays">
+          <el-option v-for="display in displayOptions" :key="display" :label="`显示器 ${display}`" :value="display" />
+        </el-select>
+        <small>最多选择 8 块 · 当前间隔 {{ status?.interval_seconds ?? "—" }}s</small>
+      </article>
       <article><span>循环状态</span><strong>{{ status?.loop_running ? "运行中" : "停止" }}</strong><small>已完成 {{ status?.cycles ?? 0 }} 轮</small></article>
       <article><span>记忆/主动</span><strong>{{ status?.memory_enabled ? "记忆" : "—" }}{{ status?.proactive_enabled ? " · 主动" : "" }}</strong><small>跟随配置</small></article>
+      <article><span>采集设备</span><strong>{{ screenDeviceLabel }}</strong><small>{{ screenDeviceHint }}</small></article>
     </div>
+
+    <el-alert
+      v-if="onlineDesktopDevices.length && !screenMonitorDevices.length"
+      title="桌面端已连接，但尚未开放 screen.monitor；请检查 macOS 屏幕录制权限、锁屏状态和隐私暂停。"
+      type="warning"
+      :closable="false"
+      class="error-alert"
+    />
+    <el-alert
+      v-else-if="status?.configured_enabled && !onlineDesktopDevices.length"
+      title="屏幕感知已开启，但当前没有在线的 Aria Desktop。"
+      type="warning"
+      :closable="false"
+      class="error-alert"
+    />
 
     <el-alert
       v-if="status?.last_error"
@@ -159,8 +319,10 @@ onMounted(refresh);
 .hero h2 { margin: 0; font-size: 16px; }
 .hero p { margin: 7px 0 0; color: var(--muted); font-size: 12px; line-height: 1.6; max-width: 640px; }
 .eyebrow { color: var(--accent); font-size: 11px; font-weight: 700; letter-spacing: .08em; margin-bottom: 7px; }
-.stats { display: grid; grid-template-columns: repeat(4, minmax(150px, 1fr)); gap: 12px; }
+.stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; }
 .stats article { display: grid; gap: 4px; padding: 15px 16px; background: #fff; border: 1px solid var(--line); border-radius: 12px; }
+.switch-stat > div { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.display-stat :deep(.el-select) { width: 100%; margin: 4px 0; }
 .stats span, small { color: var(--muted); font-size: 11px; }
 .stats strong { font-size: 22px; }
 .panel-head { display: flex; justify-content: space-between; align-items: center; gap: 16px; margin-bottom: 14px; }

@@ -396,6 +396,8 @@ export interface SocketEvent {
     expires_at?: string;
     count?: number;
     after_seq?: number;
+    next_after_seq?: number;
+    has_more?: boolean;
     [key: string]: unknown;
   };
 }
@@ -619,9 +621,13 @@ export class ChatApi {
     );
   }
 
-  listMessages(token: string, conversationId: string) {
+  listMessages(token: string, conversationId: string, afterSeq?: number, limit?: number) {
+    const params = new URLSearchParams();
+    if (afterSeq !== undefined) params.set("after_seq", String(afterSeq));
+    if (limit !== undefined) params.set("limit", String(limit));
+    const query = params.size ? `?${params.toString()}` : "";
     return this.request<ChatMessage[]>(
-      `/api/v1/chat/conversations/${conversationId}/messages`,
+      `/api/v1/chat/conversations/${conversationId}/messages${query}`,
       { method: "GET" },
       token,
     );

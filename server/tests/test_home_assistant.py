@@ -31,6 +31,7 @@ from app.home_assistant import (
     HomeGetStateArgs,
     HomeGetStateTool,
 )
+from app.home_assistant.manager import home_assistant_service_for_action
 from app.tools import ToolContext
 from app.tools.intent import select_device_tools
 
@@ -72,8 +73,14 @@ def _config(*entities: HomeAssistantEntityConfig) -> HomeAssistantConfig:
 
 
 class FakeGateway:
-    def __init__(self, states: tuple[HomeAssistantState, ...]) -> None:
+    def __init__(
+        self,
+        states: tuple[HomeAssistantState, ...],
+        *,
+        service_states: tuple[HomeAssistantState, ...] = (),
+    ) -> None:
         self.states = states
+        self.service_states = service_states
         self.closed = False
 
     async def fetch_states(self) -> tuple[HomeAssistantState, ...]:
@@ -94,7 +101,7 @@ class FakeGateway:
         service_data: dict[str, Any] | None = None,
     ) -> tuple[HomeAssistantState, ...]:
         del domain, service, entity_id, service_data
-        return ()
+        return self.service_states
 
     async def fetch_history(
         self,
@@ -207,6 +214,25 @@ def test_home_assistant_config_requires_https_and_unique_names() -> None:
     )
     assert direct_secret.secret_ref is None
     assert direct_secret.secret_value == "stored-by-admin"
+
+
+def test_home_assistant_semantic_actions_map_to_bounded_services() -> None:
+    assert home_assistant_service_for_action("set_brightness") == "turn_on"
+    assert home_assistant_service_for_action("play") == "media_play"
+    assert home_assistant_service_for_action("pause") == "media_pause"
+    assert home_assistant_service_for_action("volume_set") == "volume_set"
+    media = _entity(
+        "media_player.living_room",
+        name="客厅音箱",
+        allowed_actions=["play", "pause", "volume_set"],
+    )
+    assert media.allowed_actions == ["play", "pause", "volume_set"]
+    with pytest.raises(ValidationError, match="not valid for entity domain"):
+        _entity(
+            "switch.unsafe",
+            name="错误开关",
+            allowed_actions=["play"],
+        )
 
 
 def test_proactive_rule_matching_and_quiet_hours() -> None:
@@ -413,6 +439,22 @@ async def test_bridge_caches_only_explicitly_authorized_entities() -> None:
         bridge.get_state(denied.entity_id)
 
 
+async def test_bridge_updates_cache_from_service_response_for_readback() -> None:
+    now = datetime(2026, 8, 24, 10, 0, tzinfo=UTC)
+    policy = _entity(allowed_actions=["turn_on", "turn_off"])
+    off = HomeAssistantState(policy.entity_id, "off", {}, now, now)
+    on = HomeAssistantState(policy.entity_id, "on", {}, now, now)
+    bridge = HomeAssistantBridge(
+        _config(policy),
+        FakeGateway((off,), service_states=(on,)),
+    )
+    await bridge.refresh_once()
+
+    await bridge.call_service(policy.entity_id, "turn_on")
+
+    assert bridge.get_state(policy.entity_id).state == "on"
+
+
 async def test_bridge_keeps_unchanged_state_valid_while_websocket_is_ready(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -534,6 +576,65 @@ async def test_home_control_enforces_policy_and_server_side_confirmation() -> No
         (climate_policy.entity_id, "set_temperature", {"temperature": 24.0})
     ]
     assert confirmed.ok is True
+
+
+async def test_home_control_maps_brightness_and_media_parameters() -> None:
+    now = datetime(2026, 8, 24, 10, 0, tzinfo=UTC)
+    light_policy = _entity(allowed_actions=["set_brightness"])
+    light_provider = FakeStateProvider(
+        light_policy,
+        HomeAssistantState(light_policy.entity_id, "on", {"brightness": 102}, now, now),
+    )
+    brightness = await HomeControlTool(light_provider).execute(
+        HomeControlArgs(
+            target="主灯",
+            action="set_brightness",
+            brightness_pct=40,
+        ),
+        ToolContext(privacy_level="L1", user_text="把灯调到40%"),
+    )
+
+    media_policy = _entity(
+        "media_player.living_room",
+        name="客厅音箱",
+        allowed_actions=["play", "pause", "volume_set"],
+        confirmation_required_actions=["volume_set"],
+    )
+    media_provider = FakeStateProvider(
+        media_policy,
+        HomeAssistantState(
+            media_policy.entity_id,
+            "playing",
+            {"volume_level": 0.35},
+            now,
+            now,
+        ),
+    )
+    media_tool = HomeControlTool(media_provider)
+    paused = await media_tool.execute(
+        HomeControlArgs(target="客厅音箱", action="pause"),
+        ToolContext(privacy_level="L1", user_text="暂停播放"),
+    )
+    blocked_volume = await media_tool.execute(
+        HomeControlArgs(target="客厅音箱", action="volume_set", volume_level=0.35),
+        ToolContext(privacy_level="L1", user_text="音量调小"),
+    )
+    confirmed_volume = await media_tool.execute(
+        HomeControlArgs(target="客厅音箱", action="volume_set", volume_level=0.35),
+        ToolContext(privacy_level="L1", user_text="确认把音量调到35%"),
+    )
+
+    assert brightness.ok is True
+    assert light_provider.control_calls == [
+        (light_policy.entity_id, "set_brightness", {"brightness_pct": 40})
+    ]
+    assert paused.ok is True
+    assert blocked_volume.reason_code == "ha_confirmation_required"
+    assert confirmed_volume.ok is True
+    assert media_provider.control_calls == [
+        (media_policy.entity_id, "pause", None),
+        (media_policy.entity_id, "volume_set", {"volume_level": 0.35}),
+    ]
 
 
 async def test_home_history_returns_bounded_state_and_logbook_rows() -> None:

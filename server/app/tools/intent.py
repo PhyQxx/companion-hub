@@ -127,7 +127,17 @@ DEVICE_TOOL_REQUIREMENTS: dict[str, Callable[[str], bool]] = {
     "home_get_history": lambda value: value.startswith("home_assistant:")
     and value.endswith(":history.read"),
     "home_control": lambda value: value.startswith("home_assistant:")
-    and value.rsplit(":", 1)[-1] in {"turn_on", "turn_off", "toggle", "set_temperature"},
+    and value.rsplit(":", 1)[-1]
+    in {
+        "turn_on",
+        "turn_off",
+        "toggle",
+        "set_temperature",
+        "set_brightness",
+        "play",
+        "pause",
+        "volume_set",
+    },
     "home_get_state": lambda value: value.startswith("home_assistant:")
     and value.endswith(":state.read"),
 }

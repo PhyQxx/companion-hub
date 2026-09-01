@@ -45,12 +45,15 @@ from app.avatar import AvatarAssetImporter, AvatarStore
 from app.bus import DispatcherWorker, EventPublisher, LocalEventPublisher
 from app.chat import ChatService, CompositeRuntimeCapabilityProvider, RuntimeCapabilityProvider
 from app.cognition import (
+    ActionPlanService,
     AttentionEngine,
     CognitiveCycle,
     CognitiveStore,
     RouterDeliberator,
     RuleBasedDeliberator,
+    ToolActionRunner,
     WorldStateBuilder,
+    build_builtin_action_registry,
 )
 from app.config import ConfigStore, ConfigWatcher, DatabaseConfigStore
 from app.db import Database, create_database
@@ -90,7 +93,7 @@ from app.screen_awareness import (
     ScreenAwarenessResolver,
 )
 from app.timeline import HistoryRecallService, TimelineStore
-from app.tools import ToolHandler
+from app.tools import DesktopNotifyTool, ToolExecutor, ToolHandler, ToolRegistry
 from app.tools.browser import InspectWebpageTool
 from app.tools.screen import CapabilityScreenAnalyzer, CaptureScreenTool
 from app.tools.sensors import ReadSensorsTool
@@ -178,12 +181,16 @@ def create_app(
     ).resolve()
     avatar_upload_root.mkdir(parents=True, exist_ok=True)
     avatar_importer = (
-        AvatarAssetImporter(avatar_upload_root, avatar_store)
-        if avatar_store is not None
-        else None
+        AvatarAssetImporter(avatar_upload_root, avatar_store) if avatar_store is not None else None
     )
     theme_store = ThemeStore(runtime_database) if runtime_database is not None else None
     cognitive_store = CognitiveStore(runtime_database) if runtime_database is not None else None
+    action_registry = build_builtin_action_registry()
+    action_plan_service = (
+        ActionPlanService(runtime_database, action_registry)
+        if runtime_database is not None
+        else None
+    )
     cognitive_cycle = (
         CognitiveCycle(
             cognitive_store,
@@ -311,6 +318,8 @@ def create_app(
     app.state.avatar_store = avatar_store
     app.state.avatar_importer = avatar_importer
     app.state.theme_store = theme_store
+    app.state.action_registry = action_registry
+    app.state.action_plan_service = action_plan_service
 
     admin_root = Path(__file__).parent / "admin"
     app.mount("/admin/legacy", StaticFiles(directory=admin_root), name="admin-legacy")
@@ -706,6 +715,17 @@ def create_app(
                     mqtt_buffer=mqtt_client.buffer if mqtt_client is not None else None,
                 )
             )
+            if action_plan_service is not None:
+                if device_target_resolver is not None and device_command_gateway is not None:
+                    device_tools.append(
+                        DesktopNotifyTool(device_target_resolver, device_command_gateway)
+                    )
+                action_plan_service.set_runner(
+                    ToolActionRunner(
+                        ToolExecutor(ToolRegistry(device_tools)),
+                        home_state_provider=home_assistant_manager,
+                    )
+                )
             capability_provider = (
                 CompositeRuntimeCapabilityProvider(capability_providers)
                 if capability_providers
@@ -734,7 +754,13 @@ def create_app(
                 app.include_router(create_theme_router(theme_store, auth_service))
             if cognitive_store is not None:
                 app.include_router(
-                    create_cognition_router(cognitive_store, auth_service, perception_store)
+                    create_cognition_router(
+                        cognitive_store,
+                        auth_service,
+                        perception_store,
+                        action_registry,
+                        action_plan_service,
+                    )
                 )
             if capability_models is not None:
                 app.include_router(create_model_capability_router(capability_models, auth_service))
@@ -762,9 +788,7 @@ def create_app(
                 )
                 app.state.voice_websocket_manager = voice_manager
                 if device_command_gateway is not None:
-                    device_command_gateway.set_pet_audio_handler(
-                        voice_manager.stream_device_speech
-                    )
+                    device_command_gateway.set_pet_audio_handler(voice_manager.stream_device_speech)
                 app.include_router(voice_router)
             if home_assistant_manager is not None:
                 proactive_delivery = ProactiveDeliveryService(

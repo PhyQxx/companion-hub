@@ -23,6 +23,7 @@ from app.schemas.common import StrictModel
 from app.tools import ClientLocation, ClientLocationPayload
 
 logger = logging.getLogger(__name__)
+SYNC_PAGE_SIZE = 200
 
 
 class AuthenticateFrame(StrictModel):
@@ -100,16 +101,25 @@ class ChatWebSocketManager:
             conversation_id,
             user_id=connection.principal.user_id,
             after_seq=after_seq,
+            limit=SYNC_PAGE_SIZE + 1,
         )
+        has_more = len(messages) > SYNC_PAGE_SIZE
+        page = messages[:SYNC_PAGE_SIZE]
         connection.subscriptions.add(conversation_id)
-        for message in messages:
+        for message in page:
             await connection.send(_message_event(message))
+        next_after_seq = page[-1].seq if page else after_seq
         await connection.send(
             _event(
                 conversation_id=conversation_id,
                 event_type="sync.completed",
-                seq=messages[-1].seq if messages else after_seq,
-                payload={"after_seq": after_seq, "count": len(messages)},
+                seq=next_after_seq,
+                payload={
+                    "after_seq": after_seq,
+                    "next_after_seq": next_after_seq,
+                    "count": len(page),
+                    "has_more": has_more,
+                },
             )
         )
 

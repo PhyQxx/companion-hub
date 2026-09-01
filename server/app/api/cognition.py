@@ -7,6 +7,11 @@ from pydantic import Field
 
 from app.auth import AuthService, ChatPrincipal
 from app.cognition import (
+    ActionDefinition,
+    ActionInvocation,
+    ActionPlanService,
+    ActionPlanView,
+    ActionRegistry,
     ActionResult,
     CognitiveDecisionView,
     CognitiveStore,
@@ -40,6 +45,13 @@ class UpdateGoalRequest(StrictModel):
     status: Literal["completed", "cancelled"]
 
 
+class CreateActionPlanRequest(StrictModel):
+    title: Annotated[str, Field(min_length=1, max_length=240)] | None = None
+    steps: Annotated[list[ActionInvocation], Field(min_length=1, max_length=10)]
+    ttl_seconds: Annotated[int, Field(ge=30, le=3_600)] = 300
+    idempotency_key: Annotated[str, Field(min_length=8, max_length=160)] | None = None
+
+
 class FeedbackResponse(StrictModel):
     id: UUID
     reflection_candidate: ReflectionCandidate | None = None
@@ -49,6 +61,8 @@ def create_cognition_router(
     store: CognitiveStore,
     auth_service: AuthService,
     perception_store: PerceptionStore | None = None,
+    action_registry: ActionRegistry | None = None,
+    action_plan_service: ActionPlanService | None = None,
 ) -> APIRouter:
     guard = ChatSessionGuard(auth_service)
     router = APIRouter(prefix="/api/v1/cognition", tags=["cognition"])
@@ -133,6 +147,123 @@ def create_cognition_router(
         limit: Annotated[int, Field(ge=1, le=200)] = 100,
     ) -> list[ActionResult]:
         return await store.recent_action_results(principal.user_id, limit=limit)
+
+    if action_registry is not None:
+
+        @router.get("/actions/catalog", response_model=list[ActionDefinition])
+        async def list_action_catalog(
+            _: Annotated[ChatPrincipal, Depends(guard)],
+        ) -> list[ActionDefinition]:
+            return action_registry.definitions()
+
+    if action_plan_service is not None:
+
+        @router.post(
+            "/action-plans",
+            response_model=ActionPlanView,
+            status_code=status.HTTP_201_CREATED,
+        )
+        async def create_action_plan(
+            body: CreateActionPlanRequest,
+            principal: Annotated[ChatPrincipal, Depends(guard)],
+        ) -> ActionPlanView:
+            try:
+                return await action_plan_service.create_plan(
+                    user_id=principal.user_id,
+                    invocations=body.steps,
+                    title=body.title,
+                    ttl_seconds=body.ttl_seconds,
+                    idempotency_key=body.idempotency_key,
+                )
+            except LookupError as error:
+                raise HTTPException(status.HTTP_404_NOT_FOUND, detail=str(error)) from error
+            except (PermissionError, ValueError) as error:
+                raise HTTPException(
+                    status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail=str(error),
+                ) from error
+
+        @router.get("/action-plans/{plan_id}", response_model=ActionPlanView)
+        async def get_action_plan(
+            plan_id: UUID,
+            principal: Annotated[ChatPrincipal, Depends(guard)],
+        ) -> ActionPlanView:
+            try:
+                return await action_plan_service.get_plan(
+                    user_id=principal.user_id,
+                    plan_id=plan_id,
+                )
+            except LookupError as error:
+                raise HTTPException(status.HTTP_404_NOT_FOUND, detail=str(error)) from error
+
+        @router.post("/action-plans/{plan_id}/confirm", response_model=ActionPlanView)
+        async def confirm_action_plan(
+            plan_id: UUID,
+            principal: Annotated[ChatPrincipal, Depends(guard)],
+        ) -> ActionPlanView:
+            try:
+                return await action_plan_service.confirm_plan(
+                    user_id=principal.user_id,
+                    plan_id=plan_id,
+                )
+            except LookupError as error:
+                raise HTTPException(status.HTTP_404_NOT_FOUND, detail=str(error)) from error
+            except ValueError as error:
+                raise HTTPException(status.HTTP_409_CONFLICT, detail=str(error)) from error
+
+        @router.post("/action-plans/{plan_id}/cancel", response_model=ActionPlanView)
+        async def cancel_action_plan(
+            plan_id: UUID,
+            principal: Annotated[ChatPrincipal, Depends(guard)],
+        ) -> ActionPlanView:
+            try:
+                return await action_plan_service.cancel_plan(
+                    user_id=principal.user_id,
+                    plan_id=plan_id,
+                )
+            except LookupError as error:
+                raise HTTPException(status.HTTP_404_NOT_FOUND, detail=str(error)) from error
+            except ValueError as error:
+                raise HTTPException(status.HTTP_409_CONFLICT, detail=str(error)) from error
+
+        @router.post("/action-plans/{plan_id}/execute", response_model=ActionPlanView)
+        async def execute_action_plan(
+            plan_id: UUID,
+            principal: Annotated[ChatPrincipal, Depends(guard)],
+        ) -> ActionPlanView:
+            try:
+                return await action_plan_service.execute_plan(
+                    user_id=principal.user_id,
+                    plan_id=plan_id,
+                )
+            except LookupError as error:
+                raise HTTPException(status.HTTP_404_NOT_FOUND, detail=str(error)) from error
+            except RuntimeError as error:
+                raise HTTPException(
+                    status.HTTP_503_SERVICE_UNAVAILABLE,
+                    detail=str(error),
+                ) from error
+            except ValueError as error:
+                raise HTTPException(status.HTTP_409_CONFLICT, detail=str(error)) from error
+
+        @router.post(
+            "/action-plans/{plan_id}/undo",
+            response_model=ActionPlanView,
+            status_code=status.HTTP_201_CREATED,
+        )
+        async def create_action_undo_plan(
+            plan_id: UUID,
+            principal: Annotated[ChatPrincipal, Depends(guard)],
+        ) -> ActionPlanView:
+            try:
+                return await action_plan_service.create_undo_plan(
+                    user_id=principal.user_id,
+                    plan_id=plan_id,
+                )
+            except LookupError as error:
+                raise HTTPException(status.HTTP_404_NOT_FOUND, detail=str(error)) from error
+            except ValueError as error:
+                raise HTTPException(status.HTTP_409_CONFLICT, detail=str(error)) from error
 
     @router.get("/reflection-candidates", response_model=list[ReflectionCandidate])
     async def list_reflection_candidates(

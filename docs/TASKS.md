@@ -1,6 +1,6 @@
 # Aria 当前任务
 
-> 最后更新：2026-08-29
+> 最后更新：2026-09-01
 > 详细设计入口：[00-文档索引与架构总览.md](./00-文档索引与架构总览.md)
 
 本文件只维护当前执行队列、未完成门槛和最新质量基线。历史交付细节留在对应阶段文档，不在这里重复。
@@ -14,11 +14,12 @@
 | P6 Batch A～C 语音 | 主链完成 | 真浏览器 ASR/LLM/TTS/viseme/打断已打通；延迟继续优化 |
 | M3A 地图/天气第一批 | 已完成 | 查询、定位、卡片、Admin 自检、200 条台账与延迟报告已落地，见 `docs/35` |
 | M3A 多终端与感知 | 进行中 | Browser Bridge、macOS Desktop 活动窗口/交互选择器与隐私门禁已通过真机验收；主动输出已接入 Web、macOS 通知和在线语音 |
-| M3B 认知调度闭环 | 已完成（v1） | 被动对话与主动事件已统一进入 World State、Attention、结构化决策、反馈和审计闭环；自主写动作保持关闭 |
+| M3B 认知调度闭环 | v1 完成，Action v2 进行中 | 被动/主动认知闭环已落地；ACT-01～03 已完成，ACT-04 已扩展灯光亮度、媒体和 L0/L1 桌面通知，模型自主 `act` 仍关闭 |
 | 形象与主题底座 | 已完成（v1） | 形象包/实例/Persona 绑定、主题同步、自定义立绘与 Live2D 安全导入均已落地 |
 | Admin 信息架构重整 | 已完成（v1） | 领域分组、URL 可恢复二级 Tab、真实数据页与浏览器验收已完成 |
 | P6 Batch D Live2D/桌宠 | 联动代码完成 | 透明窗口、拖拽、穿透、位置恢复、Hub 同源舞台及签名情绪/动作/口型同步已接通；M2 与真机性能仍是发布门槛 |
-| M4B 手机 PWA | 进行中 | Batch A 已完成可安装壳、离线降级、移动抽屉布局与安全区适配；待 iOS/Android 真机验收 |
+| M4B 手机 PWA | 进行中 | 可安装壳、离线降级、移动布局、前后台恢复、移动音频解锁及游标分页补拉/去重底座已完成；待真机验收、通知与多端租约 |
+| 个人管家闭环 J1～J8 | 已规划，未启动 | 安全行动、任务简报、全屋语音、个人连接器、受控电脑操作、原生入口和家庭守护已拆为可验收批次，见 `docs/39` |
 
 ## 2. 当前执行队列
 
@@ -29,8 +30,8 @@
 - [x] **macOS 系统内容选择器。** `capture_screen(target=interactive)` 的系统框选/取消、视觉回答、结构化错误码、临时授权与原图销毁已经完成代码、隔离 E2E 和用户确认的真机验收。
 - [ ] **硬件到位后恢复：ESP32 + LD2410 第一硬件闭环。** Hub 侧 MQTT → L3 `EphemeralSignal` → 5 秒稳定窗 → L1 `presence.changed` → Perception → Proactive Pipeline 已接通，ESPHome 固件样例与单设备 topic ACL 已落地；因暂时没有硬件，剩余刷写真机与 7 天验收不阻塞软件主线。
 - [x] **手机 PWA Batch A：可安装移动壳。** 现有 Chat 已增加 manifest、多尺寸/可遮罩图标、Service Worker 与离线降级页；窄屏改为顶部导航 + 会话/形象双抽屉，补齐刘海屏安全区、44px 触摸目标和输入法友好字号。安装后模式的访问令牌只进入 `sessionStorage`，不写长期 `localStorage`。
-- [ ] **手机 PWA Batch B：真机聊天闭环。** 前后台恢复逻辑已完成：回到前台会补拉当前会话并重连/同步 WebSocket，进入后台会释放语音会话，离线时停止发送并在网络恢复后自动同步。剩余是在 iOS Safari 和 Android Chrome 完成添加到主屏、登录、文字/streaming、麦克风/定位权限与异常降级真机验收。
-- [ ] **手机 PWA Batch C：通知与会话漫游。** 接入受授权的移动通知 endpoint、消息去重/点击回流、会话游标补拉和多端音频租约；L2 文本不进入系统通知。
+- [ ] **手机 PWA Batch B：真机聊天闭环。** 前后台恢复逻辑已完成：回到前台会补拉当前会话并重连/同步 WebSocket，进入后台会释放语音会话，离线时停止发送并在网络恢复后自动同步。移动浏览器会在麦克风、播报开关或发送按钮的可信用户手势内预先解锁 `AudioContext`，后续 TTS 解码/播放失败会结束忙碌态并显示可操作提示。剩余是在 iOS Safari 和 Android Chrome 完成添加到主屏、登录、文字/streaming、麦克风/定位权限、TTS 播放与异常降级真机验收。
+- [ ] **手机 PWA Batch C：通知与会话漫游。** 会话游标补拉与消息去重底座已完成：REST 支持 `after_seq` 增量查询和 500 条分页循环，WebSocket 每页 200 条并用 `has_more/next_after_seq` 自动续拉，客户端按消息 ID 去重后按 `seq` 稳定合并。剩余为受授权的移动通知 endpoint、通知去重/点击回流，以及多端音频与麦克风租约；L2 文本不进入系统通知。
 - [ ] **并行门槛：Tauri 透明桌宠真机收口。** 待验收 macOS 热插拔、60fps、常驻内存 <300MB 和长时间运行。
 - [ ] **并行门槛：M2 语音延迟与识别质量。** 重置统计窗口后完成 20 个完整回合 + 20 个打断样本，新低延迟模型端点继续暂缓。
 
@@ -39,6 +40,51 @@
 - [x] 恢复在制分支质量闸门：Ruff **163** 项、mypy **38** 项和 Admin TypeScript **4** 项已清零；非 soak 全量 pytest **532 通过 / 0 失败**（3 个既有全局 Admin token 状态污染失败已用 conftest autouse 重置 fixture 修复）；Chat/Admin/Shared typecheck 与 production build、Alembic 空库升级到 `0022` 单 head 和 `git diff --check` 全部通过。
 - [x] 收口当前实现批次：迁移链 `0019 → 0020 → 0021 → bb15882faef4 → 0022 → 0023` 已确认单 head，空库升级复验通过；`.design-qa/`、`.zcode/`、本地截图、`server/assets/` 运行时上传与授权 SDK/Core 已入 `.gitignore`，在制批次已分 9 个逻辑提交入库。
 - [x] P5 连续 14 天文字稳定性观察已由用户确认完成；外部每日记录的仓库证据索引仍需回填到 `docs/32`。M2 语音延迟优化作为并行性能专项推进。
+
+### 0.2 PWA 收口后的个人管家能力队列
+
+完整范围、风险边界、验收和预估见 [39-个人管家能力路线图.md](./39-个人管家能力路线图.md)。以下顺序是当前认可的实施队列；J1 开始前必须先完成 PWA Batch B/C、多端租约，并保留 M2 与桌宠发布门槛。
+
+#### J1 安全行动引擎 v2
+
+- [x] `ACT-01` 动作注册表：已落地独立于 `ToolRegistry` 的动作安全目录，声明参数 Schema、A0～A3 风险、可逆性、确认策略、幂等范围、超时、回读验证器和补偿动作；首批注册灯光/开关开关及空调设温，鉴权目录接口为 `GET /api/v1/cognition/actions/catalog`。
+- [x] `ACT-02` 计划—确认—执行：新增持久化 `action_plan/action_step`、`0024_action_plan` 迁移及创建/查询/确认/取消/执行 API；Runner 只接受注册表预编译的工具和参数，顺序执行、部分成功、后续跳过、执行前取消、超时/中断 `unknown_outcome` 和禁止自动重试均已落地。A1 当前默认仍需确认，A2 必须每次确认，模型自主 `act` 继续关闭。
+- [x] `ACT-03` 结果回读与撤销：HA 控制响应会刷新状态缓存，Runner 对开关状态和空调目标温度执行写后回读；步骤持久化验证状态、最小证据和验证时间，不一致或验证器不可用统一记为 `unknown_outcome` 且不重试。已完成的可逆步骤可通过 `POST /api/v1/cognition/action-plans/{plan_id}/undo` 逆序生成幂等补偿计划，补偿计划必须重新确认且禁止递归撤销。
+- [ ] `ACT-04` 首批真实动作（进行中）：已注册并接通灯光亮度、媒体播放/暂停、音量设置及 L0/L1 桌面通知；亮度及播放控制为 A1 预授权候选，音量为 A2 每次确认，HA 动作具备写后回读。桌面通知复用 `notification.show` 能力，只接受显式 L0/L1、步骤幂等键和设备成功回执。提醒仍依赖 TASK-01 的持久调度，打开应用/网页仍依赖新增桌面白名单能力；这些尚未完成，不通过通用命令提前开放。A3 继续默认禁止。
+
+#### J2 任务与主动管家
+
+- [ ] `TASK-01` 提醒与计划任务：一次性/周期任务、时间/位置/事件触发、稍后/完成/取消和重启恢复。
+- [ ] `BRIEF-01` 每日智能简报：天气、日程、任务、承诺、家庭状态和通勤，结论可追溯来源。
+- [ ] `GOAL-01` 承诺跟踪：明确承诺识别、到期提醒、完成确认和忽略降频。
+- [ ] `REVIEW-01` 晚间回顾：完成事项、未完成计划、新承诺和次日重点，用户确认后再沉淀。
+
+#### J3 全屋语音卫星
+
+- [ ] `SAT-01` 房间终端协议：唤醒词、VAD、状态机、音频上下行和单终端全链。
+- [ ] `SAT-02` 就近响应：房间标识、候选仲裁、普通/紧急播报策略，多个终端只允许一个响应。
+- [ ] `SAT-03` 连续对话：多轮免唤醒、超时、打断和跨设备安全接管。
+
+#### J4 个人信息连接器
+
+- [ ] `CAL-01` 日历：查询、冲突检查、会前提醒以及经确认的创建/修改/取消。
+- [ ] `TODO-01` 单一任务真源：新增、完成、延期、优先级和项目双向同步。
+- [ ] `MAIL-01` 邮件助手：先只读摘要/搜索/归类，再开放草稿和显式确认发送。
+- [ ] `CONTACT-01` 联系人上下文：别名、时区、重要日期与用户明确授权的偏好。
+
+#### J5 受控电脑操作代理
+
+- [ ] `PC-01` 白名单桌面动作：打开应用/URL、聚焦窗口、文件移动/重命名、剪贴板和音量；删除、覆盖、发送需确认。
+- [ ] `WEB-01` 浏览器工作流：读取、定位控件、填写不提交，展示字段和证据后才允许提交。
+- [ ] `FLOW-01` 可复用流程：保存上班、会议、睡眠等步骤化流程，保存前展示全部动作与权限。
+- [ ] `PC-02` 执行可视化：目标、步骤、进度、证据和立即停止；禁止无限制鼠标键盘权限。
+
+#### J6～J8 后续产品化
+
+- [ ] `MEET-01/FOCUS-01/COMMUTE-01/HOME-01`：会议、专注、出行和家庭情境助手。
+- [ ] `IOS-01/AND-01`：PWA 稳定后评估 App Intents、快捷指令、锁屏/Live Activity、小组件和穿戴设备入口。
+- [ ] `ID-01` 多人身份：设备身份为主、声纹辅助、访客降级、记忆和播报隔离。
+- [ ] `SAFE-01/SAFE-02` 家庭守护：环境异常、分级提醒和预授权紧急联系人升级。
 
 ### A. 多终端设备底座
 
@@ -107,6 +153,13 @@
 
 ## 3. 最近完成
 
+- [x] 个人管家 `ACT-04` 首批动作第二批：新增 `desktop.notification.show` 和本地 `DesktopNotifyTool`，Action Registry 当前共 10 个受控动作。通知标题/正文分别限制 80/500 字，只接受 L0/L1 和可选的明确桌面目标；Runner 将持久步骤幂等键交给设备命令网关，设备须具备 `notification.show`、在线并返回 `succeeded` 终态，才把最小 `command_id/device_id/status` 回执记为 `verified`。L2 在 Registry 参数层被拒绝，设备不可用或失败回执不会描述为成功。
+- [x] 个人管家 `ACT-04` 首批动作第一批：Action Registry 从 5 个 HA 动作扩展到 9 个，新增 `home.light.set_brightness`、`home.media.play/pause/set_volume`。Home Assistant 配置白名单和工具参数新增 `set_brightness/play/pause/volume_set`，语义动作确定性映射到 `turn_on/media_play/media_pause/volume_set` 服务；亮度限制 1～100%，音量限制 0～1。Runner 分别核对 HA `brightness`、播放状态与 `volume_level`，不匹配继续按 ACT-03 记为 `unknown_outcome`。
+- [x] 个人管家 `ACT-03` 结果回读与撤销：新增 `ActionRunResult` 和 `pending/not_required/verified/inconclusive` 验证状态，HA 灯光/开关按最终 `on/off`、空调按目标温度容差回读；工具成功但状态不匹配时步骤转 `unknown_outcome`，保留执行回执与最小回读证据并停止后续步骤。新增 `0025_action_verification` 保存验证证据、原计划/补偿计划和原步骤/补偿步骤关联；撤销只选择已完成且声明可逆的步骤，按逆序创建独立、需确认、不可递归的补偿计划。
+- [x] 个人管家 `ACT-02` 计划—确认—执行闭环：`ActionPlanService` 支持 1～10 步计划、owner 隔离、请求哈希幂等、30～3600 秒 TTL、预授权集合、显式确认、执行前取消和状态恢复；`ToolActionRunner` 只把持久步骤中的固定 `tool_name/tool_arguments` 交给 `ToolExecutor`。执行采用逐步 claim，成功继续、失败停止、已完成步骤保留、剩余步骤标记 skipped；超时和协程取消将当前步骤记为 `unknown_outcome`，不重试未知副作用。新增 `POST/GET /api/v1/cognition/action-plans*` 鉴权接口和 `0024_action_plan` 单 head 迁移。
+- [x] 个人管家 `ACT-01` 动作注册表：新增 `ActionRegistry`/`ActionDefinition`/`CompiledAction`，确定性校验风险与确认策略、动态参数 Schema、固定工具参数、验证策略和补偿引用；未注册动作、额外参数、Schema 漂移、重复 ID、缺失补偿及 A3 编译均被拒绝。首批 5 个 HA 动作映射到既有 `home_control`，灯/开关为 A1 预授权候选，空调设温为 A2 每次确认，A3 继续禁止。
+- [x] PWA 会话游标与去重底座：聊天消息 REST 新增可选 `after_seq`，回到前台和语音回复刷新改为从本地最大 `seq` 增量补拉并按 500 条自动翻页；WebSocket 同步按 200 条分页返回 `has_more/next_after_seq`，客户端自动续拉，不再在大间隔恢复时静默截断。所有入口统一按消息 ID 去重、按 `seq` 排序并单调推进会话游标；新增 201 条消息跨页回归。
+- [x] 手机 PWA 移动音频播放加固：在麦克风按钮、文字回复播报开关和已启用播报时的发送手势内，用静音 buffer 创建/恢复 `AudioContext`，满足 iOS/Android 对延迟 TTS 播放的用户手势要求；音频队列补充解码/播放错误回调，失败时清理忙碌态与口型并向用户给出重新授权提示。
 - [x] 手机 PWA Batch A：复用 Vue Chat 主链而非新建分叉应用；增加 standalone manifest、180/192/512 图标与 maskable 图标、生产环境 Service Worker、不缓存 API/WS 的运行时策略和明确离线页。移动端使用顶部导航和左右抽屉，会话区保留整屏高度；安装模式令牌改用会话级存储。
 - [x] 手机前后台恢复底座：监听 `visibilitychange` / `online` / `offline`；后台时立即停止录音与播放并释放语音连接，回到前台后 REST 补拉当前会话、重置重连次数并恢复 WebSocket `sync`；断网时关闭实时连接和发送入口，恢复后自动同步。登录页增加 Android 安装按钮和 iOS Safari 添加到主屏指引。
 - [x] 桌宠文字回复播报：迷你输入新增可持久化“播报”开关，回复复用现有 TTS provider chain 和 `agent_reply.tts_text`；L2 仍只选择本地 TTS，无本地提供方时安全降级文字。音频不创建公开 URL，按 24 KiB 分块、8 MiB 总上限经 `/ws/devices` HMAC 签名帧投递，Desktop 主窗口验签后仅把音频帧转给桌宠 WebView；桌宠校验请求、顺序、分块数和总字节后用 AudioContext 解码 PCM/MP3，隐藏时立即中断并清空缓存。
@@ -166,6 +219,13 @@
 
 ## 4. 最新质量基线
 
+- 2026-09-01 `ACT-04` L0/L1 桌面通知：Action Plan/Registry/Cognition/HA/Config/Device Command/Output/API/Schema 扩展回归 **91 通过**；Ruff、严格 mypy 和 `git diff --check` 通过，Alembic 保持单 head `0025_action_verification`。验收覆盖 L2 参数拒绝、步骤幂等键透传、设备能力选择、成功终态回执和验证证据持久化；真实桌面系统通知仍需联机验收。
+- 2026-09-01 `ACT-04` HA 动作扩展第一批：Registry/Action Plan/Home Assistant 定向测试 **35 通过**，扩展 Cognition/Config/API/Schema 回归 **69 通过**；覆盖参数越界、领域动作白名单、语义服务映射、服务参数、音量确认以及亮度/播放/音量真实 Runner 回读。Ruff、严格 mypy、Admin typecheck/production build 和 `git diff --check` 通过，Alembic 仍为单 head `0025_action_verification`；尚未做真实 HA 设备场景验收。Admin 构建仅有既有的 VueUse pure annotation 与大 chunk 警告。
+- 2026-09-01 `ACT-03` 回读与撤销：新增验证成功、状态不一致、真实 ToolActionRunner 回读、HA 服务响应刷新缓存、逆序补偿和撤销 API 验收；Action Plan/Registry/HA 定向测试 **30 通过**，扩展 Cognition/API/Schema 回归 **56 通过**，Ruff、严格 mypy和 `git diff --check` 通过；Alembic 已验证 SQLite 从 `0024` 升级到单 head `0025_action_verification`，并用既有计划/步骤样本确认数据保留，历史未验证写步骤回填为 `inconclusive`。真实 PostgreSQL 尚未应用 `0024/0025`。
+- 2026-09-01 `ACT-02` 行动计划闭环：Action Plan/Registry、Cognition、HA、API 与 Schema 相关测试 **51 通过**；Ruff、严格 mypy、`git diff --check` 通过；Alembic 从 SQLite 空库升级到单 head `0024_action_plan` 成功。真实 PostgreSQL 尚未应用 `0024`，不得把空库迁移测试写成线上升级完成。
+- 2026-09-01 `ACT-01` 动作注册表：Action Registry、Cognition 和 Home Assistant 定向测试 **33 通过**；Ruff、严格 mypy 和 `git diff --check` 通过。目录 API 额外覆盖未鉴权拒绝与登录用户读取；本批没有开放新的现实写权限。
+- 2026-09-01 PWA 游标补拉与去重底座：完整 `test_chat.py + test_chat_websocket.py` **27 通过**；定向 Ruff、mypy、Shared/Chat/Admin TypeScript、全 Web production build 和 `git diff --check` 通过。Admin 构建仍只有既有的 VueUse pure annotation 与大 chunk 警告，无新增失败。
+- 2026-08-31 手机 PWA 移动音频加固：Chat `vue-tsc --noEmit` 与 production build 通过，`git diff --check` 通过；真实移动浏览器的 AudioContext 解锁、TTS 播放和前后台切换仍需纳入 Batch B 真机验收，不把桌面浏览器构建结果当作真机通过。
 - 2026-08-29 手机 PWA Batch A：Chat `vue-tsc --noEmit` 与 production build 通过，Service Worker 语法检查和 `git diff --check` 通过；生产包已输出 manifest、offline shell、180/192/512 图标与 maskable 图标。Codex 内置浏览器以 390×844 视口完成登录页 DOM 与视觉验收；鉴权后聊天与 iOS/Android 安装仍待真机。
 - 2026-08-27 全量质量闸门已恢复：在制批次分 9 个逻辑提交入库后，Ruff（含 `allowed-confusables` 白名单全角标点）、严格 mypy（214 source files）、Admin/Chat/Shared typecheck 与 production build 全部通过；非 soak 全量 pytest **532 通过 / 0 失败**（新增 conftest autouse fixture 修复 3 个既有全局 Admin token 状态污染失败；TurnCoordinator `create_turn` 已对齐真实 `ChatService.start_turn` 契约）；Alembic 空库升级到单 head `0023_device_alias_reuse`、`git diff --check` 通过。
 - 2026-08-27 屏幕感知上线运行验证：配置 v63 开启（60s×三屏）、设备声明+授权 `screen.monitor`、修复上传白名单后（`8d80ebb`）三屏截图与 GLM 视觉分析实测成功（微信/文件系统/编程界面三份摘要入 Timeline），循环无错误；感知哈希变化检测、即焚与降频待长期观察。

@@ -3,7 +3,15 @@ import { computed, inject, onMounted, ref } from "vue";
 import { AdminApi } from "@aria/shared";
 import { ElMessage, ElMessageBox } from "element-plus";
 
-type Action = "turn_on" | "turn_off" | "toggle" | "set_temperature";
+type Action =
+  | "turn_on"
+  | "turn_off"
+  | "toggle"
+  | "set_temperature"
+  | "set_brightness"
+  | "play"
+  | "pause"
+  | "volume_set";
 type RuleKind =
   | "water_leak"
   | "temperature_high"
@@ -174,6 +182,10 @@ const actionLabels: Record<Action, string> = {
   turn_off: "关闭",
   toggle: "切换",
   set_temperature: "设置温度",
+  set_brightness: "设置亮度",
+  play: "播放",
+  pause: "暂停",
+  volume_set: "设置音量",
 };
 const ruleLabels: Record<RuleKind, string> = {
   water_leak: "水浸告警",
@@ -328,8 +340,10 @@ async function save() {
 
 function supportedActions(entityId: string): Action[] {
   const domain = entityId.split(".", 1)[0];
-  if (domain === "light" || domain === "switch") return ["turn_on", "turn_off", "toggle"];
+  if (domain === "light") return ["turn_on", "turn_off", "toggle", "set_brightness"];
+  if (domain === "switch") return ["turn_on", "turn_off", "toggle"];
   if (domain === "climate") return ["turn_on", "turn_off", "set_temperature"];
+  if (domain === "media_player") return ["turn_on", "turn_off", "play", "pause", "volume_set"];
   return [];
 }
 
@@ -418,8 +432,10 @@ async function clearWhitelist() {
 }
 
 function defaultActionsForDomain(domain: string): Action[] {
-  if (domain === "light" || domain === "switch") return ["turn_on", "turn_off", "toggle"];
+  if (domain === "light") return ["turn_on", "turn_off", "toggle", "set_brightness"];
+  if (domain === "switch") return ["turn_on", "turn_off", "toggle"];
   if (domain === "climate") return ["turn_on", "turn_off", "set_temperature"];
+  if (domain === "media_player") return ["turn_on", "turn_off", "play", "pause", "volume_set"];
   return [];
 }
 

@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Awaitable, Callable
+from datetime import UTC, datetime
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
-from uuid import UUID
+from uuid import UUID, uuid4
 
 import pytest
 from fastapi import FastAPI
@@ -14,8 +16,9 @@ from sqlalchemy import select
 from starlette.websockets import WebSocketDisconnect
 
 from app.api import create_chat_websocket_router
+from app.api.chat_ws import ChatConnection, ChatWebSocketManager
 from app.auth import AuthService
-from app.chat import ChatService
+from app.chat import ChatService, MessageView
 from app.config import DatabaseConfigStore
 from app.db import Base, InteractionTurnRecord, create_database
 from app.llm import CompletionRequest, CompletionResult, LLMRoute, ModelUsage
@@ -123,7 +126,14 @@ def test_websocket_stream_cancel_and_cursor_catchup(tmp_path: Path) -> None:
             websocket.send_json(
                 {"type": "client_hello", "cursors": {conversation_id: 0}}
             )
-            assert websocket.receive_json()["type"] == "sync.completed"
+            initial_sync = websocket.receive_json()
+            assert initial_sync["type"] == "sync.completed"
+            assert initial_sync["payload"] == {
+                "after_seq": 0,
+                "next_after_seq": 0,
+                "count": 0,
+                "has_more": False,
+            }
             websocket.send_json(
                 {
                     "type": "message.send",
@@ -195,6 +205,76 @@ def test_websocket_stream_cancel_and_cursor_catchup(tmp_path: Path) -> None:
         await database.close()
 
     asyncio.run(inspect())
+
+
+async def test_websocket_cursor_catchup_is_paginated_without_truncation() -> None:
+    conversation_id = uuid4()
+    user_id = uuid4()
+    now = datetime.now(UTC)
+    messages = [
+        MessageView(
+            id=uuid4(),
+            conversation_id=conversation_id,
+            turn_id=uuid4(),
+            seq=seq,
+            role="assistant",
+            content=f"message-{seq}",
+            privacy_level="L1",
+            generation_id=None,
+            decision_meta=None,
+            created_at=now,
+        )
+        for seq in range(1, 202)
+    ]
+
+    class FakeService:
+        async def list_messages_after(
+            self,
+            requested_conversation_id: UUID,
+            *,
+            user_id: UUID,
+            after_seq: int,
+            limit: int,
+        ) -> list[MessageView]:
+            assert requested_conversation_id == conversation_id
+            assert user_id == connection.principal.user_id
+            return [message for message in messages if message.seq > after_seq][:limit]
+
+    class FakeWebSocket:
+        def __init__(self) -> None:
+            self.events: list[dict[str, object]] = []
+
+        async def send_json(self, event: dict[str, object]) -> None:
+            self.events.append(event)
+
+    websocket = FakeWebSocket()
+    connection = ChatConnection(
+        websocket=websocket,  # type: ignore[arg-type]
+        principal=SimpleNamespace(user_id=user_id),  # type: ignore[arg-type]
+    )
+    manager = ChatWebSocketManager(FakeService())  # type: ignore[arg-type]
+
+    await manager.subscribe(connection, conversation_id, 0)
+    first_sync = websocket.events[-1]
+    assert first_sync["type"] == "sync.completed"
+    assert first_sync["payload"] == {
+        "after_seq": 0,
+        "next_after_seq": 200,
+        "count": 200,
+        "has_more": True,
+    }
+    assert len(websocket.events) == 201
+
+    websocket.events.clear()
+    await manager.subscribe(connection, conversation_id, 200)
+    second_sync = websocket.events[-1]
+    assert second_sync["payload"] == {
+        "after_seq": 200,
+        "next_after_seq": 201,
+        "count": 1,
+        "has_more": False,
+    }
+    assert len(websocket.events) == 2
 
 
 async def test_device_message_uses_full_chat_service_and_hides_l2_reply(

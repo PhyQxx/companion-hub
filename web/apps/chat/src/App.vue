@@ -210,9 +210,53 @@ let voiceSentence: {
 const microphone = new PcmMicrophoneCapture();
 const playback = new VoicePlaybackQueue();
 
+function unlockVoicePlayback() {
+  void playback.unlock().then((unlocked) => {
+    if (!unlocked) voiceStatus.value = "浏览器尚未允许播放声音，请关闭再开启“文字回复播报”";
+  }).catch((error: unknown) => {
+    voiceStatus.value = error instanceof Error
+      ? `无法启用声音：${error.message}`
+      : "浏览器尚未允许播放声音";
+  });
+}
+
 const activeMessages = computed(() =>
   activeId.value ? (messagesByConversation.get(activeId.value) ?? []) : [],
 );
+
+function mergeMessages(
+  conversationId: string,
+  incoming: ChatMessage[],
+  replace = false,
+): ChatMessage[] {
+  const merged = new Map<string, ChatMessage>();
+  if (!replace) {
+    for (const message of messagesByConversation.get(conversationId) ?? []) {
+      merged.set(message.id, message);
+    }
+  }
+  for (const message of incoming) merged.set(message.id, message);
+  const messages = [...merged.values()].sort((left, right) => left.seq - right.seq);
+  messagesByConversation.set(conversationId, messages);
+  const conversation = conversations.value.find((item) => item.id === conversationId);
+  if (conversation && messages.length) {
+    conversation.last_seq = Math.max(conversation.last_seq, messages[messages.length - 1]!.seq);
+  }
+  return messages;
+}
+
+async function pullMessagesAfter(conversationId: string, afterSeq: number): Promise<void> {
+  const pageSize = 500;
+  let cursor = afterSeq;
+  while (true) {
+    const page = await api.listMessages(token.value, conversationId, cursor, pageSize);
+    mergeMessages(conversationId, page);
+    if (page.length < pageSize) return;
+    const nextCursor = page.reduce((latest, message) => Math.max(latest, message.seq), cursor);
+    if (nextCursor <= cursor) return;
+    cursor = nextCursor;
+  }
+}
 const avatarEmotion = computed(() => {
   if (streaming.value?.emotion) return streaming.value.emotion;
   const latest = [...activeMessages.value]
@@ -429,6 +473,11 @@ function handleVoiceEvent(event: VoiceControlEvent) {
           (amp) => {
             voiceViseme.value = amp;
           },
+          (message) => {
+            voiceBusy.value = false;
+            voiceViseme.value = 0;
+            voiceStatus.value = `语音播放失败：${message}`;
+          },
         );
         voiceSentence = null;
         voiceStatus.value = "正在播放回复…";
@@ -500,10 +549,7 @@ function handleVoiceEvent(event: VoiceControlEvent) {
 
 async function refreshMessages(conversationId: string) {
   try {
-    const messages = await api.listMessages(token.value, conversationId);
-    messagesByConversation.set(conversationId, messages);
-    const conversation = conversations.value.find((item) => item.id === conversationId);
-    if (conversation && messages.length) conversation.last_seq = messages[messages.length - 1]!.seq;
+    await pullMessagesAfter(conversationId, lastSeqOf(conversationId));
     if (conversationId === activeId.value) await scrollToEnd();
   } catch (error) {
     setStatus(error instanceof Error ? error.message : "刷新语音消息失败", true);
@@ -521,6 +567,8 @@ async function toggleVoiceRecording() {
   }
   if (!activeId.value || streaming.value || voiceBusy.value) return;
   try {
+    // 麦克风按钮是移动端可信用户手势，同时解锁稍后的 TTS 播放。
+    unlockVoicePlayback();
     const current = await ensureVoiceSocket();
     if (voiceAsrConfigured.value === false) {
       voiceStatus.value = voiceAsrBlockMessage.value || "语音识别当前不可用";
@@ -554,6 +602,8 @@ function onPrivacyChanged() {
 function onTextReplyVoiceChanged() {
   localStorage.setItem(TEXT_REPLY_VOICE_KEY, textReplyVoice.value ? "1" : "0");
   if (textReplyVoice.value && activeId.value) {
+    // 必须在 change 手势仍生效时创建/恢复 AudioContext。
+    unlockVoicePlayback();
     voiceStatus.value = "正在连接语音…";
     void ensureVoiceSocket().catch((error) => {
       voiceStatus.value = error instanceof Error ? error.message : "语音连接失败";
@@ -772,7 +822,7 @@ async function openConversation(id: string) {
   if (!messagesByConversation.has(id)) {
     try {
       const messages = await api.listMessages(token.value, id);
-      messagesByConversation.set(id, messages);
+      mergeMessages(id, messages, true);
     } catch (error) {
       setStatus(error instanceof Error ? error.message : "加载消息失败", true);
       return;
@@ -789,7 +839,7 @@ async function openConversation(id: string) {
 
 function lastSeqOf(id: string) {
   const messages = messagesByConversation.get(id) ?? [];
-  return messages.length ? (messages[messages.length - 1]!.seq ?? 0) : 0;
+  return messages.reduce((latest, message) => Math.max(latest, message.seq ?? 0), 0);
 }
 
 async function createConversation() {
@@ -873,8 +923,7 @@ async function resumeSession() {
     const conversationId = activeId.value;
     if (conversationId) {
       try {
-        const messages = await api.listMessages(token.value, conversationId);
-        messagesByConversation.set(conversationId, messages);
+        await pullMessagesAfter(conversationId, lastSeqOf(conversationId));
         await scrollToEnd();
       } catch (error) {
         if (error instanceof ApiError && error.status === 401) {
@@ -930,6 +979,15 @@ function handleEvent(event: SocketEvent) {
     }
     return;
   }
+  if (event.type === "sync.completed") {
+    const conversationId = event.stream.replace("conversation:", "");
+    const afterSeq = Number(event.payload.after_seq ?? 0);
+    const nextAfterSeq = Number(event.payload.next_after_seq ?? event.seq ?? afterSeq);
+    if (event.payload.has_more === true && nextAfterSeq > afterSeq) {
+      socket?.sync(conversationId, nextAfterSeq);
+    }
+    return;
+  }
   if (!event.payload.message && event.type !== "reply.delta" && event.type !== "reply.control") {
     if (event.type === "turn.failed") {
       streaming.value = null;
@@ -968,14 +1026,7 @@ function handleEvent(event: SocketEvent) {
   }
 
   const message = event.payload.message!;
-  const bucket = messagesByConversation.get(conversationId);
-  if (bucket) {
-    if (!bucket.some((item) => item.id === message.id)) bucket.push(message);
-  } else {
-    messagesByConversation.set(conversationId, [message]);
-  }
-  const conversation = conversations.value.find((item) => item.id === conversationId);
-  if (conversation) conversation.last_seq = Math.max(conversation.last_seq, message.seq);
+  mergeMessages(conversationId, [message]);
   if (event.type === "reply.committed" || event.type === "message.committed") {
     if (streaming.value?.generationId === event.generation_id) streaming.value = null;
     if (event.type === "reply.committed") {
@@ -988,6 +1039,8 @@ function handleEvent(event: SocketEvent) {
 
 async function send() {
   if (!canSend.value || !activeId.value) return;
+  // 已记住播报开关时，本次发送点击是恢复移动端音频权限的机会。
+  if (textReplyVoice.value) unlockVoicePlayback();
   const text = draft.value.trim();
   sendPending.value = true;
   draft.value = "";

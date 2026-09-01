@@ -488,9 +488,7 @@ class CognitiveDecisionRecord(Base):
 class CognitiveGoalRecord(Base):
     __tablename__ = "cognitive_goal"
     __table_args__ = (
-        CheckConstraint(
-            "kind IN ('user','shared','system')", name="ck_cognitive_goal_kind"
-        ),
+        CheckConstraint("kind IN ('user','shared','system')", name="ck_cognitive_goal_kind"),
         CheckConstraint(
             "status IN ('active','completed','cancelled','expired')",
             name="ck_cognitive_goal_status",
@@ -811,6 +809,102 @@ class InteractionTurnRecord(Base):
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
+class ActionPlanRecord(Base):
+    __tablename__ = "action_plan"
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('awaiting_confirmation','ready','executing','completed',"
+            "'partially_completed','failed','cancelled','expired')",
+            name="ck_action_plan_status",
+        ),
+        CheckConstraint(
+            "plan_kind IN ('standard','compensation')",
+            name="ck_action_plan_kind",
+        ),
+        UniqueConstraint("user_id", "idempotency_key", name="uq_action_plan_user_idempotency"),
+        Index("ix_action_plan_user_created", "user_id", "created_at"),
+        Index("ix_action_plan_user_status", "user_id", "status", "created_at"),
+    )
+
+    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True)
+    user_id: Mapped[UUID] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("app_user.id", ondelete="CASCADE"), nullable=False
+    )
+    title: Mapped[str | None] = mapped_column(String(240))
+    plan_kind: Mapped[str] = mapped_column(
+        String(24), nullable=False, default="standard", server_default="standard"
+    )
+    source_plan_id: Mapped[UUID | None] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("action_plan.id", ondelete="SET NULL")
+    )
+    undo_plan_id: Mapped[UUID | None] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("action_plan.id", ondelete="SET NULL")
+    )
+    status: Mapped[str] = mapped_column(String(32), nullable=False)
+    idempotency_key: Mapped[str] = mapped_column(String(160), nullable=False)
+    request_hash: Mapped[str] = mapped_column(String(71), nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    confirmed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    cancelled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    cancel_reason: Mapped[str | None] = mapped_column(String(160))
+    reason_code: Mapped[str | None] = mapped_column(String(160))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+
+class ActionStepRecord(Base):
+    __tablename__ = "action_step"
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('awaiting_confirmation','ready','executing','completed','failed',"
+            "'cancelled','skipped','unknown_outcome','expired')",
+            name="ck_action_step_status",
+        ),
+        CheckConstraint(
+            "verification_status IN ('pending','not_required','verified','inconclusive')",
+            name="ck_action_step_verification_status",
+        ),
+        UniqueConstraint("plan_id", "position", name="uq_action_step_plan_position"),
+        UniqueConstraint("idempotency_key", name="uq_action_step_idempotency"),
+        Index("ix_action_step_plan_status", "plan_id", "status", "position"),
+    )
+
+    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True)
+    plan_id: Mapped[UUID] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("action_plan.id", ondelete="CASCADE"), nullable=False
+    )
+    position: Mapped[int] = mapped_column(Integer, nullable=False)
+    action_id: Mapped[str] = mapped_column(String(160), nullable=False)
+    risk: Mapped[str] = mapped_column(String(4), nullable=False)
+    confirmation_policy: Mapped[str] = mapped_column(String(24), nullable=False)
+    status: Mapped[str] = mapped_column(String(32), nullable=False)
+    arguments: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    tool_name: Mapped[str] = mapped_column(String(160), nullable=False)
+    tool_arguments: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    idempotency_key: Mapped[str] = mapped_column(String(160), nullable=False)
+    timeout_seconds: Mapped[int] = mapped_column(Integer, nullable=False)
+    verification_policy: Mapped[str] = mapped_column(String(32), nullable=False)
+    verifier_id: Mapped[str | None] = mapped_column(String(160))
+    compensation_action_id: Mapped[str | None] = mapped_column(String(160))
+    compensates_step_id: Mapped[UUID | None] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("action_step.id", ondelete="SET NULL")
+    )
+    result: Mapped[dict[str, Any] | None] = mapped_column(JSON)
+    verification_status: Mapped[str] = mapped_column(
+        String(24), nullable=False, default="pending", server_default="pending"
+    )
+    verification_result: Mapped[dict[str, Any] | None] = mapped_column(JSON)
+    verified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    reason_code: Mapped[str | None] = mapped_column(String(160))
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
 class ActionResultRecord(Base):
     __tablename__ = "action_result"
     __table_args__ = (
@@ -887,9 +981,7 @@ class RuntimeLeaseRecord(Base):
 
 class UserModeRecord(Base):
     __tablename__ = "user_mode"
-    __table_args__ = (
-        Index("ix_user_mode_user_active", "user_id", "superseded_at", "priority"),
-    )
+    __table_args__ = (Index("ix_user_mode_user_active", "user_id", "superseded_at", "priority"),)
 
     id: Mapped[int] = mapped_column(BIGINT_PK, primary_key=True, autoincrement=True)
     user_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
@@ -1163,9 +1255,7 @@ class UiPreferenceRecord(Base):
     theme_id: Mapped[UUID] = mapped_column(
         Uuid(as_uuid=True), ForeignKey("ui_theme.id", ondelete="RESTRICT"), nullable=False
     )
-    appearance_mode: Mapped[str] = mapped_column(
-        String(16), nullable=False, server_default="light"
-    )
+    appearance_mode: Mapped[str] = mapped_column(String(16), nullable=False, server_default="light")
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now()
     )

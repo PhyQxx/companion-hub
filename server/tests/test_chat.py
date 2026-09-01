@@ -1115,6 +1115,10 @@ async def test_chat_api_auth_validation_and_stable_failure(
         messages = await client.get(
             f"/api/v1/chat/conversations/{conversation_id}/messages", headers=headers
         )
+        messages_after = await client.get(
+            f"/api/v1/chat/conversations/{conversation_id}/messages?after_seq=1",
+            headers=headers,
+        )
 
     assert unauthorized.status_code == 401
     assert admin_unauthorized.status_code == 401
@@ -1123,6 +1127,8 @@ async def test_chat_api_auth_validation_and_stable_failure(
     assert failure.status_code == 503
     assert failure.json() == {"detail": {"reason_code": "all_model_routes_failed"}}
     assert [item["content"] for item in messages.json()] == ["persist me"]
+    assert messages_after.status_code == 200
+    assert messages_after.json() == []
     async with database.sessions() as session:
         count = await session.scalar(select(func.count()).select_from(MessageRecord))
     assert count == 1

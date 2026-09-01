@@ -79,11 +79,27 @@ export class VoicePlaybackQueue {
   private epoch = 0;
   private visemeTimers = new Set<number>();
 
+  /**
+   * 移动浏览器要求在用户手势内解锁音频输出。必须在 click/change 处理器
+   * 的第一个异步网络等待之前调用；否则稍后收到的 TTS 分句会被静默挂起。
+   */
+  async unlock(): Promise<boolean> {
+    const context = this.ensureAudioContext();
+    const source = context.createBufferSource();
+    source.buffer = context.createBuffer(1, 1, context.sampleRate);
+    source.connect(context.destination);
+    source.onended = () => source.disconnect();
+    source.start(0);
+    if (context.state !== "running") await context.resume();
+    return context.state === "running";
+  }
+
   enqueue(
     meta: VoiceSentenceMeta,
     chunks: ArrayBuffer[],
     visemes: VoiceVisemeFrame[] = [],
     onViseme?: (amp: number) => void,
+    onError?: (message: string) => void,
   ): void {
     const epoch = this.epoch;
     const payload = concatBuffers(chunks);
@@ -97,6 +113,9 @@ export class VoicePlaybackQueue {
           : await context.decodeAudioData(payload.slice(0));
         if (epoch !== this.epoch) return;
         await this.playBuffer(context, buffer, epoch, visemes, onViseme);
+      })
+      .catch((error: unknown) => {
+        onError?.(error instanceof Error ? error.message : "浏览器无法播放语音");
       });
   }
 
@@ -123,8 +142,16 @@ export class VoicePlaybackQueue {
   }
 
   private async audioContext(): Promise<AudioContext> {
+    const context = this.ensureAudioContext();
+    if (context.state !== "running") await context.resume();
+    if (context.state !== "running") {
+      throw new Error("浏览器阻止了音频播放，请关闭再开启“文字回复播报”后重试");
+    }
+    return context;
+  }
+
+  private ensureAudioContext(): AudioContext {
     if (!this.context || this.context.state === "closed") this.context = new AudioContext();
-    if (this.context.state === "suspended") await this.context.resume();
     return this.context;
   }
 

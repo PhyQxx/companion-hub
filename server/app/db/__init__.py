@@ -1,5 +1,7 @@
 from .models import (
+    ActionPlanRecord,
     ActionResultRecord,
+    ActionStepRecord,
     AppUserRecord,
     AssetDerivationRecord,
     AssetRecord,
@@ -46,7 +48,9 @@ from .models import (
 from .session import Database, create_database
 
 __all__ = [
+    "ActionPlanRecord",
     "ActionResultRecord",
+    "ActionStepRecord",
     "AppUserRecord",
     "AssetDerivationRecord",
     "AssetRecord",

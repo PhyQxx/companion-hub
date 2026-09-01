@@ -162,8 +162,8 @@ interface HomeAssistantEntityConfig {
   read_allowed: boolean;
   history_allowed: boolean;
   history_max_hours: number;
-  allowed_actions: Array<"turn_on" | "turn_off" | "toggle" | "set_temperature">;
-  confirmation_required_actions: Array<"turn_on" | "turn_off" | "toggle" | "set_temperature">;
+  allowed_actions: Array<"turn_on" | "turn_off" | "toggle" | "set_temperature" | "set_brightness" | "play" | "pause" | "volume_set">;
+  confirmation_required_actions: Array<"turn_on" | "turn_off" | "toggle" | "set_temperature" | "set_brightness" | "play" | "pause" | "volume_set">;
   privacy_level: "L0" | "L1" | "L2" | "L3";
   allowed_attributes: string[];
 }
@@ -202,6 +202,7 @@ interface HomeAssistantConnectionTestResult {
 }
 
 interface HubConfig {
+  [key: string]: unknown;
   schema_version: number;
   models: Record<string, HubModel>;
   routes: Record<string, { primary: string; fallbacks?: string[]; timeout_ms?: number | null }>;
@@ -214,6 +215,23 @@ interface HubConfig {
   tools?: HubToolsConfig;
   integrations?: { home_assistant: HomeAssistantConfig };
   observability: { log_level: string; trace_sample_rate: number; retain_days: number };
+}
+
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/**
+ * 模型工作区只编辑自己认识的配置字段。保存时递归合并服务端原配置，
+ * 防止 screen_awareness、主动输出等其他模块被 Pydantic 默认值覆盖。
+ */
+function mergePreservingUnknown(base: unknown, updates: unknown): unknown {
+  if (!isPlainRecord(base) || !isPlainRecord(updates)) return structuredClone(updates);
+  const merged = structuredClone(base);
+  for (const [key, value] of Object.entries(updates)) {
+    merged[key] = key in base ? mergePreservingUnknown(base[key], value) : structuredClone(value);
+  }
+  return merged;
 }
 interface HubToolsConfig {
   enabled: boolean;
@@ -631,12 +649,18 @@ const homeAssistantActionLabels: Record<string, string> = {
   turn_off: "关闭",
   toggle: "切换",
   set_temperature: "设置温度",
+  set_brightness: "设置亮度",
+  play: "播放",
+  pause: "暂停",
+  volume_set: "设置音量",
 };
 
 function homeAssistantActions(entityId: string): string[] {
   const domain = entityId.split(".", 1)[0];
-  if (domain === "light" || domain === "switch") return ["turn_on", "turn_off", "toggle"];
+  if (domain === "light") return ["turn_on", "turn_off", "toggle", "set_brightness"];
+  if (domain === "switch") return ["turn_on", "turn_off", "toggle"];
   if (domain === "climate") return ["turn_on", "turn_off", "set_temperature"];
+  if (domain === "media_player") return ["turn_on", "turn_off", "play", "pause", "volume_set"];
   return [];
 }
 
@@ -1115,7 +1139,8 @@ async function saveConfig() {
     if (editMode.value === "visual") {
       syncDraftJson();
     }
-    const candidate = JSON.parse(draftJson.value) as HubConfig;
+    const edited = JSON.parse(draftJson.value) as HubConfig;
+    const candidate = mergePreservingUnknown(current.value?.config ?? {}, edited) as HubConfig;
     const problem = validateCandidate(candidate);
     if (problem) {
       emit("status", problem, true);
