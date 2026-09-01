@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import date, datetime
 from typing import Any
 from uuid import UUID
 
@@ -9,6 +9,7 @@ from sqlalchemy import (
     BigInteger,
     Boolean,
     CheckConstraint,
+    Date,
     DateTime,
     Float,
     ForeignKey,
@@ -1320,6 +1321,41 @@ class TaskItemRecord(Base):
     source: Mapped[str] = mapped_column(String(16), nullable=False, default="manual")
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     cancelled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now()
+    )
+
+
+class DailyBriefRecord(Base):
+    """BRIEF-01 每日智能简报：事实采集确定性、结论可溯源、每天至多一条。
+
+    (user_id, brief_date) 唯一约束保证每日 exactly-once；facts 持久化每条
+    结论的来源引用（task:{id} / goal:{id} / amap:weather:{adcode}）。
+    """
+
+    __tablename__ = "daily_brief"
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('pending','delivered')",
+            name="ck_daily_brief_status",
+        ),
+        UniqueConstraint("user_id", "brief_date", name="uq_daily_brief_user_date"),
+        Index("ix_daily_brief_user_created", "user_id", "created_at"),
+    )
+
+    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True)
+    user_id: Mapped[UUID] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("app_user.id", ondelete="CASCADE"), nullable=False
+    )
+    brief_date: Mapped[date] = mapped_column(Date, nullable=False)
+    facts: Mapped[list[dict[str, Any]]] = mapped_column(JSON, nullable=False)
+    text: Mapped[str] = mapped_column(Text, nullable=False)
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="pending")
+    delivered_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    channels: Mapped[list[dict[str, Any]] | None] = mapped_column(JSON)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )

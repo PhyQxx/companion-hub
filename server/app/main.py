@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager, suppress
+from datetime import time as dt_time
 from pathlib import Path
 from typing import cast
 from uuid import UUID
@@ -27,6 +28,7 @@ from app.api import (
     create_admin_timeline_router,
     create_auth_router,
     create_avatar_router,
+    create_briefs_router,
     create_chat_router,
     create_chat_websocket_router,
     create_cognition_router,
@@ -75,6 +77,7 @@ from app.home_assistant import (
     HomeGetStateTool,
 )
 from app.jobs import AssetStore, JobEngine
+from app.llm.provider import EnvSecretProvider
 from app.memory import (
     LlmMemoryExtractor,
     MemoryExtractor,
@@ -98,13 +101,27 @@ from app.screen_awareness import (
     ScreenAwarenessResolver,
 )
 from app.tasks import TaskScheduler, TaskStore
+from app.tasks.brief import BriefWeather, DailyBriefService
+from app.tasks.brief_scheduler import DailyBriefScheduler
 from app.tasks.goal_scheduler import GoalReminderScheduler
 from app.timeline import HistoryRecallService, TimelineStore
-from app.tools import DesktopNotifyTool, ToolExecutor, ToolHandler, ToolRegistry
+from app.tools import (
+    DesktopNotifyTool,
+    ToolExecutor,
+    ToolHandler,
+    ToolRegistry,
+    build_query_tool_runtime,
+)
 from app.tools.browser import InspectWebpageTool
+from app.tools.location import resolve_location
 from app.tools.screen import CapabilityScreenAnalyzer, CaptureScreenTool
 from app.tools.sensors import ReadSensorsTool
 from app.voice import ConfigVoiceSource
+
+
+def _parse_brief_time(raw: str) -> dt_time:
+    hour, minute = raw.split(":", 1)
+    return dt_time(int(hour), int(minute))
 
 
 def create_app(
@@ -165,6 +182,7 @@ def create_app(
     mqtt_presence_bridge: MqttPresenceBridge | None = None
     task_scheduler: TaskScheduler | None = None
     goal_reminder_scheduler: GoalReminderScheduler | None = None
+    daily_brief_scheduler: DailyBriefScheduler | None = None
 
     async def test_home_assistant_proactive() -> bool:
         if home_assistant_proactive is None:
@@ -248,6 +266,71 @@ def create_app(
             interval_seconds=float(os.getenv("ARIA_GOAL_REMINDER_INTERVAL", "60")),
         )
         if cognitive_store is not None
+        else None
+    )
+
+    async def fetch_brief_weather() -> BriefWeather | None:
+        """按需构建高德运行时取一次天气；任何失败只意味着简报少一条事实。"""
+        if runtime_config is None:
+            return None
+        city = runtime_config.current.config.tools.query.default_city or os.getenv(
+            "ARIA_BRIEF_CITY"
+        )
+        if not city:
+            return None
+        try:
+            runtime = build_query_tool_runtime(runtime_config.current.config, EnvSecretProvider())
+        except ValueError:
+            return None
+        try:
+            resolved = await resolve_location(
+                runtime.provider, explicit=city, ephemeral=None, default_city=city
+            )
+            live = await runtime.provider.weather(resolved.adcode, extensions="base")
+            lives = live.get("lives")
+            if not isinstance(lives, list) or not lives:
+                return None
+            item = lives[0] if isinstance(lives[0], dict) else {}
+            forecast = await runtime.provider.weather(resolved.adcode, extensions="all")
+            forecasts = forecast.get("forecasts")
+            casts = (
+                forecasts[0].get("casts")
+                if isinstance(forecasts, list) and forecasts and isinstance(forecasts[0], dict)
+                else None
+            )
+            today = (
+                casts[0] if isinstance(casts, list) and casts and isinstance(casts[0], dict) else {}
+            )
+            return BriefWeather(
+                city=resolved.name or city,
+                condition=str(item.get("weather") or "未知"),
+                temperature_c=str(item.get("temperature") or "—"),
+                low_c=str(today.get("nighttemp")) if today.get("nighttemp") else None,
+                high_c=str(today.get("daytemp")) if today.get("daytemp") else None,
+            )
+        except Exception:
+            return None
+        finally:
+            await runtime.close()
+
+    daily_brief_service = (
+        DailyBriefService(
+            runtime_database,
+            task_store,
+            cognitive_store,
+            weather_fetcher=fetch_brief_weather,
+            timezone_name=os.getenv("ARIA_DEFAULT_TIMEZONE", "Asia/Shanghai"),
+        )
+        if runtime_database is not None and task_store is not None and cognitive_store is not None
+        else None
+    )
+    daily_brief_scheduler = (
+        DailyBriefScheduler(
+            daily_brief_service,
+            timezone_name=os.getenv("ARIA_DEFAULT_TIMEZONE", "Asia/Shanghai"),
+            brief_time=_parse_brief_time(os.getenv("ARIA_BRIEF_TIME", "08:00")),
+        )
+        if daily_brief_service is not None
         else None
     )
 
@@ -349,9 +432,13 @@ def create_app(
             task_scheduler.start()
         if goal_reminder_scheduler is not None:
             goal_reminder_scheduler.start()
+        if daily_brief_scheduler is not None:
+            daily_brief_scheduler.start()
         try:
             yield
         finally:
+            if daily_brief_scheduler is not None:
+                await daily_brief_scheduler.stop()
             if goal_reminder_scheduler is not None:
                 await goal_reminder_scheduler.stop()
             if task_scheduler is not None:
@@ -849,6 +936,10 @@ def create_app(
                 app.state.task_store = task_store
                 app.state.task_scheduler = task_scheduler
                 app.state.goal_reminder_scheduler = goal_reminder_scheduler
+            if daily_brief_service is not None:
+                app.include_router(create_briefs_router(daily_brief_service, auth_service))
+                app.state.daily_brief_service = daily_brief_service
+                app.state.daily_brief_scheduler = daily_brief_scheduler
             if capability_models is not None:
                 app.include_router(create_model_capability_router(capability_models, auth_service))
             turn_coordinator = TurnCoordinator(runtime_database, runtime_chat_service)
@@ -896,6 +987,31 @@ def create_app(
                     task_scheduler.set_deliverer(deliver_task_reminder)
                 if goal_reminder_scheduler is not None:
                     goal_reminder_scheduler.set_deliverer(deliver_goal_reminder)
+                if daily_brief_scheduler is not None:
+
+                    async def deliver_daily_brief(
+                        text: str,
+                        *,
+                        user_id: UUID,
+                        brief_id: UUID,
+                        privacy_level: PrivacyLevel,
+                        trigger_kind: str,
+                    ) -> list[str] | None:
+                        if proactive_delivery is None:
+                            return None
+                        result = await proactive_delivery.deliver(
+                            text,
+                            entity_id="brief",
+                            rule_id=f"brief:{brief_id}",
+                            trigger_kind=trigger_kind,
+                            privacy_level=privacy_level,
+                            target_user_id=user_id,
+                        )
+                        if result is None:
+                            return None
+                        return list(result.delivered_channels)
+
+                    daily_brief_scheduler.set_deliverer(deliver_daily_brief)
 
                 home_assistant_proactive = HomeAssistantProactiveEngine(
                     runtime_database,
