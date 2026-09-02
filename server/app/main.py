@@ -38,6 +38,7 @@ from app.api import (
     create_device_routers,
     create_logs_stream_router,
     create_model_capability_router,
+    create_pnkx_router,
     create_reviews_router,
     create_tasks_router,
     create_theme_router,
@@ -96,6 +97,7 @@ from app.output.proactive import DesktopCommandGateway
 from app.perception import PerceptionPipeline, PerceptionStore, ProactivePolicy
 from app.perception.pipeline import EventObserver
 from app.persona import PersonaStore
+from app.pnkx import PnkxLifeClient
 from app.runtime import TurnCoordinator
 from app.schemas.common import PrivacyLevel
 from app.screen_awareness import (
@@ -389,6 +391,14 @@ def create_app(
         and pnkx_integration_token
         else None
     )
+    pnkx_life_client = (
+        PnkxLifeClient(
+            base_url=pnkx_base_url or "",
+            integration_token=pnkx_integration_token or "",
+        )
+        if pnkx_base_url and pnkx_integration_token
+        else None
+    )
     todo_sync_scheduler = (
         TodoSyncScheduler(
             todo_sync_service,
@@ -505,6 +515,8 @@ def create_app(
         try:
             yield
         finally:
+            if pnkx_life_client is not None:
+                await pnkx_life_client.close()
             if todo_sync_scheduler is not None:
                 await todo_sync_scheduler.stop()
             if daily_review_scheduler is not None:
@@ -1023,6 +1035,18 @@ def create_app(
                 app.include_router(create_todo_router(todo_sync_service, auth_service))
                 app.state.todo_sync_service = todo_sync_service
                 app.state.todo_sync_scheduler = todo_sync_scheduler
+            if pnkx_life_client is not None:
+                app.include_router(
+                    create_pnkx_router(
+                        pnkx_life_client,
+                        auth_service,
+                        writes_enabled=os.getenv(
+                            "ARIA_PNKX_WRITES_ENABLED", "false"
+                        ).lower()
+                        == "true",
+                    )
+                )
+                app.state.pnkx_life_client = pnkx_life_client
             if capability_models is not None:
                 app.include_router(create_model_capability_router(capability_models, auth_service))
             turn_coordinator = TurnCoordinator(runtime_database, runtime_chat_service)

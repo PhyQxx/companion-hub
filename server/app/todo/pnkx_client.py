@@ -99,6 +99,8 @@ class PnkxTodoClient:
             raise PnkxTodoError("integration_token_rejected")
         response.raise_for_status()
         payload: dict[str, Any] = response.json()
+        if payload.get("code") == 401:
+            raise PnkxTodoError("integration_token_rejected")
         if payload.get("code") != 200:
             raise PnkxTodoError("pnkx_rejected", str(payload.get("msg")))
         return payload
