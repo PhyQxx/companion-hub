@@ -68,6 +68,7 @@ class TaskView(StrictModel):
     last_delivery: dict[str, object] | None = None
     privacy_level: PrivacyLevel
     source: str
+    source_ref: str | None = None
     completed_at: datetime | None = None
     cancelled_at: datetime | None = None
     created_at: datetime | None = None

@@ -12,6 +12,7 @@ from .admin_timeline import create_admin_timeline_router
 from .auth import ChatSessionGuard, create_auth_router
 from .avatar import create_avatar_router
 from .briefs import create_briefs_router
+from .calendar import create_calendar_router
 from .chat import create_chat_router
 from .chat_ws import ChatWebSocketManager, create_chat_websocket_router
 from .cognition import create_cognition_router
@@ -47,6 +48,7 @@ __all__ = [
     "create_auth_router",
     "create_avatar_router",
     "create_briefs_router",
+    "create_calendar_router",
     "create_chat_router",
     "create_chat_websocket_router",
     "create_cognition_router",

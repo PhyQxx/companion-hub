@@ -19,7 +19,7 @@
 | Admin 信息架构重整 | 已完成（v1） | 领域分组、URL 可恢复二级 Tab、真实数据页与浏览器验收已完成 |
 | P6 Batch D Live2D/桌宠 | 联动代码完成 | 透明窗口、拖拽、穿透、位置恢复、Hub 同源舞台及签名情绪/动作/口型同步已接通；M2 与真机性能仍是发布门槛 |
 | M4B 手机 PWA | 进行中 | 可安装壳、离线降级、移动布局、前后台恢复、移动音频解锁及游标分页补拉/去重底座已完成；待真机验收、通知与多端租约 |
-| 个人管家闭环 J1～J8 | J2 代码闭环完成，J3 进行中 | ACT-01～03 已完成、ACT-04 进行中；J2 四项全部代码闭环；SAT-01/02 确定性核心（状态机+仲裁+协议帧）已落地，音频与真机全链待硬件；J4～J8 未启动，见 `docs/39` |
+| 个人管家闭环 J1～J8 | J2 完成，J3/J4 进行中 | ACT-01～03 已完成、ACT-04 进行中；J2 四项全部代码闭环；SAT-01/02 确定性核心已落地（音频与真机待硬件）；CAL-01 日历代码闭环；TODO/MAIL/CONTACT 与 J5～J8 未启动，见 `docs/39` |
 
 ## 2. 当前执行队列
 
@@ -67,7 +67,7 @@
 
 #### J4 个人信息连接器
 
-- [ ] `CAL-01` 日历：查询、冲突检查、会前提醒以及经确认的创建/修改/取消。
+- [x] `CAL-01` 日历（代码闭环，待真实验收）：v1 以 Hub 本地库为日历真源（`calendar_event` 表，`0030_calendar` 迁移同时给 `task_item` 加 `source_ref` 关联列）；外部 CalDAV/Google 后续按同契约接入。`CalendarStore` 半开区间重叠查询（首尾相接不算冲突）；`CalendarService` 提供 `preview`（纯读：规范化展示时间/参与人/目标日历 + 冲突列表，不落库，对应验收「写入前展示」）与显式 create/patch/cancel；会前提醒复用 TASK-01 调度底座（`source_ref=calendar:{id}`，默认提前 10 分钟，事件太近则尽快提醒；改期撤旧建新、取消撤旧，不引入新调度器）。API `/api/v1/calendar/events(/preview)` 全部走聊天会话鉴权，不接入模型工具直呼。剩余：聊天端自然语言建日程与外部日历同步。
 - [ ] `TODO-01` 单一任务真源：新增、完成、延期、优先级和项目双向同步。
 - [ ] `MAIL-01` 邮件助手：先只读摘要/搜索/归类，再开放草稿和显式确认发送。
 - [ ] `CONTACT-01` 联系人上下文：别名、时区、重要日期与用户明确授权的偏好。
@@ -153,6 +153,7 @@
 
 ## 3. 最近完成
 
+- [x] 个人连接器 `CAL-01` 日历：`calendar_event` 表 + `CalendarStore`（半开区间重叠冲突检查）+ `CalendarService`（preview 纯读展示写入内容与冲突、显式 CRUD、会前提醒经 `task_item.source_ref` 复用 TASK-01 调度并联动改期/取消）+ `/api/v1/calendar` 用户 API 与 main 接线。J4 第一项代码闭环。
 - [x] 全屋语音 `SAT-01/SAT-02` 确定性核心：`app/satellite` 状态机 + 内存会话注册表 + 唤醒仲裁（同 owner 单会话、2s 窗口去重、多终端唯一响应），接入 `/ws/devices` 签名帧（hello/wake/state，`voice.satellite` 能力门禁，非法转移/越权上报返回结构化错误帧）。音频上下行与真机全链待硬件。
 - [x] 个人管家 `REVIEW-01` 晚间回顾：`DailyReviewService` 四区块采集（完成/未完成/新承诺/明日重点，各带来源引用）+ 逐项修正（confirm/remove/note 只作用于回顾自身并重渲染正文）+ `(user_id, review_date)` 唯一约束每晚一次；`DailyReviewScheduler` 本地时区 21:30（`ARIA_REVIEW_TIME` 可调）经主动通道投递；`/api/v1/reviews` 查看与幂等预览。`CognitiveStore.create_goal/set_goal_status` 补可注入时钟，`goals_created_between/goals_completed_between` 支撑回顾查询。J2 四项（TASK/GOAL/BRIEF/REVIEW）代码闭环全部完成。
 - [x] 个人管家 `BRIEF-01` 每日智能简报：`DailyBriefService` 确定性事实采集（天气/当日任务/到期承诺，各带来源引用）+ 模板拼装（无重要内容一行短句）+ `(user_id, brief_date)` 唯一约束每日一次；`DailyBriefScheduler` 本地时区时间门后为活跃用户投递；`/api/v1/briefs` 查看与幂等预览。main.py 完成天气闭包（按需构建高德运行时、任何失败静默降级）与调度器生命周期接线。
@@ -223,6 +224,8 @@
 - [x] 伴侣形象与角色系统 v1 骨架：`app/avatar/store.py` 实现 AvatarStore（形象包管理、实例创建/更新/删除、人格绑定与默认形象查询）；内置 `warm-daily`（静态）与 `light-core`（抽象）两个种子形象包；新增 `avatar_pack`/`avatar_instance`/`persona_avatar_binding` 表；Admin 后台路由 `/api/v1/admin/avatars` 支持包列表/实例列表/创建/更新/删除/绑定/查询默认形象；`ChatService` 在 `decision_meta` 中注入当前人格默认形象的 `avatar_instance_id` 与 `avatar_pack_id`；新增 11 个单元测试全部通过。
 
 ## 4. 最新质量基线
+
+- 2026-09-02 `CAL-01` 日历：新增 `tests/test_calendar.py` **8 通过**（预览冲突且不落库、首尾相接非冲突、窗口/提前量校验、创建关联提醒任务、取消联动撤提醒、改期撤旧建新、临近事件立即提醒、API 全流含 401/404/422 与冲突预览）；非 soak 全量 pytest **592 通过 / 0 失败**；Ruff、严格 mypy（app 189 files）与 `git diff --check` 通过；Alembic SQLite 空库升级到单 head `0030_calendar`。真实 PostgreSQL 尚未应用 `0024～0030`；聊天端自然语言建日程与外部日历接入待做。
 
 - 2026-09-02 `SAT-01/SAT-02` 卫星确定性核心：新增 `tests/test_satellite.py` **13 通过**（合法生命周期、cancel/error 任意态回 idle、非法转移拒绝、首唤醒胜出/窗口内压制/窗口后放行、注销与未注册拒绝、重连重置保留计数、网关 hello/wake/state 全流、双卫星唯一响应、能力门禁、设备不能自行进入 listening、非法跳转与未注册错误帧、idle 重申幂等、断开注销）；非 soak 全量 pytest **584 通过 / 0 失败**；Ruff、严格 mypy（app 184 files）与 `git diff --check` 通过；无新迁移（内存态注册表），Alembic 保持单 head `0029_daily_review`。唤醒词/VAD/音频上下行待真机硬件验证。
 

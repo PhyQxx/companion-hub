@@ -1313,6 +1313,8 @@ class TaskItemRecord(Base):
     trigger_type: Mapped[str] = mapped_column(String(16), nullable=False)
     trigger_config: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
     event_type: Mapped[str | None] = mapped_column(String(64))
+    # 归属外部实体的可选引用（如 calendar:{event_id}），用于联动取消/重建
+    source_ref: Mapped[str | None] = mapped_column(String(120))
     next_fire_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     last_fired_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     fire_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
@@ -1392,6 +1394,46 @@ class DailyReviewRecord(Base):
     status: Mapped[str] = mapped_column(String(16), nullable=False, default="pending")
     delivered_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     channels: Mapped[list[dict[str, Any]] | None] = mapped_column(JSON)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now()
+    )
+
+
+class CalendarEventRecord(Base):
+    """CAL-01 日历事件：v1 以 Hub 本地库为唯一日历真源。
+
+    会前提醒不是独立列，而是通过 task_item.source_ref=calendar:{id} 挂在
+    TASK-01 调度底座上；事件改期/取消时由 CalendarService 联动重建/取消。
+    """
+
+    __tablename__ = "calendar_event"
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('active','cancelled')",
+            name="ck_calendar_event_status",
+        ),
+        Index("ix_calendar_event_user_start", "user_id", "status", "starts_at"),
+    )
+
+    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True)
+    user_id: Mapped[UUID] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("app_user.id", ondelete="CASCADE"), nullable=False
+    )
+    calendar_id: Mapped[str] = mapped_column(String(64), nullable=False, default="primary")
+    title: Mapped[str] = mapped_column(String(320), nullable=False)
+    notes: Mapped[str | None] = mapped_column(Text)
+    starts_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    ends_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    all_day: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default=false()
+    )
+    location: Mapped[str | None] = mapped_column(String(240))
+    participants: Mapped[list[dict[str, Any]]] = mapped_column(JSON, nullable=False, default=list)
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="active")
+    source: Mapped[str] = mapped_column(String(16), nullable=False, default="api")
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )

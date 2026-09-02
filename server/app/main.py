@@ -29,6 +29,7 @@ from app.api import (
     create_auth_router,
     create_avatar_router,
     create_briefs_router,
+    create_calendar_router,
     create_chat_router,
     create_chat_websocket_router,
     create_cognition_router,
@@ -48,6 +49,7 @@ from app.appearance import ThemeStore
 from app.auth import AuthService
 from app.avatar import AvatarAssetImporter, AvatarStore
 from app.bus import DispatcherWorker, EventPublisher, LocalEventPublisher
+from app.calendar import CalendarService, CalendarStore
 from app.chat import ChatService, CompositeRuntimeCapabilityProvider, RuntimeCapabilityProvider
 from app.cognition import (
     ActionPlanService,
@@ -359,6 +361,11 @@ def create_app(
             review_time=_parse_review_time(os.getenv("ARIA_REVIEW_TIME", "21:30")),
         )
         if daily_review_service is not None
+        else None
+    )
+    calendar_service = (
+        CalendarService(CalendarStore(runtime_database), task_store)
+        if runtime_database is not None and task_store is not None
         else None
     )
 
@@ -976,6 +983,9 @@ def create_app(
                 app.include_router(create_reviews_router(daily_review_service, auth_service))
                 app.state.daily_review_service = daily_review_service
                 app.state.daily_review_scheduler = daily_review_scheduler
+            if calendar_service is not None:
+                app.include_router(create_calendar_router(calendar_service, auth_service))
+                app.state.calendar_service = calendar_service
             if capability_models is not None:
                 app.include_router(create_model_capability_router(capability_models, auth_service))
             turn_coordinator = TurnCoordinator(runtime_database, runtime_chat_service)

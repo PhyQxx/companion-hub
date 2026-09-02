@@ -49,6 +49,7 @@ def _to_view(record: TaskItemRecord) -> TaskView:
         last_delivery=record.last_delivery,
         privacy_level=PrivacyLevel(record.privacy_level),
         source=record.source,
+        source_ref=record.source_ref,
         completed_at=_aware(record.completed_at) if record.completed_at is not None else None,
         cancelled_at=_aware(record.cancelled_at) if record.cancelled_at is not None else None,
         created_at=_aware(record.created_at) if record.created_at is not None else None,
@@ -74,6 +75,7 @@ class TaskStore:
         notes: str | None = None,
         privacy_level: PrivacyLevel = PrivacyLevel.L1,
         source: str = "manual",
+        source_ref: str | None = None,
         now: datetime | None = None,
     ) -> TaskView:
         moment = now or datetime.now(UTC)
@@ -88,6 +90,7 @@ class TaskStore:
             trigger_type=str(normalized.type),
             trigger_config=normalized.model_dump(mode="json"),
             event_type=normalized.event_type,
+            source_ref=source_ref,
             next_fire_at=normalized.at if normalized.type == "time" else None,
             fire_count=0,
             privacy_level=str(privacy_level),
@@ -98,6 +101,26 @@ class TaskStore:
         async with self._database.sessions.begin() as session:
             session.add(record)
         return _to_view(record)
+
+    async def cancel_tasks_by_source_ref(self, user_id: UUID, source_ref: str) -> int:
+        """联动取消：外部实体（如日历事件）取消/改期时撤下其提醒任务。"""
+        now = datetime.now(UTC)
+        async with self._database.sessions.begin() as session:
+            result = await session.execute(
+                update(TaskItemRecord)
+                .where(
+                    TaskItemRecord.user_id == user_id,
+                    TaskItemRecord.source_ref == source_ref,
+                    TaskItemRecord.status == str(TaskStatus.ACTIVE),
+                )
+                .values(
+                    status=str(TaskStatus.CANCELLED),
+                    cancelled_at=now,
+                    next_fire_at=None,
+                    updated_at=now,
+                )
+            )
+        return int(cast(CursorResult[Any], result).rowcount or 0)
 
     async def list_tasks(
         self,
