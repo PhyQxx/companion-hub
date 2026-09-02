@@ -37,6 +37,17 @@ from app.devices import (
     EphemeralDeviceAssetError,
     EphemeralDeviceAssetStore,
 )
+from app.satellite import (
+    SATELLITE_CAPABILITY,
+    InvalidSatelliteTransition,
+    SatelliteEvent,
+    SatelliteHelloFrame,
+    SatelliteRegistry,
+    SatelliteState,
+    SatelliteStateFrame,
+    SatelliteWakeFrame,
+    device_reported_event,
+)
 from app.schemas import PrivacyLevel
 from app.schemas.common import NamespacedName, StrictModel
 
@@ -128,9 +139,7 @@ PetMessageHandler = Callable[
     Awaitable[tuple[dict[str, JsonValue], str]],
 ]
 PetAudioEmitter = Callable[[str, dict[str, JsonValue]], Awaitable[None]]
-PetAudioHandler = Callable[
-    [str, PrivacyLevel, PetAudioEmitter], Awaitable[bool]
-]
+PetAudioHandler = Callable[[str, PrivacyLevel, PetAudioEmitter], Awaitable[bool]]
 
 
 class DeviceCommandGateway:
@@ -152,6 +161,8 @@ class DeviceCommandGateway:
         self._pet_audio_handler: PetAudioHandler | None = None
         self._pet_message_tasks: dict[tuple[UUID, UUID], asyncio.Task[None]] = {}
         self._pet_message_requests: set[tuple[UUID, UUID]] = set()
+        # SAT-01 卫星会话与唤醒仲裁（内存态，掉线即注销）
+        self.satellites = SatelliteRegistry()
 
     def set_pet_message_handler(self, handler: PetMessageHandler) -> None:
         self._pet_message_handler = handler
@@ -176,6 +187,7 @@ class DeviceCommandGateway:
         if current is connection:
             self._connections.pop(connection.principal.device_id, None)
             self._cancel_pet_messages(connection.principal.device_id)
+            self.satellites.unregister(connection.principal.device_id)
 
     def _cancel_pet_messages(self, device_id: UUID) -> None:
         for key, task in list(self._pet_message_tasks.items()):
@@ -185,6 +197,137 @@ class DeviceCommandGateway:
         self._pet_message_requests = {
             key for key in self._pet_message_requests if key[0] != device_id
         }
+
+    async def satellite_hello(
+        self,
+        connection: DeviceCommandConnection,
+        frame: SatelliteHelloFrame,
+    ) -> None:
+        if SATELLITE_CAPABILITY not in connection.capabilities:
+            await connection.send_signed(
+                {
+                    "proto_version": 1,
+                    "type": "satellite.error",
+                    "reason_code": "capability_not_authorized",
+                    "sent_at": datetime.now(UTC).isoformat(),
+                }
+            )
+            return
+        session = self.satellites.register(
+            device_id=connection.principal.device_id,
+            owner_user_id=connection.principal.owner_user_id,
+            room_id=frame.room_id,
+        )
+        await connection.send_signed(
+            {
+                "proto_version": 1,
+                "type": "satellite.ready",
+                "room_id": session.room_id,
+                "state": session.state.value,
+                "sent_at": datetime.now(UTC).isoformat(),
+            }
+        )
+
+    async def satellite_wake(
+        self,
+        connection: DeviceCommandConnection,
+        frame: SatelliteWakeFrame,
+    ) -> None:
+        if SATELLITE_CAPABILITY not in connection.capabilities:
+            await connection.send_signed(
+                {
+                    "proto_version": 1,
+                    "type": "satellite.error",
+                    "reason_code": "capability_not_authorized",
+                    "sent_at": datetime.now(UTC).isoformat(),
+                }
+            )
+            return
+        decision = self.satellites.arbitrate_wake(
+            device_id=connection.principal.device_id,
+            owner_user_id=connection.principal.owner_user_id,
+        )
+        if decision.winner:
+            await connection.send_signed(
+                {
+                    "proto_version": 1,
+                    "type": "satellite.state.set",
+                    "state": decision.session_state.value,
+                    "room_id": frame.room_id,
+                    "sent_at": datetime.now(UTC).isoformat(),
+                }
+            )
+        else:
+            await connection.send_signed(
+                {
+                    "proto_version": 1,
+                    "type": "satellite.wake.suppressed",
+                    "reason_code": decision.reason_code,
+                    "sent_at": datetime.now(UTC).isoformat(),
+                }
+            )
+
+    async def satellite_state(
+        self,
+        connection: DeviceCommandConnection,
+        frame: SatelliteStateFrame,
+    ) -> None:
+        if SATELLITE_CAPABILITY not in connection.capabilities:
+            await connection.send_signed(
+                {
+                    "proto_version": 1,
+                    "type": "satellite.error",
+                    "reason_code": "capability_not_authorized",
+                    "sent_at": datetime.now(UTC).isoformat(),
+                }
+            )
+            return
+        event = device_reported_event(frame.state)
+        session = self.satellites.get(connection.principal.device_id)
+        if (
+            session is not None
+            and frame.state == SatelliteState.IDLE
+            and session.state == SatelliteState.IDLE
+        ):
+            # 设备重申 idle 幂等接受，不产生错误帧
+            await connection.send_signed(
+                {
+                    "proto_version": 1,
+                    "type": "satellite.state.accepted",
+                    "state": SatelliteState.IDLE.value,
+                    "sent_at": datetime.now(UTC).isoformat(),
+                }
+            )
+            return
+        try:
+            if event is None:
+                # idle→listening 只能由 Hub 仲裁触发；其余目标状态必须有等价事件
+                raise InvalidSatelliteTransition(
+                    session.state if session is not None else SatelliteState.IDLE,
+                    SatelliteEvent.WAKE_ACCEPTED,
+                )
+            state = self.satellites.apply_event(connection.principal.device_id, event)
+        except (LookupError, InvalidSatelliteTransition) as error:
+            await connection.send_signed(
+                {
+                    "proto_version": 1,
+                    "type": "satellite.error",
+                    "reason_code": (
+                        "not_registered" if isinstance(error, LookupError) else "illegal_transition"
+                    ),
+                    "detail": frame.reason_code,
+                    "sent_at": datetime.now(UTC).isoformat(),
+                }
+            )
+            return
+        await connection.send_signed(
+            {
+                "proto_version": 1,
+                "type": "satellite.state.accepted",
+                "state": state.value,
+                "sent_at": datetime.now(UTC).isoformat(),
+            }
+        )
 
     async def start_pet_message(
         self, connection: DeviceCommandConnection, frame: PetMessageFrame
@@ -201,14 +344,10 @@ class DeviceCommandGateway:
             )
             return
         if key in self._pet_message_requests:
-            await self._send_pet_message_failure(
-                connection, frame.request_id, "duplicate_request"
-            )
+            await self._send_pet_message_failure(connection, frame.request_id, "duplicate_request")
             return
         if any(device_id == key[0] for device_id, _ in self._pet_message_tasks):
-            await self._send_pet_message_failure(
-                connection, frame.request_id, "turn_in_progress"
-            )
+            await self._send_pet_message_failure(connection, frame.request_id, "turn_in_progress")
             return
         previous_requests = [
             request_key
@@ -231,13 +370,9 @@ class DeviceCommandGateway:
             name=f"pet-message-{frame.request_id}",
         )
         self._pet_message_tasks[key] = task
-        task.add_done_callback(
-            lambda finished: self._finish_pet_message(key, finished)
-        )
+        task.add_done_callback(lambda finished: self._finish_pet_message(key, finished))
 
-    def _finish_pet_message(
-        self, key: tuple[UUID, UUID], task: asyncio.Task[None]
-    ) -> None:
+    def _finish_pet_message(self, key: tuple[UUID, UUID], task: asyncio.Task[None]) -> None:
         if self._pet_message_tasks.get(key) is task:
             self._pet_message_tasks.pop(key, None)
 
@@ -280,9 +415,7 @@ class DeviceCommandGateway:
         except asyncio.CancelledError:
             raise
         except Exception:
-            await self._send_pet_message_failure(
-                connection, frame.request_id, "generation_failed"
-            )
+            await self._send_pet_message_failure(connection, frame.request_id, "generation_failed")
 
     async def _stream_pet_audio(
         self,
@@ -291,9 +424,7 @@ class DeviceCommandGateway:
         text: str,
         privacy_level: PrivacyLevel,
     ) -> bool:
-        async def emit_audio(
-            frame_type: str, payload: dict[str, JsonValue]
-        ) -> None:
+        async def emit_audio(frame_type: str, payload: dict[str, JsonValue]) -> None:
             await connection.send_signed(
                 {
                     "proto_version": 1,
@@ -306,18 +437,14 @@ class DeviceCommandGateway:
 
         handler = self._pet_audio_handler
         if handler is None:
-            await emit_audio(
-                "pet.audio.failed", {"reason_code": "tts_not_configured"}
-            )
+            await emit_audio("pet.audio.failed", {"reason_code": "tts_not_configured"})
             return False
         try:
             return await handler(text, privacy_level, emit_audio)
         except asyncio.CancelledError:
             raise
         except Exception:
-            await emit_audio(
-                "pet.audio.failed", {"reason_code": "tts_generation_failed"}
-            )
+            await emit_audio("pet.audio.failed", {"reason_code": "tts_generation_failed"})
             return False
 
     async def _send_pet_message_failure(
@@ -442,11 +569,11 @@ class DeviceCommandGateway:
         reason_code: str | None,
         result_meta: dict[str, JsonValue] | None,
     ) -> CommandSnapshot:
-        if result_meta is not None and len(
-            json.dumps(
-                result_meta, ensure_ascii=False, separators=(",", ":")
-            ).encode()
-        ) > 4096:
+        if (
+            result_meta is not None
+            and len(json.dumps(result_meta, ensure_ascii=False, separators=(",", ":")).encode())
+            > 4096
+        ):
             raise DeviceCommandConflict("result_meta exceeds 4096 bytes")
         result = await self._store.complete(
             device_id,
@@ -574,13 +701,10 @@ def create_device_command_routers(
         limit: Annotated[int, Field(ge=1, le=200)] = 100,
     ) -> list[CommandResponse]:
         return [
-            _command_response(value)
-            for value in await store.list(device_id=device_id, limit=limit)
+            _command_response(value) for value in await store.list(device_id=device_id, limit=limit)
         ]
 
-    @admin.get(
-        "/api/v1/admin/device-commands/{command_id}", response_model=CommandResponse
-    )
+    @admin.get("/api/v1/admin/device-commands/{command_id}", response_model=CommandResponse)
     async def command_detail(command_id: UUID) -> CommandResponse:
         try:
             return _command_response(await store.get(command_id))
@@ -605,9 +729,7 @@ def create_device_command_routers(
                 raw_auth = await websocket.receive_json()
             auth = DeviceAuthenticateFrame.model_validate(raw_auth)
             principal = await registry.authenticate(auth.access_token)
-            device = await registry.heartbeat(
-                principal, capabilities=tuple(auth.capabilities)
-            )
+            device = await registry.heartbeat(principal, capabilities=tuple(auth.capabilities))
         except WebSocketDisconnect:
             return
         except (TimeoutError, ValidationError, DeviceCredentialInvalid):
@@ -692,9 +814,7 @@ def create_device_command_routers(
                     status.HTTP_400_BAD_REQUEST, detail="invalid content length"
                 ) from error
             if length < 0:
-                raise HTTPException(
-                    status.HTTP_400_BAD_REQUEST, detail="invalid content length"
-                )
+                raise HTTPException(status.HTTP_400_BAD_REQUEST, detail="invalid content length")
             if length > MAX_DEVICE_ASSET_BYTES:
                 raise HTTPException(status.HTTP_413_CONTENT_TOO_LARGE, detail="asset too large")
         body = bytearray()
@@ -745,14 +865,16 @@ async def _handle_device_frame(
                 }
             )
         elif frame_type == "pet.message.send":
-            await gateway.start_pet_message(
-                connection, PetMessageFrame.model_validate(raw)
-            )
+            await gateway.start_pet_message(connection, PetMessageFrame.model_validate(raw))
+        elif frame_type == "satellite.hello":
+            await gateway.satellite_hello(connection, SatelliteHelloFrame.model_validate(raw))
+        elif frame_type == "satellite.wake":
+            await gateway.satellite_wake(connection, SatelliteWakeFrame.model_validate(raw))
+        elif frame_type == "satellite.state":
+            await gateway.satellite_state(connection, SatelliteStateFrame.model_validate(raw))
         elif frame_type == "command.ack":
             ack_frame = CommandAckFrame.model_validate(raw)
-            result = await gateway.acknowledge(
-                connection.principal.device_id, ack_frame.command_id
-            )
+            result = await gateway.acknowledge(connection.principal.device_id, ack_frame.command_id)
             await connection.send_signed(_receipt_frame(result))
         elif frame_type == "command.result":
             result_frame = CommandResultFrame.model_validate(raw)

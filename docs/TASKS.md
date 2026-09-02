@@ -19,7 +19,7 @@
 | Admin 信息架构重整 | 已完成（v1） | 领域分组、URL 可恢复二级 Tab、真实数据页与浏览器验收已完成 |
 | P6 Batch D Live2D/桌宠 | 联动代码完成 | 透明窗口、拖拽、穿透、位置恢复、Hub 同源舞台及签名情绪/动作/口型同步已接通；M2 与真机性能仍是发布门槛 |
 | M4B 手机 PWA | 进行中 | 可安装壳、离线降级、移动布局、前后台恢复、移动音频解锁及游标分页补拉/去重底座已完成；待真机验收、通知与多端租约 |
-| 个人管家闭环 J1～J8 | J1 主体完成，J2 代码闭环完成 | ACT-01～03 已完成、ACT-04 进行中；TASK-01/GOAL-01/BRIEF-01/REVIEW-01 全部代码闭环（合计 50 项新回归，待真实多通道投递与模型识别验收），J3～J8 未启动，见 `docs/39` |
+| 个人管家闭环 J1～J8 | J2 代码闭环完成，J3 进行中 | ACT-01～03 已完成、ACT-04 进行中；J2 四项全部代码闭环；SAT-01/02 确定性核心（状态机+仲裁+协议帧）已落地，音频与真机全链待硬件；J4～J8 未启动，见 `docs/39` |
 
 ## 2. 当前执行队列
 
@@ -61,8 +61,8 @@
 
 #### J3 全屋语音卫星
 
-- [ ] `SAT-01` 房间终端协议：唤醒词、VAD、状态机、音频上下行和单终端全链。
-- [ ] `SAT-02` 就近响应：房间标识、候选仲裁、普通/紧急播报策略，多个终端只允许一个响应。
+- [ ] `SAT-01` 房间终端协议（进行中）：`app/satellite` 模块已落地确定性核心——`idle/listening/processing/speaking` 四态状态机（非法转移抛 `InvalidSatelliteTransition`，cancel/error 任意态回 idle）、`SatelliteRegistry` 内存会话（重连重置 idle、计数保留观测、掉线注销）与设备命令通道三类签名帧（`satellite.hello` 注册房间、`satellite.wake` 唤醒上报、`satellite.state` 状态上报；`idle→listening` 只能由 Hub 仲裁下发，设备重申 idle 幂等接受），全部要求 `voice.satellite` 能力授权；SAT-02 的仲裁核心已随做（见下）。剩余：唤醒词/VAD 的设备端实现、音频上下行帧与单终端真机全链（旧手机/树莓派验证）。
+- [ ] `SAT-02` 就近响应（仲裁核心已随 SAT-01 落地）：`arbitrate_wake` 确定性判定——同 owner 已有进行中会话压制（session_active）、仲裁窗口内重复唤醒压制（arbitration_window，默认 2s）、否则胜出进入 listening；多终端同时听到唤醒词只有一个响应。剩余：普通/紧急播报策略与房间标签路由。
 - [ ] `SAT-03` 连续对话：多轮免唤醒、超时、打断和跨设备安全接管。
 
 #### J4 个人信息连接器
@@ -153,6 +153,7 @@
 
 ## 3. 最近完成
 
+- [x] 全屋语音 `SAT-01/SAT-02` 确定性核心：`app/satellite` 状态机 + 内存会话注册表 + 唤醒仲裁（同 owner 单会话、2s 窗口去重、多终端唯一响应），接入 `/ws/devices` 签名帧（hello/wake/state，`voice.satellite` 能力门禁，非法转移/越权上报返回结构化错误帧）。音频上下行与真机全链待硬件。
 - [x] 个人管家 `REVIEW-01` 晚间回顾：`DailyReviewService` 四区块采集（完成/未完成/新承诺/明日重点，各带来源引用）+ 逐项修正（confirm/remove/note 只作用于回顾自身并重渲染正文）+ `(user_id, review_date)` 唯一约束每晚一次；`DailyReviewScheduler` 本地时区 21:30（`ARIA_REVIEW_TIME` 可调）经主动通道投递；`/api/v1/reviews` 查看与幂等预览。`CognitiveStore.create_goal/set_goal_status` 补可注入时钟，`goals_created_between/goals_completed_between` 支撑回顾查询。J2 四项（TASK/GOAL/BRIEF/REVIEW）代码闭环全部完成。
 - [x] 个人管家 `BRIEF-01` 每日智能简报：`DailyBriefService` 确定性事实采集（天气/当日任务/到期承诺，各带来源引用）+ 模板拼装（无重要内容一行短句）+ `(user_id, brief_date)` 唯一约束每日一次；`DailyBriefScheduler` 本地时区时间门后为活跃用户投递；`/api/v1/briefs` 查看与幂等预览。main.py 完成天气闭包（按需构建高德运行时、任何失败静默降级）与调度器生命周期接线。
 - [x] 个人管家 `GOAL-01` 承诺跟踪：目标提醒 pre_due/due 各一次的乐观认领、稍后/忽略降频闸门与反馈 API；`GoalTracker` 聊天后台承诺识别（消息证据 + 幂等 + 宁缺勿滥）；`GoalReminderScheduler` 复用主动通道投递。`ChatService` 新增 `goal_tracker` 参数与后台提取任务，`main.py` 完成 scheduler 生命周期与投递接线。
@@ -222,6 +223,8 @@
 - [x] 伴侣形象与角色系统 v1 骨架：`app/avatar/store.py` 实现 AvatarStore（形象包管理、实例创建/更新/删除、人格绑定与默认形象查询）；内置 `warm-daily`（静态）与 `light-core`（抽象）两个种子形象包；新增 `avatar_pack`/`avatar_instance`/`persona_avatar_binding` 表；Admin 后台路由 `/api/v1/admin/avatars` 支持包列表/实例列表/创建/更新/删除/绑定/查询默认形象；`ChatService` 在 `decision_meta` 中注入当前人格默认形象的 `avatar_instance_id` 与 `avatar_pack_id`；新增 11 个单元测试全部通过。
 
 ## 4. 最新质量基线
+
+- 2026-09-02 `SAT-01/SAT-02` 卫星确定性核心：新增 `tests/test_satellite.py` **13 通过**（合法生命周期、cancel/error 任意态回 idle、非法转移拒绝、首唤醒胜出/窗口内压制/窗口后放行、注销与未注册拒绝、重连重置保留计数、网关 hello/wake/state 全流、双卫星唯一响应、能力门禁、设备不能自行进入 listening、非法跳转与未注册错误帧、idle 重申幂等、断开注销）；非 soak 全量 pytest **584 通过 / 0 失败**；Ruff、严格 mypy（app 184 files）与 `git diff --check` 通过；无新迁移（内存态注册表），Alembic 保持单 head `0029_daily_review`。唤醒词/VAD/音频上下行待真机硬件验证。
 
 - 2026-09-01 `REVIEW-01` 晚间回顾（J2 收口）：新增 `tests/test_review.py` **7 通过**（四区块采集、空/移除/附注拼装、幂等不覆盖修正、修正不改任务真源状态、每晚投递一次、时间门、API 含 401/404/422）；非 soak 全量 pytest **571 通过 / 0 失败**；Ruff、严格 mypy（app 181 files）与 `git diff --check` 通过；Alembic SQLite 空库升级到单 head `0029_daily_review`。真实 PostgreSQL 尚未应用 `0024～0029`；真实多通道投递待验收。
 
