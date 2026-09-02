@@ -41,6 +41,7 @@ from app.api import (
     create_reviews_router,
     create_tasks_router,
     create_theme_router,
+    create_todo_router,
     create_voice_websocket_router,
 )
 from app.api.admin_config import set_runtime_admin_token
@@ -110,6 +111,8 @@ from app.tasks.goal_scheduler import GoalReminderScheduler
 from app.tasks.review import DailyReviewService
 from app.tasks.review_scheduler import DailyReviewScheduler
 from app.timeline import HistoryRecallService, TimelineStore
+from app.todo import PnkxTodoClient, TodoSyncService
+from app.todo.sync_scheduler import TodoSyncScheduler
 from app.tools import (
     DesktopNotifyTool,
     ToolExecutor,
@@ -194,6 +197,7 @@ def create_app(
     goal_reminder_scheduler: GoalReminderScheduler | None = None
     daily_brief_scheduler: DailyBriefScheduler | None = None
     daily_review_scheduler: DailyReviewScheduler | None = None
+    todo_sync_scheduler: TodoSyncScheduler | None = None
 
     async def test_home_assistant_proactive() -> bool:
         if home_assistant_proactive is None:
@@ -368,6 +372,31 @@ def create_app(
         if runtime_database is not None and task_store is not None
         else None
     )
+    # TODO-01：pnkx 为任务单一真源；BASE_URL + 集成令牌齐备才启用，缺省完全关闭
+    pnkx_base_url = os.getenv("ARIA_PNKX_BASE_URL")
+    pnkx_integration_token = os.getenv("ARIA_PNKX_TOKEN")
+    todo_sync_service = (
+        TodoSyncService(
+            runtime_database,
+            PnkxTodoClient(
+                base_url=pnkx_base_url or "",
+                integration_token=pnkx_integration_token or "",
+                timezone_name=os.getenv("ARIA_DEFAULT_TIMEZONE", "Asia/Shanghai"),
+            ),
+        )
+        if runtime_database is not None
+        and pnkx_base_url
+        and pnkx_integration_token
+        else None
+    )
+    todo_sync_scheduler = (
+        TodoSyncScheduler(
+            todo_sync_service,
+            interval_seconds=float(os.getenv("ARIA_TODO_SYNC_INTERVAL", "300")),
+        )
+        if todo_sync_service is not None
+        else None
+    )
 
     async def deliver_task_reminder(
         text: str,
@@ -471,9 +500,13 @@ def create_app(
             daily_brief_scheduler.start()
         if daily_review_scheduler is not None:
             daily_review_scheduler.start()
+        if todo_sync_scheduler is not None:
+            todo_sync_scheduler.start()
         try:
             yield
         finally:
+            if todo_sync_scheduler is not None:
+                await todo_sync_scheduler.stop()
             if daily_review_scheduler is not None:
                 await daily_review_scheduler.stop()
             if daily_brief_scheduler is not None:
@@ -986,6 +1019,10 @@ def create_app(
             if calendar_service is not None:
                 app.include_router(create_calendar_router(calendar_service, auth_service))
                 app.state.calendar_service = calendar_service
+            if todo_sync_service is not None:
+                app.include_router(create_todo_router(todo_sync_service, auth_service))
+                app.state.todo_sync_service = todo_sync_service
+                app.state.todo_sync_scheduler = todo_sync_scheduler
             if capability_models is not None:
                 app.include_router(create_model_capability_router(capability_models, auth_service))
             turn_coordinator = TurnCoordinator(runtime_database, runtime_chat_service)

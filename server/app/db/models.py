@@ -1319,6 +1319,10 @@ class TaskItemRecord(Base):
     last_fired_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     fire_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
     last_delivery: Mapped[dict[str, Any] | None] = mapped_column(JSON)
+    # TODO-01 外部任务镜像元数据（pnkx 为单一真源时的本地投影）
+    external_updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    priority: Mapped[int | None] = mapped_column(Integer)
+    group_label: Mapped[str | None] = mapped_column(String(64))
     privacy_level: Mapped[str] = mapped_column(String(2), nullable=False, default="L1")
     source: Mapped[str] = mapped_column(String(16), nullable=False, default="manual")
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
