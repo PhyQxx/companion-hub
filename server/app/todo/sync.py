@@ -202,7 +202,7 @@ class TodoSyncService:
                     # 镜像永不触发本地提醒：next_fire_at 恒为 NULL
                     next_fire_at=None,
                     source_ref=_ref(item.external_id),
-                    external_updated_at=item.updated_at,
+                    external_updated_at=_utc(item.updated_at),
                     priority=item.priority,
                     group_label=item.label[:64] if item.label else None,
                     privacy_level="L1",
@@ -222,7 +222,7 @@ class TodoSyncService:
                 .values(
                     title=item.content[:320] or local.title,
                     status="done" if item.status else local.status,
-                    external_updated_at=item.updated_at,
+                    external_updated_at=_utc(item.updated_at),
                     priority=item.priority,
                     group_label=item.label[:64] if item.label else None,
                     completed_at=local.completed_at or (now if item.status else None),
@@ -260,6 +260,13 @@ class TodoSyncService:
                     updated_at=now,
                 )
             )
+
+
+def _utc(value: datetime | None) -> datetime | None:
+    """pnkx 时间带 Asia/Shanghai 偏移；入库统一转 UTC，避免 SQLite 丢偏移后误判变更。"""
+    if value is None:
+        return None
+    return value.astimezone(UTC) if value.tzinfo is not None else value.replace(tzinfo=UTC)
 
 
 def _ts(value: datetime | None) -> float:
