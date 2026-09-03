@@ -220,6 +220,20 @@ def test_resolve_vapid_credentials_secret_ref(monkeypatch: pytest.MonkeyPatch) -
     )
 
 
+def test_generate_vapid_keys_script_format(capsys: pytest.CaptureFixture[str]) -> None:
+    """生成脚本输出的私钥必须能被发送链路的 Vapid.from_string 接受（d 值非 PEM）。"""
+    from py_vapid import Vapid  # type: ignore[import-untyped]
+
+    from scripts.generate_vapid_keys import main as generate_main
+
+    generate_main()
+    output = capsys.readouterr().out
+    private_line = next(line for line in output.splitlines() if line.startswith("vapid_private"))
+    private_key = private_line.split(":", 1)[1].strip()
+    assert len(private_key) == 43
+    Vapid.from_string(private_key)  # 不抛即格式契约成立
+
+
 class _FakeResponse:
     def __init__(self, status_code: int) -> None:
         self.status_code = status_code

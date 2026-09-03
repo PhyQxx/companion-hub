@@ -181,8 +181,8 @@ integrations:
     state_cache_ttl_seconds: 300
     entities: []
   # Web Push（手机 PWA 移动通知）。密钥对生成：
-  #   uv run python -c "from py_vapid import Vapid; v=Vapid(); v.generate_keys(); print(v.private_key.decode()); print(v.public_key.decode())"
-  # 或管理后台填写。公钥/私钥都启用时才把 enabled 设为 true。
+  #   cd server && ../.venv/bin/python scripts/generate_vapid_keys.py
+  # 私钥是 base64url 的 P-256 d 值（不是 PEM）；公私钥配齐后才把 enabled 设为 true。
   push:
     enabled: false
     vapid_subject: mailto:admin@example.com
