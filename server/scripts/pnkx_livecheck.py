@@ -84,10 +84,12 @@ async def main() -> None:
     print("== 3. 完成推送")
     await tasks.complete_task(local.user_id, local.id)
     stats3 = await service.sync_once()
-    print(f"   stats: completions_pushed={stats3.completions_pushed}")
-    recheck = await raw.get(
-        f"{BASE_URL}/admin/toDo/{remote['id']}",
-        headers={"X-Integration-Token": TOKEN},
+    print(f"   stats: {json.dumps(asdict(stats3), ensure_ascii=False, default=str)}")
+    recheck = (
+        await raw.get(
+            f"{BASE_URL}/admin/toDo/{remote['id']}",
+            headers={"X-Integration-Token": TOKEN},
+        )
     ).json()
     remote_after = recheck.get("data") or {}
     print(
@@ -95,9 +97,11 @@ async def main() -> None:
     )
 
     print("== 4. 清理远端测试任务")
-    deleted = await raw.delete(
-        f"{BASE_URL}/admin/toDo/{remote['id']}",
-        headers={"X-Integration-Token": TOKEN},
+    deleted = (
+        await raw.delete(
+            f"{BASE_URL}/admin/toDo/{remote['id']}",
+            headers={"X-Integration-Token": TOKEN},
+        )
     ).json()
     print(f"   delete: {deleted.get('code')} {deleted.get('msg')!r}")
 
