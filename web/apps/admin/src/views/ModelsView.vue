@@ -222,14 +222,26 @@ function isPlainRecord(value: unknown): value is Record<string, unknown> {
 }
 
 /**
+ * 配置值来自 Vue ref 时可能是响应式 Proxy，浏览器的 structuredClone
+ * 无法克隆 Proxy。配置本身是 JSON 数据，递归重建即可同时去除响应式包装。
+ */
+function cloneConfigValue(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(cloneConfigValue);
+  if (!isPlainRecord(value)) return value;
+  return Object.fromEntries(
+    Object.entries(value).map(([key, child]) => [key, cloneConfigValue(child)]),
+  );
+}
+
+/**
  * 模型工作区只编辑自己认识的配置字段。保存时递归合并服务端原配置，
  * 防止 screen_awareness、主动输出等其他模块被 Pydantic 默认值覆盖。
  */
 function mergePreservingUnknown(base: unknown, updates: unknown): unknown {
-  if (!isPlainRecord(base) || !isPlainRecord(updates)) return structuredClone(updates);
-  const merged = structuredClone(base);
+  if (!isPlainRecord(base) || !isPlainRecord(updates)) return cloneConfigValue(updates);
+  const merged = cloneConfigValue(base) as Record<string, unknown>;
   for (const [key, value] of Object.entries(updates)) {
-    merged[key] = key in base ? mergePreservingUnknown(base[key], value) : structuredClone(value);
+    merged[key] = key in base ? mergePreservingUnknown(base[key], value) : cloneConfigValue(value);
   }
   return merged;
 }

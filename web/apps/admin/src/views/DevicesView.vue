@@ -122,6 +122,15 @@ const selectedDeviceName = computed(
   () => devices.value.find((item) => item.id === selectedDeviceId.value)?.name ?? "全部设备",
 );
 
+const commandPage = ref(1);
+const commandPageSize = ref(20);
+const pagedCommands = computed(() =>
+  commands.value.slice(
+    (commandPage.value - 1) * commandPageSize.value,
+    commandPage.value * commandPageSize.value,
+  ),
+);
+
 function fmt(value: string | null) {
   return value ? new Date(value).toLocaleString() : "—";
 }
@@ -172,6 +181,11 @@ async function loadCommands() {
   } finally {
     commandLoading.value = false;
   }
+}
+
+async function onDeviceFilterChange() {
+  commandPage.value = 1;
+  await loadCommands();
 }
 
 async function refresh() {
@@ -325,6 +339,7 @@ async function issueCommand() {
     issueOpen.value = false;
     emit("status", `命令 ${result.command}：${commandStatusLabels[result.status] ?? result.status}`);
     selectedDeviceId.value = issuing.value.id;
+    commandPage.value = 1;
     await loadCommands();
   } catch (error) {
     emit("status", error instanceof Error ? error.message : "命令下发失败", true);
@@ -414,11 +429,11 @@ onMounted(refresh);
     <div v-if="props.mode === 'commands'" class="panel command-panel">
       <div class="panel-head">
         <div><h2>命令台账</h2><p>{{ selectedDeviceName }} · 参数与结果均为脱敏摘要。</p></div>
-        <el-select v-model="selectedDeviceId" placeholder="全部设备" clearable @change="loadCommands">
+        <el-select v-model="selectedDeviceId" placeholder="全部设备" clearable @change="onDeviceFilterChange">
           <el-option v-for="item in devices" :key="item.id" :label="item.name" :value="item.id" />
         </el-select>
       </div>
-      <el-table v-loading="commandLoading" :data="commands" empty-text="没有命令记录" style="width:100%">
+      <el-table v-loading="commandLoading" :data="pagedCommands" empty-text="没有命令记录" style="width:100%">
         <el-table-column label="发起时间" min-width="170"><template #default="{ row }">{{ fmt(row.issued_at) }}</template></el-table-column>
         <el-table-column prop="command" label="命令" min-width="180" />
         <el-table-column label="设备" min-width="150"><template #default="{ row }">{{ devices.find(item => item.id === row.device_id)?.name ?? row.device_id.slice(0, 8) }}</template></el-table-column>
@@ -433,6 +448,16 @@ onMounted(refresh);
           <template #default="{ row }"><el-button v-if="['pending', 'sent', 'acknowledged'].includes(row.status)" size="small" type="warning" plain @click="cancelCommand(row as CommandItem)">取消</el-button></template>
         </el-table-column>
       </el-table>
+      <div class="pager">
+        <el-pagination
+          v-model:current-page="commandPage"
+          v-model:page-size="commandPageSize"
+          :total="commands.length"
+          :page-sizes="[20, 50, 100]"
+          layout="total, sizes, prev, pager, next, jumper"
+          background
+        />
+      </div>
     </div>
 
     <el-dialog v-model="pairingOpen" title="生成一次性配对码" width="620px">
@@ -490,6 +515,7 @@ onMounted(refresh);
 .stats strong { font-size: 24px; }
 .panel-head { display: flex; justify-content: space-between; align-items: center; gap: 16px; margin-bottom: 14px; }
 .panel-head :deep(.el-select) { width: 220px; }
+.pager { display: flex; justify-content: flex-end; margin-top: 12px; }
 .device-name { display: block; font-size: 13px; margin-bottom: 4px; }
 .state { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; font-weight: 600; }
 .state::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: #a8b0bf; }

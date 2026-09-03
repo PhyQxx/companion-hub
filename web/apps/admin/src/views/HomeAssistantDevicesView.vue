@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, inject, onMounted, ref } from "vue";
+import { computed, inject, onMounted, ref, watch } from "vue";
 import { AdminApi } from "@aria/shared";
 import { ElMessage, ElMessageBox } from "element-plus";
 
@@ -158,6 +158,15 @@ const filteredEntities = computed(() => {
   return rows;
 });
 const authorizedIds = computed(() => new Set(ha.value?.entities.map((e) => e.entity_id) ?? []));
+
+const page = ref(1);
+const pageSize = ref(50);
+const pagedEntities = computed(() =>
+  filteredEntities.value.slice((page.value - 1) * pageSize.value, page.value * pageSize.value),
+);
+watch([keyword, areaFilter, domainFilter], () => {
+  page.value = 1;
+});
 
 const whitelistSearch = ref("");
 const whitelistVisible = ref(100);
@@ -501,8 +510,8 @@ onMounted(load);
             <el-option v-for="domain in domainOptions" :key="domain" :label="domain" :value="domain" />
           </el-select>
         </div>
-        <el-table :data="filteredEntities" max-height="480" @selection-change="rows => selected = rows.map((row: EntityDetail) => row.entity_id)">
-          <el-table-column type="selection" width="48" />
+        <el-table :data="pagedEntities" row-key="entity_id" max-height="480" @selection-change="rows => selected = rows.map((row: EntityDetail) => row.entity_id)">
+          <el-table-column type="selection" width="48" reserve-selection />
           <el-table-column label="名称" min-width="180">
             <template #default="{ row }">
               <span>{{ row.friendly_name }}</span>
@@ -523,6 +532,16 @@ onMounted(load);
           </el-table-column>
           <el-table-column prop="state" label="状态" width="100" />
         </el-table>
+        <div class="pager">
+          <el-pagination
+            v-model:current-page="page"
+            v-model:page-size="pageSize"
+            :total="filteredEntities.length"
+            :page-sizes="[20, 50, 100, 200]"
+            layout="total, sizes, prev, pager, next, jumper"
+            background
+          />
+        </div>
       </div>
 
       <div class="panel proactive-global">
@@ -572,5 +591,5 @@ onMounted(load);
 </template>
 
 <style scoped>
-.ha-workspace{padding:20px 24px 28px;display:grid;gap:16px;align-content:start}.panel{background:#fff;border:1px solid var(--line);border-radius:14px;padding:18px}.hero,.panel-head,.entity-head,.rules-head,.actions{display:flex;align-items:center;justify-content:space-between;gap:14px}.hero{background:linear-gradient(135deg,#fff,#f1f5ff)}h2,p{margin:0}.hero h2,.panel h2{font-size:16px}.hero p,.panel-head p{margin-top:7px;color:var(--muted);font-size:12px}.eyebrow{margin-bottom:7px;color:var(--accent);font-size:11px;font-weight:700}.actions{justify-content:flex-end}.form-grid{display:grid;grid-template-columns:repeat(4,minmax(160px,1fr));gap:14px}.form-grid.three{grid-template-columns:repeat(3,minmax(180px,1fr))}.form-grid label,.rule-row label{display:grid;gap:6px;color:var(--muted);font-size:11px}.form-grid small,.rule-row small,.rules-head small{color:var(--muted);font-size:10px}.wide{grid-column:1/-1}.discovery{display:grid;gap:14px}.filter-bar{display:flex;gap:10px;flex-wrap:wrap;align-items:center}.auth-badge{display:inline-block;margin-left:6px;padding:1px 6px;border-radius:4px;background:#e8f5e9;color:#2e7d32;font-size:10px;font-weight:600}.muted{color:var(--muted);font-size:12px}.load-more{display:flex;justify-content:center;margin-top:14px}.entity-card{display:grid;gap:16px;margin-top:14px;padding:16px;border:1px solid #e5e9f2;border-radius:12px;background:#fbfcff}.entity-head>div:first-child{display:grid;gap:5px}.entity-head code{color:var(--muted);font-size:10px}.rules{display:grid;gap:10px;padding-top:14px;border-top:1px dashed #dfe4ee}.rules-head>div{display:grid;gap:4px}.rule-row{display:grid;grid-template-columns:auto minmax(150px,1fr) repeat(3,minmax(105px,auto)) minmax(200px,1.4fr) auto;gap:10px;align-items:end;padding:11px;border:1px solid #e7ebf3;border-radius:9px;background:#fff}@media(max-width:1100px){.form-grid,.form-grid.three{grid-template-columns:repeat(2,minmax(160px,1fr))}.rule-row{grid-template-columns:repeat(2,minmax(0,1fr))}}@media(max-width:700px){.hero,.panel-head,.entity-head{align-items:flex-start;flex-direction:column}.form-grid,.form-grid.three,.rule-row{grid-template-columns:1fr}.wide{grid-column:auto}.filter-bar{flex-direction:column;align-items:stretch}}
+.ha-workspace{padding:20px 24px 28px;display:grid;gap:16px;align-content:start}.panel{background:#fff;border:1px solid var(--line);border-radius:14px;padding:18px}.hero,.panel-head,.entity-head,.rules-head,.actions{display:flex;align-items:center;justify-content:space-between;gap:14px}.hero{background:linear-gradient(135deg,#fff,#f1f5ff)}h2,p{margin:0}.hero h2,.panel h2{font-size:16px}.hero p,.panel-head p{margin-top:7px;color:var(--muted);font-size:12px}.eyebrow{margin-bottom:7px;color:var(--accent);font-size:11px;font-weight:700}.actions{justify-content:flex-end}.form-grid{display:grid;grid-template-columns:repeat(4,minmax(160px,1fr));gap:14px}.form-grid.three{grid-template-columns:repeat(3,minmax(180px,1fr))}.form-grid label,.rule-row label{display:grid;gap:6px;color:var(--muted);font-size:11px}.form-grid small,.rule-row small,.rules-head small{color:var(--muted);font-size:10px}.wide{grid-column:1/-1}.discovery{display:grid;gap:14px}.filter-bar{display:flex;gap:10px;flex-wrap:wrap;align-items:center}.pager{display:flex;justify-content:flex-end}.auth-badge{display:inline-block;margin-left:6px;padding:1px 6px;border-radius:4px;background:#e8f5e9;color:#2e7d32;font-size:10px;font-weight:600}.muted{color:var(--muted);font-size:12px}.load-more{display:flex;justify-content:center;margin-top:14px}.entity-card{display:grid;gap:16px;margin-top:14px;padding:16px;border:1px solid #e5e9f2;border-radius:12px;background:#fbfcff}.entity-head>div:first-child{display:grid;gap:5px}.entity-head code{color:var(--muted);font-size:10px}.rules{display:grid;gap:10px;padding-top:14px;border-top:1px dashed #dfe4ee}.rules-head>div{display:grid;gap:4px}.rule-row{display:grid;grid-template-columns:auto minmax(150px,1fr) repeat(3,minmax(105px,auto)) minmax(200px,1.4fr) auto;gap:10px;align-items:end;padding:11px;border:1px solid #e7ebf3;border-radius:9px;background:#fff}@media(max-width:1100px){.form-grid,.form-grid.three{grid-template-columns:repeat(2,minmax(160px,1fr))}.rule-row{grid-template-columns:repeat(2,minmax(0,1fr))}}@media(max-width:700px){.hero,.panel-head,.entity-head{align-items:flex-start;flex-direction:column}.form-grid,.form-grid.three,.rule-row{grid-template-columns:1fr}.wide{grid-column:auto}.filter-bar{flex-direction:column;align-items:stretch}}
 </style>
