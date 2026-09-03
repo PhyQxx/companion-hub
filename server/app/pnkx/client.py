@@ -32,6 +32,12 @@ class PnkxCommemorationPage:
     total: int
 
 
+@dataclass(frozen=True, slots=True)
+class PnkxContentPage:
+    items: list[dict[str, Any]]
+    total: int
+
+
 class PnkxLifeClient:
     def __init__(
         self,
@@ -173,6 +179,123 @@ class PnkxLifeClient:
             payload=payload,
             reason_prefix="commemoration_create",
         )
+
+    async def notes(
+        self,
+        *,
+        page: int = 1,
+        page_size: int = 50,
+        title: str | None = None,
+        folder_id: int | None = None,
+    ) -> PnkxContentPage:
+        params: dict[str, str | int] = {"pageNum": page, "pageSize": page_size}
+        if title is not None:
+            params["title"] = title
+        if folder_id is not None:
+            params["folder"] = folder_id
+        return await self._content_page(
+            "/note/list", params=params, reason_prefix="notes"
+        )
+
+    async def note_folders(self) -> list[dict[str, Any]]:
+        data = await self._get_data("/note/folder/treeList")
+        return self._object_list(data, "note_folders_invalid")
+
+    async def create_note(
+        self,
+        *,
+        client_uuid: str,
+        title: str,
+        content: str,
+        rich_text: str | None = None,
+        folder_id: int | None = None,
+        order: int | None = None,
+        remark: str | None = None,
+    ) -> str:
+        payload: dict[str, Any] = {"title": title, "content": content}
+        if rich_text is not None:
+            payload["richText"] = rich_text
+        if folder_id is not None:
+            payload["folder"] = folder_id
+        if order is not None:
+            payload["order"] = order
+        if remark is not None:
+            payload["remark"] = remark
+        return await self._offline_create(
+            table_name="px_note",
+            client_uuid=client_uuid,
+            payload=payload,
+            reason_prefix="note_create",
+        )
+
+    async def diaries(
+        self,
+        *,
+        page: int = 1,
+        page_size: int = 50,
+        title: str | None = None,
+        mood: str | None = None,
+        weather: str | None = None,
+        month: str | None = None,
+    ) -> PnkxContentPage:
+        params: dict[str, str | int] = {"pageNum": page, "pageSize": page_size}
+        if title is not None:
+            params["title"] = title
+        if mood is not None:
+            params["mood"] = mood
+        if weather is not None:
+            params["weather"] = weather
+        if month is not None:
+            params["date"] = f"{month}-01"
+        return await self._content_page(
+            "/admin/diary/list", params=params, reason_prefix="diaries"
+        )
+
+    async def create_diary(
+        self,
+        *,
+        client_uuid: str,
+        title: str,
+        content: str,
+        entry_date: str,
+        mood: str | None = None,
+        weather: str | None = None,
+        rich_text: str | None = None,
+        remark: str | None = None,
+    ) -> str:
+        payload: dict[str, Any] = {
+            "title": title,
+            "content": content,
+            "date": entry_date,
+        }
+        if mood is not None:
+            payload["mood"] = mood
+        if weather is not None:
+            payload["weather"] = weather
+        if rich_text is not None:
+            payload["richText"] = rich_text
+        if remark is not None:
+            payload["remark"] = remark
+        return await self._offline_create(
+            table_name="px_diary",
+            client_uuid=client_uuid,
+            payload=payload,
+            reason_prefix="diary_create",
+        )
+
+    async def _content_page(
+        self,
+        path: str,
+        *,
+        params: dict[str, str | int],
+        reason_prefix: str,
+    ) -> PnkxContentPage:
+        payload = await self._request_payload("GET", path, params=params)
+        items = self._object_list(payload.get("rows"), f"{reason_prefix}_invalid")
+        total = payload.get("total")
+        if isinstance(total, bool) or not isinstance(total, int):
+            raise PnkxApiError(f"{reason_prefix}_total_invalid")
+        return PnkxContentPage(items=items, total=total)
 
     async def bookkeeping_accounts(self) -> list[dict[str, Any]]:
         data = await self._get_data("/bookkeeping/account/getAccountList")

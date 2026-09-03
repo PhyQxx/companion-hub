@@ -32,8 +32,12 @@ class FakePnkxLife:
         self.requests: list[httpx.Request] = []
         self.bookkeeping_operations: list[dict[str, Any]] = []
         self.commemoration_operations: list[dict[str, Any]] = []
+        self.note_operations: list[dict[str, Any]] = []
+        self.diary_operations: list[dict[str, Any]] = []
         self.bookkeeping_ids: dict[str, int] = {}
         self.commemoration_ids: dict[str, int] = {}
+        self.note_ids: dict[str, int] = {}
+        self.diary_ids: dict[str, int] = {}
 
     def handler(self, request: httpx.Request) -> httpx.Response:
         self.requests.append(request)
@@ -70,6 +74,29 @@ class FakePnkxLife:
             )
         if path == "/reminder/notifications/read" and request.method == "PUT":
             return httpx.Response(200, json={"code": 200, "msg": "操作成功"})
+        if path == "/note/list":
+            return httpx.Response(
+                200,
+                json={
+                    "code": 200,
+                    "rows": [{"id": 21, "title": "旅行清单", "folder": 4}],
+                    "total": 1,
+                },
+            )
+        if path == "/note/folder/treeList":
+            return httpx.Response(
+                200,
+                json={"code": 200, "data": [{"id": 4, "name": "生活"}]},
+            )
+        if path == "/admin/diary/list":
+            return httpx.Response(
+                200,
+                json={
+                    "code": 200,
+                    "rows": [{"id": 31, "title": "晴天", "date": "2026-09-03"}],
+                    "total": 1,
+                },
+            )
         if path == "/offline/batch" and request.method == "POST":
             body = json.loads(request.content)
             operation = body["operations"][0]
@@ -77,9 +104,15 @@ class FakePnkxLife:
             if operation["tableName"] == "px_bookkeeping_record":
                 self.bookkeeping_operations.append(operation)
                 remote_id = self.bookkeeping_ids.setdefault(client_uuid, 81)
-            else:
+            elif operation["tableName"] == "px_commemoration_day":
                 self.commemoration_operations.append(operation)
                 remote_id = self.commemoration_ids.setdefault(client_uuid, 82)
+            elif operation["tableName"] == "px_note":
+                self.note_operations.append(operation)
+                remote_id = self.note_ids.setdefault(client_uuid, 83)
+            else:
+                self.diary_operations.append(operation)
+                remote_id = self.diary_ids.setdefault(client_uuid, 84)
             return httpx.Response(
                 200,
                 json={
@@ -200,6 +233,47 @@ async def test_life_client_controls_notifications_and_commemorations() -> None:
     assert operation["payload"]["orderNum"] == 3
 
 
+async def test_life_client_reads_and_creates_notes_and_diaries() -> None:
+    fake = FakePnkxLife()
+    client = _client(fake)
+
+    notes = await client.notes(page=2, page_size=10, title="旅行", folder_id=4)
+    folders = await client.note_folders()
+    diaries = await client.diaries(page=1, page_size=20, month="2026-09")
+    note_id = await client.create_note(
+        client_uuid="018f7f4489d27cc8bc198f51f522a4d3",
+        title="旅行清单",
+        content="证件、充电器",
+        folder_id=4,
+        order=2,
+    )
+    diary_id = await client.create_diary(
+        client_uuid="018f7f4489d27cc8bc198f51f522a4d4",
+        title="晴天",
+        content="今天很好。",
+        entry_date="2026-09-03",
+        mood="开心",
+        weather="晴",
+    )
+
+    assert notes.total == 1
+    assert folders[0]["name"] == "生活"
+    assert diaries.items[0]["date"] == "2026-09-03"
+    assert note_id == "83"
+    assert diary_id == "84"
+    note = fake.note_operations[0]
+    diary = fake.diary_operations[0]
+    assert note["payload"]["folder"] == 4
+    assert note["payload"]["order"] == 2
+    assert diary["payload"]["date"] == "2026-09-03"
+    diary_request = next(
+        request
+        for request in fake.requests
+        if request.url.path.endswith("/admin/diary/list")
+    )
+    assert diary_request.url.params["date"] == "2026-09-01"
+
+
 async def test_life_client_recognizes_pnkx_business_401() -> None:
     fake = FakePnkxLife()
     client = _client(fake, token="wrong")
@@ -305,7 +379,7 @@ async def test_bookkeeping_api_validates_and_creates(database: Database) -> None
     assert invalid.status_code == 422
 
 
-async def test_bookkeeping_api_write_gate_defaults_closed(database: Database) -> None:
+async def test_pnkx_api_write_gate_defaults_closed(database: Database) -> None:
     auth = AuthService(database)
     owner = await auth.setup(display_name="safe owner", password="correct horse")
     fake = FakePnkxLife()
@@ -313,7 +387,7 @@ async def test_bookkeeping_api_write_gate_defaults_closed(database: Database) ->
     app.include_router(create_pnkx_router(_client(fake), auth))
 
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
-        response = await client.post(
+        bookkeeping = await client.post(
             "/api/v1/pnkx/bookkeeping/records",
             headers={"Authorization": f"Bearer {owner.access_token}"},
             json={
@@ -324,9 +398,32 @@ async def test_bookkeeping_api_write_gate_defaults_closed(database: Database) ->
                 "pay_time": "2026-09-02T04:30:00Z",
             },
         )
+        note = await client.post(
+            "/api/v1/pnkx/notes",
+            headers={"Authorization": f"Bearer {owner.access_token}"},
+            json={
+                "idempotency_key": "018f7f44-89d2-7cc8-bc19-8f51f522a4d3",
+                "title": "测试",
+                "content": "测试",
+            },
+        )
+        diary = await client.post(
+            "/api/v1/pnkx/diaries",
+            headers={"Authorization": f"Bearer {owner.access_token}"},
+            json={
+                "idempotency_key": "018f7f44-89d2-7cc8-bc19-8f51f522a4d4",
+                "title": "测试",
+                "content": "测试",
+                "entry_date": "2026-09-03",
+            },
+        )
 
-    assert response.status_code == 503
+    assert bookkeeping.status_code == 503
+    assert note.status_code == 503
+    assert diary.status_code == 503
     assert fake.bookkeeping_operations == []
+    assert fake.note_operations == []
+    assert fake.diary_operations == []
 
 
 async def test_commemoration_and_notification_api_controls(database: Database) -> None:
@@ -368,3 +465,52 @@ async def test_commemoration_and_notification_api_controls(database: Database) -
     )
     assert marked.status_code == 200
     assert marked.json() == {"success": True}
+
+
+async def test_note_and_diary_api_reads_and_creates(database: Database) -> None:
+    auth = AuthService(database)
+    owner = await auth.setup(display_name="content owner", password="correct horse")
+    fake = FakePnkxLife()
+    app = FastAPI()
+    app.include_router(create_pnkx_router(_client(fake), auth, writes_enabled=True))
+    headers = {"Authorization": f"Bearer {owner.access_token}"}
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        notes = await client.get("/api/v1/pnkx/notes?folder_id=4", headers=headers)
+        folders = await client.get("/api/v1/pnkx/notes/folders", headers=headers)
+        diaries = await client.get(
+            "/api/v1/pnkx/diaries?month=2026-09", headers=headers
+        )
+        note = await client.post(
+            "/api/v1/pnkx/notes",
+            headers=headers,
+            json={
+                "idempotency_key": "018f7f44-89d2-7cc8-bc19-8f51f522a4d3",
+                "title": "旅行清单",
+                "content": "证件、充电器",
+                "folder_id": 4,
+                "order": 2,
+            },
+        )
+        diary = await client.post(
+            "/api/v1/pnkx/diaries",
+            headers=headers,
+            json={
+                "idempotency_key": "018f7f44-89d2-7cc8-bc19-8f51f522a4d4",
+                "title": "晴天",
+                "content": "今天很好。",
+                "entry_date": "2026-09-03",
+                "mood": "开心",
+                "weather": "晴",
+            },
+        )
+
+    assert notes.json()["total"] == 1
+    assert folders.json()["items"][0]["id"] == 4
+    assert diaries.json()["items"][0]["title"] == "晴天"
+    assert note.status_code == 201
+    assert note.json()["remote_id"] == "83"
+    assert note.json()["client_uuid"] == "018f7f4489d27cc8bc198f51f522a4d3"
+    assert diary.status_code == 201
+    assert diary.json()["remote_id"] == "84"
+    assert fake.diary_operations[0]["payload"]["date"] == "2026-09-03"

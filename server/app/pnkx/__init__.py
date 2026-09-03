@@ -4,6 +4,7 @@ from .client import (
     PnkxApiError,
     PnkxBookkeepingPage,
     PnkxCommemorationPage,
+    PnkxContentPage,
     PnkxLifeClient,
 )
 
@@ -11,5 +12,6 @@ __all__ = [
     "PnkxApiError",
     "PnkxBookkeepingPage",
     "PnkxCommemorationPage",
+    "PnkxContentPage",
     "PnkxLifeClient",
 ]

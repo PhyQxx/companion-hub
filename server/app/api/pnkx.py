@@ -86,6 +86,37 @@ class PnkxCommemorationCreateResponse(StrictModel):
     client_uuid: str
 
 
+class PnkxContentPageResponse(StrictModel):
+    items: list[dict[str, Any]]
+    total: int
+
+
+class PnkxContentCreateResponse(StrictModel):
+    remote_id: str
+    client_uuid: str
+
+
+class PnkxNoteCreatePayload(StrictModel):
+    idempotency_key: UUID
+    title: Annotated[str, Field(min_length=1, max_length=255)]
+    content: Annotated[str, Field(min_length=1, max_length=100_000)]
+    rich_text: Annotated[str, Field(max_length=500_000)] | None = None
+    folder_id: Annotated[int, Field(gt=0)] | None = None
+    order: Annotated[int, Field(ge=0)] | None = None
+    remark: Annotated[str, Field(min_length=1, max_length=1000)] | None = None
+
+
+class PnkxDiaryCreatePayload(StrictModel):
+    idempotency_key: UUID
+    title: Annotated[str, Field(min_length=1, max_length=255)]
+    content: Annotated[str, Field(min_length=1, max_length=100_000)]
+    entry_date: date
+    mood: Annotated[str, Field(min_length=1, max_length=100)] | None = None
+    weather: Annotated[str, Field(min_length=1, max_length=100)] | None = None
+    rich_text: Annotated[str, Field(max_length=500_000)] | None = None
+    remark: Annotated[str, Field(min_length=1, max_length=1000)] | None = None
+
+
 def create_pnkx_router(
     client: PnkxLifeClient,
     auth_service: AuthService,
@@ -237,6 +268,120 @@ def create_pnkx_router(
         except Exception as error:
             raise unavailable(error) from error
         return PnkxCommemorationCreateResponse(
+            remote_id=remote_id, client_uuid=client_uuid
+        )
+
+    @router.get("/notes", response_model=PnkxContentPageResponse)
+    async def notes(
+        _: Annotated[ChatPrincipal, Depends(guard)],
+        page: Annotated[int, Query(ge=1)] = 1,
+        page_size: Annotated[int, Query(ge=1, le=200)] = 50,
+        title: Annotated[str | None, Query(min_length=1, max_length=255)] = None,
+        folder_id: Annotated[int | None, Query(gt=0)] = None,
+    ) -> PnkxContentPageResponse:
+        try:
+            result = await client.notes(
+                page=page,
+                page_size=page_size,
+                title=title,
+                folder_id=folder_id,
+            )
+        except Exception as error:
+            raise unavailable(error) from error
+        return PnkxContentPageResponse(items=result.items, total=result.total)
+
+    @router.get("/notes/folders", response_model=PnkxItemsResponse)
+    async def note_folders(
+        _: Annotated[ChatPrincipal, Depends(guard)],
+    ) -> PnkxItemsResponse:
+        try:
+            return PnkxItemsResponse(items=await client.note_folders())
+        except Exception as error:
+            raise unavailable(error) from error
+
+    @router.post(
+        "/notes",
+        response_model=PnkxContentCreateResponse,
+        status_code=status.HTTP_201_CREATED,
+    )
+    async def create_note(
+        body: PnkxNoteCreatePayload,
+        _: Annotated[ChatPrincipal, Depends(guard)],
+    ) -> PnkxContentCreateResponse:
+        if not writes_enabled:
+            raise HTTPException(
+                status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="pnkx writes are disabled",
+            )
+        client_uuid = body.idempotency_key.hex
+        try:
+            remote_id = await client.create_note(
+                client_uuid=client_uuid,
+                title=body.title,
+                content=body.content,
+                rich_text=body.rich_text,
+                folder_id=body.folder_id,
+                order=body.order,
+                remark=body.remark,
+            )
+        except Exception as error:
+            raise unavailable(error) from error
+        return PnkxContentCreateResponse(
+            remote_id=remote_id, client_uuid=client_uuid
+        )
+
+    @router.get("/diaries", response_model=PnkxContentPageResponse)
+    async def diaries(
+        _: Annotated[ChatPrincipal, Depends(guard)],
+        page: Annotated[int, Query(ge=1)] = 1,
+        page_size: Annotated[int, Query(ge=1, le=200)] = 50,
+        title: Annotated[str | None, Query(min_length=1, max_length=255)] = None,
+        mood: Annotated[str | None, Query(min_length=1, max_length=100)] = None,
+        weather: Annotated[str | None, Query(min_length=1, max_length=100)] = None,
+        month: Annotated[str | None, Query(pattern=r"^\d{4}-\d{2}$")] = None,
+    ) -> PnkxContentPageResponse:
+        try:
+            result = await client.diaries(
+                page=page,
+                page_size=page_size,
+                title=title,
+                mood=mood,
+                weather=weather,
+                month=month,
+            )
+        except Exception as error:
+            raise unavailable(error) from error
+        return PnkxContentPageResponse(items=result.items, total=result.total)
+
+    @router.post(
+        "/diaries",
+        response_model=PnkxContentCreateResponse,
+        status_code=status.HTTP_201_CREATED,
+    )
+    async def create_diary(
+        body: PnkxDiaryCreatePayload,
+        _: Annotated[ChatPrincipal, Depends(guard)],
+    ) -> PnkxContentCreateResponse:
+        if not writes_enabled:
+            raise HTTPException(
+                status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="pnkx writes are disabled",
+            )
+        client_uuid = body.idempotency_key.hex
+        try:
+            remote_id = await client.create_diary(
+                client_uuid=client_uuid,
+                title=body.title,
+                content=body.content,
+                entry_date=body.entry_date.isoformat(),
+                mood=body.mood,
+                weather=body.weather,
+                rich_text=body.rich_text,
+                remark=body.remark,
+            )
+        except Exception as error:
+            raise unavailable(error) from error
+        return PnkxContentCreateResponse(
             remote_id=remote_id, client_uuid=client_uuid
         )
 
