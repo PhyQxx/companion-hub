@@ -1,6 +1,6 @@
 # Aria 当前任务
 
-> 最后更新：2026-09-01
+> 最后更新：2026-09-03
 > 详细设计入口：[00-文档索引与架构总览.md](./00-文档索引与架构总览.md)
 
 本文件只维护当前执行队列、未完成门槛和最新质量基线。历史交付细节留在对应阶段文档，不在这里重复。
@@ -153,6 +153,10 @@
 
 ## 3. 最近完成
 
+- [x] 聊天 Markdown 渲染 + TTS 前文本清洗：Chat 气泡由纯文本改为 markdown-it 安全渲染（`html=false` 转义原始 HTML、链接强制 `noopener noreferrer`、流式期间保持 pre-wrap），新增 `MarkdownContent.vue`/`markdown.ts`；语音侧新增 `speech_text.py`（`MarkdownSpeechFilter` 跨句记住 fenced code 状态、`markdown_to_speech_text` 移除标题/链接/URL/行内代码/表格线/HTML 标签），接入流式分句、桌宠播报与完整语音回复三条路径，清洗后为空则安全跳过或返回 `tts_empty_text`。语音播报不再念出 Markdown 符号与代码块。
+- [x] 情景记忆按事件追加（修复屏幕观察重复入库冲突）：`MemoryIngester` 对 EPISODIC 候选直接追加，不再进入稳定事实的"相似但不同即冲突"裁决——相似文本描述的是不同时间的事件可以同时为真；上游事件管线继续按事件 ID、截图哈希与时间窗口去重。`docs/38` 同步更新，新增两条相似屏幕观察各自独立创建的回归。
+- [x] Admin 三处修复：设备命令台账与 HA 实体列表加分页（20/50/100(/200) 档位、筛选变化重置页码、HA 表格跨页保留勾选）；修复模型工作区保存时 `structuredClone` 无法克隆 Vue 响应式 Proxy 导致的崩溃——改为递归重建普通对象。
+- [x] pnkx livecheck 联调脚本增强：完成推送阶段输出全量同步统计，便于真机联调核对。
 - [x] 个人连接器 `TODO-01` 任务单一真源（对接 pnkx）：集成令牌鉴权（pnkx 侧 IntegrationTokenFilter + X-Integration-Token，Aria 侧双 env 门控）；TodoSyncService 拉取镜像/删检测/推完成/推新建（clientUuid 幂等 + 崩溃认领）；TodoSyncScheduler 300s 循环 + `/api/v1/todo/sync` 手动触发。pnkx 仓同步提交过滤器与配置（编译通过）。
 - [x] 个人连接器 `CAL-01` 日历：`calendar_event` 表 + `CalendarStore`（半开区间重叠冲突检查）+ `CalendarService`（preview 纯读展示写入内容与冲突、显式 CRUD、会前提醒经 `task_item.source_ref` 复用 TASK-01 调度并联动改期/取消）+ `/api/v1/calendar` 用户 API 与 main 接线。J4 第一项代码闭环。
 - [x] 全屋语音 `SAT-01/SAT-02` 确定性核心：`app/satellite` 状态机 + 内存会话注册表 + 唤醒仲裁（同 owner 单会话、2s 窗口去重、多终端唯一响应），接入 `/ws/devices` 签名帧（hello/wake/state，`voice.satellite` 能力门禁，非法转移/越权上报返回结构化错误帧）。音频上下行与真机全链待硬件。
@@ -226,6 +230,7 @@
 
 ## 4. 最新质量基线
 
+- 2026-09-03 Markdown 渲染/TTS 清洗/情景记忆/Admin 修复批次收口：新增 `test_voice.py` Markdown 清洗 3 例、`test_memory.py` 情景事件独立追加 1 例；非 soak 全量 pytest **627 通过 / 0 失败**（1 个 soak 用例 deselect）；Ruff、严格 mypy（268 source files）、Chat/Admin typecheck 与 production build、`git diff --check` 全部通过；分 5 个逻辑提交入库。语音真机播报效果与 pnkx 真机联调仍待验收。
 - 2026-09-02 `TODO-01` pnkx 任务对接：新增 `tests/test_todo_sync.py` **10 通过**（令牌头校验与 401 拒绝、创建/更新载荷、镜像建立与子任务跳过、二次同步稳定与远端删除检测、完成推送且不重复、手建推送一次与崩溃认领、拉取失败不产生半写、调度器首 tick 延迟、API 401/统计）；非 soak 全量 pytest **602 通过 / 0 失败**；Ruff、严格 mypy（app 194 files）与 `git diff --check` 通过；Alembic SQLite 空库升级到单 head `0031_todo_sync`；pnkx-framework `mvn compile` 通过。真实 pnkx 实例联调（配置集成令牌后）待验收。
 - 2026-09-02 `CAL-01` 日历：新增 `tests/test_calendar.py` **8 通过**（预览冲突且不落库、首尾相接非冲突、窗口/提前量校验、创建关联提醒任务、取消联动撤提醒、改期撤旧建新、临近事件立即提醒、API 全流含 401/404/422 与冲突预览）；非 soak 全量 pytest **592 通过 / 0 失败**；Ruff、严格 mypy（app 189 files）与 `git diff --check` 通过；Alembic SQLite 空库升级到单 head `0030_calendar`。真实 PostgreSQL 尚未应用 `0024～0030`；聊天端自然语言建日程与外部日历接入待做。
 
