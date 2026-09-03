@@ -51,7 +51,7 @@ from app.appearance import ThemeStore
 from app.auth import AuthService
 from app.avatar import AvatarAssetImporter, AvatarStore
 from app.bus import DispatcherWorker, EventPublisher, LocalEventPublisher
-from app.calendar import CalendarService, CalendarStore
+from app.calendar import CalendarCreateTool, CalendarService, CalendarStore
 from app.chat import ChatService, CompositeRuntimeCapabilityProvider, RuntimeCapabilityProvider
 from app.cognition import (
     ActionPlanService,
@@ -106,7 +106,7 @@ from app.screen_awareness import (
     ScreenAwarenessLoop,
     ScreenAwarenessResolver,
 )
-from app.tasks import TaskScheduler, TaskStore
+from app.tasks import ReminderCreateTool, TaskScheduler, TaskStore
 from app.tasks.brief import BriefWeather, DailyBriefService
 from app.tasks.brief_scheduler import DailyBriefScheduler
 from app.tasks.goal_scheduler import GoalReminderScheduler
@@ -967,6 +967,15 @@ def create_app(
                     mqtt_buffer=mqtt_client.buffer if mqtt_client is not None else None,
                 )
             )
+            default_timezone = os.getenv("ARIA_DEFAULT_TIMEZONE", "Asia/Shanghai")
+            if task_store is not None:
+                device_tools.append(
+                    ReminderCreateTool(task_store, timezone_name=default_timezone)
+                )
+            if calendar_service is not None:
+                device_tools.append(
+                    CalendarCreateTool(calendar_service, timezone_name=default_timezone)
+                )
             if pnkx_life_client is not None:
                 pnkx_is_local = pnkx_runs_local(pnkx_base_url or "")
                 device_tools.append(
