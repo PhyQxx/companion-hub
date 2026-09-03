@@ -22,6 +22,7 @@ from app.chat import ChatService, MessageView
 from app.config import DatabaseConfigStore
 from app.db import Base, InteractionTurnRecord, create_database
 from app.llm import CompletionRequest, CompletionResult, LLMRoute, ModelUsage
+from app.runtime import TurnCoordinator
 from app.schemas import PrivacyLevel
 
 
@@ -106,7 +107,11 @@ def test_websocket_stream_cancel_and_cursor_catchup(tmp_path: Path) -> None:
 
     token, conversation_id = asyncio.run(setup())
     app = FastAPI()
-    router, _ = create_chat_websocket_router(service, auth)
+    router, _ = create_chat_websocket_router(
+        service,
+        auth,
+        turn_coordinator=TurnCoordinator(database, service),
+    )
     app.include_router(router)
 
     with TestClient(app) as client:

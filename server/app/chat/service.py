@@ -596,7 +596,10 @@ class ChatService:
             except Exception:
                 # 设备能力查询失败不能影响聊天；失败时按“没有现实能力”收紧边界。
                 logger.warning("runtime capability lookup failed", exc_info=True)
-        reality_block = render_reality_grounding(runtime_capabilities)
+        pnkx_intent = _has_pnkx_intent(text)
+        reality_block = render_reality_grounding(
+            () if pnkx_intent else runtime_capabilities
+        )
         time_block = render_time_context(now, user_timezone)
         history_intent = has_history_intent(text)
         memory_retrieval: RetrievalResult | None = None
@@ -658,9 +661,14 @@ class ChatService:
             snapshot.config, privacy_level, llm_route
         )
         # 工具挂载只看在线能力与配置就绪；选哪个、何时调用由模型根据工具描述自行判断。
+        candidate_device_tools = self._device_tools.names()
+        if pnkx_intent:
+            candidate_device_tools = tuple(
+                name for name in candidate_device_tools if name.startswith("pnkx_")
+            )
         device_tool_names = tuple(
             name
-            for name in self._device_tools.names()
+            for name in candidate_device_tools
             if supports_device_capability(
                 name, (item.capability_id for item in runtime_capabilities)
             )
@@ -815,7 +823,18 @@ class ChatService:
                     consistency_request = self._tool_followup_request(
                         pending.request, result, execution
                     )
-                    result = await backend.stream(consistency_request, filtered_delta)
+                    if execution.result.tool_name.startswith("pnkx_"):
+                        direct_reply = _render_pnkx_tool_reply(execution.result)
+                        await filtered_delta(direct_reply)
+                        result = result.model_copy(
+                            update={
+                                "text": direct_reply,
+                                "tool_calls": [],
+                                "finish_reason": "stop",
+                            }
+                        )
+                    else:
+                        result = await backend.stream(consistency_request, filtered_delta)
                 else:
                     for chunk in initial_chunks:
                         await filtered_delta(chunk)
@@ -1484,6 +1503,26 @@ _HOME_READ_FOLLOWUP_TERMS = (
     "怎么样了",
 )
 
+_PNKX_INTENT_TERMS = (
+    "pnkx",
+    "待办",
+    "菜谱",
+    "餐食计划",
+    "用餐计划",
+    "购物清单",
+    "订阅",
+    "账本",
+    "记账",
+    "笔记",
+    "日记",
+    "纪念日",
+)
+
+
+def _has_pnkx_intent(text: str) -> bool:
+    normalized = text.lower()
+    return any(term in normalized for term in _PNKX_INTENT_TERMS)
+
 
 def _deterministic_home_read_call(pending: PendingTurn) -> ToolCall | None:
     """Resolve unambiguous HA reads server-side instead of trusting model tool syntax."""
@@ -1574,6 +1613,99 @@ def _tool_result_count(result: ToolResult) -> int:
         if isinstance(value, list):
             return len(value)
     return 1 if result.ok else 0
+
+
+_PNKX_RESOURCE_LABELS = {
+    "cockpit": "生活概览",
+    "reminders": "今日提醒",
+    "notifications": "通知",
+    "commemoration_days": "纪念日",
+    "notes": "笔记",
+    "note_folders": "笔记文件夹",
+    "diaries": "日记",
+    "subscriptions": "订阅",
+    "subscription_forecast": "订阅预测",
+    "shopping_lists": "购物清单",
+    "shopping_items": "购物项",
+    "recipes": "菜谱",
+    "meal_plans": "餐食计划",
+    "todos": "未完成待办",
+    "todo_kanban": "待办看板",
+    "todo_labels": "待办标签",
+    "bookkeeping_accounts": "账本账户",
+    "bookkeeping_classifications": "账目分类",
+    "bookkeeping_records": "账目",
+    "commemoration_day": "纪念日",
+    "note": "笔记",
+    "diary": "日记",
+    "subscription": "订阅",
+    "shopping_list": "购物清单",
+    "shopping_item": "购物项",
+    "recipe": "菜谱",
+    "meal_plan": "餐食计划",
+    "todo": "待办",
+    "bookkeeping_record": "账目",
+}
+
+
+def _render_pnkx_tool_reply(result: ToolResult) -> str:
+    """Render pnkx results locally so L2 data never needs a second model pass."""
+    if not result.ok:
+        return f"PNKX 操作没有完成（{result.reason_code or 'unknown_error'}）。"
+    resource = str(result.data.get("resource") or "data")
+    label = _PNKX_RESOURCE_LABELS.get(resource, "数据")
+    if result.tool_name == "pnkx_create_life":
+        return f"已在 PNKX 创建{label}。"
+
+    items = result.data.get("items")
+    if isinstance(items, list):
+        total_value = result.data.get("total")
+        total = total_value if isinstance(total_value, int) else len(items)
+        if not items:
+            return f"PNKX 中没有找到{label}。"
+        lines = [f"PNKX 中共有 {total} 条{label}，前 {min(len(items), 5)} 条是："]
+        lines.extend(
+            f"{index}. {_pnkx_item_summary(item)}"
+            for index, item in enumerate(items[:5], start=1)
+        )
+        return "\n".join(lines)
+
+    labels = result.data.get("labels")
+    if isinstance(labels, list):
+        if not labels:
+            return "PNKX 中还没有待办标签。"
+        return "PNKX 中的待办标签：" + "、".join(str(item) for item in labels[:20])
+
+    value = result.data.get("value")
+    rendered = json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+    if len(rendered) > 2_000:
+        rendered = rendered[:2_000] + "…"
+    return f"PNKX {label}：{rendered}"
+
+
+def _pnkx_item_summary(item: object) -> str:
+    if not isinstance(item, dict):
+        return str(item)
+    primary = next(
+        (
+            str(item[key]).strip()
+            for key in ("content", "title", "name", "label", "description")
+            if item.get(key) not in (None, "")
+        ),
+        f"记录 {item.get('id', '')}".strip(),
+    )
+    details = [
+        str(item[key])
+        for key in (
+            "planStartTime",
+            "planDate",
+            "date",
+            "nextPaymentDate",
+            "amount",
+        )
+        if item.get(key) not in (None, "")
+    ]
+    return " · ".join((primary, *details))
 
 
 def _tool_presentation(result: ToolResult) -> dict[str, object] | None:

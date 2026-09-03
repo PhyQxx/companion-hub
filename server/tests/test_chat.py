@@ -15,6 +15,7 @@ from app.api import create_chat_router
 from app.auth import AuthService
 from app.avatar import AvatarStore
 from app.chat import ChatService, RuntimeActionCapability
+from app.chat.service import _render_pnkx_tool_reply
 from app.cognition import (
     AttentionEngine,
     CognitiveCycle,
@@ -157,6 +158,7 @@ async def test_pnkx_tools_are_exposed_to_tool_capable_chat_model(
     service = ChatService(
         database,
         store,
+        capability_provider=FakeScreenCapabilityProvider(),
         device_tools=(
             PnkxReadTool.__new__(PnkxReadTool),
             PnkxCreateTool.__new__(PnkxCreateTool),
@@ -172,10 +174,36 @@ async def test_pnkx_tools_are_exposed_to_tool_capable_chat_model(
         privacy_level=PrivacyLevel.L1,
     )
 
-    assert {"pnkx_read_life", "pnkx_create_life"}.issubset(pending.tool_names)
-    assert {tool.name for tool in pending.request.tools}.issuperset(
-        {"pnkx_read_life", "pnkx_create_life"}
+    assert pending.tool_names == ("pnkx_read_life", "pnkx_create_life")
+    assert {tool.name for tool in pending.request.tools} == {
+        "pnkx_read_life",
+        "pnkx_create_life",
+    }
+    assert "device:test:screen.capture" not in pending.request.messages[0].content
+
+
+def test_pnkx_tool_result_is_rendered_locally() -> None:
+    reply = _render_pnkx_tool_reply(
+        ToolResult(
+            ok=True,
+            tool_name="pnkx_read_life",
+            provider="pnkx",
+            latency_ms=12,
+            data={
+                "resource": "todos",
+                "total": 12,
+                "items": [
+                    {"content": f"待办 {index}", "planStartTime": "2026-09-04 09:00:00"}
+                    for index in range(1, 7)
+                ],
+            },
+        )
     )
+
+    assert reply.startswith("PNKX 中共有 12 条未完成待办，前 5 条是：")
+    assert "1. 待办 1 · 2026-09-04 09:00:00" in reply
+    assert "5. 待办 5" in reply
+    assert "待办 6" not in reply
 
 
 class FakeBrowserCapabilityProvider:

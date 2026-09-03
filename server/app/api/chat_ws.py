@@ -83,7 +83,10 @@ class ChatWebSocketManager:
         avatar_control_publisher: AvatarControlPublisher | None = None,
     ) -> None:
         self._service = service
-        self._turns = turn_coordinator
+        # ChatService owns persisted text-turn transitions. The coordinator is
+        # accepted for wiring compatibility because the voice path still uses
+        # it, but applying both state machines to one text turn races versions.
+        del turn_coordinator
         self._avatar_control = avatar_control_publisher
         self._connections: dict[int, ChatConnection] = {}
         self._tasks: dict[UUID, asyncio.Task[None]] = {}
@@ -157,9 +160,6 @@ class ChatWebSocketManager:
             current_task = asyncio.current_task()
             if current_task is not None:
                 self._tasks[pending.generation_id] = current_task
-            # 状态机：accepted -> thinking
-            if self._turns is not None:
-                await self._turns.transition(pending.turn_id, 1, "thinking")
             await self.broadcast(
                 connection.principal.user_id,
                 frame.conversation_id,
@@ -208,9 +208,6 @@ class ChatWebSocketManager:
                     ),
                 )
 
-            # 状态机：thinking -> streaming
-            if self._turns is not None:
-                await self._turns.transition(pending.turn_id, 2, "streaming")
             turn = await self._service.run_stream(pending, on_delta, on_tool_event)
             reply_meta = (turn.assistant_message.decision_meta or {}).get("agent_reply")
             if isinstance(reply_meta, dict):
@@ -241,15 +238,8 @@ class ChatWebSocketManager:
                     generation_id=pending.generation_id,
                 ),
             )
-            # 状态机：streaming -> completed
-            if self._turns is not None:
-                await self._turns.transition(pending.turn_id, 3, "completed")
         except (TurnCancelled, asyncio.CancelledError):
             if pending is not None:
-                if self._turns is not None:
-                    await self._turns.transition(
-                        pending.turn_id, 2, "cancelled", reason="user_cancelled"
-                    )
                 await self.broadcast(
                     connection.principal.user_id,
                     frame.conversation_id,
@@ -262,8 +252,6 @@ class ChatWebSocketManager:
                     ),
                 )
         except LLMRouteExhausted as error:
-            if pending is not None and self._turns is not None:
-                await self._turns.transition(pending.turn_id, 2, "failed")
             logger.error(
                 "chat websocket model route failed conversation_id=%s generation_id=%s "
                 "reason=%s failures=[%s]",
@@ -281,8 +269,6 @@ class ChatWebSocketManager:
                 error.reason_code,
             )
         except EgressBlocked as error:
-            if pending is not None and self._turns is not None:
-                await self._turns.transition(pending.turn_id, 2, "failed")
             logger.warning(
                 "chat websocket model egress blocked conversation_id=%s generation_id=%s reason=%s",
                 frame.conversation_id,
@@ -296,8 +282,6 @@ class ChatWebSocketManager:
                 str(error),
             )
         except Exception:
-            if pending is not None and self._turns is not None:
-                await self._turns.transition(pending.turn_id, 2, "failed")
             logger.exception("chat generation failed for conversation %s", frame.conversation_id)
             await self._send_failure(connection, frame, pending, "generation_failed")
         finally:
