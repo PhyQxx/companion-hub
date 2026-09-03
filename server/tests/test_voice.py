@@ -18,6 +18,7 @@ from app.schemas import PrivacyLevel
 from app.voice import (
     EnergyVad,
     FasterWhisperRecognizer,
+    MarkdownSpeechFilter,
     MiMoAsrRecognizer,
     MiMoTtsSynthesizer,
     OpenWakeWordDetector,
@@ -28,6 +29,7 @@ from app.voice import (
     TtsProviderChain,
     VoiceLatencyMetrics,
     VoiceLatencySample,
+    markdown_to_speech_text,
     pcm16_rms,
     wrap_wav,
 )
@@ -359,6 +361,28 @@ def test_sentence_buffer_emits_short_first_tts_chunk_without_strong_punctuation(
 def test_sentence_buffer_rejects_non_positive_limits() -> None:
     with pytest.raises(ValueError, match="limits must be positive"):
         SentenceBuffer(first_chunk_chars=0)
+
+
+def test_markdown_to_speech_text_removes_markup_urls_and_slashes() -> None:
+    text = "## 使用方法\n\n**打开设置**，访问 [帮助页](https://example.com/a/b)。路径 `/tmp/demo`。"
+
+    assert markdown_to_speech_text(text) == "使用方法 打开设置，访问 帮助页。路径 tmp、demo。"
+
+
+def test_markdown_speech_filter_skips_fenced_code_across_sentences() -> None:
+    speech_filter = MarkdownSpeechFilter()
+
+    assert speech_filter.clean("说明如下：\n") == "说明如下："
+    assert speech_filter.clean("```python\n") == ""
+    assert speech_filter.clean('url = "https://example.com/a/b"\n') == ""
+    assert speech_filter.clean("```\n") == ""
+    assert speech_filter.clean("**完成**。") == "完成。"
+
+
+def test_markdown_to_speech_text_drops_raw_html_and_link_target() -> None:
+    text = '<script>alert(1)</script> [点击这里](javascript:alert(1)) A/B'
+
+    assert markdown_to_speech_text(text) == "alert(1) 点击这里 A、B"
 
 
 def test_wrap_wav_roundtrips_pcm() -> None:

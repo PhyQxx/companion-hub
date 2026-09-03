@@ -28,6 +28,7 @@ from app.voice.mimo import (
     wrap_wav,
 )
 from app.voice.pipeline import PcmAmplitudeEnvelope, SentenceBuffer
+from app.voice.speech_text import MarkdownSpeechFilter, markdown_to_speech_text
 from app.voice.tts import EdgeTtsSynthesizer
 from app.voice.vad import (
     EnergyVad,
@@ -47,6 +48,7 @@ __all__ = [
     "EnergyVad",
     "FasterWhisperRecognizer",
     "LocalOnlySynthesizerError",
+    "MarkdownSpeechFilter",
     "MiMoAsrRecognizer",
     "MiMoTtsSynthesizer",
     "OpenWakeWordDetector",
@@ -70,6 +72,7 @@ __all__ = [
     "build_voice_providers",
     "create_default_vad",
     "create_default_wake_word",
+    "markdown_to_speech_text",
     "pcm16_rms",
     "wrap_wav",
 ]

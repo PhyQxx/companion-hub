@@ -33,6 +33,7 @@ from app.schemas import PrivacyLevel
 from app.tools import ClientLocation, ClientLocationPayload
 from app.voice import (
     FasterWhisperRecognizer,
+    MarkdownSpeechFilter,
     PcmAmplitudeEnvelope,
     SentenceBuffer,
     SpeechRecognitionUnavailable,
@@ -46,6 +47,7 @@ from app.voice import (
     WakeWordUnavailable,
     create_default_vad,
     create_default_wake_word,
+    markdown_to_speech_text,
 )
 from app.voice.contracts import LocalOnlySynthesizerError
 
@@ -157,8 +159,12 @@ class VoiceWebSocketManager:
         if tts_chain is None:
             await emit("pet.audio.failed", {"reason_code": "tts_not_configured"})
             return False
+        speech_text = markdown_to_speech_text(text)
+        if not speech_text:
+            await emit("pet.audio.failed", {"reason_code": "tts_empty_text"})
+            return False
         try:
-            selection = await tts_chain.select(text, privacy_level=privacy_level)
+            selection = await tts_chain.select(speech_text, privacy_level=privacy_level)
         except LocalOnlySynthesizerError:
             await emit("pet.audio.failed", {"reason_code": "local_tts_required"})
             return False
@@ -269,8 +275,11 @@ class VoiceWebSocketManager:
         _, tts_chain = await self._voice_source.resolve()
         if tts_chain is None:
             return True
+        speech_text = markdown_to_speech_text(text)
+        if not speech_text:
+            return True
         try:
-            selection = await tts_chain.select(text, privacy_level=privacy_level)
+            selection = await tts_chain.select(speech_text, privacy_level=privacy_level)
         except LocalOnlySynthesizerError:
             await self._send(
                 session,
@@ -284,7 +293,7 @@ class VoiceWebSocketManager:
             {
                 "generation_id": str(generation_id),
                 "index": 0,
-                "text": text,
+                "text": speech_text,
                 "mime": selection.provider.mime,
                 "sample_rate": selection.provider.sample_rate,
                 "provider": type(selection.provider).__name__,
@@ -650,10 +659,14 @@ class VoiceWebSocketManager:
             buffer = SentenceBuffer(
                 first_chunk_chars=pending.config.voice.first_tts_chunk_chars
             )
+            speech_filter = MarkdownSpeechFilter()
             sentence_index = 0
 
             async def speak(sentence: str) -> None:
                 nonlocal sentence_index, first_audio_at
+                sentence = speech_filter.clean(sentence)
+                if not sentence:
+                    return
                 if tts_chain is None:
                     # 未配置任何 TTS：纯文字语音回合，只提示一次
                     if not session.tts_unavailable_notified:
