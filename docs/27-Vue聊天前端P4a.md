@@ -27,7 +27,7 @@
 
 - 登录/首次设置（`setup_required` 自动切换表单，管理 Token 仅首次使用）；
 - 会话侧栏：新建、切换、删除（确认提示含"记忆一并删除"）；`token` 持久化于 localStorage；
-- 聊天区：流式 delta 渲染、`reply.control` 情绪标签、已提交消息回放（含历史情绪）；
+- 聊天区：流式 delta 渲染、`reply.control` 情绪标签、已提交消息回放（含历史情绪）；消息气泡经 `markdown-it` 安全渲染 Markdown（`html=false` 转义原始 HTML、链接强制 `target=_blank rel=noopener noreferrer`，见 `MarkdownContent.vue`/`markdown.ts`；流式期间保持 pre-wrap，避免半截标记跳动）；用户消息同样渲染；
 - 当前 Persona 展示：侧栏标题读取运行时 Persona 名称并显示 `Persona vN`；历史助手消息可显示其 `decision_meta.persona_version`，便于区分旧消息与新发布人格；
 - 发送区：隐私等级选择（L0/L1/L2）、Enter 发送、生成中"停止"（turn.cancel）；
 - WS 断线自动重连（最多 3 次），失败时降级提示；`/chat/debug` 入口保留。
