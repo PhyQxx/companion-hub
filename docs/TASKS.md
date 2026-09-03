@@ -19,7 +19,7 @@
 | Admin 信息架构重整 | 已完成（v1） | 领域分组、URL 可恢复二级 Tab、真实数据页与浏览器验收已完成 |
 | P6 Batch D Live2D/桌宠 | 联动代码完成 | 透明窗口、拖拽、穿透、位置恢复、Hub 同源舞台及签名情绪/动作/口型同步已接通；M2 与真机性能仍是发布门槛 |
 | M4B 手机 PWA | 进行中 | 可安装壳、离线降级、移动布局、前后台恢复、移动音频解锁及游标分页补拉/去重底座已完成；待真机验收、通知与多端租约 |
-| 个人管家闭环 J1～J8 | J2 完成，J3/J4 进行中 | ACT-01～03 已完成、ACT-04 进行中；J2 四项全部代码闭环；SAT-01/02 确定性核心已落地（音频与真机待硬件）；CAL-01 日历代码闭环、TODO-01 pnkx 真机联调通过；MAIL/CONTACT 与 J5～J8 未启动，见 `docs/39` |
+| 个人管家闭环 J1～J8 | J2 完成，J3/J4 进行中 | ACT-01～03 已完成、ACT-04 进行中；J2 四项全部代码闭环；SAT-01/02 确定性核心已落地（音频与真机待硬件）；CAL-01 日历代码闭环、聊天端建提醒/建日程工具已落地，TODO-01 pnkx 真机联调通过；MAIL/CONTACT 与 J5～J8 未启动，见 `docs/39` |
 
 ## 2. 当前执行队列
 
@@ -54,7 +54,7 @@
 
 #### J2 任务与主动管家
 
-- [x] `TASK-01` 提醒与计划任务（代码闭环，待真实投递验收）：新增 `task_item` 表与 `0026_task_reminder` 迁移、`TaskStore`/`TaskScheduler` 与用户 API `/api/v1/tasks`（创建/列表/详情/完成/取消/稍后）。时间触发支持一次性与 daily/weekdays/weekly/interval 周期，错过的周期不补发；事件触发精确匹配 Perception 语义事件（如 `user_arrived_home`）并受 cooldown 限制。exactly-once 由 claim 的 `status+fire_count` 乐观守卫保证；一次性任务触发期短暂处于 firing，投递结束转 done，进程中断遗留的 firing 重启后直接判完成不重复投递。投递复用 `ProactiveDeliveryService`（Web 私聊/桌面通知/在线语音按通道配置仲裁），提醒为用户显式请求不消耗主动每日预算，通道启停与隐私上限仍生效；调度器默认 15s 轮询（`ARIA_TASK_SCHEDULER_INTERVAL` 可调），首个 tick 前等待一个完整间隔。位置触发以 HA person 实体派生的到家/离家事件先行覆盖；聊天端自然语言创建提醒、Admin 任务可视化与真实多通道投递验收尚未完成。
+- [x] `TASK-01` 提醒与计划任务（代码闭环，待真实投递验收）：新增 `task_item` 表与 `0026_task_reminder` 迁移、`TaskStore`/`TaskScheduler` 与用户 API `/api/v1/tasks`（创建/列表/详情/完成/取消/稍后）。时间触发支持一次性与 daily/weekdays/weekly/interval 周期，错过的周期不补发；事件触发精确匹配 Perception 语义事件（如 `user_arrived_home`）并受 cooldown 限制。exactly-once 由 claim 的 `status+fire_count` 乐观守卫保证；一次性任务触发期短暂处于 firing，投递结束转 done，进程中断遗留的 firing 重启后直接判完成不重复投递。投递复用 `ProactiveDeliveryService`（Web 私聊/桌面通知/在线语音按通道配置仲裁），提醒为用户显式请求不消耗主动每日预算，通道启停与隐私上限仍生效；调度器默认 15s 轮询（`ARIA_TASK_SCHEDULER_INTERVAL` 可调），首个 tick 前等待一个完整间隔。位置触发以 HA person 实体派生的到家/离家事件先行覆盖；聊天端自然语言建提醒已由 `reminder_create` 工具落地（见最近完成）；Admin 任务可视化与真实多通道投递验收尚未完成。
 - [x] `GOAL-01` 承诺跟踪（代码闭环，待真实验收）：`cognitive_goal` 新增提醒状态列（`0027_goal_reminders` 迁移）；到期前 24h 与到期后各提醒一次，时间戳列即乐观守卫保证 exactly-once；`GoalReminderScheduler`（默认 60s，`ARIA_GOAL_REMINDER_INTERVAL` 可调）经 `ProactiveDeliveryService` 投递，完成/取消/过期目标不再打扰。`GoalTracker` 在聊天后台用 utility 路由识别第一人称明确承诺（置信度 ≥0.7、疑问/假设/愿望/转述一律不提取、无后端或坏输出不提取、不做规则兜底），以消息 ID 为证据建目标且天然幂等；完成仍只能由用户显式 PATCH，不擅自标记。忽略降频：`POST /api/v1/cognition/goals/{id}/reminder-feedback`（ignored 顺延一天并计数 / snoozed 推迟指定分钟）。
 - [x] `BRIEF-01` 每日智能简报（代码闭环，待真实验收）：`daily_brief` 表（`0028_daily_brief` 迁移，`(user_id, brief_date)` 唯一保证每日 exactly-once）+ `DailyBriefService`/`DailyBriefScheduler`。事实采集确定性：天气（高德实时+当日预报，默认城市取 `config.tools.query.default_city` 或 `ARIA_BRIEF_CITY`，失败仅少一条事实）、当日会触发的时间任务（`task:{id}`）、当日到期/已过期承诺（`goal:{id}`，过期标注）；正文用确定性模板拼装而非 LLM——任务/目标标题是用户文本，进模型提示词既有注入面又不可溯源。每条事实持久化来源引用满足"结论可查看来源"；无任务与承诺时正文一行短句。本地时区（`ARIA_DEFAULT_TIMEZONE`）到 `ARIA_BRIEF_TIME`（默认 08:00）后为每个活跃用户投递一次，经 `ProactiveDeliveryService` 走 Web/桌面/语音通道；用户 API `GET /api/v1/briefs(/latest)` 与 `POST /api/v1/briefs/generate`（幂等预览不投递）。日程/家庭状态/通勤待 J4 日历与对应真源接入后扩展，不伪造数据。
 - [x] `REVIEW-01` 晚间回顾（代码闭环，待真实验收）：`daily_review` 表（`0029_daily_review` 迁移，`(user_id, review_date)` 唯一保证每晚 exactly-once）+ `DailyReviewService`/`DailyReviewScheduler`。四区块确定性采集（各带来源引用）：完成事项（当日完成的任务与承诺）、未完成计划（到期未完成，逾期标注）、新承诺（当日新建）、明日重点（明天触发的任务/到期承诺）；全部为空时一行短句。逐项修正：`PATCH /api/v1/reviews/{id}/items/{index}` 支持 confirm/remove/附注 note，修正只改回顾条目并重渲染正文，不触碰任务/目标真源状态，也绝不改写 Persona 或记忆。本地时区到 `ARIA_REVIEW_TIME`（默认 21:30）经主动通道投递一次；`GET /api/v1/reviews/latest` 与幂等 `POST /generate` 预览。
@@ -67,8 +67,8 @@
 
 #### J4 个人信息连接器
 
-- [x] `CAL-01` 日历（代码闭环，待真实验收）：v1 以 Hub 本地库为日历真源（`calendar_event` 表，`0030_calendar` 迁移同时给 `task_item` 加 `source_ref` 关联列）；外部 CalDAV/Google 后续按同契约接入。`CalendarStore` 半开区间重叠查询（首尾相接不算冲突）；`CalendarService` 提供 `preview`（纯读：规范化展示时间/参与人/目标日历 + 冲突列表，不落库，对应验收「写入前展示」）与显式 create/patch/cancel；会前提醒复用 TASK-01 调度底座（`source_ref=calendar:{id}`，默认提前 10 分钟，事件太近则尽快提醒；改期撤旧建新、取消撤旧，不引入新调度器）。API `/api/v1/calendar/events(/preview)` 全部走聊天会话鉴权，不接入模型工具直呼。剩余：聊天端自然语言建日程与外部日历同步。
-- [x] `TODO-01` 单一任务真源（对接 pnkx，2026-09-03 真机联调通过）：**pnkx 待办为唯一真源**，Hub `task_item` 作本地镜像（`0031_todo_sync` 迁移加 `external_updated_at/priority/group_label` 三列）。鉴权按用户决策采用**内部集成令牌**：pnkx 侧新增 `IntegrationTokenFilter`（`X-Integration-Token` 头常量时间比对，绑定 `pnkx.integration.userId` 指定身份，未配置完全不生效），Aria 侧 `ARIA_PNKX_BASE_URL` + `ARIA_PNKX_TOKEN` 两个 env 齐备才启用——无密码存储、无会话过期。同步引擎 `TodoSyncService`：全量分页拉取（跳过子任务）→ 按 `source_ref=pnkx:{id}` upsert 镜像、`external_updated_at` 变更才更新、远端删除→本地取消；本地完成→推送 `status=1`；Aria 手建任务经 `clientUuid=aria:{task_id}` 推送 pnkx，推送后崩溃未回填时按 clientUuid 从拉取快照认领，绝不重复创建。镜像 `next_fire_at` 恒为 NULL 不产生本地提醒（pnkx 自带 Quartz 提醒，避免双端重复打扰）；简报/回顾自动包含镜像任务。调度器默认 300s（`ARIA_TODO_SYNC_INTERVAL`），API `POST /api/v1/todo/sync` 手动触发返回统计。剩余：延期/优先级的反向推送、聊天端自然语言建任务。
+- [x] `CAL-01` 日历（代码闭环，待真实验收）：v1 以 Hub 本地库为日历真源（`calendar_event` 表，`0030_calendar` 迁移同时给 `task_item` 加 `source_ref` 关联列）；外部 CalDAV/Google 后续按同契约接入。`CalendarStore` 半开区间重叠查询（首尾相接不算冲突）；`CalendarService` 提供 `preview`（纯读：规范化展示时间/参与人/目标日历 + 冲突列表，不落库，对应验收「写入前展示」）与显式 create/patch/cancel；会前提醒复用 TASK-01 调度底座（`source_ref=calendar:{id}`，默认提前 10 分钟，事件太近则尽快提醒；改期撤旧建新、取消撤旧，不引入新调度器）。API `/api/v1/calendar/events(/preview)` 全部走聊天会话鉴权；聊天端经 `calendar_create` 受控工具接入（两段式：先预览复述、用户确认后落库，时间冲突服务端硬拦），不开放模型对底层 API 的直呼。剩余：外部日历同步。
+- [x] `TODO-01` 单一任务真源（对接 pnkx，2026-09-03 真机联调通过）：**pnkx 待办为唯一真源**，Hub `task_item` 作本地镜像（`0031_todo_sync` 迁移加 `external_updated_at/priority/group_label` 三列）。鉴权按用户决策采用**内部集成令牌**：pnkx 侧新增 `IntegrationTokenFilter`（`X-Integration-Token` 头常量时间比对，绑定 `pnkx.integration.userId` 指定身份，未配置完全不生效），Aria 侧 `ARIA_PNKX_BASE_URL` + `ARIA_PNKX_TOKEN` 两个 env 齐备才启用——无密码存储、无会话过期。同步引擎 `TodoSyncService`：全量分页拉取（跳过子任务）→ 按 `source_ref=pnkx:{id}` upsert 镜像、`external_updated_at` 变更才更新、远端删除→本地取消；本地完成→推送 `status=1`；Aria 手建任务经 `clientUuid=aria:{task_id}` 推送 pnkx，推送后崩溃未回填时按 clientUuid 从拉取快照认领，绝不重复创建。镜像 `next_fire_at` 恒为 NULL 不产生本地提醒（pnkx 自带 Quartz 提醒，避免双端重复打扰）；简报/回顾自动包含镜像任务。调度器默认 300s（`ARIA_TODO_SYNC_INTERVAL`），API `POST /api/v1/todo/sync` 手动触发返回统计。剩余：延期/优先级的反向推送（聊天端自然语言建任务已由 `pnkx_create_life` resource=todo 覆盖）。
 - [ ] `MAIL-01` 邮件助手：先只读摘要/搜索/归类，再开放草稿和显式确认发送。
 - [ ] `CONTACT-01` 联系人上下文：别名、时区、重要日期与用户明确授权的偏好。
 
@@ -153,6 +153,7 @@
 
 ## 3. 最近完成
 
+- [x] 聊天端自然语言建提醒/建日程工具：新增 `reminder_create`（`app/tasks/tools.py`，写 TASK-01 任务存储，支持 once/daily/weekdays/weekly/interval 周期与到家/离家事件触发，本地时间按 `ARIA_DEFAULT_TIMEZONE` 解释）与 `calendar_create`（`app/calendar/tools.py`，两段式契约：首次调用只做时间规范化 + 冲突预览并要求模型向用户复述，`confirmed=true` 才落库，时间冲突即使确认也服务端硬拦）。两者同回合按 turn 幂等（重复调用返回已建实体不重复写入）；挂载门禁仅 L1 开放（L0 公开模式不写个人数据，L2 私密会话内容不入库，工具执行层兜底拒绝），要求工具模型就绪；`tool.started` 标签与 main.py 按 service 就绪挂载已接通。TODO-01 的聊天建任务已由既有 `pnkx_create_life` resource=todo 覆盖，不另建通道。
 - [x] 聊天 Markdown 渲染 + TTS 前文本清洗：Chat 气泡由纯文本改为 markdown-it 安全渲染（`html=false` 转义原始 HTML、链接强制 `noopener noreferrer`、流式期间保持 pre-wrap），新增 `MarkdownContent.vue`/`markdown.ts`；语音侧新增 `speech_text.py`（`MarkdownSpeechFilter` 跨句记住 fenced code 状态、`markdown_to_speech_text` 移除标题/链接/URL/行内代码/表格线/HTML 标签），接入流式分句、桌宠播报与完整语音回复三条路径，清洗后为空则安全跳过或返回 `tts_empty_text`。语音播报不再念出 Markdown 符号与代码块。
 - [x] 情景记忆按事件追加（修复屏幕观察重复入库冲突）：`MemoryIngester` 对 EPISODIC 候选直接追加，不再进入稳定事实的"相似但不同即冲突"裁决——相似文本描述的是不同时间的事件可以同时为真；上游事件管线继续按事件 ID、截图哈希与时间窗口去重。`docs/38` 同步更新，新增两条相似屏幕观察各自独立创建的回归。
 - [x] Admin 三处修复：设备命令台账与 HA 实体列表加分页（20/50/100(/200) 档位、筛选变化重置页码、HA 表格跨页保留勾选）；修复模型工作区保存时 `structuredClone` 无法克隆 Vue 响应式 Proxy 导致的崩溃——改为递归重建普通对象。
@@ -230,6 +231,7 @@
 
 ## 4. 最新质量基线
 
+- 2026-09-03 聊天端建提醒/建日程工具：新增 `tests/test_assistant_tools.py` **12 通过**（本地 naive 时间转时区、周期与事件触发映射、同回合幂等、过期触发拒绝、L2/缺 turn 拒绝；日历两段式预览不落库、确认后建事件并关联提醒任务、冲突即使确认也硬拦、倒置窗口拒绝、幂等；L1 挂载/L0/L2 不挂载、无工具能力模型不挂载）；非 soak 全量 pytest **639 通过 / 0 失败**（1 个 soak 用例 deselect）；Ruff、严格 mypy（271 source files）与 `git diff --check` 通过。真实模型端的自然语言解析效果（模型是否先追问/复述再调用）待真机验收。
 - 2026-09-03 Markdown 渲染/TTS 清洗/情景记忆/Admin 修复批次收口：新增 `test_voice.py` Markdown 清洗 3 例、`test_memory.py` 情景事件独立追加 1 例；非 soak 全量 pytest **627 通过 / 0 失败**（1 个 soak 用例 deselect）；Ruff、严格 mypy（268 source files）、Chat/Admin typecheck 与 production build、`git diff --check` 全部通过；分 5 个逻辑提交入库。同日 `TODO-01` livecheck 对真实 pnkx 实例全链 4 阶段零错误（拉取 109/镜像/新建推送/完成推送/清理）。语音真机播报效果仍待验收。
 - 2026-09-02 `TODO-01` pnkx 任务对接：新增 `tests/test_todo_sync.py` **10 通过**（令牌头校验与 401 拒绝、创建/更新载荷、镜像建立与子任务跳过、二次同步稳定与远端删除检测、完成推送且不重复、手建推送一次与崩溃认领、拉取失败不产生半写、调度器首 tick 延迟、API 401/统计）；非 soak 全量 pytest **602 通过 / 0 失败**；Ruff、严格 mypy（app 194 files）与 `git diff --check` 通过；Alembic SQLite 空库升级到单 head `0031_todo_sync`；pnkx-framework `mvn compile` 通过。真实 pnkx 实例联调（配置集成令牌后）待验收。
 - 2026-09-02 `CAL-01` 日历：新增 `tests/test_calendar.py` **8 通过**（预览冲突且不落库、首尾相接非冲突、窗口/提前量校验、创建关联提醒任务、取消联动撤提醒、改期撤旧建新、临近事件立即提醒、API 全流含 401/404/422 与冲突预览）；非 soak 全量 pytest **592 通过 / 0 失败**；Ruff、严格 mypy（app 189 files）与 `git diff --check` 通过；Alembic SQLite 空库升级到单 head `0030_calendar`。真实 PostgreSQL 尚未应用 `0024～0030`；聊天端自然语言建日程与外部日历接入待做。
