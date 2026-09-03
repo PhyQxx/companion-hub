@@ -435,6 +435,99 @@ class PnkxLifeClient:
             raise PnkxApiError("shopping_item_create_no_id")
         return str(remote_id)
 
+    async def recipes(
+        self,
+        *,
+        page: int = 1,
+        page_size: int = 50,
+        title: str | None = None,
+        servings: int | None = None,
+    ) -> PnkxContentPage:
+        params: dict[str, str | int] = {"pageNum": page, "pageSize": page_size}
+        if title is not None:
+            params["title"] = title
+        if servings is not None:
+            params["servings"] = servings
+        return await self._content_page(
+            "/recipe/list", params=params, reason_prefix="recipes"
+        )
+
+    async def create_recipe(
+        self,
+        *,
+        client_uuid: str,
+        title: str,
+        servings: int,
+        ingredients: list[dict[str, Any]],
+        url: str | None = None,
+        notes: str | None = None,
+        remark: str | None = None,
+    ) -> str:
+        payload: dict[str, Any] = {
+            "clientUuid": client_uuid,
+            "title": title,
+            "servings": servings,
+            "ingredients": ingredients,
+        }
+        if url is not None:
+            payload["url"] = url
+        if notes is not None:
+            payload["notes"] = notes
+        if remark is not None:
+            payload["remark"] = remark
+        remote_id = await self._post_data("/recipe", json=payload)
+        if remote_id is None:
+            raise PnkxApiError("recipe_create_no_id")
+        return str(remote_id)
+
+    async def meal_plans(
+        self,
+        *,
+        page: int = 1,
+        page_size: int = 50,
+        plan_date: str | None = None,
+        meal_type: int | None = None,
+    ) -> PnkxContentPage:
+        params: dict[str, str | int] = {"pageNum": page, "pageSize": page_size}
+        if plan_date is not None:
+            params["planDate"] = plan_date
+        if meal_type is not None:
+            params["mealType"] = meal_type
+        return await self._content_page(
+            "/mealPlan/list", params=params, reason_prefix="meal_plans"
+        )
+
+    async def create_meal_plan(
+        self,
+        *,
+        client_uuid: str,
+        plan_date: str,
+        meal_type: int,
+        title: str,
+        recipe_id: int | None = None,
+        notes: str | None = None,
+        sort_order: int | None = None,
+        remark: str | None = None,
+    ) -> str:
+        payload: dict[str, Any] = {
+            "clientUuid": client_uuid,
+            "planDate": plan_date,
+            "mealType": meal_type,
+            "title": title,
+        }
+        if recipe_id is not None:
+            payload["recipeId"] = recipe_id
+        if notes is not None:
+            payload["notes"] = notes
+        if sort_order is not None:
+            payload["sortOrder"] = sort_order
+        if remark is not None:
+            payload["remark"] = remark
+        remote_id = await self._post_data("/mealPlan", json=payload)
+        if remote_id is None:
+            raise PnkxApiError("meal_plan_create_no_id")
+        return str(remote_id)
+
     async def _content_page(
         self,
         path: str,

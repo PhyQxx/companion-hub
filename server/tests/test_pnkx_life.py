@@ -37,6 +37,8 @@ class FakePnkxLife:
         self.subscription_operations: list[dict[str, Any]] = []
         self.shopping_list_operations: list[dict[str, Any]] = []
         self.shopping_item_operations: list[dict[str, Any]] = []
+        self.recipe_operations: list[dict[str, Any]] = []
+        self.meal_plan_operations: list[dict[str, Any]] = []
         self.bookkeeping_ids: dict[str, int] = {}
         self.commemoration_ids: dict[str, int] = {}
         self.note_ids: dict[str, int] = {}
@@ -44,6 +46,8 @@ class FakePnkxLife:
         self.subscription_ids: dict[str, int] = {}
         self.shopping_list_ids: dict[str, int] = {}
         self.shopping_item_ids: dict[str, int] = {}
+        self.recipe_ids: dict[str, int] = {}
+        self.meal_plan_ids: dict[str, int] = {}
 
     def handler(self, request: httpx.Request) -> httpx.Response:
         self.requests.append(request)
@@ -162,6 +166,41 @@ class FakePnkxLife:
             body = json.loads(request.content)
             self.shopping_item_operations.append(body)
             remote_id = self.shopping_item_ids.setdefault(str(body["clientUuid"]), 87)
+            return httpx.Response(200, json={"code": 200, "data": remote_id})
+        if path == "/recipe/list":
+            return httpx.Response(
+                200,
+                json={
+                    "code": 200,
+                    "rows": [{"id": 61, "title": "番茄炒蛋", "servings": 2}],
+                    "total": 1,
+                },
+            )
+        if path == "/mealPlan/list":
+            return httpx.Response(
+                200,
+                json={
+                    "code": 200,
+                    "rows": [
+                        {
+                            "id": 62,
+                            "planDate": "2026-09-04",
+                            "mealType": 2,
+                            "title": "番茄炒蛋",
+                        }
+                    ],
+                    "total": 1,
+                },
+            )
+        if path == "/recipe" and request.method == "POST":
+            body = json.loads(request.content)
+            self.recipe_operations.append(body)
+            remote_id = self.recipe_ids.setdefault(str(body["clientUuid"]), 88)
+            return httpx.Response(200, json={"code": 200, "data": remote_id})
+        if path == "/mealPlan" and request.method == "POST":
+            body = json.loads(request.content)
+            self.meal_plan_operations.append(body)
+            remote_id = self.meal_plan_ids.setdefault(str(body["clientUuid"]), 89)
             return httpx.Response(200, json={"code": 200, "data": remote_id})
         if path == "/offline/batch" and request.method == "POST":
             body = json.loads(request.content)
@@ -403,6 +442,35 @@ async def test_life_client_reads_and_creates_shopping_data() -> None:
     assert fake.shopping_list_operations[0]["orderNum"] == 2
     assert fake.shopping_item_operations[0]["listId"] == 51
     assert fake.shopping_item_operations[0]["quantity"] == "2包"
+
+
+async def test_life_client_reads_and_creates_recipes_and_meal_plans() -> None:
+    fake = FakePnkxLife()
+    client = _client(fake)
+
+    recipes = await client.recipes(title="番茄", servings=2)
+    meals = await client.meal_plans(plan_date="2026-09-04", meal_type=2)
+    recipe_id = await client.create_recipe(
+        client_uuid="018f7f4489d27cc8bc198f51f522a4d8",
+        title="番茄炒蛋",
+        servings=2,
+        ingredients=[{"name": "番茄", "quantity": "2个"}],
+    )
+    meal_id = await client.create_meal_plan(
+        client_uuid="018f7f4489d27cc8bc198f51f522a4d9",
+        plan_date="2026-09-04",
+        meal_type=2,
+        title="番茄炒蛋",
+        recipe_id=61,
+        sort_order=1,
+    )
+
+    assert recipes.total == 1
+    assert meals.items[0]["mealType"] == 2
+    assert recipe_id == "88"
+    assert meal_id == "89"
+    assert fake.recipe_operations[0]["ingredients"][0]["name"] == "番茄"
+    assert fake.meal_plan_operations[0]["planDate"] == "2026-09-04"
 
 
 async def test_life_client_recognizes_pnkx_business_401() -> None:
@@ -739,3 +807,51 @@ async def test_shopping_api_reads_and_creates_lists_and_items(database: Database
     assert created_list.json()["remote_id"] == "86"
     assert created_item.status_code == 201
     assert created_item.json()["remote_id"] == "87"
+
+
+async def test_recipe_and_meal_plan_api_reads_and_creates(database: Database) -> None:
+    auth = AuthService(database)
+    owner = await auth.setup(display_name="meal owner", password="correct horse")
+    fake = FakePnkxLife()
+    app = FastAPI()
+    app.include_router(create_pnkx_router(_client(fake), auth, writes_enabled=True))
+    headers = {"Authorization": f"Bearer {owner.access_token}"}
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        recipes = await client.get("/api/v1/pnkx/recipes?servings=2", headers=headers)
+        meals = await client.get(
+            "/api/v1/pnkx/meal-plans?plan_date=2026-09-04&meal_type=2",
+            headers=headers,
+        )
+        recipe = await client.post(
+            "/api/v1/pnkx/recipes",
+            headers=headers,
+            json={
+                "idempotency_key": "018f7f44-89d2-7cc8-bc19-8f51f522a4d8",
+                "title": "番茄炒蛋",
+                "servings": 2,
+                "ingredients": [{"name": "番茄", "quantity": "2个"}],
+            },
+        )
+        meal = await client.post(
+            "/api/v1/pnkx/meal-plans",
+            headers=headers,
+            json={
+                "idempotency_key": "018f7f44-89d2-7cc8-bc19-8f51f522a4d9",
+                "plan_date": "2026-09-04",
+                "meal_type": 2,
+                "title": "番茄炒蛋",
+                "recipe_id": 61,
+            },
+        )
+
+    assert recipes.status_code == 200, recipes.text
+    assert meals.status_code == 200, meals.text
+    assert recipe.status_code == 201, recipe.text
+    assert meal.status_code == 201, meal.text
+    assert recipes.json()["total"] == 1
+    assert meals.json()["items"][0]["planDate"] == "2026-09-04"
+    assert recipe.status_code == 201
+    assert recipe.json()["remote_id"] == "88"
+    assert meal.status_code == 201
+    assert meal.json()["remote_id"] == "89"

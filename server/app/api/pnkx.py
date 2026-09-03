@@ -151,6 +151,33 @@ class PnkxShoppingItemCreatePayload(StrictModel):
     remark: Annotated[str, Field(min_length=1, max_length=1000)] | None = None
 
 
+class PnkxRecipeIngredientPayload(StrictModel):
+    name: Annotated[str, Field(min_length=1, max_length=255)]
+    quantity: Annotated[str, Field(min_length=1, max_length=100)] | None = None
+    classification_id: Annotated[int, Field(gt=0)] | None = None
+
+
+class PnkxRecipeCreatePayload(StrictModel):
+    idempotency_key: UUID
+    title: Annotated[str, Field(min_length=1, max_length=255)]
+    servings: Annotated[int, Field(gt=0, le=100)] = 1
+    ingredients: Annotated[list[PnkxRecipeIngredientPayload], Field(max_length=200)]
+    url: Annotated[str, Field(min_length=1, max_length=2000)] | None = None
+    notes: Annotated[str, Field(max_length=10_000)] | None = None
+    remark: Annotated[str, Field(min_length=1, max_length=1000)] | None = None
+
+
+class PnkxMealPlanCreatePayload(StrictModel):
+    idempotency_key: UUID
+    plan_date: date
+    meal_type: Literal[1, 2, 3, 4]
+    title: Annotated[str, Field(min_length=1, max_length=255)]
+    recipe_id: Annotated[int, Field(gt=0)] | None = None
+    notes: Annotated[str, Field(max_length=10_000)] | None = None
+    sort_order: Annotated[int, Field(ge=0)] | None = None
+    remark: Annotated[str, Field(min_length=1, max_length=1000)] | None = None
+
+
 def create_pnkx_router(
     client: PnkxLifeClient,
     auth_service: AuthService,
@@ -587,6 +614,116 @@ def create_pnkx_router(
                 quantity=body.quantity,
                 classification_id=body.classification_id,
                 checked=body.checked,
+                sort_order=body.sort_order,
+                remark=body.remark,
+            )
+        except Exception as error:
+            raise unavailable(error) from error
+        return PnkxContentCreateResponse(
+            remote_id=remote_id, client_uuid=client_uuid
+        )
+
+    @router.get("/recipes", response_model=PnkxContentPageResponse)
+    async def recipes(
+        _: Annotated[ChatPrincipal, Depends(guard)],
+        page: Annotated[int, Query(ge=1)] = 1,
+        page_size: Annotated[int, Query(ge=1, le=200)] = 50,
+        title: Annotated[str | None, Query(min_length=1, max_length=255)] = None,
+        servings: Annotated[int | None, Query(gt=0, le=100)] = None,
+    ) -> PnkxContentPageResponse:
+        try:
+            result = await client.recipes(
+                page=page, page_size=page_size, title=title, servings=servings
+            )
+        except Exception as error:
+            raise unavailable(error) from error
+        return PnkxContentPageResponse(items=result.items, total=result.total)
+
+    @router.post(
+        "/recipes",
+        response_model=PnkxContentCreateResponse,
+        status_code=status.HTTP_201_CREATED,
+    )
+    async def create_recipe(
+        body: PnkxRecipeCreatePayload,
+        _: Annotated[ChatPrincipal, Depends(guard)],
+    ) -> PnkxContentCreateResponse:
+        if not writes_enabled:
+            raise HTTPException(
+                status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="pnkx writes are disabled",
+            )
+        client_uuid = body.idempotency_key.hex
+        ingredients = [
+            {
+                key: value
+                for key, value in {
+                    "name": item.name,
+                    "quantity": item.quantity,
+                    "classificationId": item.classification_id,
+                }.items()
+                if value is not None
+            }
+            for item in body.ingredients
+        ]
+        try:
+            remote_id = await client.create_recipe(
+                client_uuid=client_uuid,
+                title=body.title,
+                servings=body.servings,
+                ingredients=ingredients,
+                url=body.url,
+                notes=body.notes,
+                remark=body.remark,
+            )
+        except Exception as error:
+            raise unavailable(error) from error
+        return PnkxContentCreateResponse(
+            remote_id=remote_id, client_uuid=client_uuid
+        )
+
+    @router.get("/meal-plans", response_model=PnkxContentPageResponse)
+    async def meal_plans(
+        _: Annotated[ChatPrincipal, Depends(guard)],
+        page: Annotated[int, Query(ge=1)] = 1,
+        page_size: Annotated[int, Query(ge=1, le=200)] = 50,
+        plan_date: Annotated[date | None, Query()] = None,
+        meal_type: Annotated[int | None, Query(ge=1, le=4)] = None,
+    ) -> PnkxContentPageResponse:
+        try:
+            result = await client.meal_plans(
+                page=page,
+                page_size=page_size,
+                plan_date=plan_date.isoformat() if plan_date else None,
+                meal_type=meal_type,
+            )
+        except Exception as error:
+            raise unavailable(error) from error
+        return PnkxContentPageResponse(items=result.items, total=result.total)
+
+    @router.post(
+        "/meal-plans",
+        response_model=PnkxContentCreateResponse,
+        status_code=status.HTTP_201_CREATED,
+    )
+    async def create_meal_plan(
+        body: PnkxMealPlanCreatePayload,
+        _: Annotated[ChatPrincipal, Depends(guard)],
+    ) -> PnkxContentCreateResponse:
+        if not writes_enabled:
+            raise HTTPException(
+                status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="pnkx writes are disabled",
+            )
+        client_uuid = body.idempotency_key.hex
+        try:
+            remote_id = await client.create_meal_plan(
+                client_uuid=client_uuid,
+                plan_date=body.plan_date.isoformat(),
+                meal_type=body.meal_type,
+                title=body.title,
+                recipe_id=body.recipe_id,
+                notes=body.notes,
                 sort_order=body.sort_order,
                 remark=body.remark,
             )
