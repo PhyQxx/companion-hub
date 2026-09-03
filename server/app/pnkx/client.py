@@ -283,6 +283,72 @@ class PnkxLifeClient:
             reason_prefix="diary_create",
         )
 
+    async def subscriptions(
+        self,
+        *,
+        page: int = 1,
+        page_size: int = 50,
+        name: str | None = None,
+        cycle: str | None = None,
+        enabled: bool | None = None,
+    ) -> PnkxContentPage:
+        params: dict[str, str | int] = {"pageNum": page, "pageSize": page_size}
+        if name is not None:
+            params["name"] = name
+        if cycle is not None:
+            params["cycle"] = cycle
+        if enabled is not None:
+            params["enabled"] = str(enabled).lower()
+        return await self._content_page(
+            "/subscription/list", params=params, reason_prefix="subscriptions"
+        )
+
+    async def subscription_forecast(self) -> dict[str, Any]:
+        data = await self._get_data("/subscription/forecast")
+        if not isinstance(data, dict):
+            raise PnkxApiError("subscription_forecast_invalid")
+        return data
+
+    async def create_subscription(
+        self,
+        *,
+        client_uuid: str,
+        name: str,
+        amount: str,
+        cycle: str,
+        cycle_interval: int,
+        next_payment_date: str,
+        account_id: int,
+        classification_id: int,
+        payment_method: str | None = None,
+        logo: str | None = None,
+        reminder_lead_days: int = 0,
+        enabled: bool = True,
+        remark: str | None = None,
+    ) -> str:
+        payload: dict[str, Any] = {
+            "clientUuid": client_uuid,
+            "name": name,
+            "amount": amount,
+            "cycle": cycle,
+            "cycleInterval": cycle_interval,
+            "nextPaymentDate": next_payment_date,
+            "accountId": account_id,
+            "classificationId": classification_id,
+            "reminderLeadDays": reminder_lead_days,
+            "enabled": enabled,
+        }
+        if payment_method is not None:
+            payload["paymentMethod"] = payment_method
+        if logo is not None:
+            payload["logo"] = logo
+        if remark is not None:
+            payload["remark"] = remark
+        remote_id = await self._post_data("/subscription", json=payload)
+        if remote_id is None:
+            raise PnkxApiError("subscription_create_no_id")
+        return str(remote_id)
+
     async def _content_page(
         self,
         path: str,

@@ -34,10 +34,12 @@ class FakePnkxLife:
         self.commemoration_operations: list[dict[str, Any]] = []
         self.note_operations: list[dict[str, Any]] = []
         self.diary_operations: list[dict[str, Any]] = []
+        self.subscription_operations: list[dict[str, Any]] = []
         self.bookkeeping_ids: dict[str, int] = {}
         self.commemoration_ids: dict[str, int] = {}
         self.note_ids: dict[str, int] = {}
         self.diary_ids: dict[str, int] = {}
+        self.subscription_ids: dict[str, int] = {}
 
     def handler(self, request: httpx.Request) -> httpx.Response:
         self.requests.append(request)
@@ -97,6 +99,36 @@ class FakePnkxLife:
                     "total": 1,
                 },
             )
+        if path == "/subscription/list":
+            return httpx.Response(
+                200,
+                json={
+                    "code": 200,
+                    "rows": [
+                        {
+                            "id": 41,
+                            "name": "云服务",
+                            "amount": 20,
+                            "cycle": "monthly",
+                        }
+                    ],
+                    "total": 1,
+                },
+            )
+        if path == "/subscription/forecast":
+            return httpx.Response(
+                200,
+                json={
+                    "code": 200,
+                    "data": {"monthlyTotal": 20, "yearlyTotal": 240, "count": 1},
+                },
+            )
+        if path == "/subscription" and request.method == "POST":
+            body = json.loads(request.content)
+            self.subscription_operations.append(body)
+            client_uuid = str(body["clientUuid"])
+            remote_id = self.subscription_ids.setdefault(client_uuid, 85)
+            return httpx.Response(200, json={"code": 200, "data": remote_id})
         if path == "/offline/batch" and request.method == "POST":
             body = json.loads(request.content)
             operation = body["operations"][0]
@@ -274,6 +306,41 @@ async def test_life_client_reads_and_creates_notes_and_diaries() -> None:
     assert diary_request.url.params["date"] == "2026-09-01"
 
 
+async def test_life_client_reads_forecasts_and_creates_subscriptions() -> None:
+    fake = FakePnkxLife()
+    client = _client(fake)
+
+    page = await client.subscriptions(
+        page=2, page_size=10, name="云", cycle="monthly", enabled=True
+    )
+    forecast = await client.subscription_forecast()
+    remote_id = await client.create_subscription(
+        client_uuid="018f7f4489d27cc8bc198f51f522a4d5",
+        name="云服务",
+        amount="20.00",
+        cycle="monthly",
+        cycle_interval=1,
+        next_payment_date="2026-10-01",
+        account_id=2,
+        classification_id=3,
+        payment_method="支付宝",
+        reminder_lead_days=3,
+    )
+
+    assert page.total == 1
+    assert forecast["yearlyTotal"] == 240
+    assert remote_id == "85"
+    request = next(
+        item
+        for item in fake.requests
+        if item.url.path.endswith("/subscription/list")
+    )
+    assert request.url.params["enabled"] == "true"
+    operation = fake.subscription_operations[0]
+    assert operation["clientUuid"] == "018f7f4489d27cc8bc198f51f522a4d5"
+    assert operation["nextPaymentDate"] == "2026-10-01"
+
+
 async def test_life_client_recognizes_pnkx_business_401() -> None:
     fake = FakePnkxLife()
     client = _client(fake, token="wrong")
@@ -417,13 +484,27 @@ async def test_pnkx_api_write_gate_defaults_closed(database: Database) -> None:
                 "entry_date": "2026-09-03",
             },
         )
+        subscription = await client.post(
+            "/api/v1/pnkx/subscriptions",
+            headers={"Authorization": f"Bearer {owner.access_token}"},
+            json={
+                "idempotency_key": "018f7f44-89d2-7cc8-bc19-8f51f522a4d5",
+                "name": "云服务",
+                "amount": "20.00",
+                "next_payment_date": "2026-10-01",
+                "account_id": 2,
+                "classification_id": 3,
+            },
+        )
 
     assert bookkeeping.status_code == 503
     assert note.status_code == 503
     assert diary.status_code == 503
+    assert subscription.status_code == 503
     assert fake.bookkeeping_operations == []
     assert fake.note_operations == []
     assert fake.diary_operations == []
+    assert fake.subscription_operations == []
 
 
 async def test_commemoration_and_notification_api_controls(database: Database) -> None:
@@ -514,3 +595,41 @@ async def test_note_and_diary_api_reads_and_creates(database: Database) -> None:
     assert diary.status_code == 201
     assert diary.json()["remote_id"] == "84"
     assert fake.diary_operations[0]["payload"]["date"] == "2026-09-03"
+
+
+async def test_subscription_api_reads_forecast_and_creates(database: Database) -> None:
+    auth = AuthService(database)
+    owner = await auth.setup(display_name="subscription owner", password="correct horse")
+    fake = FakePnkxLife()
+    app = FastAPI()
+    app.include_router(create_pnkx_router(_client(fake), auth, writes_enabled=True))
+    headers = {"Authorization": f"Bearer {owner.access_token}"}
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        subscriptions = await client.get(
+            "/api/v1/pnkx/subscriptions?enabled=true", headers=headers
+        )
+        forecast = await client.get(
+            "/api/v1/pnkx/subscriptions/forecast", headers=headers
+        )
+        created = await client.post(
+            "/api/v1/pnkx/subscriptions",
+            headers=headers,
+            json={
+                "idempotency_key": "018f7f44-89d2-7cc8-bc19-8f51f522a4d5",
+                "name": "云服务",
+                "amount": "20.00",
+                "cycle": "monthly",
+                "cycle_interval": 1,
+                "next_payment_date": "2026-10-01",
+                "account_id": 2,
+                "classification_id": 3,
+                "reminder_lead_days": 3,
+            },
+        )
+
+    assert subscriptions.json()["total"] == 1
+    assert forecast.json()["data"]["monthlyTotal"] == 20
+    assert created.status_code == 201
+    assert created.json()["remote_id"] == "85"
+    assert created.json()["client_uuid"] == "018f7f4489d27cc8bc198f51f522a4d5"

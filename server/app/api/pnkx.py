@@ -117,6 +117,22 @@ class PnkxDiaryCreatePayload(StrictModel):
     remark: Annotated[str, Field(min_length=1, max_length=1000)] | None = None
 
 
+class PnkxSubscriptionCreatePayload(StrictModel):
+    idempotency_key: UUID
+    name: Annotated[str, Field(min_length=1, max_length=255)]
+    amount: Annotated[Decimal, Field(gt=0, max_digits=18, decimal_places=2)]
+    cycle: Literal["daily", "weekly", "monthly", "yearly"] = "monthly"
+    cycle_interval: Annotated[int, Field(gt=0, le=365)] = 1
+    next_payment_date: date
+    account_id: Annotated[int, Field(gt=0)]
+    classification_id: Annotated[int, Field(gt=0)]
+    payment_method: Annotated[str, Field(min_length=1, max_length=100)] | None = None
+    logo: Annotated[str, Field(min_length=1, max_length=1000)] | None = None
+    reminder_lead_days: Annotated[int, Field(ge=0, le=365)] = 0
+    enabled: bool = True
+    remark: Annotated[str, Field(min_length=1, max_length=1000)] | None = None
+
+
 def create_pnkx_router(
     client: PnkxLifeClient,
     auth_service: AuthService,
@@ -377,6 +393,75 @@ def create_pnkx_router(
                 mood=body.mood,
                 weather=body.weather,
                 rich_text=body.rich_text,
+                remark=body.remark,
+            )
+        except Exception as error:
+            raise unavailable(error) from error
+        return PnkxContentCreateResponse(
+            remote_id=remote_id, client_uuid=client_uuid
+        )
+
+    @router.get("/subscriptions", response_model=PnkxContentPageResponse)
+    async def subscriptions(
+        _: Annotated[ChatPrincipal, Depends(guard)],
+        page: Annotated[int, Query(ge=1)] = 1,
+        page_size: Annotated[int, Query(ge=1, le=200)] = 50,
+        name: Annotated[str | None, Query(min_length=1, max_length=255)] = None,
+        cycle: Annotated[
+            Literal["daily", "weekly", "monthly", "yearly"] | None, Query()
+        ] = None,
+        enabled: Annotated[bool | None, Query()] = None,
+    ) -> PnkxContentPageResponse:
+        try:
+            result = await client.subscriptions(
+                page=page,
+                page_size=page_size,
+                name=name,
+                cycle=cycle,
+                enabled=enabled,
+            )
+        except Exception as error:
+            raise unavailable(error) from error
+        return PnkxContentPageResponse(items=result.items, total=result.total)
+
+    @router.get("/subscriptions/forecast", response_model=PnkxObjectResponse)
+    async def subscription_forecast(
+        _: Annotated[ChatPrincipal, Depends(guard)],
+    ) -> PnkxObjectResponse:
+        try:
+            return PnkxObjectResponse(data=await client.subscription_forecast())
+        except Exception as error:
+            raise unavailable(error) from error
+
+    @router.post(
+        "/subscriptions",
+        response_model=PnkxContentCreateResponse,
+        status_code=status.HTTP_201_CREATED,
+    )
+    async def create_subscription(
+        body: PnkxSubscriptionCreatePayload,
+        _: Annotated[ChatPrincipal, Depends(guard)],
+    ) -> PnkxContentCreateResponse:
+        if not writes_enabled:
+            raise HTTPException(
+                status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="pnkx writes are disabled",
+            )
+        client_uuid = body.idempotency_key.hex
+        try:
+            remote_id = await client.create_subscription(
+                client_uuid=client_uuid,
+                name=body.name,
+                amount=format(body.amount, "f"),
+                cycle=body.cycle,
+                cycle_interval=body.cycle_interval,
+                next_payment_date=body.next_payment_date.isoformat(),
+                account_id=body.account_id,
+                classification_id=body.classification_id,
+                payment_method=body.payment_method,
+                logo=body.logo,
+                reminder_lead_days=body.reminder_lead_days,
+                enabled=body.enabled,
                 remark=body.remark,
             )
         except Exception as error:
