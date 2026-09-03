@@ -31,6 +31,7 @@ import {
 } from "./voice";
 import ToolResultCard from "./ToolResultCard.vue";
 import Live2DStage from "./Live2DStage.vue";
+import MarkdownContent from "./MarkdownContent.vue";
 
 // 聊天前端主组件：登录 → 会话侧栏 → 流式消息区 → 发送区。
 // 普通 Web 保留既有本地会话；安装后的 PWA 只在当前会话存储令牌。
@@ -1217,7 +1218,7 @@ async function installPwa() {
         <template v-for="message in activeMessages" :key="message.id">
           <div v-if="message.role !== 'system'" class="message" :class="message.role">
             <div class="bubble">
-              {{ message.content }}
+              <MarkdownContent :content="message.content" />
               <ToolResultCard
                 v-if="message.role === 'assistant' && toolResultOf(message)"
                 :result="toolResultOf(message)!"
@@ -1387,8 +1388,10 @@ main { grid-area:chat; display:grid; grid-template-rows:minmax(0,1fr) auto; min-
 .empty { height: 100%; display: grid; place-items: center; color: var(--muted); }
 .message { max-width: 80%; margin-bottom: 14px; }
 .message.user { margin-left: auto; }
-.bubble { white-space: pre-wrap; line-height: 1.55; padding: 10px 14px; border:1px solid var(--line); border-radius: 14px; background: var(--panel); box-shadow:0 3px 12px color-mix(in srgb,var(--text) 4%,transparent); position: relative; }
+.bubble { line-height: 1.55; padding: 10px 14px; border:1px solid var(--line); border-radius: 14px; background: var(--panel); box-shadow:0 3px 12px color-mix(in srgb,var(--text) 4%,transparent); position: relative; }
 .user .bubble { background: var(--message-user-bg); border-color:var(--message-user-bg); color: #fff; }
+.user .bubble :deep(.markdown-content a) { color:inherit; }
+.bubble.streaming { white-space:pre-wrap; }
 .bubble.streaming::after { content: ""; }
 .emotion { display: inline-block; margin-left: 8px; font-size: 11px; color: var(--muted); border: 1px solid var(--line); border-radius: 999px; padding: 0 8px; vertical-align: 1px; }
 .persona-badge { display:inline-block; margin-left:6px; font-size:10px; color:var(--muted); opacity:.75; }
