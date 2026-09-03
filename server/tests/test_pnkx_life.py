@@ -39,6 +39,7 @@ class FakePnkxLife:
         self.shopping_item_operations: list[dict[str, Any]] = []
         self.recipe_operations: list[dict[str, Any]] = []
         self.meal_plan_operations: list[dict[str, Any]] = []
+        self.todo_operations: list[dict[str, Any]] = []
         self.bookkeeping_ids: dict[str, int] = {}
         self.commemoration_ids: dict[str, int] = {}
         self.note_ids: dict[str, int] = {}
@@ -48,6 +49,7 @@ class FakePnkxLife:
         self.shopping_item_ids: dict[str, int] = {}
         self.recipe_ids: dict[str, int] = {}
         self.meal_plan_ids: dict[str, int] = {}
+        self.todo_ids: dict[str, int] = {}
 
     def handler(self, request: httpx.Request) -> httpx.Response:
         self.requests.append(request)
@@ -202,6 +204,28 @@ class FakePnkxLife:
             self.meal_plan_operations.append(body)
             remote_id = self.meal_plan_ids.setdefault(str(body["clientUuid"]), 89)
             return httpx.Response(200, json={"code": 200, "data": remote_id})
+        if path == "/admin/toDo/list":
+            return httpx.Response(
+                200,
+                json={
+                    "code": 200,
+                    "rows": [
+                        {
+                            "id": 71,
+                            "content": "整理联调清单",
+                            "status": False,
+                            "priority": 3,
+                            "kanbanStatus": 0,
+                        }
+                    ],
+                    "total": 1,
+                },
+            )
+        if path == "/admin/toDo" and request.method == "POST":
+            body = json.loads(request.content)
+            self.todo_operations.append(body)
+            remote_id = self.todo_ids.setdefault(str(body["clientUuid"]), 90)
+            return httpx.Response(200, json={"code": 200, "data": remote_id})
         if path == "/offline/batch" and request.method == "POST":
             body = json.loads(request.content)
             operation = body["operations"][0]
@@ -247,6 +271,13 @@ class FakePnkxLife:
             "/reminder/today": {"todo": [{"id": 1}], "commemorationDays": []},
             "/reminder/notifications": [{"id": 9, "title": "提醒"}],
             "/reminder/unread/count": 2,
+            "/admin/toDo/kanban": {
+                "todo": [{"id": 71, "content": "整理联调清单"}],
+                "doing": [],
+                "done": [],
+                "doneTotal": 0,
+            },
+            "/admin/toDo/getLabelList": ["工作", "生活"],
             "/bookkeeping/account/getAccountList": [
                 {"accountName": "现金", "children": [{"id": 2, "accountName": "钱包"}]}
             ],
@@ -471,6 +502,40 @@ async def test_life_client_reads_and_creates_recipes_and_meal_plans() -> None:
     assert meal_id == "89"
     assert fake.recipe_operations[0]["ingredients"][0]["name"] == "番茄"
     assert fake.meal_plan_operations[0]["planDate"] == "2026-09-04"
+
+
+async def test_life_client_reads_and_creates_todos() -> None:
+    fake = FakePnkxLife()
+    client = _client(fake)
+
+    todos = await client.todos(
+        search="联调", completed=False, label="工作", priority=3, kanban_status=0
+    )
+    kanban = await client.todo_kanban()
+    labels = await client.todo_labels()
+    todo_id = await client.create_todo(
+        client_uuid="018f7f4489d27cc8bc198f51f522a4da",
+        content="整理联调清单",
+        plan_start_time="2026-09-04 09:00:00",
+        plan_end_time="2026-09-04 10:00:00",
+        label="工作",
+        priority=3,
+        kanban_status=0,
+        sort_order=1,
+    )
+
+    assert todos.total == 1
+    assert kanban["todo"][0]["id"] == 71
+    assert labels == ["工作", "生活"]
+    assert todo_id == "90"
+    request = next(
+        item for item in fake.requests if item.url.path.endswith("/admin/toDo/list")
+    )
+    assert request.url.params["status"] == "false"
+    assert request.url.params["kanbanStatus"] == "0"
+    operation = fake.todo_operations[0]
+    assert operation["clientUuid"] == "018f7f4489d27cc8bc198f51f522a4da"
+    assert operation["planStartTime"] == "2026-09-04 09:00:00"
 
 
 async def test_life_client_recognizes_pnkx_business_401() -> None:
@@ -855,3 +920,44 @@ async def test_recipe_and_meal_plan_api_reads_and_creates(database: Database) ->
     assert recipe.json()["remote_id"] == "88"
     assert meal.status_code == 201
     assert meal.json()["remote_id"] == "89"
+
+
+async def test_todo_api_reads_kanban_labels_and_creates(database: Database) -> None:
+    auth = AuthService(database)
+    owner = await auth.setup(display_name="todo owner", password="correct horse")
+    fake = FakePnkxLife()
+    app = FastAPI()
+    app.include_router(create_pnkx_router(_client(fake), auth, writes_enabled=True))
+    headers = {"Authorization": f"Bearer {owner.access_token}"}
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        todos = await client.get(
+            "/api/v1/pnkx/todos?completed=false&priority=3&kanban_status=0",
+            headers=headers,
+        )
+        kanban = await client.get("/api/v1/pnkx/todos/kanban", headers=headers)
+        labels = await client.get("/api/v1/pnkx/todos/labels", headers=headers)
+        created = await client.post(
+            "/api/v1/pnkx/todos",
+            headers=headers,
+            json={
+                "idempotency_key": "018f7f44-89d2-7cc8-bc19-8f51f522a4da",
+                "content": "整理联调清单",
+                "plan_start_time": "2026-09-04T09:00:00",
+                "plan_end_time": "2026-09-04T10:00:00",
+                "label": "工作",
+                "priority": 3,
+                "kanban_status": 0,
+                "sort_order": 1,
+            },
+        )
+
+    assert todos.status_code == 200, todos.text
+    assert kanban.status_code == 200, kanban.text
+    assert labels.status_code == 200, labels.text
+    assert created.status_code == 201, created.text
+    assert todos.json()["items"][0]["content"] == "整理联调清单"
+    assert kanban.json()["data"]["todo"][0]["id"] == 71
+    assert labels.json()["items"] == ["工作", "生活"]
+    assert created.json()["remote_id"] == "90"
+    assert fake.todo_operations[0]["planEndTime"] == "2026-09-04 10:00:00"

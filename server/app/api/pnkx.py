@@ -27,6 +27,10 @@ class PnkxItemsResponse(StrictModel):
     items: list[dict[str, Any]]
 
 
+class PnkxStringItemsResponse(StrictModel):
+    items: list[str]
+
+
 class PnkxUnreadCountResponse(StrictModel):
     count: int
 
@@ -174,6 +178,20 @@ class PnkxMealPlanCreatePayload(StrictModel):
     title: Annotated[str, Field(min_length=1, max_length=255)]
     recipe_id: Annotated[int, Field(gt=0)] | None = None
     notes: Annotated[str, Field(max_length=10_000)] | None = None
+    sort_order: Annotated[int, Field(ge=0)] | None = None
+    remark: Annotated[str, Field(min_length=1, max_length=1000)] | None = None
+
+
+class PnkxTodoCreatePayload(StrictModel):
+    idempotency_key: UUID
+    content: Annotated[str, Field(min_length=1, max_length=10_000)]
+    plan_start_time: datetime | None = None
+    plan_end_time: datetime | None = None
+    completed: bool = False
+    label: Annotated[str, Field(min_length=1, max_length=255)] | None = None
+    priority: Annotated[int, Field(ge=0, le=4)] = 0
+    kanban_status: Annotated[int, Field(ge=0, le=2)] = 0
+    parent_id: Annotated[int, Field(gt=0)] | None = None
     sort_order: Annotated[int, Field(ge=0)] | None = None
     remark: Annotated[str, Field(min_length=1, max_length=1000)] | None = None
 
@@ -724,6 +742,92 @@ def create_pnkx_router(
                 title=body.title,
                 recipe_id=body.recipe_id,
                 notes=body.notes,
+                sort_order=body.sort_order,
+                remark=body.remark,
+            )
+        except Exception as error:
+            raise unavailable(error) from error
+        return PnkxContentCreateResponse(
+            remote_id=remote_id, client_uuid=client_uuid
+        )
+
+    @router.get("/todos", response_model=PnkxContentPageResponse)
+    async def todos(
+        _: Annotated[ChatPrincipal, Depends(guard)],
+        page: Annotated[int, Query(ge=1)] = 1,
+        page_size: Annotated[int, Query(ge=1, le=200)] = 50,
+        search: Annotated[str | None, Query(min_length=1, max_length=255)] = None,
+        completed: Annotated[bool | None, Query()] = None,
+        label: Annotated[str | None, Query(min_length=1, max_length=255)] = None,
+        priority: Annotated[int | None, Query(ge=0, le=4)] = None,
+        kanban_status: Annotated[int | None, Query(ge=0, le=2)] = None,
+    ) -> PnkxContentPageResponse:
+        try:
+            result = await client.todos(
+                page=page,
+                page_size=page_size,
+                search=search,
+                completed=completed,
+                label=label,
+                priority=priority,
+                kanban_status=kanban_status,
+            )
+        except Exception as error:
+            raise unavailable(error) from error
+        return PnkxContentPageResponse(items=result.items, total=result.total)
+
+    @router.get("/todos/kanban", response_model=PnkxObjectResponse)
+    async def todo_kanban(
+        _: Annotated[ChatPrincipal, Depends(guard)],
+    ) -> PnkxObjectResponse:
+        try:
+            return PnkxObjectResponse(data=await client.todo_kanban())
+        except Exception as error:
+            raise unavailable(error) from error
+
+    @router.get("/todos/labels", response_model=PnkxStringItemsResponse)
+    async def todo_labels(
+        _: Annotated[ChatPrincipal, Depends(guard)],
+    ) -> PnkxStringItemsResponse:
+        try:
+            return PnkxStringItemsResponse(items=await client.todo_labels())
+        except Exception as error:
+            raise unavailable(error) from error
+
+    @router.post(
+        "/todos",
+        response_model=PnkxContentCreateResponse,
+        status_code=status.HTTP_201_CREATED,
+    )
+    async def create_todo(
+        body: PnkxTodoCreatePayload,
+        _: Annotated[ChatPrincipal, Depends(guard)],
+    ) -> PnkxContentCreateResponse:
+        if not writes_enabled:
+            raise HTTPException(
+                status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="pnkx writes are disabled",
+            )
+        client_uuid = body.idempotency_key.hex
+        try:
+            remote_id = await client.create_todo(
+                client_uuid=client_uuid,
+                content=body.content,
+                plan_start_time=(
+                    body.plan_start_time.strftime("%Y-%m-%d %H:%M:%S")
+                    if body.plan_start_time
+                    else None
+                ),
+                plan_end_time=(
+                    body.plan_end_time.strftime("%Y-%m-%d %H:%M:%S")
+                    if body.plan_end_time
+                    else None
+                ),
+                completed=body.completed,
+                label=body.label,
+                priority=body.priority,
+                kanban_status=body.kanban_status,
+                parent_id=body.parent_id,
                 sort_order=body.sort_order,
                 remark=body.remark,
             )

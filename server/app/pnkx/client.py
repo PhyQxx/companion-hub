@@ -528,6 +528,83 @@ class PnkxLifeClient:
             raise PnkxApiError("meal_plan_create_no_id")
         return str(remote_id)
 
+    async def todos(
+        self,
+        *,
+        page: int = 1,
+        page_size: int = 50,
+        search: str | None = None,
+        completed: bool | None = None,
+        label: str | None = None,
+        priority: int | None = None,
+        kanban_status: int | None = None,
+    ) -> PnkxContentPage:
+        params: dict[str, str | int] = {"pageNum": page, "pageSize": page_size}
+        if search is not None:
+            params["searchValue"] = search
+        if completed is not None:
+            params["status"] = "true" if completed else "false"
+        if label is not None:
+            params["label"] = label
+        if priority is not None:
+            params["priority"] = priority
+        if kanban_status is not None:
+            params["kanbanStatus"] = kanban_status
+        return await self._content_page(
+            "/admin/toDo/list", params=params, reason_prefix="todos"
+        )
+
+    async def todo_kanban(self) -> dict[str, Any]:
+        data = await self._get_data("/admin/toDo/kanban")
+        if not isinstance(data, dict):
+            raise PnkxApiError("todo_kanban_invalid")
+        return data
+
+    async def todo_labels(self) -> list[str]:
+        data = await self._get_data("/admin/toDo/getLabelList")
+        if not isinstance(data, list) or any(not isinstance(item, str) for item in data):
+            raise PnkxApiError("todo_labels_invalid")
+        return data
+
+    async def create_todo(
+        self,
+        *,
+        client_uuid: str,
+        content: str,
+        plan_start_time: str | None = None,
+        plan_end_time: str | None = None,
+        completed: bool = False,
+        label: str | None = None,
+        priority: int = 0,
+        kanban_status: int = 0,
+        parent_id: int | None = None,
+        sort_order: int | None = None,
+        remark: str | None = None,
+    ) -> str:
+        payload: dict[str, Any] = {
+            "clientUuid": client_uuid,
+            "content": content,
+            "status": completed,
+            "priority": priority,
+            "kanbanStatus": kanban_status,
+        }
+        if plan_start_time is not None:
+            payload["planStartTime"] = plan_start_time
+        if plan_end_time is not None:
+            payload["planEndTime"] = plan_end_time
+        if label is not None:
+            payload["label"] = label
+        if parent_id is not None:
+            payload["parentId"] = parent_id
+        if sort_order is not None:
+            payload["sortOrder"] = sort_order
+        if remark is not None:
+            payload["remark"] = remark
+        remote_id = await self._post_data("/admin/toDo", json=payload)
+        if remote_id is None:
+            raise PnkxApiError("todo_create_no_id")
+        return str(remote_id)
+
     async def _content_page(
         self,
         path: str,
