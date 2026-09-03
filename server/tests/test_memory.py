@@ -516,6 +516,41 @@ async def test_consolidation_supports_conflicts_and_creates(
     assert unrelated.decision is ConsolidateDecision.CREATED
 
 
+async def test_consolidation_keeps_similar_episodic_events_independent(
+    store: MemoryStore, user: AppUserRecord
+) -> None:
+    ingester = MemoryIngester(store)
+
+    async def ingest_screen_event(source_id: str) -> Any:
+        return await ingester.ingest(
+            MemoryCandidate(
+                type=MemoryType.EPISODIC,
+                origin_kind=MemoryOriginKind.SYSTEM_EVENT,
+                content="[屏幕观察 · 显示器 2] 电脑屏幕显示了一个编程界面",
+                privacy_level=PrivacyLevel.L1,
+                sources=[
+                    MemorySourceRef(
+                        source_kind=MemorySourceKind.EVENT,
+                        source_id=source_id,
+                    )
+                ],
+                importance=0.3,
+                extractor_version="screen-v1",
+            ),
+            user_id=user.id,
+            actor="screen-awareness",
+        )
+
+    first = await ingest_screen_event("screen-observation:1")
+    second = await ingest_screen_event("screen-observation:2")
+
+    assert first.decision is ConsolidateDecision.CREATED
+    assert second.decision is ConsolidateDecision.CREATED
+    assert second.memory.id != first.memory.id
+    assert second.memory.status == MemoryStatus.ACTIVE
+    assert second.memory.conflict_with is None
+
+
 async def test_fact_key_conflict_is_deterministic_and_subject_scoped(
     store: MemoryStore, user: AppUserRecord
 ) -> None:

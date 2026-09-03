@@ -102,6 +102,15 @@ class MemoryIngester:
                     related=current,
                 )
 
+        # 情景记忆描述的是在不同时间发生的事件。即使两次事件的文本很相似，
+        # 它们也可以同时为真，不能套用稳定事实的“相似但不同即冲突”规则。
+        # 上游事件管线负责按事件 ID、截图哈希和时间窗口去重；这里按事件追加。
+        if MemoryType(candidate.type) is MemoryType.EPISODIC:
+            created = await self._store.add(candidate, user_id=user_id, actor=actor)
+            return ConsolidateOutcome(
+                decision=ConsolidateDecision.CREATED, memory=created, related=None
+            )
+
         similar = await self._store.find_similar(
             candidate.content,
             user_id=user_id,
