@@ -36,6 +36,7 @@ from app.llm import (
 )
 from app.main import create_app
 from app.persona import PersonaConfig, PersonaStore
+from app.pnkx import PnkxCreateTool, PnkxReadTool
 from app.schemas import PrivacyLevel
 from app.tools import ToolExecution, ToolResult
 from app.tools.browser import InspectWebpageTool
@@ -143,6 +144,38 @@ class FakeScreenCapabilityProvider:
                 description="在线桌面已授权单次屏幕读取",
             )
         ]
+
+
+async def test_pnkx_tools_are_exposed_to_tool_capable_chat_model(
+    database: Database,
+    store: DatabaseConfigStore,
+) -> None:
+    candidate = store.current.config.model_dump(mode="python")
+    candidate["models"]["cloud"]["supports_tool_calling"] = True
+    draft = await store.create_draft(HubConfig.model_validate(candidate), actor="test")
+    await store.publish(draft.version, actor="test")
+    service = ChatService(
+        database,
+        store,
+        device_tools=(
+            PnkxReadTool.__new__(PnkxReadTool),
+            PnkxCreateTool.__new__(PnkxCreateTool),
+        ),
+    )
+    user = await create_user(database)
+    conversation = await service.create_conversation(user_id=user.id, title="pnkx")
+
+    pending = await service.start_turn(
+        conversation.id,
+        user_id=user.id,
+        text="帮我看看待办",
+        privacy_level=PrivacyLevel.L1,
+    )
+
+    assert {"pnkx_read_life", "pnkx_create_life"}.issubset(pending.tool_names)
+    assert {tool.name for tool in pending.request.tools}.issuperset(
+        {"pnkx_read_life", "pnkx_create_life"}
+    )
 
 
 class FakeBrowserCapabilityProvider:

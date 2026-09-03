@@ -4,6 +4,7 @@ import json
 from collections.abc import AsyncIterator
 from datetime import date
 from typing import Any
+from uuid import UUID
 
 import httpx
 import pytest
@@ -14,6 +15,9 @@ from app.api import create_pnkx_router
 from app.auth import AuthService
 from app.db import Base, Database, create_database
 from app.pnkx import PnkxApiError, PnkxLifeClient
+from app.pnkx.tools import PnkxCreateArgs, PnkxCreateTool, PnkxReadArgs, PnkxReadTool
+from app.schemas import PrivacyLevel
+from app.tools import ToolContext
 
 
 @pytest.fixture
@@ -536,6 +540,55 @@ async def test_life_client_reads_and_creates_todos() -> None:
     operation = fake.todo_operations[0]
     assert operation["clientUuid"] == "018f7f4489d27cc8bc198f51f522a4da"
     assert operation["planStartTime"] == "2026-09-04 09:00:00"
+
+
+async def test_pnkx_chat_tools_read_and_create_with_turn_idempotency() -> None:
+    fake = FakePnkxLife()
+    client = _client(fake)
+    read_tool = PnkxReadTool(client, runs_local=True)
+    create_tool = PnkxCreateTool(client, runs_local=True)
+    turn_id = UUID("018f7f44-89d2-7cc8-bc19-8f51f522a4db")
+    context = ToolContext(privacy_level=PrivacyLevel.L1, turn_id=turn_id)
+
+    read_result = await read_tool.execute(
+        PnkxReadArgs(
+            resource="todos",
+            query="联调",
+            label="工作",
+            completed=False,
+            priority=3,
+            kanban_status=0,
+        ),
+        context,
+    )
+    create_result = await create_tool.execute(
+        PnkxCreateArgs(
+            resource="todo",
+            content="整理联调清单",
+            plan_start_time="2026-09-04T09:00:00",
+            priority=3,
+        ),
+        context,
+    )
+
+    assert read_result.ok is True
+    assert read_result.data["items"][0]["id"] == 71
+    assert create_result.ok is True
+    assert create_result.data == {"resource": "todo", "remote_id": "90"}
+    assert fake.todo_operations[0]["clientUuid"] == turn_id.hex
+    assert fake.todo_operations[0]["planStartTime"] == "2026-09-04 09:00:00"
+
+
+async def test_pnkx_chat_read_requires_list_id_for_shopping_items() -> None:
+    tool = PnkxReadTool(_client(FakePnkxLife()), runs_local=True)
+
+    result = await tool.execute(
+        PnkxReadArgs(resource="shopping_items"),
+        ToolContext(privacy_level=PrivacyLevel.L1),
+    )
+
+    assert result.ok is False
+    assert result.reason_code == "pnkx_list_id_required"
 
 
 async def test_life_client_recognizes_pnkx_business_401() -> None:

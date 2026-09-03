@@ -97,7 +97,7 @@ from app.output.proactive import DesktopCommandGateway
 from app.perception import PerceptionPipeline, PerceptionStore, ProactivePolicy
 from app.perception.pipeline import EventObserver
 from app.persona import PersonaStore
-from app.pnkx import PnkxLifeClient
+from app.pnkx import PnkxCreateTool, PnkxLifeClient, PnkxReadTool, pnkx_runs_local
 from app.runtime import TurnCoordinator
 from app.schemas.common import PrivacyLevel
 from app.screen_awareness import (
@@ -967,6 +967,15 @@ def create_app(
                     mqtt_buffer=mqtt_client.buffer if mqtt_client is not None else None,
                 )
             )
+            if pnkx_life_client is not None:
+                pnkx_is_local = pnkx_runs_local(pnkx_base_url or "")
+                device_tools.append(
+                    PnkxReadTool(pnkx_life_client, runs_local=pnkx_is_local)
+                )
+                if os.getenv("ARIA_PNKX_WRITES_ENABLED", "false").lower() == "true":
+                    device_tools.append(
+                        PnkxCreateTool(pnkx_life_client, runs_local=pnkx_is_local)
+                    )
             if action_plan_service is not None:
                 if device_target_resolver is not None and device_command_gateway is not None:
                     device_tools.append(

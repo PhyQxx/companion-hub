@@ -150,6 +150,12 @@ def _device_tool_ready(
     privacy_level: PrivacyLevel,
     llm_route: LLMRoute,
 ) -> bool:
+    if name in {"pnkx_read_life", "pnkx_create_life"}:
+        if privacy_level is PrivacyLevel.L1:
+            return _cloud_tool_model_ready(config, llm_route)
+        if privacy_level is PrivacyLevel.L2:
+            return _local_tool_model_ready(config)
+        return False
     if name in {"home_get_state", "home_get_history", "home_control"}:
         if not config.integrations.home_assistant.enabled:
             return False
@@ -1554,7 +1560,16 @@ def _cognitive_meta(decision: CognitiveDecision) -> dict[str, object]:
 
 
 def _tool_result_count(result: ToolResult) -> int:
-    for key in ("results", "forecast", "routes", "entities", "states", "logbook"):
+    for key in (
+        "results",
+        "items",
+        "labels",
+        "forecast",
+        "routes",
+        "entities",
+        "states",
+        "logbook",
+    ):
         value = result.data.get(key)
         if isinstance(value, list):
             return len(value)
@@ -1641,4 +1656,6 @@ def _tool_label(tool_name: str) -> str:
         "home_get_state": "正在读取设备状态…",
         "home_get_history": "正在读取设备历史…",
         "home_control": "正在执行设备控制…",
+        "pnkx_read_life": "正在读取 pnkx 生活数据…",
+        "pnkx_create_life": "正在写入 pnkx 生活数据…",
     }.get(tool_name, "正在使用外部工具…")
