@@ -349,6 +349,92 @@ class PnkxLifeClient:
             raise PnkxApiError("subscription_create_no_id")
         return str(remote_id)
 
+    async def shopping_lists(
+        self,
+        *,
+        page: int = 1,
+        page_size: int = 50,
+        name: str | None = None,
+    ) -> PnkxContentPage:
+        params: dict[str, str | int] = {"pageNum": page, "pageSize": page_size}
+        if name is not None:
+            params["name"] = name
+        return await self._content_page(
+            "/shoppingList/list", params=params, reason_prefix="shopping_lists"
+        )
+
+    async def create_shopping_list(
+        self,
+        *,
+        client_uuid: str,
+        name: str,
+        icon: str | None = None,
+        order_num: int | None = None,
+        remark: str | None = None,
+    ) -> str:
+        payload: dict[str, Any] = {"clientUuid": client_uuid, "name": name}
+        if icon is not None:
+            payload["icon"] = icon
+        if order_num is not None:
+            payload["orderNum"] = order_num
+        if remark is not None:
+            payload["remark"] = remark
+        remote_id = await self._post_data("/shoppingList", json=payload)
+        if remote_id is None:
+            raise PnkxApiError("shopping_list_create_no_id")
+        return str(remote_id)
+
+    async def shopping_items(
+        self,
+        *,
+        list_id: int,
+        page: int = 1,
+        page_size: int = 200,
+        checked: bool | None = None,
+    ) -> PnkxContentPage:
+        params: dict[str, str | int] = {
+            "listId": list_id,
+            "pageNum": page,
+            "pageSize": page_size,
+        }
+        if checked is not None:
+            params["checked"] = str(checked).lower()
+        return await self._content_page(
+            "/shoppingItem/list", params=params, reason_prefix="shopping_items"
+        )
+
+    async def create_shopping_item(
+        self,
+        *,
+        client_uuid: str,
+        list_id: int,
+        name: str,
+        quantity: str | None = None,
+        classification_id: int | None = None,
+        checked: bool = False,
+        sort_order: int | None = None,
+        remark: str | None = None,
+    ) -> str:
+        payload: dict[str, Any] = {
+            "clientUuid": client_uuid,
+            "listId": list_id,
+            "name": name,
+            "checked": checked,
+            "addedFromMeal": False,
+        }
+        if quantity is not None:
+            payload["quantity"] = quantity
+        if classification_id is not None:
+            payload["classificationId"] = classification_id
+        if sort_order is not None:
+            payload["sortOrder"] = sort_order
+        if remark is not None:
+            payload["remark"] = remark
+        remote_id = await self._post_data("/shoppingItem", json=payload)
+        if remote_id is None:
+            raise PnkxApiError("shopping_item_create_no_id")
+        return str(remote_id)
+
     async def _content_page(
         self,
         path: str,

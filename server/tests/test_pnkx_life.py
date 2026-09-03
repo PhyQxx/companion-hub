@@ -35,11 +35,15 @@ class FakePnkxLife:
         self.note_operations: list[dict[str, Any]] = []
         self.diary_operations: list[dict[str, Any]] = []
         self.subscription_operations: list[dict[str, Any]] = []
+        self.shopping_list_operations: list[dict[str, Any]] = []
+        self.shopping_item_operations: list[dict[str, Any]] = []
         self.bookkeeping_ids: dict[str, int] = {}
         self.commemoration_ids: dict[str, int] = {}
         self.note_ids: dict[str, int] = {}
         self.diary_ids: dict[str, int] = {}
         self.subscription_ids: dict[str, int] = {}
+        self.shopping_list_ids: dict[str, int] = {}
+        self.shopping_item_ids: dict[str, int] = {}
 
     def handler(self, request: httpx.Request) -> httpx.Response:
         self.requests.append(request)
@@ -128,6 +132,36 @@ class FakePnkxLife:
             self.subscription_operations.append(body)
             client_uuid = str(body["clientUuid"])
             remote_id = self.subscription_ids.setdefault(client_uuid, 85)
+            return httpx.Response(200, json={"code": 200, "data": remote_id})
+        if path == "/shoppingList/list":
+            return httpx.Response(
+                200,
+                json={
+                    "code": 200,
+                    "rows": [{"id": 51, "name": "日用品", "icon": "cart"}],
+                    "total": 1,
+                },
+            )
+        if path == "/shoppingItem/list":
+            return httpx.Response(
+                200,
+                json={
+                    "code": 200,
+                    "rows": [
+                        {"id": 52, "listId": 51, "name": "纸巾", "checked": False}
+                    ],
+                    "total": 1,
+                },
+            )
+        if path == "/shoppingList" and request.method == "POST":
+            body = json.loads(request.content)
+            self.shopping_list_operations.append(body)
+            remote_id = self.shopping_list_ids.setdefault(str(body["clientUuid"]), 86)
+            return httpx.Response(200, json={"code": 200, "data": remote_id})
+        if path == "/shoppingItem" and request.method == "POST":
+            body = json.loads(request.content)
+            self.shopping_item_operations.append(body)
+            remote_id = self.shopping_item_ids.setdefault(str(body["clientUuid"]), 87)
             return httpx.Response(200, json={"code": 200, "data": remote_id})
         if path == "/offline/batch" and request.method == "POST":
             body = json.loads(request.content)
@@ -339,6 +373,36 @@ async def test_life_client_reads_forecasts_and_creates_subscriptions() -> None:
     operation = fake.subscription_operations[0]
     assert operation["clientUuid"] == "018f7f4489d27cc8bc198f51f522a4d5"
     assert operation["nextPaymentDate"] == "2026-10-01"
+
+
+async def test_life_client_reads_and_creates_shopping_data() -> None:
+    fake = FakePnkxLife()
+    client = _client(fake)
+
+    lists = await client.shopping_lists(page=1, page_size=20, name="日用")
+    items = await client.shopping_items(list_id=51, checked=False)
+    list_id = await client.create_shopping_list(
+        client_uuid="018f7f4489d27cc8bc198f51f522a4d6",
+        name="日用品",
+        icon="cart",
+        order_num=2,
+    )
+    item_id = await client.create_shopping_item(
+        client_uuid="018f7f4489d27cc8bc198f51f522a4d7",
+        list_id=51,
+        name="纸巾",
+        quantity="2包",
+        checked=False,
+        sort_order=3,
+    )
+
+    assert lists.total == 1
+    assert items.items[0]["name"] == "纸巾"
+    assert list_id == "86"
+    assert item_id == "87"
+    assert fake.shopping_list_operations[0]["orderNum"] == 2
+    assert fake.shopping_item_operations[0]["listId"] == 51
+    assert fake.shopping_item_operations[0]["quantity"] == "2包"
 
 
 async def test_life_client_recognizes_pnkx_business_401() -> None:
@@ -633,3 +697,45 @@ async def test_subscription_api_reads_forecast_and_creates(database: Database) -
     assert created.status_code == 201
     assert created.json()["remote_id"] == "85"
     assert created.json()["client_uuid"] == "018f7f4489d27cc8bc198f51f522a4d5"
+
+
+async def test_shopping_api_reads_and_creates_lists_and_items(database: Database) -> None:
+    auth = AuthService(database)
+    owner = await auth.setup(display_name="shopping owner", password="correct horse")
+    fake = FakePnkxLife()
+    app = FastAPI()
+    app.include_router(create_pnkx_router(_client(fake), auth, writes_enabled=True))
+    headers = {"Authorization": f"Bearer {owner.access_token}"}
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        lists = await client.get("/api/v1/pnkx/shopping/lists", headers=headers)
+        items = await client.get(
+            "/api/v1/pnkx/shopping/lists/51/items?checked=false", headers=headers
+        )
+        created_list = await client.post(
+            "/api/v1/pnkx/shopping/lists",
+            headers=headers,
+            json={
+                "idempotency_key": "018f7f44-89d2-7cc8-bc19-8f51f522a4d6",
+                "name": "日用品",
+                "icon": "cart",
+                "order_num": 2,
+            },
+        )
+        created_item = await client.post(
+            "/api/v1/pnkx/shopping/lists/51/items",
+            headers=headers,
+            json={
+                "idempotency_key": "018f7f44-89d2-7cc8-bc19-8f51f522a4d7",
+                "name": "纸巾",
+                "quantity": "2包",
+                "sort_order": 3,
+            },
+        )
+
+    assert lists.json()["total"] == 1
+    assert items.json()["items"][0]["listId"] == 51
+    assert created_list.status_code == 201
+    assert created_list.json()["remote_id"] == "86"
+    assert created_item.status_code == 201
+    assert created_item.json()["remote_id"] == "87"

@@ -133,6 +133,24 @@ class PnkxSubscriptionCreatePayload(StrictModel):
     remark: Annotated[str, Field(min_length=1, max_length=1000)] | None = None
 
 
+class PnkxShoppingListCreatePayload(StrictModel):
+    idempotency_key: UUID
+    name: Annotated[str, Field(min_length=1, max_length=255)]
+    icon: Annotated[str, Field(min_length=1, max_length=100)] | None = None
+    order_num: Annotated[int, Field(ge=0)] | None = None
+    remark: Annotated[str, Field(min_length=1, max_length=1000)] | None = None
+
+
+class PnkxShoppingItemCreatePayload(StrictModel):
+    idempotency_key: UUID
+    name: Annotated[str, Field(min_length=1, max_length=255)]
+    quantity: Annotated[str, Field(min_length=1, max_length=100)] | None = None
+    classification_id: Annotated[int, Field(gt=0)] | None = None
+    checked: bool = False
+    sort_order: Annotated[int, Field(ge=0)] | None = None
+    remark: Annotated[str, Field(min_length=1, max_length=1000)] | None = None
+
+
 def create_pnkx_router(
     client: PnkxLifeClient,
     auth_service: AuthService,
@@ -462,6 +480,114 @@ def create_pnkx_router(
                 logo=body.logo,
                 reminder_lead_days=body.reminder_lead_days,
                 enabled=body.enabled,
+                remark=body.remark,
+            )
+        except Exception as error:
+            raise unavailable(error) from error
+        return PnkxContentCreateResponse(
+            remote_id=remote_id, client_uuid=client_uuid
+        )
+
+    @router.get("/shopping/lists", response_model=PnkxContentPageResponse)
+    async def shopping_lists(
+        _: Annotated[ChatPrincipal, Depends(guard)],
+        page: Annotated[int, Query(ge=1)] = 1,
+        page_size: Annotated[int, Query(ge=1, le=200)] = 50,
+        name: Annotated[str | None, Query(min_length=1, max_length=255)] = None,
+    ) -> PnkxContentPageResponse:
+        try:
+            result = await client.shopping_lists(
+                page=page, page_size=page_size, name=name
+            )
+        except Exception as error:
+            raise unavailable(error) from error
+        return PnkxContentPageResponse(items=result.items, total=result.total)
+
+    @router.post(
+        "/shopping/lists",
+        response_model=PnkxContentCreateResponse,
+        status_code=status.HTTP_201_CREATED,
+    )
+    async def create_shopping_list(
+        body: PnkxShoppingListCreatePayload,
+        _: Annotated[ChatPrincipal, Depends(guard)],
+    ) -> PnkxContentCreateResponse:
+        if not writes_enabled:
+            raise HTTPException(
+                status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="pnkx writes are disabled",
+            )
+        client_uuid = body.idempotency_key.hex
+        try:
+            remote_id = await client.create_shopping_list(
+                client_uuid=client_uuid,
+                name=body.name,
+                icon=body.icon,
+                order_num=body.order_num,
+                remark=body.remark,
+            )
+        except Exception as error:
+            raise unavailable(error) from error
+        return PnkxContentCreateResponse(
+            remote_id=remote_id, client_uuid=client_uuid
+        )
+
+    @router.get(
+        "/shopping/lists/{list_id}/items", response_model=PnkxContentPageResponse
+    )
+    async def shopping_items(
+        list_id: int,
+        _: Annotated[ChatPrincipal, Depends(guard)],
+        page: Annotated[int, Query(ge=1)] = 1,
+        page_size: Annotated[int, Query(ge=1, le=200)] = 200,
+        checked: Annotated[bool | None, Query()] = None,
+    ) -> PnkxContentPageResponse:
+        if list_id <= 0:
+            raise HTTPException(
+                status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail="list_id must be positive",
+            )
+        try:
+            result = await client.shopping_items(
+                list_id=list_id,
+                page=page,
+                page_size=page_size,
+                checked=checked,
+            )
+        except Exception as error:
+            raise unavailable(error) from error
+        return PnkxContentPageResponse(items=result.items, total=result.total)
+
+    @router.post(
+        "/shopping/lists/{list_id}/items",
+        response_model=PnkxContentCreateResponse,
+        status_code=status.HTTP_201_CREATED,
+    )
+    async def create_shopping_item(
+        list_id: int,
+        body: PnkxShoppingItemCreatePayload,
+        _: Annotated[ChatPrincipal, Depends(guard)],
+    ) -> PnkxContentCreateResponse:
+        if list_id <= 0:
+            raise HTTPException(
+                status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail="list_id must be positive",
+            )
+        if not writes_enabled:
+            raise HTTPException(
+                status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="pnkx writes are disabled",
+            )
+        client_uuid = body.idempotency_key.hex
+        try:
+            remote_id = await client.create_shopping_item(
+                client_uuid=client_uuid,
+                list_id=list_id,
+                name=body.name,
+                quantity=body.quantity,
+                classification_id=body.classification_id,
+                checked=body.checked,
+                sort_order=body.sort_order,
                 remark=body.remark,
             )
         except Exception as error:
