@@ -31,7 +31,9 @@ class FakePnkxLife:
     def __init__(self) -> None:
         self.requests: list[httpx.Request] = []
         self.bookkeeping_operations: list[dict[str, Any]] = []
+        self.commemoration_operations: list[dict[str, Any]] = []
         self.bookkeeping_ids: dict[str, int] = {}
+        self.commemoration_ids: dict[str, int] = {}
 
     def handler(self, request: httpx.Request) -> httpx.Response:
         self.requests.append(request)
@@ -49,12 +51,35 @@ class FakePnkxLife:
                     "total": 1,
                 },
             )
+        if path == "/commemorationDay/list":
+            return httpx.Response(
+                200,
+                json={
+                    "code": 200,
+                    "msg": "查询成功",
+                    "rows": [
+                        {
+                            "id": 12,
+                            "name": "纪念日",
+                            "date": "2026-09-02 18:30:00",
+                            "repeat": True,
+                        }
+                    ],
+                    "total": 1,
+                },
+            )
+        if path == "/reminder/notifications/read" and request.method == "PUT":
+            return httpx.Response(200, json={"code": 200, "msg": "操作成功"})
         if path == "/offline/batch" and request.method == "POST":
             body = json.loads(request.content)
             operation = body["operations"][0]
-            self.bookkeeping_operations.append(operation)
             client_uuid = str(operation["clientUuid"])
-            remote_id = self.bookkeeping_ids.setdefault(client_uuid, 81)
+            if operation["tableName"] == "px_bookkeeping_record":
+                self.bookkeeping_operations.append(operation)
+                remote_id = self.bookkeeping_ids.setdefault(client_uuid, 81)
+            else:
+                self.commemoration_operations.append(operation)
+                remote_id = self.commemoration_ids.setdefault(client_uuid, 82)
             return httpx.Response(
                 200,
                 json={
@@ -135,6 +160,44 @@ async def test_life_client_reads_dashboard_and_forwards_month_range() -> None:
     )
     assert month_request.url.params["startDate"] == "2026-09-01"
     assert month_request.url.params["endDate"] == "2026-09-30"
+
+
+async def test_life_client_controls_notifications_and_commemorations() -> None:
+    fake = FakePnkxLife()
+    client = _client(fake)
+
+    page = await client.commemoration_days(page=2, page_size=10, name="纪念")
+    await client.mark_notifications_read([9])
+    remote_id = await client.create_commemoration_day(
+        client_uuid="aria:commemoration:stable",
+        name="纪念日",
+        event_time="2026-09-02 18:30:00",
+        repeat=True,
+        icon="heart",
+        order_num=3,
+        remark="测试",
+    )
+
+    assert page.total == 1
+    assert page.items[0]["name"] == "纪念日"
+    list_request = next(
+        request
+        for request in fake.requests
+        if request.url.path.endswith("/commemorationDay/list")
+    )
+    assert list_request.url.params["pageNum"] == "2"
+    assert list_request.url.params["name"] == "纪念"
+    read_request = next(
+        request
+        for request in fake.requests
+        if request.url.path.endswith("/reminder/notifications/read")
+    )
+    assert json.loads(read_request.content) == [9]
+    assert remote_id == "82"
+    operation = fake.commemoration_operations[0]
+    assert operation["clientUuid"] == "aria:commemoration:stable"
+    assert operation["payload"]["date"] == "2026-09-02 18:30:00"
+    assert operation["payload"]["orderNum"] == 3
 
 
 async def test_life_client_recognizes_pnkx_business_401() -> None:
@@ -264,3 +327,44 @@ async def test_bookkeeping_api_write_gate_defaults_closed(database: Database) ->
 
     assert response.status_code == 503
     assert fake.bookkeeping_operations == []
+
+
+async def test_commemoration_and_notification_api_controls(database: Database) -> None:
+    auth = AuthService(database)
+    owner = await auth.setup(display_name="life owner", password="correct horse")
+    fake = FakePnkxLife()
+    app = FastAPI()
+    app.include_router(create_pnkx_router(_client(fake), auth, writes_enabled=True))
+    headers = {"Authorization": f"Bearer {owner.access_token}"}
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        listed = await client.get(
+            "/api/v1/pnkx/commemorations?page=1&page_size=20", headers=headers
+        )
+        created = await client.post(
+            "/api/v1/pnkx/commemorations",
+            headers=headers,
+            json={
+                "idempotency_key": "018f7f44-89d2-7cc8-bc19-8f51f522a4d2",
+                "name": "纪念日",
+                "event_time": "2026-09-02T10:30:00Z",
+                "repeat": True,
+                "order_num": 3,
+            },
+        )
+        marked = await client.put(
+            "/api/v1/pnkx/notifications/read",
+            headers=headers,
+            json={"ids": [9]},
+        )
+
+    assert listed.status_code == 200
+    assert listed.json()["total"] == 1
+    assert created.status_code == 201
+    assert created.json()["remote_id"] == "82"
+    assert created.json()["client_uuid"].startswith("aria:commemoration:")
+    assert fake.commemoration_operations[0]["payload"]["date"] == (
+        "2026-09-02 18:30:00"
+    )
+    assert marked.status_code == 200
+    assert marked.json() == {"success": True}

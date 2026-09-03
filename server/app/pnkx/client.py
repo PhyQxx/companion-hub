@@ -1,4 +1,4 @@
-"""pnkx 生活驾驶舱只读客户端。"""
+"""pnkx 生活数据查询与受控写入客户端。"""
 
 from __future__ import annotations
 
@@ -26,6 +26,12 @@ class PnkxBookkeepingPage:
     outflow: str | None
 
 
+@dataclass(frozen=True, slots=True)
+class PnkxCommemorationPage:
+    items: list[dict[str, Any]]
+    total: int
+
+
 class PnkxLifeClient:
     def __init__(
         self,
@@ -49,7 +55,7 @@ class PnkxLifeClient:
         path: str,
         *,
         params: dict[str, str | int] | None = None,
-        json: dict[str, Any] | None = None,
+        json: Any = None,
     ) -> dict[str, Any]:
         response = await self._client.request(
             method,
@@ -115,6 +121,59 @@ class PnkxLifeClient:
             raise PnkxApiError("unread_count_invalid")
         return int(data)
 
+    async def mark_notifications_read(self, ids: list[int] | None = None) -> None:
+        await self._request_payload("PUT", "/reminder/notifications/read", json=ids)
+
+    async def commemoration_days(
+        self,
+        *,
+        page: int = 1,
+        page_size: int = 50,
+        name: str | None = None,
+    ) -> PnkxCommemorationPage:
+        params: dict[str, str | int] = {"pageNum": page, "pageSize": page_size}
+        if name is not None:
+            params["name"] = name
+        payload = await self._request_payload(
+            "GET", "/commemorationDay/list", params=params
+        )
+        items = self._object_list(
+            payload.get("rows"), "commemoration_days_invalid"
+        )
+        total = payload.get("total")
+        if isinstance(total, bool) or not isinstance(total, int):
+            raise PnkxApiError("commemoration_total_invalid")
+        return PnkxCommemorationPage(items=items, total=total)
+
+    async def create_commemoration_day(
+        self,
+        *,
+        client_uuid: str,
+        name: str,
+        event_time: str,
+        repeat: bool,
+        icon: str | None = None,
+        order_num: int | None = None,
+        remark: str | None = None,
+    ) -> str:
+        payload: dict[str, Any] = {
+            "name": name,
+            "date": event_time,
+            "isRepeat": repeat,
+        }
+        if icon is not None:
+            payload["icon"] = icon
+        if order_num is not None:
+            payload["orderNum"] = order_num
+        if remark is not None:
+            payload["remark"] = remark
+        return await self._offline_create(
+            table_name="px_commemoration_day",
+            client_uuid=client_uuid,
+            payload=payload,
+            reason_prefix="commemoration_create",
+        )
+
     async def bookkeeping_accounts(self) -> list[dict[str, Any]]:
         data = await self._get_data("/bookkeeping/account/getAccountList")
         return self._object_list(data, "bookkeeping_accounts_invalid")
@@ -175,30 +234,45 @@ class PnkxLifeClient:
         }
         if remark:
             record["remark"] = remark
+        return await self._offline_create(
+            table_name="px_bookkeeping_record",
+            client_uuid=client_uuid,
+            payload=record,
+            reason_prefix="bookkeeping_create",
+        )
+
+    async def _offline_create(
+        self,
+        *,
+        table_name: str,
+        client_uuid: str,
+        payload: dict[str, Any],
+        reason_prefix: str,
+    ) -> str:
         data = await self._post_data(
             "/offline/batch",
             json={
                 "operations": [
                     {
-                        "tableName": "px_bookkeeping_record",
+                        "tableName": table_name,
                         "method": "POST",
                         "clientUuid": client_uuid,
-                        "payload": record,
+                        "payload": payload,
                     }
                 ]
             },
         )
         if not isinstance(data, dict):
-            raise PnkxApiError("bookkeeping_create_invalid")
+            raise PnkxApiError(f"{reason_prefix}_invalid")
         results = data.get("results")
         if not isinstance(results, list) or len(results) != 1:
-            raise PnkxApiError("bookkeeping_create_invalid")
+            raise PnkxApiError(f"{reason_prefix}_invalid")
         result = results[0]
         if not isinstance(result, dict) or result.get("status") not in {"success", "skip"}:
-            raise PnkxApiError("bookkeeping_create_failed", str(result))
+            raise PnkxApiError(f"{reason_prefix}_failed", str(result))
         remote_id = result.get("id")
         if remote_id is None:
-            raise PnkxApiError("bookkeeping_create_no_id")
+            raise PnkxApiError(f"{reason_prefix}_no_id")
         return str(remote_id)
 
     async def bookkeeping_primary_statistics(

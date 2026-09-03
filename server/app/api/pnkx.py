@@ -1,4 +1,4 @@
-"""pnkx 生活驾驶舱实时查询 API。"""
+"""pnkx 生活数据实时查询与受控写入 API。"""
 
 # 注意：不要加 `from __future__ import annotations`，原因同其他懒路由模块。
 
@@ -31,6 +31,10 @@ class PnkxUnreadCountResponse(StrictModel):
     count: int
 
 
+class PnkxActionResponse(StrictModel):
+    success: bool
+
+
 class PnkxTodayResponse(StrictModel):
     cockpit: dict[str, Any]
     reminders: dict[str, Any]
@@ -54,6 +58,30 @@ class PnkxBookkeepingCreatePayload(StrictModel):
 
 
 class PnkxBookkeepingCreateResponse(StrictModel):
+    remote_id: str
+    client_uuid: str
+
+
+class PnkxNotificationReadPayload(StrictModel):
+    ids: list[Annotated[int, Field(gt=0)]] | None = None
+
+
+class PnkxCommemorationPageResponse(StrictModel):
+    items: list[dict[str, Any]]
+    total: int
+
+
+class PnkxCommemorationCreatePayload(StrictModel):
+    idempotency_key: UUID
+    name: Annotated[str, Field(min_length=1, max_length=100)]
+    event_time: datetime
+    repeat: bool = True
+    icon: Annotated[str, Field(min_length=1, max_length=100)] | None = None
+    order_num: Annotated[int, Field(ge=0)] | None = None
+    remark: Annotated[str, Field(min_length=1, max_length=1000)] | None = None
+
+
+class PnkxCommemorationCreateResponse(StrictModel):
     remote_id: str
     client_uuid: str
 
@@ -142,6 +170,73 @@ def create_pnkx_router(
             return PnkxUnreadCountResponse(count=await client.unread_count())
         except Exception as error:
             raise unavailable(error) from error
+
+    @router.put("/notifications/read", response_model=PnkxActionResponse)
+    async def mark_notifications_read(
+        body: PnkxNotificationReadPayload,
+        _: Annotated[ChatPrincipal, Depends(guard)],
+    ) -> PnkxActionResponse:
+        if not writes_enabled:
+            raise HTTPException(
+                status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="pnkx writes are disabled",
+            )
+        try:
+            await client.mark_notifications_read(body.ids)
+        except Exception as error:
+            raise unavailable(error) from error
+        return PnkxActionResponse(success=True)
+
+    @router.get(
+        "/commemorations", response_model=PnkxCommemorationPageResponse
+    )
+    async def commemoration_days(
+        _: Annotated[ChatPrincipal, Depends(guard)],
+        page: Annotated[int, Query(ge=1)] = 1,
+        page_size: Annotated[int, Query(ge=1, le=200)] = 50,
+        name: Annotated[str | None, Query(min_length=1, max_length=100)] = None,
+    ) -> PnkxCommemorationPageResponse:
+        try:
+            result = await client.commemoration_days(
+                page=page, page_size=page_size, name=name
+            )
+        except Exception as error:
+            raise unavailable(error) from error
+        return PnkxCommemorationPageResponse(items=result.items, total=result.total)
+
+    @router.post(
+        "/commemorations",
+        response_model=PnkxCommemorationCreateResponse,
+        status_code=status.HTTP_201_CREATED,
+    )
+    async def create_commemoration_day(
+        body: PnkxCommemorationCreatePayload,
+        _: Annotated[ChatPrincipal, Depends(guard)],
+    ) -> PnkxCommemorationCreateResponse:
+        if not writes_enabled:
+            raise HTTPException(
+                status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="pnkx writes are disabled",
+            )
+        client_uuid = f"aria:commemoration:{body.idempotency_key}"
+        event_time = body.event_time.astimezone(ZoneInfo("Asia/Shanghai")).strftime(
+            "%Y-%m-%d %H:%M:%S"
+        )
+        try:
+            remote_id = await client.create_commemoration_day(
+                client_uuid=client_uuid,
+                name=body.name,
+                event_time=event_time,
+                repeat=body.repeat,
+                icon=body.icon,
+                order_num=body.order_num,
+                remark=body.remark,
+            )
+        except Exception as error:
+            raise unavailable(error) from error
+        return PnkxCommemorationCreateResponse(
+            remote_id=remote_id, client_uuid=client_uuid
+        )
 
     @router.get("/bookkeeping/accounts", response_model=PnkxItemsResponse)
     async def bookkeeping_accounts(
