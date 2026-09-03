@@ -414,7 +414,7 @@ class ProactiveDeliveryReceiptRecord(Base):
     __tablename__ = "proactive_delivery_receipt"
     __table_args__ = (
         CheckConstraint(
-            "channel IN ('web_chat','desktop_notification','voice')",
+            "channel IN ('web_chat','desktop_notification','web_push','voice')",
             name="ck_proactive_delivery_channel",
         ),
         CheckConstraint(
@@ -443,6 +443,40 @@ class ProactiveDeliveryReceiptRecord(Base):
     external_operation_id: Mapped[str | None] = mapped_column(String(160))
     privacy_level: Mapped[str] = mapped_column(String(2), nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class PushSubscriptionRecord(Base):
+    """Web Push 订阅：浏览器 PushSubscription 的服务端镜像。
+
+    endpoint 是推送服务分配的全局唯一 URL，按它 upsert；同一浏览器换账号
+    登录时重绑 user_id。推送服务返回 404/410 表示订阅失效，立即删除。
+    """
+
+    __tablename__ = "push_subscription"
+    __table_args__ = (
+        CheckConstraint(
+            "consecutive_failures >= 0",
+            name="ck_push_subscription_failures",
+        ),
+        Index("ix_push_subscription_user", "user_id"),
+    )
+
+    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True)
+    user_id: Mapped[UUID] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("app_user.id", ondelete="CASCADE"), nullable=False
+    )
+    endpoint: Mapped[str] = mapped_column(String(768), nullable=False, unique=True)
+    p256dh: Mapped[str] = mapped_column(String(255), nullable=False)
+    auth: Mapped[str] = mapped_column(String(255), nullable=False)
+    consecutive_failures: Mapped[int] = mapped_column(nullable=False, default=0)
+    last_delivered_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_failed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
 
 
 class CognitiveDecisionRecord(Base):

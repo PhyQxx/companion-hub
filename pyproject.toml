@@ -19,6 +19,7 @@ dependencies = [
   "websockets>=15,<18",
   "pillow>=11,<13",
   "python-multipart>=0.0.20,<1",
+  "pywebpush>=2.5.0",
 ]
 
 [project.optional-dependencies]

@@ -32,6 +32,11 @@ import {
 import ToolResultCard from "./ToolResultCard.vue";
 import Live2DStage from "./Live2DStage.vue";
 import MarkdownContent from "./MarkdownContent.vue";
+import {
+  disablePushNotifications,
+  enablePushNotifications,
+  pushSubscriptionState,
+} from "./push";
 
 // 聊天前端主组件：登录 → 会话侧栏 → 流式消息区 → 发送区。
 // 普通 Web 保留既有本地会话；安装后的 PWA 只在当前会话存储令牌。
@@ -159,6 +164,49 @@ async function resolveLocationForText(text: string): Promise<ClientLocationPaylo
 function onLocationEnabledChanged() {
   localStorage.setItem(LOCATION_ENABLED_KEY, locationEnabled.value ? "1" : "0");
   if (!locationEnabled.value) cachedLocation = null;
+}
+
+const pushSupported =
+  typeof Notification !== "undefined" && "serviceWorker" in navigator && "PushManager" in window;
+const notificationsEnabled = ref(false);
+let pushToggling = false;
+
+async function refreshPushToggle() {
+  if (!pushSupported || !token.value) {
+    notificationsEnabled.value = false;
+    return;
+  }
+  notificationsEnabled.value = await pushSubscriptionState(api, token.value);
+}
+
+async function onNotificationsChanged() {
+  if (pushToggling) return;
+  pushToggling = true;
+  try {
+    if (notificationsEnabled.value) {
+      const result = await enablePushNotifications(api, token.value);
+      if (result === "enabled") {
+        setStatus("已开启移动通知");
+      } else {
+        notificationsEnabled.value = false;
+        setStatus(
+          result === "denied"
+            ? "浏览器拒绝了通知权限，请在系统设置中允许"
+            : result === "disabled"
+              ? "服务端尚未启用移动推送（需配置 VAPID 密钥）"
+              : result === "unsupported"
+                ? "当前浏览器不支持移动推送"
+                : "开启移动通知失败，请稍后再试",
+          result === "failed" || result === "denied",
+        );
+      }
+    } else {
+      await disablePushNotifications(api, token.value);
+      setStatus("已关闭移动通知");
+    }
+  } finally {
+    pushToggling = false;
+  }
 }
 
 async function onThemeChanged() {
@@ -755,6 +803,7 @@ async function submitAuth() {
       : await api.login(password.value);
     rememberSession(session);
     await enterChat();
+    void refreshPushToggle();
   } catch (error) {
     const message = error instanceof ApiError ? error.message : "连接失败";
     setStatus(message, true);
@@ -1109,6 +1158,7 @@ onMounted(async () => {
     return;
   }
   await enterChat();
+  void refreshPushToggle();
 });
 
 onBeforeUnmount(() => {
@@ -1267,6 +1317,19 @@ async function installPwa() {
               @change="onLocationEnabledChanged"
             />
             <span>📍自动定位</span>
+          </label>
+          <label
+            v-if="pushSupported"
+            class="tts-toggle"
+            title="开启后，主动提醒/简报等会以系统通知推送到本机（PWA 关闭页面也能收到）"
+          >
+            <input
+              v-model="notificationsEnabled"
+              type="checkbox"
+              :disabled="!token || !!streaming || voiceRecording || voiceBusy"
+              @change="onNotificationsChanged"
+            />
+            <span>🔔移动通知</span>
           </label>
           <span class="status" :class="{ error: statusError }">{{ statusText }}</span>
         </div>

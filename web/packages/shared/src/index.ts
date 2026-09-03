@@ -654,6 +654,32 @@ export class ChatApi {
       body: JSON.stringify({ instance_id: instanceId }),
     }, token);
   }
+
+  pushVapidKey(token: string) {
+    return this.request<{ enabled: boolean; public_key: string | null }>(
+      "/api/v1/push/vapid-key",
+      { method: "GET" },
+      token,
+    );
+  }
+
+  pushSubscribe(
+    token: string,
+    subscription: { endpoint: string; keys: { p256dh: string; auth: string } },
+  ) {
+    return this.request<{ endpoint: string }>("/api/v1/push/subscribe", {
+      method: "POST",
+      body: JSON.stringify(subscription),
+    }, token);
+  }
+
+  pushUnsubscribe(token: string, endpoint: string) {
+    return this.request<void>(
+      "/api/v1/push/unsubscribe",
+      { method: "POST", body: JSON.stringify({ endpoint }) },
+      token,
+    );
+  }
 }
 
 /** 管理端 REST 客户端：令牌保存在实例上（来自 sessionStorage） */

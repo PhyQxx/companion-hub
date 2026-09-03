@@ -180,9 +180,19 @@ integrations:
     reconnect_max_seconds: 30
     state_cache_ttl_seconds: 300
     entities: []
+  # Web Push（手机 PWA 移动通知）。密钥对生成：
+  #   uv run python -c "from py_vapid import Vapid; v=Vapid(); v.generate_keys(); print(v.private_key.decode()); print(v.public_key.decode())"
+  # 或管理后台填写。公钥/私钥都启用时才把 enabled 设为 true。
+  push:
+    enabled: false
+    vapid_subject: mailto:admin@example.com
+    # vapid_public_key: <base64url 未压缩 P-256 公钥点，约 87 字符>
+    # 私钥走 secret_value（后台填写）或环境变量引用二选一：
+    # vapid_private_key_secret_ref: env:ARIA_VAPID_PRIVATE_KEY
 
 # 主动输出通道。Desktop 通知还需要设备端声明并获授 notification.show；
-# Voice 仅投递到当前在线且空闲的语音会话。
+# Voice 仅投递到当前在线且空闲的语音会话；Web Push 需 integrations.push 启用
+# 且用户在聊天端开启通知。所有通知类通道（desktop/web_push）禁止 L2 内容。
 proactive_output:
   enabled: true
   delivery_mode: all_enabled
@@ -194,6 +204,11 @@ proactive_output:
   desktop_notification:
     enabled: false
     priority: 80
+    max_privacy_level: L1
+    critical_only: false
+  web_push:
+    enabled: false
+    priority: 70
     max_privacy_level: L1
     critical_only: false
   voice:

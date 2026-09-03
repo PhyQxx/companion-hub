@@ -47,3 +47,43 @@ self.addEventListener("fetch", (event) => {
     }),
   );
 });
+
+// 主动通知（Web Push）：tag 用事件 ID 做同事件去重，正文由服务端按通知习惯截断。
+self.addEventListener("push", (event) => {
+  let payload = {};
+  try {
+    payload = event.data ? event.data.json() : {};
+  } catch {
+    payload = {};
+  }
+  const title = payload.title || "Aria";
+  const options = {
+    body: typeof payload.body === "string" ? payload.body : "",
+    tag: typeof payload.tag === "string" ? payload.tag : undefined,
+    icon: "/chat/icons/aria.svg",
+    badge: "/chat/icons/aria.svg",
+    data: payload.data || {},
+  };
+  event.waitUntil(self.registration.showNotification(title, options));
+});
+
+// 点击回流：优先聚焦已打开的聊天窗口，否则新开 /chat/；
+// 页面进入前台后会走既有 visibilitychange 补拉逻辑取回最新消息。
+self.addEventListener("notificationclick", (event) => {
+  event.notification.close();
+  event.waitUntil(
+    (async () => {
+      const clientList = await self.clients.matchAll({
+        type: "window",
+        includeUncontrolled: true,
+      });
+      for (const client of clientList) {
+        if ("focus" in client) {
+          await client.focus();
+          return;
+        }
+      }
+      await self.clients.openWindow("/chat/");
+    })(),
+  );
+});

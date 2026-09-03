@@ -39,6 +39,7 @@ from app.api import (
     create_logs_stream_router,
     create_model_capability_router,
     create_pnkx_router,
+    create_push_router,
     create_reviews_router,
     create_tasks_router,
     create_theme_router,
@@ -98,6 +99,7 @@ from app.perception import PerceptionPipeline, PerceptionStore, ProactivePolicy
 from app.perception.pipeline import EventObserver
 from app.persona import PersonaStore
 from app.pnkx import PnkxCreateTool, PnkxLifeClient, PnkxReadTool, pnkx_runs_local
+from app.push import PushSubscriptionStore, WebPushAdapter
 from app.runtime import TurnCoordinator
 from app.schemas.common import PrivacyLevel
 from app.screen_awareness import (
@@ -1093,6 +1095,14 @@ def create_app(
                 if device_command_gateway is not None:
                     device_command_gateway.set_pet_audio_handler(voice_manager.stream_device_speech)
                 app.include_router(voice_router)
+            push_subscription_store = (
+                PushSubscriptionStore(runtime_database) if runtime_database is not None else None
+            )
+            if push_subscription_store is not None:
+                app.include_router(
+                    create_push_router(push_subscription_store, runtime_config, auth_service)
+                )
+                app.state.push_subscription_store = push_subscription_store
             if home_assistant_manager is not None:
                 proactive_delivery = ProactiveDeliveryService(
                     runtime_database,
@@ -1106,6 +1116,11 @@ def create_app(
                         else None
                     ),
                     voice_broadcaster=voice_manager,
+                    push_adapter=(
+                        WebPushAdapter(push_subscription_store, config_store=runtime_config)
+                        if push_subscription_store is not None
+                        else None
+                    ),
                 )
                 app.state.proactive_delivery_service = proactive_delivery
                 if task_scheduler is not None:

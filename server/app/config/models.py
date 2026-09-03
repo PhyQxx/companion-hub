@@ -341,8 +341,39 @@ class HomeAssistantConfig(StrictModel):
         return self
 
 
+class WebPushConfig(StrictModel):
+    """Web Push（PWA 移动通知）配置：VAPID 密钥齐全且 enabled 才可用。
+
+    公钥不是机密（前端申请订阅需要下发）；私钥走 secret_value/secret_ref
+    双模式，与 voice/amap 密钥同一惯例。
+    """
+
+    enabled: bool = False
+    vapid_subject: Annotated[str, Field(min_length=3, max_length=255)] = "mailto:admin@example.com"
+    vapid_public_key: Annotated[str, Field(min_length=40, max_length=255)] | None = None
+    vapid_private_key_secret_ref: Annotated[
+        str, Field(pattern=r"^env:[A-Z][A-Z0-9_]{2,127}$")
+    ] | None = None
+    vapid_private_key_secret_value: Annotated[str, Field(min_length=32, max_length=4096)] | None = (
+        None
+    )
+
+    @model_validator(mode="after")
+    def require_keys_when_enabled(self) -> WebPushConfig:
+        if self.enabled and (
+            self.vapid_public_key is None
+            or (
+                self.vapid_private_key_secret_value is None
+                and self.vapid_private_key_secret_ref is None
+            )
+        ):
+            raise ValueError("enabled web push requires vapid public and private keys")
+        return self
+
+
 class IntegrationsConfig(StrictModel):
     home_assistant: HomeAssistantConfig = Field(default_factory=HomeAssistantConfig)
+    push: WebPushConfig = Field(default_factory=WebPushConfig)
 
 
 class ProactiveChannelConfig(StrictModel):
@@ -361,6 +392,9 @@ class ProactiveOutputConfig(StrictModel):
     desktop_notification: ProactiveChannelConfig = Field(
         default_factory=lambda: ProactiveChannelConfig(priority=80)
     )
+    web_push: ProactiveChannelConfig = Field(
+        default_factory=lambda: ProactiveChannelConfig(priority=70)
+    )
     voice: ProactiveChannelConfig = Field(
         default_factory=lambda: ProactiveChannelConfig(priority=60)
     )
@@ -369,11 +403,18 @@ class ProactiveOutputConfig(StrictModel):
     def require_enabled_channel(self) -> ProactiveOutputConfig:
         if self.enabled and not any(
             channel.enabled
-            for channel in (self.web_chat, self.desktop_notification, self.voice)
+            for channel in (
+                self.web_chat,
+                self.desktop_notification,
+                self.web_push,
+                self.voice,
+            )
         ):
             raise ValueError("enabled proactive output requires at least one channel")
         if self.desktop_notification.max_privacy_level == "L2":
             raise ValueError("desktop notifications cannot carry L2 content")
+        if self.web_push.max_privacy_level == "L2":
+            raise ValueError("web push notifications cannot carry L2 content")
         return self
 
 

@@ -4,7 +4,7 @@ import { AdminApi } from "@aria/shared";
 import { ElMessage } from "element-plus";
 
 type PrivacyLevel = "L0" | "L1" | "L2";
-type ChannelKey = "web_chat" | "desktop_notification" | "voice";
+type ChannelKey = "web_chat" | "desktop_notification" | "web_push" | "voice";
 
 interface ChannelPolicy {
   enabled: boolean;
@@ -18,6 +18,7 @@ interface ProactiveOutputConfig {
   delivery_mode: "first_available" | "all_enabled";
   web_chat: ChannelPolicy;
   desktop_notification: ChannelPolicy;
+  web_push: ChannelPolicy;
   voice: ChannelPolicy;
 }
 
@@ -45,6 +46,11 @@ const channelMeta: Record<ChannelKey, { name: string; description: string; requi
     description: "通过签名设备命令调用 Aria Desktop 的原生系统通知。",
     requirement: "Desktop 必须在线、未锁屏、未隐私暂停，并获授 notification.show。",
   },
+  web_push: {
+    name: "移动推送（Web Push）",
+    description: "通过 Web Push 把通知推到手机 PWA / 已订阅浏览器，即使页面关闭也能收到。",
+    requirement: "需在「集成 → push」配置 VAPID 密钥并启用；用户在聊天端开启通知并完成订阅。",
+  },
   voice: {
     name: "在线语音播报",
     description: "向当前在线且空闲的语音会话发送文字，并在隐私允许时使用现有 TTS 链播报。",
@@ -52,10 +58,11 @@ const channelMeta: Record<ChannelKey, { name: string; description: string; requi
   },
 };
 
-const channelKeys: ChannelKey[] = ["web_chat", "desktop_notification", "voice"];
+const channelKeys: ChannelKey[] = ["web_chat", "desktop_notification", "web_push", "voice"];
 const privacyOptions: Record<ChannelKey, PrivacyLevel[]> = {
   web_chat: ["L0", "L1", "L2"],
   desktop_notification: ["L0", "L1"],
+  web_push: ["L0", "L1"],
   voice: ["L0", "L1", "L2"],
 };
 const enabledCount = computed(() => draft.value
@@ -68,6 +75,7 @@ function defaults(): ProactiveOutputConfig {
     delivery_mode: "all_enabled",
     web_chat: { enabled: true, priority: 100, max_privacy_level: "L1", critical_only: false },
     desktop_notification: { enabled: false, priority: 80, max_privacy_level: "L1", critical_only: false },
+    web_push: { enabled: false, priority: 70, max_privacy_level: "L1", critical_only: false },
     voice: { enabled: false, priority: 60, max_privacy_level: "L1", critical_only: false },
   };
 }
@@ -80,6 +88,7 @@ function normalize(value?: ProactiveOutputConfig): ProactiveOutputConfig {
     ...value,
     web_chat: { ...base.web_chat, ...value.web_chat },
     desktop_notification: { ...base.desktop_notification, ...value.desktop_notification },
+    web_push: { ...base.web_push, ...value.web_push },
     voice: { ...base.voice, ...value.voice },
   };
 }
@@ -188,5 +197,5 @@ onMounted(load);
 </template>
 
 <style scoped>
-.channels-workspace{padding:20px 24px 28px;display:grid;gap:16px}.panel{background:#fff;border:1px solid var(--line);border-radius:14px;padding:18px}.hero,.global-policy,.channel-head,.actions{display:flex;align-items:center;justify-content:space-between;gap:16px}.hero{background:linear-gradient(135deg,#fff,#f1f5ff)}h2,h3,p{margin:0}.hero h2{font-size:16px}.hero p,.channel-head p,.global-policy p{margin-top:7px;color:var(--muted);font-size:12px}.eyebrow{margin-bottom:7px;color:var(--accent);font-size:11px;font-weight:700}.global-policy>div:first-child{flex:1}.global-policy label,.fields label{display:grid;gap:6px;color:var(--muted);font-size:11px}.global-policy label{min-width:260px}.channel-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:16px}.channel-card{display:grid;gap:16px;align-content:start}.channel-head{align-items:flex-start}.channel-head h3{font-size:15px}.requirement{padding:10px 12px;border-radius:9px;background:#f5f7fb;color:var(--muted);font-size:11px;line-height:1.6}.fields{display:grid;gap:12px}.switch-field{min-height:54px}@media(max-width:1100px){.channel-grid{grid-template-columns:1fr}.global-policy{align-items:flex-start;flex-wrap:wrap}}@media(max-width:700px){.hero,.global-policy,.channel-head{align-items:flex-start;flex-direction:column}.actions{width:100%;justify-content:flex-start}.global-policy label{min-width:100%;width:100%}}
+.channels-workspace{padding:20px 24px 28px;display:grid;gap:16px}.panel{background:#fff;border:1px solid var(--line);border-radius:14px;padding:18px}.hero,.global-policy,.channel-head,.actions{display:flex;align-items:center;justify-content:space-between;gap:16px}.hero{background:linear-gradient(135deg,#fff,#f1f5ff)}h2,h3,p{margin:0}.hero h2{font-size:16px}.hero p,.channel-head p,.global-policy p{margin-top:7px;color:var(--muted);font-size:12px}.eyebrow{margin-bottom:7px;color:var(--accent);font-size:11px;font-weight:700}.global-policy>div:first-child{flex:1}.global-policy label,.fields label{display:grid;gap:6px;color:var(--muted);font-size:11px}.global-policy label{min-width:260px}.channel-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:16px}.channel-card{display:grid;gap:16px;align-content:start}.channel-head{align-items:flex-start}.channel-head h3{font-size:15px}.requirement{padding:10px 12px;border-radius:9px;background:#f5f7fb;color:var(--muted);font-size:11px;line-height:1.6}.fields{display:grid;gap:12px}.switch-field{min-height:54px}@media(max-width:1100px){.channel-grid{grid-template-columns:1fr}.global-policy{align-items:flex-start;flex-wrap:wrap}}@media(max-width:700px){.hero,.global-policy,.channel-head{align-items:flex-start;flex-direction:column}.actions{width:100%;justify-content:flex-start}.global-policy label{min-width:100%;width:100%}}
 </style>

@@ -61,6 +61,7 @@ class ProactiveDeliveryService:
         device_resolver: DeviceTargetResolver | None = None,
         device_gateway: DesktopCommandGateway | None = None,
         voice_broadcaster: VoiceProactiveBroadcaster | None = None,
+        push_adapter: OutputAdapter | None = None,
         adapters: list[OutputAdapter] | None = None,
     ) -> None:
         self._database = database
@@ -78,6 +79,8 @@ class ProactiveDeliveryService:
                 self._adapters.append(
                     DesktopNotificationAdapter(device_resolver, device_gateway)
                 )
+            if push_adapter is not None:
+                self._adapters.append(push_adapter)
             if voice_broadcaster is not None:
                 self._adapters.append(VoiceAdapter(voice_broadcaster))
 
@@ -111,6 +114,7 @@ class ProactiveDeliveryService:
             (
                 ("web_chat", config.web_chat),
                 ("desktop_notification", config.desktop_notification),
+                ("web_push", config.web_push),
                 ("voice", config.voice),
             ),
             key=lambda item: item[1].priority,
