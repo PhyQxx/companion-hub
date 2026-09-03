@@ -19,7 +19,7 @@
 | Admin 信息架构重整 | 已完成（v1） | 领域分组、URL 可恢复二级 Tab、真实数据页与浏览器验收已完成 |
 | P6 Batch D Live2D/桌宠 | 联动代码完成 | 透明窗口、拖拽、穿透、位置恢复、Hub 同源舞台及签名情绪/动作/口型同步已接通；M2 与真机性能仍是发布门槛 |
 | M4B 手机 PWA | 进行中 | 可安装壳、离线降级、移动布局、前后台恢复、移动音频解锁及游标分页补拉/去重底座已完成；待真机验收、通知与多端租约 |
-| 个人管家闭环 J1～J8 | J2 完成，J3/J4 进行中 | ACT-01～03 已完成、ACT-04 进行中；J2 四项全部代码闭环；SAT-01/02 确定性核心已落地（音频与真机待硬件）；CAL-01 日历与 TODO-01 pnkx 任务对接代码闭环；MAIL/CONTACT 与 J5～J8 未启动，见 `docs/39` |
+| 个人管家闭环 J1～J8 | J2 完成，J3/J4 进行中 | ACT-01～03 已完成、ACT-04 进行中；J2 四项全部代码闭环；SAT-01/02 确定性核心已落地（音频与真机待硬件）；CAL-01 日历代码闭环、TODO-01 pnkx 真机联调通过；MAIL/CONTACT 与 J5～J8 未启动，见 `docs/39` |
 
 ## 2. 当前执行队列
 
@@ -68,7 +68,7 @@
 #### J4 个人信息连接器
 
 - [x] `CAL-01` 日历（代码闭环，待真实验收）：v1 以 Hub 本地库为日历真源（`calendar_event` 表，`0030_calendar` 迁移同时给 `task_item` 加 `source_ref` 关联列）；外部 CalDAV/Google 后续按同契约接入。`CalendarStore` 半开区间重叠查询（首尾相接不算冲突）；`CalendarService` 提供 `preview`（纯读：规范化展示时间/参与人/目标日历 + 冲突列表，不落库，对应验收「写入前展示」）与显式 create/patch/cancel；会前提醒复用 TASK-01 调度底座（`source_ref=calendar:{id}`，默认提前 10 分钟，事件太近则尽快提醒；改期撤旧建新、取消撤旧，不引入新调度器）。API `/api/v1/calendar/events(/preview)` 全部走聊天会话鉴权，不接入模型工具直呼。剩余：聊天端自然语言建日程与外部日历同步。
-- [x] `TODO-01` 单一任务真源（代码闭环，对接 pnkx，待真机验收）：**pnkx 待办为唯一真源**，Hub `task_item` 作本地镜像（`0031_todo_sync` 迁移加 `external_updated_at/priority/group_label` 三列）。鉴权按用户决策采用**内部集成令牌**：pnkx 侧新增 `IntegrationTokenFilter`（`X-Integration-Token` 头常量时间比对，绑定 `pnkx.integration.userId` 指定身份，未配置完全不生效），Aria 侧 `ARIA_PNKX_BASE_URL` + `ARIA_PNKX_TOKEN` 两个 env 齐备才启用——无密码存储、无会话过期。同步引擎 `TodoSyncService`：全量分页拉取（跳过子任务）→ 按 `source_ref=pnkx:{id}` upsert 镜像、`external_updated_at` 变更才更新、远端删除→本地取消；本地完成→推送 `status=1`；Aria 手建任务经 `clientUuid=aria:{task_id}` 推送 pnkx，推送后崩溃未回填时按 clientUuid 从拉取快照认领，绝不重复创建。镜像 `next_fire_at` 恒为 NULL 不产生本地提醒（pnkx 自带 Quartz 提醒，避免双端重复打扰）；简报/回顾自动包含镜像任务。调度器默认 300s（`ARIA_TODO_SYNC_INTERVAL`），API `POST /api/v1/todo/sync` 手动触发返回统计。剩余：延期/优先级的反向推送、聊天端自然语言建任务。
+- [x] `TODO-01` 单一任务真源（对接 pnkx，2026-09-03 真机联调通过）：**pnkx 待办为唯一真源**，Hub `task_item` 作本地镜像（`0031_todo_sync` 迁移加 `external_updated_at/priority/group_label` 三列）。鉴权按用户决策采用**内部集成令牌**：pnkx 侧新增 `IntegrationTokenFilter`（`X-Integration-Token` 头常量时间比对，绑定 `pnkx.integration.userId` 指定身份，未配置完全不生效），Aria 侧 `ARIA_PNKX_BASE_URL` + `ARIA_PNKX_TOKEN` 两个 env 齐备才启用——无密码存储、无会话过期。同步引擎 `TodoSyncService`：全量分页拉取（跳过子任务）→ 按 `source_ref=pnkx:{id}` upsert 镜像、`external_updated_at` 变更才更新、远端删除→本地取消；本地完成→推送 `status=1`；Aria 手建任务经 `clientUuid=aria:{task_id}` 推送 pnkx，推送后崩溃未回填时按 clientUuid 从拉取快照认领，绝不重复创建。镜像 `next_fire_at` 恒为 NULL 不产生本地提醒（pnkx 自带 Quartz 提醒，避免双端重复打扰）；简报/回顾自动包含镜像任务。调度器默认 300s（`ARIA_TODO_SYNC_INTERVAL`），API `POST /api/v1/todo/sync` 手动触发返回统计。剩余：延期/优先级的反向推送、聊天端自然语言建任务。
 - [ ] `MAIL-01` 邮件助手：先只读摘要/搜索/归类，再开放草稿和显式确认发送。
 - [ ] `CONTACT-01` 联系人上下文：别名、时区、重要日期与用户明确授权的偏好。
 
@@ -156,7 +156,7 @@
 - [x] 聊天 Markdown 渲染 + TTS 前文本清洗：Chat 气泡由纯文本改为 markdown-it 安全渲染（`html=false` 转义原始 HTML、链接强制 `noopener noreferrer`、流式期间保持 pre-wrap），新增 `MarkdownContent.vue`/`markdown.ts`；语音侧新增 `speech_text.py`（`MarkdownSpeechFilter` 跨句记住 fenced code 状态、`markdown_to_speech_text` 移除标题/链接/URL/行内代码/表格线/HTML 标签），接入流式分句、桌宠播报与完整语音回复三条路径，清洗后为空则安全跳过或返回 `tts_empty_text`。语音播报不再念出 Markdown 符号与代码块。
 - [x] 情景记忆按事件追加（修复屏幕观察重复入库冲突）：`MemoryIngester` 对 EPISODIC 候选直接追加，不再进入稳定事实的"相似但不同即冲突"裁决——相似文本描述的是不同时间的事件可以同时为真；上游事件管线继续按事件 ID、截图哈希与时间窗口去重。`docs/38` 同步更新，新增两条相似屏幕观察各自独立创建的回归。
 - [x] Admin 三处修复：设备命令台账与 HA 实体列表加分页（20/50/100(/200) 档位、筛选变化重置页码、HA 表格跨页保留勾选）；修复模型工作区保存时 `structuredClone` 无法克隆 Vue 响应式 Proxy 导致的崩溃——改为递归重建普通对象。
-- [x] pnkx livecheck 联调脚本增强：完成推送阶段输出全量同步统计，便于真机联调核对。
+- [x] `TODO-01` 真机联调通过：livecheck 对 `https://admin.pnkx.top:8` 全链验收——分页拉取 109 条、镜像 109 条建立零错误（active 6 条含标题/优先级/分组正确）；本地新建经 `clientUuid=aria:{id}` 推送且远端绑定身份 `createBy` 正确；完成推送后远端 `status/finishTime` 落位；测试任务远端删除成功。livecheck 脚本同步增强为输出全量同步统计。生产 Hub 启用同步仍需部署侧配置 `ARIA_PNKX_BASE_URL/ARIA_PNKX_TOKEN`。
 - [x] 个人连接器 `TODO-01` 任务单一真源（对接 pnkx）：集成令牌鉴权（pnkx 侧 IntegrationTokenFilter + X-Integration-Token，Aria 侧双 env 门控）；TodoSyncService 拉取镜像/删检测/推完成/推新建（clientUuid 幂等 + 崩溃认领）；TodoSyncScheduler 300s 循环 + `/api/v1/todo/sync` 手动触发。pnkx 仓同步提交过滤器与配置（编译通过）。
 - [x] 个人连接器 `CAL-01` 日历：`calendar_event` 表 + `CalendarStore`（半开区间重叠冲突检查）+ `CalendarService`（preview 纯读展示写入内容与冲突、显式 CRUD、会前提醒经 `task_item.source_ref` 复用 TASK-01 调度并联动改期/取消）+ `/api/v1/calendar` 用户 API 与 main 接线。J4 第一项代码闭环。
 - [x] 全屋语音 `SAT-01/SAT-02` 确定性核心：`app/satellite` 状态机 + 内存会话注册表 + 唤醒仲裁（同 owner 单会话、2s 窗口去重、多终端唯一响应），接入 `/ws/devices` 签名帧（hello/wake/state，`voice.satellite` 能力门禁，非法转移/越权上报返回结构化错误帧）。音频上下行与真机全链待硬件。
@@ -230,7 +230,7 @@
 
 ## 4. 最新质量基线
 
-- 2026-09-03 Markdown 渲染/TTS 清洗/情景记忆/Admin 修复批次收口：新增 `test_voice.py` Markdown 清洗 3 例、`test_memory.py` 情景事件独立追加 1 例；非 soak 全量 pytest **627 通过 / 0 失败**（1 个 soak 用例 deselect）；Ruff、严格 mypy（268 source files）、Chat/Admin typecheck 与 production build、`git diff --check` 全部通过；分 5 个逻辑提交入库。语音真机播报效果与 pnkx 真机联调仍待验收。
+- 2026-09-03 Markdown 渲染/TTS 清洗/情景记忆/Admin 修复批次收口：新增 `test_voice.py` Markdown 清洗 3 例、`test_memory.py` 情景事件独立追加 1 例；非 soak 全量 pytest **627 通过 / 0 失败**（1 个 soak 用例 deselect）；Ruff、严格 mypy（268 source files）、Chat/Admin typecheck 与 production build、`git diff --check` 全部通过；分 5 个逻辑提交入库。同日 `TODO-01` livecheck 对真实 pnkx 实例全链 4 阶段零错误（拉取 109/镜像/新建推送/完成推送/清理）。语音真机播报效果仍待验收。
 - 2026-09-02 `TODO-01` pnkx 任务对接：新增 `tests/test_todo_sync.py` **10 通过**（令牌头校验与 401 拒绝、创建/更新载荷、镜像建立与子任务跳过、二次同步稳定与远端删除检测、完成推送且不重复、手建推送一次与崩溃认领、拉取失败不产生半写、调度器首 tick 延迟、API 401/统计）；非 soak 全量 pytest **602 通过 / 0 失败**；Ruff、严格 mypy（app 194 files）与 `git diff --check` 通过；Alembic SQLite 空库升级到单 head `0031_todo_sync`；pnkx-framework `mvn compile` 通过。真实 pnkx 实例联调（配置集成令牌后）待验收。
 - 2026-09-02 `CAL-01` 日历：新增 `tests/test_calendar.py` **8 通过**（预览冲突且不落库、首尾相接非冲突、窗口/提前量校验、创建关联提醒任务、取消联动撤提醒、改期撤旧建新、临近事件立即提醒、API 全流含 401/404/422 与冲突预览）；非 soak 全量 pytest **592 通过 / 0 失败**；Ruff、严格 mypy（app 189 files）与 `git diff --check` 通过；Alembic SQLite 空库升级到单 head `0030_calendar`。真实 PostgreSQL 尚未应用 `0024～0030`；聊天端自然语言建日程与外部日历接入待做。
 
