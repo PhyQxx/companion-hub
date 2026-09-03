@@ -218,7 +218,9 @@ def create_pnkx_router(
                 status.HTTP_503_SERVICE_UNAVAILABLE,
                 detail="pnkx writes are disabled",
             )
-        client_uuid = f"aria:commemoration:{body.idempotency_key}"
+        # pnkx 各业务表的 client_uuid 字段按移动端 UUID 设计，使用 32 位
+        # UUID hex，避免带业务前缀后超过旧表字段长度。不同表独立去重。
+        client_uuid = body.idempotency_key.hex
         event_time = body.event_time.astimezone(ZoneInfo("Asia/Shanghai")).strftime(
             "%Y-%m-%d %H:%M:%S"
         )
@@ -295,7 +297,7 @@ def create_pnkx_router(
                 status.HTTP_503_SERVICE_UNAVAILABLE,
                 detail="pnkx writes are disabled",
             )
-        client_uuid = f"aria:bookkeeping:{body.idempotency_key}"
+        client_uuid = body.idempotency_key.hex
         pay_time = body.pay_time.astimezone(ZoneInfo("Asia/Shanghai")).strftime(
             "%Y-%m-%d %H:%M:%S"
         )

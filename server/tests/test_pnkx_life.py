@@ -300,7 +300,7 @@ async def test_bookkeeping_api_validates_and_creates(database: Database) -> None
     assert records.json()["items"][0]["money"] == "38.00"
     assert created.status_code == 201
     assert created.json()["remote_id"] == "81"
-    assert created.json()["client_uuid"].startswith("aria:bookkeeping:")
+    assert created.json()["client_uuid"] == "018f7f4489d27cc8bc198f51f522a4d1"
     assert fake.bookkeeping_operations[0]["payload"]["payTime"] == "2026-09-02 12:30:00"
     assert invalid.status_code == 422
 
@@ -362,7 +362,7 @@ async def test_commemoration_and_notification_api_controls(database: Database) -
     assert listed.json()["total"] == 1
     assert created.status_code == 201
     assert created.json()["remote_id"] == "82"
-    assert created.json()["client_uuid"].startswith("aria:commemoration:")
+    assert created.json()["client_uuid"] == "018f7f4489d27cc8bc198f51f522a4d2"
     assert fake.commemoration_operations[0]["payload"]["date"] == (
         "2026-09-02 18:30:00"
     )
