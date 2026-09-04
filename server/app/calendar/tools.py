@@ -66,7 +66,8 @@ class CalendarCreateTool:
     async def execute(self, arguments: BaseModel, context: ToolContext) -> ToolResult:
         started = perf_counter()
         args = self._cast(arguments)
-        if context.privacy_level is PrivacyLevel.L2:
+        # ToolContext 经 pydantic use_enum_values 校验后是普通字符串，必须用 == 比较
+        if context.privacy_level == PrivacyLevel.L2:
             return self._failure("private_session_unsupported", started)
         if context.turn_id is None or context.user_id is None:
             return self._failure("idempotency_key_missing", started)

@@ -170,7 +170,7 @@ class TestReminderCreateTool:
         )
 
         private = await tool.execute(
-            args, context.model_copy(update={"privacy_level": PrivacyLevel.L2})
+            args, context.model_copy(update={"privacy_level": "L2"})
         )
         assert private.ok is False
         assert private.reason_code == "private_session_unsupported"
@@ -316,7 +316,7 @@ class TestCalendarCreateTool:
                     "ends_at": "2026-09-04T15:00",
                 }
             ),
-            context.model_copy(update={"privacy_level": PrivacyLevel.L2}),
+            context.model_copy(update={"privacy_level": "L2"}),
         )
         assert private.ok is False
         assert private.reason_code == "private_session_unsupported"
