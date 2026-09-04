@@ -19,7 +19,7 @@
 | Admin 信息架构重整 | 已完成（v1） | 领域分组、URL 可恢复二级 Tab、真实数据页与浏览器验收已完成 |
 | P6 Batch D Live2D/桌宠 | 联动代码完成 | 透明窗口、拖拽、穿透、位置恢复、Hub 同源舞台及签名情绪/动作/口型同步已接通；M2 与真机性能仍是发布门槛 |
 | M4B 手机 PWA | 进行中 | 可安装壳、离线降级、移动布局、前后台恢复、移动音频解锁及游标分页补拉/去重底座已完成；待真机验收、通知与多端租约 |
-| 个人管家闭环 J1～J8 | J2 完成，J3/J4 进行中 | ACT-01～03 已完成、ACT-04 进行中；J2 四项全部代码闭环；SAT-01/02 确定性核心已落地（音频与真机待硬件）；CAL-01 日历代码闭环、聊天端建提醒/建日程工具已落地，TODO-01 pnkx 真机联调通过；MAIL/CONTACT 与 J5～J8 未启动，见 `docs/39` |
+| 个人管家闭环 J1～J8 | J2 完成，J3/J4 进行中 | ACT-01～03 已完成、ACT-04 进行中；J2 四项全部代码闭环；SAT-01/02 确定性核心已落地（音频与真机待硬件）；CAL-01 日历代码闭环、聊天端建提醒/建日程工具已落地，TODO-01 pnkx 真机联调通过；MAIL v1 已落地（真机联调通过）；CONTACT 与 J5～J8 未启动，见 `docs/39` |
 
 ## 2. 当前执行队列
 
@@ -69,7 +69,7 @@
 
 - [x] `CAL-01` 日历（代码闭环，待真实验收）：v1 以 Hub 本地库为日历真源（`calendar_event` 表，`0030_calendar` 迁移同时给 `task_item` 加 `source_ref` 关联列）；外部 CalDAV/Google 后续按同契约接入。`CalendarStore` 半开区间重叠查询（首尾相接不算冲突）；`CalendarService` 提供 `preview`（纯读：规范化展示时间/参与人/目标日历 + 冲突列表，不落库，对应验收「写入前展示」）与显式 create/patch/cancel；会前提醒复用 TASK-01 调度底座（`source_ref=calendar:{id}`，默认提前 10 分钟，事件太近则尽快提醒；改期撤旧建新、取消撤旧，不引入新调度器）。API `/api/v1/calendar/events(/preview)` 全部走聊天会话鉴权；聊天端经 `calendar_create` 受控工具接入（两段式：先预览复述、用户确认后落库，时间冲突服务端硬拦），不开放模型对底层 API 的直呼。剩余：外部日历同步。
 - [x] `TODO-01` 单一任务真源（对接 pnkx，2026-09-03 真机联调通过）：**pnkx 待办为唯一真源**，Hub `task_item` 作本地镜像（`0031_todo_sync` 迁移加 `external_updated_at/priority/group_label` 三列）。鉴权按用户决策采用**内部集成令牌**：pnkx 侧新增 `IntegrationTokenFilter`（`X-Integration-Token` 头常量时间比对，绑定 `pnkx.integration.userId` 指定身份，未配置完全不生效），Aria 侧 `ARIA_PNKX_BASE_URL` + `ARIA_PNKX_TOKEN` 两个 env 齐备才启用——无密码存储、无会话过期。同步引擎 `TodoSyncService`：全量分页拉取（跳过子任务）→ 按 `source_ref=pnkx:{id}` upsert 镜像、`external_updated_at` 变更才更新、远端删除→本地取消；本地完成→推送 `status=1`；Aria 手建任务经 `clientUuid=aria:{task_id}` 推送 pnkx，推送后崩溃未回填时按 clientUuid 从拉取快照认领，绝不重复创建。镜像 `next_fire_at` 恒为 NULL 不产生本地提醒（pnkx 自带 Quartz 提醒，避免双端重复打扰）；简报/回顾自动包含镜像任务。调度器默认 300s（`ARIA_TODO_SYNC_INTERVAL`），API `POST /api/v1/todo/sync` 手动触发返回统计。剩余：延期/优先级的反向推送（聊天端自然语言建任务已由 `pnkx_create_life` resource=todo 覆盖）。
-- [ ] `MAIL-01` 邮件助手：先只读摘要/搜索/归类，再开放草稿和显式确认发送。
+- [ ] `MAIL-01` 邮件助手（v1 代码闭环，QQ 邮箱真机联调通过）：`integrations.mail` 配置（SMTP/IMAP 主机端口 + 授权码 secret_value/secret_ref 双模式，未配齐禁启用）；`app/mail` 客户端（smtplib/imaplib 经 asyncio.to_thread，SMTP 登录发送返回 Message-ID，IMAP INBOX 拉取/TEXT 关键词搜索 + MIME 解析摘要：发件人/主题/时间/正文前 200 字）。聊天工具 `mail_read`（只读摘要）与 `mail_send`（两段式：首次调用只返回收件人/主题/正文预览，模型复述、用户确认后 `confirmed=true` 才发送；同回合幂等绝不重复投递）；两者仅 L1 挂载（L2 私密会话禁止外发，执行层兜底拒绝），账号未配置时 available=False 不挂载。`scripts/mail_livecheck.py` 对真实 QQ 邮箱全链通过（SMTP 自发自收 + IMAP 首次搜索命中、摘要解析正确）。剩余：草稿暂存/附件、归类与未读管理、真实模型端的复述确认体验验收。
 - [ ] `CONTACT-01` 联系人上下文：别名、时区、重要日期与用户明确授权的偏好。
 
 #### J5 受控电脑操作代理
@@ -153,6 +153,7 @@
 
 ## 3. 最近完成
 
+- [x] 个人连接器 `MAIL-01` 邮件助手 v1：配置中心 `integrations.mail`（授权码双模式）+ `app/mail` 客户端（SMTP 发送/IMAP 收取，同步库全部 to_thread）+ `mail_read`/`mail_send` 聊天工具（两段式确认发送、同回合幂等、仅 L1、未配置不挂载）；`scripts/mail_livecheck.py` 对真实 QQ 邮箱联调一次通过。真实凭据只经环境变量进入运行时，仓库零凭据（提交前全仓 grep 复核）。
 - [x] 多端音频与麦克风租约（PWA Batch C 收尾项）：`VoiceSession` 增加连接级稳定 `device_id` 作为租约持有者（不再每回合随机生成），统一"最新获取者抢占、旧持有者尽快停止"策略——新语音回合获取 audio_output 后消费抢占结果，向旧持有会话发 `voice.audio_preempted` 并打断其回合；话语采集（PTT 与 VAD 自动两条路径）开始时获取 microphone 租约，抢占方接管、被抢占会话收到 `voice.microphone_preempted` 且丢弃在途话语；speak 逐句续约，失持后剩余句子降级纯文字（delta 照常）；桌宠 `stream_device_speech` 持有 audio_output 逐块检查持有权，被语音回合抢占即发 `audio_preempted` 中止剩余音频；客户端新增两个抢占事件处理（停止本地采集/清空播放队列）。修复 TurnCoordinator.interrupt 按 generation 误当持有者释放租约的 no-op bug（新增 `release_for_generation`）；`recover_after_restart` 与过期租约清理接入 lifespan 启动。新增 `tests/test_voice_multi_device.py` 4 例：麦克风抢占停旧采集且释放后第三方可获取、音频抢占通知+打断旧回合、桌宠播报被抢占中止且不动他人租约、按 generation 释放。
 - [x] PWA Batch C 移动通知底座（Web Push）：新增 `app/push` 包（订阅 Store 按 endpoint upsert/失效即删、`WebPushSender` VAPID 签名 + RFC8291 加密经 pywebpush 发送、`WebPushAdapter` 以 `web_push` 通道接入 `ProactiveDeliveryService`）；`0032_web_push` 迁移建 `push_subscription` 表并把回执 channel 约束扩展到 `web_push`；配置中心新增 `integrations.push`（VAPID 公钥明文 + 私钥 secret_value/secret_ref 双模式，未配齐密钥禁止启用）与 `proactive_output.web_push` 通道（默认优先级 70，L2 禁入由校验器硬拦）；用户 API `/api/v1/push/vapid-key|subscribe|unsubscribe`；Chat 输入区新增「🔔移动通知」开关（权限申请严格在用户手势内、状态恢复不触发询问），Service Worker 新增 `push` 展示与 `notificationclick` 点击回流（聚焦已打开窗口，前台后走既有补拉）；Admin 主动通道页新增 Web Push 通道卡。通知正文按事件 ID 打 tag 去重、截断 120 字，推送服务 404/410 自动清理订阅。
 - [x] 聊天端自然语言建提醒/建日程工具：新增 `reminder_create`（`app/tasks/tools.py`，写 TASK-01 任务存储，支持 once/daily/weekdays/weekly/interval 周期与到家/离家事件触发，本地时间按 `ARIA_DEFAULT_TIMEZONE` 解释）与 `calendar_create`（`app/calendar/tools.py`，两段式契约：首次调用只做时间规范化 + 冲突预览并要求模型向用户复述，`confirmed=true` 才落库，时间冲突即使确认也服务端硬拦）。两者同回合按 turn 幂等（重复调用返回已建实体不重复写入）；挂载门禁仅 L1 开放（L0 公开模式不写个人数据，L2 私密会话内容不入库，工具执行层兜底拒绝），要求工具模型就绪；`tool.started` 标签与 main.py 按 service 就绪挂载已接通。TODO-01 的聊天建任务已由既有 `pnkx_create_life` resource=todo 覆盖，不另建通道。
@@ -233,6 +234,7 @@
 
 ## 4. 最新质量基线
 
+- 2026-09-04 `MAIL-01` 邮件助手 v1：新增 `tests/test_mail.py` **11 通过**（配置缺账号禁启用、secret 双模式解析、工具随配置切换 available；发送构造 MIME 头/认证失败映射；两段式预览不发送、确认后发送且同回合幂等、非法地址与 L2 拒绝；读取摘要结构与 L2 拒绝；地址模式；示例 yaml 加载）；非 soak 全量 pytest **668 通过 / 0 失败**；Ruff、严格 mypy（282 source files）与 `git diff --check` 通过。真实 QQ 邮箱 livecheck 全链通过（SMTP message_id 回执 + IMAP 搜索命中）。
 - 2026-09-04 多端音频与麦克风租约：新增 `tests/test_voice_multi_device.py` **4 通过**（麦克风抢占停旧采集并通知、释放后第三方无旧持有者、音频抢占通知+打断旧回合、桌宠播报被抢占中止且不动他人租约、按 generation 释放往返）；既有 `test_voice_websocket.py` + `test_runtime.py` **39 通过**确认无回归；非 soak 全量 pytest **657 通过 / 0 失败**（1 个 soak 用例 deselect）；Ruff、严格 mypy（278 source files）、Chat typecheck 与 production build、`git diff --check` 全部通过。双端同时语音/桌宠并发播报的真机行为待验收。
 - 2026-09-03 Web Push 通知底座：新增 `tests/test_push.py` **14 通过**（endpoint upsert 重绑、owner 级退订、失败计数重置；VAPID 配置缺钥禁启用、L2 通道禁入、secret_value/env 双模式解析；发送器 201/410 状态映射、生成脚本私钥 d 值格式契约；适配器未配置/无订阅/投递成功清失效订阅/全失败带原因/长正文截断；API 401/422/201/204 全链）；非 soak 全量 pytest **653 通过 / 0 失败**（1 个 soak 用例 deselect）；Ruff、严格 mypy（277 source files）、Chat/Admin typecheck 与 production build、SW 语法、`git diff --check` 全部通过；Alembic SQLite 空库升级到单 head `0032_web_push`。VAPID 密钥生成（`server/scripts/generate_vapid_keys.py`）与真实推送服务（含 iOS Safari 已安装 PWA）真机验收待做。
 - 2026-09-03 聊天端建提醒/建日程工具：新增 `tests/test_assistant_tools.py` **12 通过**（本地 naive 时间转时区、周期与事件触发映射、同回合幂等、过期触发拒绝、L2/缺 turn 拒绝；日历两段式预览不落库、确认后建事件并关联提醒任务、冲突即使确认也硬拦、倒置窗口拒绝、幂等；L1 挂载/L0/L2 不挂载、无工具能力模型不挂载）；非 soak 全量 pytest **639 通过 / 0 失败**（1 个 soak 用例 deselect）；Ruff、严格 mypy（271 source files）与 `git diff --check` 通过。真实模型端的自然语言解析效果（模型是否先追问/复述再调用）待真机验收。
