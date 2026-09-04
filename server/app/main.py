@@ -85,6 +85,7 @@ from app.home_assistant import (
 )
 from app.jobs import AssetStore, JobEngine
 from app.llm.provider import EnvSecretProvider
+from app.mail import create_mail_tools
 from app.memory import (
     LlmMemoryExtractor,
     MemoryExtractor,
@@ -989,6 +990,8 @@ def create_app(
                 device_tools.append(
                     CalendarCreateTool(calendar_service, timezone_name=default_timezone)
                 )
+            if runtime_config is not None:
+                device_tools.extend(create_mail_tools(runtime_config))
             if pnkx_life_client is not None:
                 pnkx_is_local = pnkx_runs_local(pnkx_base_url or "")
                 device_tools.append(

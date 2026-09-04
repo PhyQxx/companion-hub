@@ -154,6 +154,10 @@ def _device_tool_ready(
         # 助手写工具：写个人任务/日历库。L0 公开模式不写入个人数据，
         # L2 私密会话内容不入库（工具执行层同样兜底拒绝），仅 L1 开放。
         return privacy_level is PrivacyLevel.L1 and _cloud_tool_model_ready(config, llm_route)
+    if name in {"mail_read", "mail_send"}:
+        # 邮件是云端账号操作（读摘要/出站发送），L2 私密会话禁止外发，仅 L1 开放；
+        # 未配置账号时工具自身 available=False。
+        return privacy_level is PrivacyLevel.L1 and _cloud_tool_model_ready(config, llm_route)
     if name in {"pnkx_read_life", "pnkx_create_life"}:
         if privacy_level is PrivacyLevel.L1:
             return _cloud_tool_model_ready(config, llm_route)
@@ -1796,4 +1800,6 @@ def _tool_label(tool_name: str) -> str:
         "pnkx_create_life": "正在写入 pnkx 生活数据…",
         "reminder_create": "正在创建提醒…",
         "calendar_create": "正在创建日程…",
+        "mail_read": "正在读取邮箱…",
+        "mail_send": "正在发送邮件…",
     }.get(tool_name, "正在使用外部工具…")

@@ -189,6 +189,20 @@ integrations:
     # vapid_public_key: <base64url 未压缩 P-256 公钥点，约 87 字符>
     # 私钥走 secret_value（后台填写）或环境变量引用二选一：
     # vapid_private_key_secret_ref: env:ARIA_VAPID_PRIVATE_KEY
+  # MAIL-01 邮件助手（QQ 邮箱默认值）。授权码（非登录密码）只走
+  # secret_value（后台填写）或环境变量：ARIA_MAIL_ADDRESS / ARIA_MAIL_SECRET。
+  # 联调验证：cd server && ARIA_MAIL_ADDRESS=... ARIA_MAIL_SECRET=... \
+  #   ../.venv/bin/python scripts/mail_livecheck.py
+  mail:
+    enabled: false
+    smtp_host: smtp.qq.com
+    smtp_port: 465
+    smtp_use_ssl: true
+    imap_host: imap.qq.com
+    imap_port: 993
+    # address: you@example.com
+    # display_name: Aria
+    # secret_ref: env:ARIA_MAIL_SECRET
 
 # 主动输出通道。Desktop 通知还需要设备端声明并获授 notification.show；
 # Voice 仅投递到当前在线且空闲的语音会话；Web Push 需 integrations.push 启用

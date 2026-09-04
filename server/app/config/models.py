@@ -371,9 +371,39 @@ class WebPushConfig(StrictModel):
         return self
 
 
+class MailConfig(StrictModel):
+    """MAIL-01 邮件助手：QQ 邮箱等 SMTP/IMAP 账号。
+
+    授权码（不是登录密码）走 secret_value/secret_ref 双模式；只读摘要与
+    确认后发送都是云端操作，聊天工具仅在 L1 挂载（L2 强制本地不外发）。
+    """
+
+    enabled: bool = False
+    smtp_host: Annotated[str, Field(min_length=3, max_length=255)] = "smtp.qq.com"
+    smtp_port: Annotated[int, Field(ge=1, le=65_535)] = 465
+    smtp_use_ssl: bool = True
+    imap_host: Annotated[str, Field(min_length=3, max_length=255)] = "imap.qq.com"
+    imap_port: Annotated[int, Field(ge=1, le=65_535)] = 993
+    address: Annotated[str, Field(min_length=3, max_length=254)] | None = None
+    display_name: Annotated[str, Field(min_length=1, max_length=120)] | None = None
+    secret_ref: Annotated[str, Field(pattern=r"^env:[A-Z][A-Z0-9_]{2,127}$")] | None = None
+    secret_value: Annotated[str, Field(min_length=8, max_length=4096)] | None = None
+    timeout_seconds: Annotated[float, Field(ge=3, le=60)] = 15.0
+    fetch_limit: Annotated[int, Field(ge=1, le=50)] = 10
+
+    @model_validator(mode="after")
+    def require_account_when_enabled(self) -> MailConfig:
+        if self.enabled and (
+            self.address is None or (self.secret_value is None and self.secret_ref is None)
+        ):
+            raise ValueError("enabled mail requires address and authorization secret")
+        return self
+
+
 class IntegrationsConfig(StrictModel):
     home_assistant: HomeAssistantConfig = Field(default_factory=HomeAssistantConfig)
     push: WebPushConfig = Field(default_factory=WebPushConfig)
+    mail: MailConfig = Field(default_factory=MailConfig)
 
 
 class ProactiveChannelConfig(StrictModel):
