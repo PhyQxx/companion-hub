@@ -60,8 +60,26 @@ interface HaConfig {
   [key: string]: unknown;
 }
 
+interface XiaoAiConfig {
+  enabled: boolean;
+  xiaomi_user_id: string | null;
+  xiaomi_password_secret_value: string | null;
+  xiaomi_password_secret_ref: string | null;
+  xiaomi_pass_token_secret_value: string | null;
+  xiaomi_pass_token_secret_ref: string | null;
+  speaker_name: string | null;
+  ha_device_id: string | null;
+  model: string | null;
+  owner_user_id: string | null;
+  gateway_token_secret_value: string | null;
+  gateway_token_secret_ref: string | null;
+  trigger_prefix: string;
+  tts_siid: number | null;
+  tts_aiid: number | null;
+}
+
 interface HubConfig {
-  integrations: { home_assistant: HaConfig };
+  integrations: { home_assistant: HaConfig; xiaoai?: XiaoAiConfig };
   [key: string]: unknown;
 }
 
@@ -87,6 +105,10 @@ interface EntityDetail {
   device_class?: string | null;
   unit_of_measurement?: string | null;
   area?: string | null;
+  device_id?: string | null;
+  device_name?: string | null;
+  manufacturer?: string | null;
+  model?: string | null;
 }
 
 interface ConnectionResult {
@@ -100,6 +122,7 @@ const api = inject("adminApi") as AdminApi;
 const emit = defineEmits<{ status: [text: string, error?: boolean] }>();
 const current = ref<CurrentConfig | null>(null);
 const ha = ref<HaConfig | null>(null);
+const xiaoai = ref<XiaoAiConfig | null>(null);
 const loading = ref(false);
 const saving = ref(false);
 const testing = ref(false);
@@ -140,12 +163,35 @@ const areaOptions = computed(() =>
 const domainOptions = computed(() =>
   [...new Set(allEntities.value.map((e) => e.domain))].sort(),
 );
+const speakerOptions = computed(() => {
+  const found = new Map<string, { device_id: string; name: string; model: string; manufacturer: string }>();
+  for (const entity of allEntities.value) {
+    const entitySpeaker = entity.entity_id.match(
+      /^media_player\.([a-z0-9]+)_cn_\d+_([a-z0-9]+)$/i,
+    );
+    const model = entity.model?.includes("wifispeaker")
+      ? entity.model
+      : entitySpeaker
+        ? `${entitySpeaker[1]}.wifispeaker.${entitySpeaker[2]}`
+        : null;
+    if (!model) continue;
+    const inferredName = entity.friendly_name.split(/\s{2,}/, 1)[0]?.trim();
+    const key = entity.device_id || `entity:${entity.entity_id}`;
+    found.set(key, {
+      device_id: key,
+      name: entity.device_name || inferredName || entity.friendly_name,
+      model,
+      manufacturer: entity.manufacturer || entitySpeaker?.[1] || "",
+    });
+  }
+  return [...found.values()].sort((a, b) => a.name.localeCompare(b.name, "zh-CN"));
+});
 const filteredEntities = computed(() => {
   let rows = allEntities.value;
   const kw = keyword.value.trim().toLowerCase();
   if (kw) {
     rows = rows.filter((item) =>
-      [item.entity_id, item.friendly_name, item.domain, item.device_class ?? "", item.area ?? ""]
+      [item.entity_id, item.friendly_name, item.domain, item.device_class ?? "", item.area ?? "", item.device_name ?? "", item.manufacturer ?? "", item.model ?? ""]
         .some((v) => v.toLowerCase().includes(kw)),
     );
   }
@@ -212,7 +258,7 @@ const discovered = computed(() => {
   const rows = allEntities.value;
   if (!kw) return rows;
   return rows.filter((item) =>
-    [item.entity_id, item.friendly_name, item.domain, item.device_class ?? "", item.area ?? ""]
+    [item.entity_id, item.friendly_name, item.domain, item.device_class ?? "", item.area ?? "", item.device_name ?? "", item.manufacturer ?? "", item.model ?? ""]
       .some((value) => value.toLocaleLowerCase().includes(kw)),
   );
 });
@@ -246,11 +292,47 @@ function normalizeConfig(config: HaConfig): HaConfig {
   };
 }
 
+function defaultXiaoAi(): XiaoAiConfig {
+  return {
+    enabled: false,
+    xiaomi_user_id: null,
+    xiaomi_password_secret_value: null,
+    xiaomi_password_secret_ref: null,
+    xiaomi_pass_token_secret_value: null,
+    xiaomi_pass_token_secret_ref: null,
+    speaker_name: null,
+    ha_device_id: null,
+    model: null,
+    owner_user_id: null,
+    gateway_token_secret_value: null,
+    gateway_token_secret_ref: null,
+    trigger_prefix: "请阿莉娅",
+    tts_siid: null,
+    tts_aiid: null,
+  };
+}
+
+function onSpeakerChange(deviceId: string) {
+  if (!xiaoai.value) return;
+  const speaker = speakerOptions.value.find((item) => item.device_id === deviceId);
+  if (!speaker) return;
+  xiaoai.value.speaker_name = speaker.name;
+  xiaoai.value.model = speaker.model;
+}
+
+function generateGatewayToken() {
+  if (!xiaoai.value) return;
+  const bytes = crypto.getRandomValues(new Uint8Array(32));
+  xiaoai.value.gateway_token_secret_value = btoa(String.fromCharCode(...bytes))
+    .replaceAll("+", "-").replaceAll("/", "_").replaceAll("=", "");
+}
+
 async function load() {
   loading.value = true;
   try {
     current.value = await api.request<CurrentConfig>("/api/v1/admin/config/current");
     ha.value = normalizeConfig(clonePlain(current.value.config.integrations.home_assistant));
+    xiaoai.value = clonePlain(current.value.config.integrations.xiaoai ?? defaultXiaoAi());
     if (ha.value?.enabled && ha.value.base_url && allEntities.value.length === 0) {
       await fetchAllEntities(true);
     }
@@ -333,11 +415,13 @@ async function save() {
         ),
       })),
     };
+    if (xiaoai.value) config.integrations.xiaoai = clonePlain(xiaoai.value);
     current.value = await api.request<CurrentConfig>("/api/v1/admin/config/current", {
       method: "PUT",
       body: JSON.stringify(config),
     });
     ha.value = normalizeConfig(clonePlain(current.value.config.integrations.home_assistant));
+    xiaoai.value = clonePlain(current.value.config.integrations.xiaoai ?? defaultXiaoAi());
     emit("status", `HA 设备授权已保存，配置版本 ${current.value.version}`);
     ElMessage.success("保存成功，已即时生效");
   } catch (error) {
@@ -502,7 +586,7 @@ onMounted(load);
       <div v-if="ha.enabled" class="panel discovery">
         <div class="panel-head"><div><h2>HA 设备总览</h2><p>共 {{ allEntities.length }} 个实体 · 已授权 {{ ha.entities.length }} 个</p></div><el-button type="primary" :disabled="!selected.length" @click="addSelected">加入授权（{{ selected.length }}）</el-button></div>
         <div class="filter-bar">
-          <el-input v-model="keyword" clearable placeholder="按名称、实体 ID、区域或类型搜索" style="width:260px" />
+          <el-input v-model="keyword" clearable placeholder="按名称、实体 ID、区域、厂商或型号搜索" style="width:300px" />
           <el-select v-model="areaFilter" clearable placeholder="全部区域" style="width:160px">
             <el-option v-for="area in areaOptions" :key="area" :label="area" :value="area" />
           </el-select>
@@ -530,6 +614,12 @@ onMounted(load);
               <el-tag size="small" effect="plain">{{ row.domain }}</el-tag>
             </template>
           </el-table-column>
+          <el-table-column label="设备型号" min-width="210">
+            <template #default="{ row }">
+              <div v-if="row.model" class="device-model"><span>{{ row.model }}</span><small>{{ row.manufacturer || row.device_name || "" }}</small></div>
+              <span v-else class="muted">—</span>
+            </template>
+          </el-table-column>
           <el-table-column prop="state" label="状态" width="100" />
         </el-table>
         <div class="pager">
@@ -542,6 +632,26 @@ onMounted(load);
             background
           />
         </div>
+      </div>
+
+      <div v-if="xiaoai" class="panel xiaoai-config">
+        <div class="panel-head">
+          <div><h2>小爱音箱网关</h2><p>账号、音箱和密钥由配置中心保存；音箱型号直接来自 HA，不再写入环境变量。</p></div>
+          <el-switch v-model="xiaoai.enabled" active-text="启用小爱接入" />
+        </div>
+        <div class="form-grid three">
+          <label><span>目标音箱</span><el-select v-model="xiaoai.ha_device_id" filterable placeholder="请先刷新 HA 设备" @change="onSpeakerChange"><el-option v-for="speaker in speakerOptions" :key="speaker.device_id" :label="`${speaker.name} · ${speaker.model}`" :value="speaker.device_id" /></el-select></label>
+          <label><span>HA 型号</span><el-input :model-value="xiaoai.model || ''" disabled /></label>
+          <label><span>触发前缀</span><el-input v-model="xiaoai.trigger_prefix" placeholder="请阿莉娅" /></label>
+          <label><span>小米账号 ID</span><el-input v-model="xiaoai.xiaomi_user_id" autocomplete="off" /></label>
+          <label><span>小米账号密码</span><el-input v-model="xiaoai.xiaomi_password_secret_value" type="password" show-password autocomplete="new-password" /></label>
+          <label class="wide"><span>小米 passToken（触发验证码时填写）</span><el-input v-model="xiaoai.xiaomi_pass_token_secret_value" type="password" show-password autocomplete="new-password" /></label>
+          <label><span>中枢用户 UUID</span><el-input v-model="xiaoai.owner_user_id" placeholder="登录用户 UUID" /></label>
+          <label class="wide"><span>网关认证密钥</span><div class="secret-row"><el-input v-model="xiaoai.gateway_token_secret_value" type="password" show-password autocomplete="new-password" /><el-button @click="generateGatewayToken">随机生成</el-button></div></label>
+          <label><span>TTS SIID（通常留空）</span><el-input-number v-model="xiaoai.tts_siid" :min="1" :controls="false" /></label>
+          <label><span>TTS AIID（通常留空）</span><el-input-number v-model="xiaoai.tts_aiid" :min="1" :controls="false" /></label>
+        </div>
+        <p class="config-note">保存后 Hub 会把配置写入小爱网关的私有共享卷。首次启用或更换账号后重启 xiaoai-gateway 容器即可生效。</p>
       </div>
 
       <div class="panel proactive-global">
@@ -591,5 +701,5 @@ onMounted(load);
 </template>
 
 <style scoped>
-.ha-workspace{padding:20px 24px 28px;display:grid;gap:16px;align-content:start}.panel{background:#fff;border:1px solid var(--line);border-radius:14px;padding:18px}.hero,.panel-head,.entity-head,.rules-head,.actions{display:flex;align-items:center;justify-content:space-between;gap:14px}.hero{background:linear-gradient(135deg,#fff,#f1f5ff)}h2,p{margin:0}.hero h2,.panel h2{font-size:16px}.hero p,.panel-head p{margin-top:7px;color:var(--muted);font-size:12px}.eyebrow{margin-bottom:7px;color:var(--accent);font-size:11px;font-weight:700}.actions{justify-content:flex-end}.form-grid{display:grid;grid-template-columns:repeat(4,minmax(160px,1fr));gap:14px}.form-grid.three{grid-template-columns:repeat(3,minmax(180px,1fr))}.form-grid label,.rule-row label{display:grid;gap:6px;color:var(--muted);font-size:11px}.form-grid small,.rule-row small,.rules-head small{color:var(--muted);font-size:10px}.wide{grid-column:1/-1}.discovery{display:grid;gap:14px}.filter-bar{display:flex;gap:10px;flex-wrap:wrap;align-items:center}.pager{display:flex;justify-content:flex-end}.auth-badge{display:inline-block;margin-left:6px;padding:1px 6px;border-radius:4px;background:#e8f5e9;color:#2e7d32;font-size:10px;font-weight:600}.muted{color:var(--muted);font-size:12px}.load-more{display:flex;justify-content:center;margin-top:14px}.entity-card{display:grid;gap:16px;margin-top:14px;padding:16px;border:1px solid #e5e9f2;border-radius:12px;background:#fbfcff}.entity-head>div:first-child{display:grid;gap:5px}.entity-head code{color:var(--muted);font-size:10px}.rules{display:grid;gap:10px;padding-top:14px;border-top:1px dashed #dfe4ee}.rules-head>div{display:grid;gap:4px}.rule-row{display:grid;grid-template-columns:auto minmax(150px,1fr) repeat(3,minmax(105px,auto)) minmax(200px,1.4fr) auto;gap:10px;align-items:end;padding:11px;border:1px solid #e7ebf3;border-radius:9px;background:#fff}@media(max-width:1100px){.form-grid,.form-grid.three{grid-template-columns:repeat(2,minmax(160px,1fr))}.rule-row{grid-template-columns:repeat(2,minmax(0,1fr))}}@media(max-width:700px){.hero,.panel-head,.entity-head{align-items:flex-start;flex-direction:column}.form-grid,.form-grid.three,.rule-row{grid-template-columns:1fr}.wide{grid-column:auto}.filter-bar{flex-direction:column;align-items:stretch}}
+.ha-workspace{padding:20px 24px 28px;display:grid;gap:16px;align-content:start}.panel{background:#fff;border:1px solid var(--line);border-radius:14px;padding:18px}.hero,.panel-head,.entity-head,.rules-head,.actions{display:flex;align-items:center;justify-content:space-between;gap:14px}.hero{background:linear-gradient(135deg,#fff,#f1f5ff)}h2,p{margin:0}.hero h2,.panel h2{font-size:16px}.hero p,.panel-head p{margin-top:7px;color:var(--muted);font-size:12px}.eyebrow{margin-bottom:7px;color:var(--accent);font-size:11px;font-weight:700}.actions{justify-content:flex-end}.form-grid{display:grid;grid-template-columns:repeat(4,minmax(160px,1fr));gap:14px}.form-grid.three{grid-template-columns:repeat(3,minmax(180px,1fr))}.form-grid label,.rule-row label{display:grid;gap:6px;color:var(--muted);font-size:11px}.form-grid small,.rule-row small,.rules-head small{color:var(--muted);font-size:10px}.wide{grid-column:1/-1}.secret-row{display:flex;gap:8px}.xiaoai-config{display:grid;gap:16px;background:linear-gradient(135deg,#fff,#f7f2ff)}.config-note{color:var(--muted);font-size:11px}.discovery{display:grid;gap:14px}.filter-bar{display:flex;gap:10px;flex-wrap:wrap;align-items:center}.pager{display:flex;justify-content:flex-end}.auth-badge{display:inline-block;margin-left:6px;padding:1px 6px;border-radius:4px;background:#e8f5e9;color:#2e7d32;font-size:10px;font-weight:600}.device-model{display:grid;gap:2px}.device-model small{color:var(--muted);font-size:10px}.muted{color:var(--muted);font-size:12px}.load-more{display:flex;justify-content:center;margin-top:14px}.entity-card{display:grid;gap:16px;margin-top:14px;padding:16px;border:1px solid #e5e9f2;border-radius:12px;background:#fbfcff}.entity-head>div:first-child{display:grid;gap:5px}.entity-head code{color:var(--muted);font-size:10px}.rules{display:grid;gap:10px;padding-top:14px;border-top:1px dashed #dfe4ee}.rules-head>div{display:grid;gap:4px}.rule-row{display:grid;grid-template-columns:auto minmax(150px,1fr) repeat(3,minmax(105px,auto)) minmax(200px,1.4fr) auto;gap:10px;align-items:end;padding:11px;border:1px solid #e7ebf3;border-radius:9px;background:#fff}@media(max-width:1100px){.form-grid,.form-grid.three{grid-template-columns:repeat(2,minmax(160px,1fr))}.rule-row{grid-template-columns:repeat(2,minmax(0,1fr))}}@media(max-width:700px){.hero,.panel-head,.entity-head{align-items:flex-start;flex-direction:column}.form-grid,.form-grid.three,.rule-row{grid-template-columns:1fr}.wide{grid-column:auto}.filter-bar{flex-direction:column;align-items:stretch}}
 </style>

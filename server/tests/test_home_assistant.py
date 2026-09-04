@@ -325,6 +325,38 @@ async def test_client_fetches_states_with_bearer_auth_and_parses_payload() -> No
     assert states[0].attributes == {"brightness": 120}
 
 
+async def test_client_fetches_device_registry_metadata_for_entities() -> None:
+    def transport(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/api/template"
+        assert request.method == "POST"
+        assert "device_attr" in request.read().decode()
+        return httpx.Response(
+            200,
+            text=(
+                '{"media_player.bedroom_speaker": {'
+                '"device_id": "device-1", "name": "小米AI音箱（第二代）", '
+                '"manufacturer": "小米", "model": "xiaomi.wifispeaker.l15a"}}'
+            ),
+        )
+
+    http = httpx.AsyncClient(
+        transport=httpx.MockTransport(transport),
+        base_url="https://ha.example.test",
+    )
+    client = HomeAssistantClient("https://ha.example.test", "test-token", http_client=http)
+    try:
+        devices = await client.fetch_entity_devices()
+    finally:
+        await http.aclose()
+
+    assert devices["media_player.bedroom_speaker"] == {
+        "device_id": "device-1",
+        "name": "小米AI音箱（第二代）",
+        "manufacturer": "小米",
+        "model": "xiaomi.wifispeaker.l15a",
+    }
+
+
 async def test_client_maps_auth_error_without_response_payload() -> None:
     http = httpx.AsyncClient(
         transport=httpx.MockTransport(

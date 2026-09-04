@@ -180,6 +180,18 @@ integrations:
     reconnect_max_seconds: 30
     state_cache_ttl_seconds: 300
     entities: []
+  # 小爱音箱网关（非官方个人接入）。账号、音箱、中枢用户与网关密钥全部在
+  # Admin「HA 实体授权 → 小爱音箱网关」填写并保存，Hub 会把运行配置写入
+  # xiaoai-state 共享卷；此文件只需保持 enabled: false。
+  # 部署：docker compose --profile xiaoai up -d --build
+  xiaoai:
+    enabled: false
+    # trigger_prefix: 请阿莉娅
+    # xiaomi_user_id: "123456"
+    # xiaomi_password_secret_ref: env:ARIA_XIAOAI_PASSWORD
+    # speaker_name: 小爱音箱 Pro
+    # owner_user_id: <Hub 登录用户 UUID>
+    # gateway_token_secret_ref: env:ARIA_XIAOAI_GATEWAY_TOKEN
   # Web Push（手机 PWA 移动通知）。密钥对生成：
   #   cd server && ../.venv/bin/python scripts/generate_vapid_keys.py
   # 私钥是 base64url 的 P-256 d 值（不是 PEM）；公私钥配齐后才把 enabled 设为 true。

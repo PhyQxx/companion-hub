@@ -46,6 +46,7 @@ from app.api import (
     create_theme_router,
     create_todo_router,
     create_voice_websocket_router,
+    create_xiaoai_websocket_router,
 )
 from app.api.admin_config import set_runtime_admin_token
 from app.api.events import create_event_router
@@ -131,6 +132,7 @@ from app.tools.location import resolve_location
 from app.tools.screen import CapabilityScreenAnalyzer, CaptureScreenTool
 from app.tools.sensors import ReadSensorsTool
 from app.voice import ConfigVoiceSource
+from app.xiaoai_config import XiaoAiConfigMaterializer
 
 
 def _parse_brief_time(raw: str) -> dt_time:
@@ -189,6 +191,12 @@ def create_app(
     )
     home_assistant_manager = (
         HomeAssistantManager(runtime_config) if runtime_config is not None else None
+    )
+    xiaoai_config_path = os.getenv("ARIA_XIAOAI_CONFIG_PATH")
+    xiaoai_materializer = (
+        XiaoAiConfigMaterializer(runtime_config, Path(xiaoai_config_path))
+        if runtime_config is not None and xiaoai_config_path
+        else None
     )
     dispatcher_enabled = run_dispatcher
     if dispatcher_enabled is None:
@@ -390,9 +398,7 @@ def create_app(
                 timezone_name=os.getenv("ARIA_DEFAULT_TIMEZONE", "Asia/Shanghai"),
             ),
         )
-        if runtime_database is not None
-        and pnkx_base_url
-        and pnkx_integration_token
+        if runtime_database is not None and pnkx_base_url and pnkx_integration_token
         else None
     )
     pnkx_life_client = (
@@ -490,6 +496,8 @@ def create_app(
         if runtime_config is not None:
             await runtime_config.load()
             apply_observability(runtime_config.current.config)
+            if xiaoai_materializer is not None:
+                await xiaoai_materializer.write()
         if persona_store is not None:
             await persona_store.load()
         if home_assistant_manager is not None:
@@ -843,15 +851,18 @@ def create_app(
             admin_token if admin_token is not None else os.getenv("ARIA_ADMIN_TOKEN")
         )
         set_runtime_admin_token(runtime_admin_token)
+
+        async def reconfigure_integrations() -> None:
+            if home_assistant_manager is not None:
+                await home_assistant_manager.reconfigure()
+            if xiaoai_materializer is not None:
+                await xiaoai_materializer.write()
+
         app.include_router(
             create_admin_config_router(
                 runtime_config,
                 admin_token=runtime_admin_token,
-                on_publish=(
-                    home_assistant_manager.reconfigure
-                    if home_assistant_manager is not None
-                    else None
-                ),
+                on_publish=reconfigure_integrations,
                 on_proactive_test=test_home_assistant_proactive,
             )
         )
@@ -983,9 +994,7 @@ def create_app(
             )
             default_timezone = os.getenv("ARIA_DEFAULT_TIMEZONE", "Asia/Shanghai")
             if task_store is not None:
-                device_tools.append(
-                    ReminderCreateTool(task_store, timezone_name=default_timezone)
-                )
+                device_tools.append(ReminderCreateTool(task_store, timezone_name=default_timezone))
             if calendar_service is not None:
                 device_tools.append(
                     CalendarCreateTool(calendar_service, timezone_name=default_timezone)
@@ -994,13 +1003,9 @@ def create_app(
                 device_tools.extend(create_mail_tools(runtime_config))
             if pnkx_life_client is not None:
                 pnkx_is_local = pnkx_runs_local(pnkx_base_url or "")
-                device_tools.append(
-                    PnkxReadTool(pnkx_life_client, runs_local=pnkx_is_local)
-                )
+                device_tools.append(PnkxReadTool(pnkx_life_client, runs_local=pnkx_is_local))
                 if os.getenv("ARIA_PNKX_WRITES_ENABLED", "false").lower() == "true":
-                    device_tools.append(
-                        PnkxCreateTool(pnkx_life_client, runs_local=pnkx_is_local)
-                    )
+                    device_tools.append(PnkxCreateTool(pnkx_life_client, runs_local=pnkx_is_local))
             if action_plan_service is not None:
                 if device_target_resolver is not None and device_command_gateway is not None:
                     device_tools.append(
@@ -1074,9 +1079,7 @@ def create_app(
                     create_pnkx_router(
                         pnkx_life_client,
                         auth_service,
-                        writes_enabled=os.getenv(
-                            "ARIA_PNKX_WRITES_ENABLED", "false"
-                        ).lower()
+                        writes_enabled=os.getenv("ARIA_PNKX_WRITES_ENABLED", "false").lower()
                         == "true",
                     )
                 )
@@ -1096,6 +1099,13 @@ def create_app(
                     websocket_manager.submit_device_message
                 )
             app.include_router(websocket_router)
+            if xiaoai_materializer is not None:
+                xiaoai_router, xiaoai_manager = create_xiaoai_websocket_router(
+                    runtime_chat_service,
+                    credentials_provider=xiaoai_materializer.credentials,
+                )
+                app.state.xiaoai_websocket_manager = xiaoai_manager
+                app.include_router(xiaoai_router)
             voice_manager = None
             if runtime_config is not None:
                 voice_router, voice_manager = create_voice_websocket_router(

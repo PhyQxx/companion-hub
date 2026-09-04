@@ -57,6 +57,7 @@ services:
       ARIA_CONFIG_PATH: ${ARIA_CONFIG_PATH:-config/hub.example.yaml}
       ARIA_WATCH_CONFIG: ${ARIA_WATCH_CONFIG:-true}
       ARIA_ADMIN_TOKEN: ${ARIA_ADMIN_TOKEN:-}
+      ARIA_XIAOAI_CONFIG_PATH: /var/lib/aria/xiaoai/config.json
     depends_on:
       postgres:
         condition: service_healthy
@@ -75,8 +76,26 @@ services:
       retries: 20
     ports:
       - "8000:8000"
+    volumes:
+      - xiaoai-state:/var/lib/aria/xiaoai
+    restart: unless-stopped
+
+  xiaoai-gateway:
+    build:
+      context: ./integrations/xiaoai_gateway
+    profiles: ["xiaoai"]
+    environment:
+      ARIA_HUB_XIAOAI_URL: ws://hub:8000/ws/adapters/xiaoai
+      XIAOAI_CONFIG_PATH: /data/config.json
+      XIAOAI_STATE_PATH: /data/state.json
+    depends_on:
+      hub:
+        condition: service_healthy
+    volumes:
+      - xiaoai-state:/data
     restart: unless-stopped
 
 volumes:
   postgres-data:
   mosquitto-data:
+  xiaoai-state:

@@ -31,6 +31,7 @@ from .tasks import create_tasks_router
 from .theme import create_admin_theme_router, create_theme_router
 from .todo import create_todo_router
 from .voice_ws import VoiceWebSocketManager, create_voice_websocket_router
+from .xiaoai_ws import XiaoAiWebSocketManager, create_xiaoai_websocket_router
 
 __all__ = [
     "ChatSessionGuard",
@@ -38,6 +39,7 @@ __all__ = [
     "DeviceCommandGateway",
     "DeviceCredentialGuard",
     "VoiceWebSocketManager",
+    "XiaoAiWebSocketManager",
     "create_admin_avatar_router",
     "create_admin_config_router",
     "create_admin_dashboard_router",
@@ -67,6 +69,7 @@ __all__ = [
     "create_theme_router",
     "create_todo_router",
     "create_voice_websocket_router",
+    "create_xiaoai_websocket_router",
     "sign_device_frame",
     "verify_device_signature",
 ]

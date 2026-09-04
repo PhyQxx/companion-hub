@@ -111,6 +111,54 @@ class HomeAssistantClient:
             str(k): str(v) for k, v in payload.items() if isinstance(k, str) and isinstance(v, str)
         }
 
+    async def fetch_entity_devices(self) -> dict[str, dict[str, str | None]]:
+        """Return HA device-registry metadata keyed by entity ID."""
+        template = (
+            "{% set ns = namespace(devices={}) %}"
+            "{% for state in states %}"
+            "{% set did = device_id(state.entity_id) %}"
+            "{% if did %}"
+            "{% set _ = ns.devices.update({state.entity_id: {"
+            "'device_id': did,"
+            "'name': device_attr(did, 'name'),"
+            "'manufacturer': device_attr(did, 'manufacturer'),"
+            "'model': device_attr(did, 'model')"
+            "}}) %}"
+            "{% endif %}"
+            "{% endfor %}"
+            "{{ ns.devices | tojson }}"
+        )
+        try:
+            response = await self._http.post(
+                "/api/template",
+                headers={**self._headers, "Content-Type": "application/json"},
+                json={"template": template},
+            )
+        except httpx.TimeoutException as error:
+            raise HomeAssistantError("ha_timeout") from error
+        except httpx.HTTPError as error:
+            raise HomeAssistantError("ha_offline") from error
+        _raise_for_status(response)
+        text = response.text.strip()
+        if text.startswith('"') and text.endswith('"'):
+            with contextlib.suppress(ValueError):
+                text = json.loads(text)
+        try:
+            payload = json.loads(text)
+        except ValueError as error:
+            raise HomeAssistantError("ha_response_invalid") from error
+        if not isinstance(payload, dict):
+            raise HomeAssistantError("ha_response_invalid")
+        devices: dict[str, dict[str, str | None]] = {}
+        for entity_id, raw in payload.items():
+            if not isinstance(entity_id, str) or not isinstance(raw, dict):
+                continue
+            devices[entity_id] = {
+                key: str(raw[key]) if raw.get(key) is not None else None
+                for key in ("device_id", "name", "manufacturer", "model")
+            }
+        return devices
+
     async def call_service(
         self,
         domain: str,

@@ -32,6 +32,7 @@ _BEARER = HTTPBearer(auto_error=False)
 AdminCredentials = Annotated[HTTPAuthorizationCredentials | None, Depends(_BEARER)]
 
 logger = logging.getLogger(__name__)
+_SECRET_MASK = "__ARIA_SECRET_CONFIGURED__"
 
 _runtime_admin_token: str | None = None
 
@@ -198,6 +199,10 @@ class HomeAssistantEntityDetailView(StrictModel):
     device_class: str | None = None
     unit_of_measurement: str | None = None
     area: str | None = None
+    device_id: str | None = None
+    device_name: str | None = None
+    manufacturer: str | None = None
+    model: str | None = None
 
 
 class HomeAssistantEntitiesResult(StrictModel):
@@ -315,7 +320,7 @@ def _version_view(
         created_at=version.created_at,
         published_at=version.published_at,
         rollback_from_version=version.rollback_from_version,
-        config=version.config if include_config else None,
+        config=_redact_config(version.config) if include_config else None,
     )
 
 
@@ -325,8 +330,33 @@ def _current_view(snapshot: ConfigSnapshot) -> CurrentConfigView:
         content_hash=snapshot.content_hash,
         published_at=snapshot.published_at,
         rollback_from_version=snapshot.rollback_from,
-        config=snapshot.config,
+        config=_redact_config(snapshot.config),
     )
+
+
+def _redact_config(config: HubConfig) -> HubConfig:
+    data = config.model_dump(mode="python")
+    xiaoai = data["integrations"]["xiaoai"]
+    if xiaoai.get("xiaomi_password_secret_value"):
+        xiaoai["xiaomi_password_secret_value"] = _SECRET_MASK
+    if xiaoai.get("xiaomi_pass_token_secret_value"):
+        xiaoai["xiaomi_pass_token_secret_value"] = _SECRET_MASK
+    if xiaoai.get("gateway_token_secret_value"):
+        xiaoai["gateway_token_secret_value"] = _SECRET_MASK
+    return HubConfig.model_validate(data)
+
+
+def _restore_secret_masks(config: HubConfig, current: HubConfig) -> HubConfig:
+    data = config.model_dump(mode="python")
+    incoming = data["integrations"]["xiaoai"]
+    existing = current.integrations.xiaoai
+    if incoming.get("xiaomi_password_secret_value") == _SECRET_MASK:
+        incoming["xiaomi_password_secret_value"] = existing.xiaomi_password_secret_value
+    if incoming.get("xiaomi_pass_token_secret_value") == _SECRET_MASK:
+        incoming["xiaomi_pass_token_secret_value"] = existing.xiaomi_pass_token_secret_value
+    if incoming.get("gateway_token_secret_value") == _SECRET_MASK:
+        incoming["gateway_token_secret_value"] = existing.gateway_token_secret_value
+    return HubConfig.model_validate(data)
 
 
 def create_admin_config_router(
@@ -354,6 +384,7 @@ def create_admin_config_router(
         admin UI treats model/routing configuration as a single live document.
         """
         try:
+            config = _restore_secret_masks(config, store.current.config)
             draft = await store.create_draft(config, actor="admin")
             snapshot = await store.publish(draft.version, actor="admin")
         except ValueError as error:
@@ -818,6 +849,14 @@ def create_admin_config_router(
                         "home assistant entity areas fetch failed: %s", area_error.reason_code
                     )
                     areas = {}
+                try:
+                    devices = await client.fetch_entity_devices()
+                except HomeAssistantError as device_error:
+                    logger.warning(
+                        "home assistant entity devices fetch failed: %s",
+                        device_error.reason_code,
+                    )
+                    devices = {}
             finally:
                 await client.close()
         except Exception as error:
@@ -830,26 +869,32 @@ def create_admin_config_router(
                 message=f"连接失败：{reason}",
                 error_type=reason,
             )
-        entities = [
-            HomeAssistantEntityDetailView(
-                entity_id=state.entity_id,
-                friendly_name=str(state.attributes.get("friendly_name") or state.entity_id),
-                domain=state.entity_id.split(".", 1)[0],
-                state=state.state,
-                device_class=(
-                    str(state.attributes["device_class"])
-                    if state.attributes.get("device_class") is not None
-                    else None
-                ),
-                unit_of_measurement=(
-                    str(state.attributes["unit_of_measurement"])
-                    if state.attributes.get("unit_of_measurement") is not None
-                    else None
-                ),
-                area=areas.get(state.entity_id) or None,
+        entities = []
+        for state in sorted(states, key=lambda item: item.entity_id):
+            device = devices.get(state.entity_id, {})
+            entities.append(
+                HomeAssistantEntityDetailView(
+                    entity_id=state.entity_id,
+                    friendly_name=str(state.attributes.get("friendly_name") or state.entity_id),
+                    domain=state.entity_id.split(".", 1)[0],
+                    state=state.state,
+                    device_class=(
+                        str(state.attributes["device_class"])
+                        if state.attributes.get("device_class") is not None
+                        else None
+                    ),
+                    unit_of_measurement=(
+                        str(state.attributes["unit_of_measurement"])
+                        if state.attributes.get("unit_of_measurement") is not None
+                        else None
+                    ),
+                    area=areas.get(state.entity_id) or None,
+                    device_id=device.get("device_id"),
+                    device_name=device.get("name"),
+                    manufacturer=device.get("manufacturer"),
+                    model=device.get("model"),
+                )
             )
-            for state in sorted(states, key=lambda item: item.entity_id)
-        ]
         return HomeAssistantEntitiesResult(
             ok=True,
             latency_ms=(perf_counter() - started) * 1_000,
@@ -932,6 +977,7 @@ def create_admin_config_router(
         status_code=status.HTTP_201_CREATED,
     )
     async def create_draft(config: HubConfig) -> ConfigVersionView:
+        config = _restore_secret_masks(config, store.current.config)
         result = await store.create_draft(config, actor="admin")
         return _version_view(result, include_config=True)
 

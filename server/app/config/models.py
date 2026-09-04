@@ -3,6 +3,7 @@ from __future__ import annotations
 import re
 from ipaddress import ip_address
 from typing import Annotated, Any, Literal
+from uuid import UUID
 
 from pydantic import AnyHttpUrl, Field, model_validator
 
@@ -43,9 +44,7 @@ class VoiceAsrConfig(StrictModel):
     def provider_requirements(self) -> VoiceAsrConfig:
         if self.provider == "mimo":
             if self.initial_prompt is not None or self.hotwords is not None:
-                raise ValueError(
-                    "initial_prompt and hotwords are only supported by faster_whisper"
-                )
+                raise ValueError("initial_prompt and hotwords are only supported by faster_whisper")
             if self.base_url is None:
                 raise ValueError("mimo voice asr requires base_url")
             if self.secret_value is None and self.secret_ref is None:
@@ -341,6 +340,53 @@ class HomeAssistantConfig(StrictModel):
         return self
 
 
+class XiaoAiConfig(StrictModel):
+    enabled: bool = False
+    xiaomi_user_id: Annotated[str, Field(min_length=1, max_length=160)] | None = None
+    xiaomi_password_secret_ref: (
+        Annotated[str, Field(pattern=r"^env:[A-Z][A-Z0-9_]{2,127}$")] | None
+    ) = None
+    xiaomi_password_secret_value: Annotated[str, Field(min_length=1, max_length=4096)] | None = None
+    xiaomi_pass_token_secret_ref: (
+        Annotated[str, Field(pattern=r"^env:[A-Z][A-Z0-9_]{2,127}$")] | None
+    ) = None
+    xiaomi_pass_token_secret_value: (
+        Annotated[str, Field(min_length=1, max_length=8192)] | None
+    ) = None
+    speaker_name: Annotated[str, Field(min_length=1, max_length=160)] | None = None
+    ha_device_id: Annotated[str, Field(min_length=1, max_length=160)] | None = None
+    model: Annotated[str, Field(min_length=1, max_length=160)] | None = None
+    owner_user_id: UUID | None = None
+    gateway_token_secret_ref: (
+        Annotated[str, Field(pattern=r"^env:[A-Z][A-Z0-9_]{2,127}$")] | None
+    ) = None
+    gateway_token_secret_value: Annotated[str, Field(min_length=20, max_length=512)] | None = None
+    trigger_prefix: Annotated[str, Field(min_length=1, max_length=80)] = "请阿莉娅"
+    tts_siid: Annotated[int, Field(gt=0)] | None = None
+    tts_aiid: Annotated[int, Field(gt=0)] | None = None
+
+    @model_validator(mode="after")
+    def require_runtime_settings(self) -> XiaoAiConfig:
+        if (self.tts_siid is None) != (self.tts_aiid is None):
+            raise ValueError("xiaoai tts_siid and tts_aiid must be configured together")
+        password_login = self.xiaomi_user_id is not None and (
+            self.xiaomi_password_secret_ref is not None
+            or self.xiaomi_password_secret_value is not None
+        )
+        pass_token_login = (
+            self.xiaomi_pass_token_secret_ref is not None
+            or self.xiaomi_pass_token_secret_value is not None
+        )
+        if self.enabled and (
+            (not password_login and not pass_token_login)
+            or self.speaker_name is None
+            or self.owner_user_id is None
+            or (self.gateway_token_secret_ref is None and self.gateway_token_secret_value is None)
+        ):
+            raise ValueError("enabled xiaoai requires account, speaker, owner and secrets")
+        return self
+
+
 class WebPushConfig(StrictModel):
     """Web Push（PWA 移动通知）配置：VAPID 密钥齐全且 enabled 才可用。
 
@@ -351,9 +397,9 @@ class WebPushConfig(StrictModel):
     enabled: bool = False
     vapid_subject: Annotated[str, Field(min_length=3, max_length=255)] = "mailto:admin@example.com"
     vapid_public_key: Annotated[str, Field(min_length=40, max_length=255)] | None = None
-    vapid_private_key_secret_ref: Annotated[
-        str, Field(pattern=r"^env:[A-Z][A-Z0-9_]{2,127}$")
-    ] | None = None
+    vapid_private_key_secret_ref: (
+        Annotated[str, Field(pattern=r"^env:[A-Z][A-Z0-9_]{2,127}$")] | None
+    ) = None
     vapid_private_key_secret_value: Annotated[str, Field(min_length=32, max_length=4096)] | None = (
         None
     )
@@ -402,6 +448,7 @@ class MailConfig(StrictModel):
 
 class IntegrationsConfig(StrictModel):
     home_assistant: HomeAssistantConfig = Field(default_factory=HomeAssistantConfig)
+    xiaoai: XiaoAiConfig = Field(default_factory=XiaoAiConfig)
     push: WebPushConfig = Field(default_factory=WebPushConfig)
     mail: MailConfig = Field(default_factory=MailConfig)
 
