@@ -851,13 +851,11 @@ class ChatService:
                                 "finish_reason": "stop",
                             }
                         )
-                    elif (
-                        direct_reply := _render_mail_send_receipt(execution.result)
-                    ) is not None:
-                        await filtered_delta(direct_reply)
+                    elif (mail_receipt := _render_mail_send_receipt(execution.result)) is not None:
+                        await filtered_delta(mail_receipt)
                         result = result.model_copy(
                             update={
-                                "text": direct_reply,
+                                "text": mail_receipt,
                                 "tool_calls": [],
                                 "finish_reason": "stop",
                             }
