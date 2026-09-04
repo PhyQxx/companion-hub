@@ -16,6 +16,7 @@ from .calendar import create_calendar_router
 from .chat import create_chat_router
 from .chat_ws import ChatWebSocketManager, create_chat_websocket_router
 from .cognition import create_cognition_router
+from .contacts import create_contacts_router
 from .device_commands import (
     DeviceCommandGateway,
     create_device_command_routers,
@@ -57,6 +58,7 @@ __all__ = [
     "create_chat_router",
     "create_chat_websocket_router",
     "create_cognition_router",
+    "create_contacts_router",
     "create_deletion_ledger_router",
     "create_device_command_routers",
     "create_device_routers",

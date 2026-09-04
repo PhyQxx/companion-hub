@@ -34,6 +34,7 @@ from app.api import (
     create_chat_router,
     create_chat_websocket_router,
     create_cognition_router,
+    create_contacts_router,
     create_deletion_ledger_router,
     create_device_command_routers,
     create_device_routers,
@@ -69,6 +70,7 @@ from app.cognition import (
     build_builtin_action_registry,
 )
 from app.config import ConfigStore, ConfigWatcher, DatabaseConfigStore
+from app.contacts import ContactQueryTool, ContactSaveTool, ContactStore
 from app.db import Database, create_database
 from app.devices import (
     DeviceCommandStore,
@@ -342,11 +344,13 @@ def create_app(
         finally:
             await runtime.close()
 
+    contact_store = ContactStore(runtime_database) if runtime_database is not None else None
     daily_brief_service = (
         DailyBriefService(
             runtime_database,
             task_store,
             cognitive_store,
+            contact_store=contact_store,
             weather_fetcher=fetch_brief_weather,
             timezone_name=os.getenv("ARIA_DEFAULT_TIMEZONE", "Asia/Shanghai"),
         )
@@ -999,6 +1003,9 @@ def create_app(
                 device_tools.append(
                     CalendarCreateTool(calendar_service, timezone_name=default_timezone)
                 )
+            if contact_store is not None:
+                device_tools.append(ContactSaveTool(contact_store))
+                device_tools.append(ContactQueryTool(contact_store))
             if runtime_config is not None:
                 device_tools.extend(create_mail_tools(runtime_config))
             if pnkx_life_client is not None:
@@ -1070,6 +1077,9 @@ def create_app(
             if calendar_service is not None:
                 app.include_router(create_calendar_router(calendar_service, auth_service))
                 app.state.calendar_service = calendar_service
+            if contact_store is not None:
+                app.include_router(create_contacts_router(contact_store, auth_service))
+                app.state.contact_store = contact_store
             if todo_sync_service is not None:
                 app.include_router(create_todo_router(todo_sync_service, auth_service))
                 app.state.todo_sync_service = todo_sync_service

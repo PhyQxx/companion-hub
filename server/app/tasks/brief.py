@@ -7,8 +7,9 @@
 事实来源（v1）：
 - weather：高德实时天气 + 当日预报（默认城市来自 config.tools.query.default_city）；
 - task：TaskStore 当天会触发的活跃时间任务（source: task:{id}）；
-- goal：CognitiveStore 当天到期或已过期的活跃承诺（source: goal:{id}）。
-日程（J4 日历）、家庭状态与通勤在对应真源接入后再扩展，不伪造数据。
+- goal：CognitiveStore 当天到期或已过期的活跃承诺（source: goal:{id}）；
+- contact：ContactStore 重要日期落在当日的联系人（source: contact:{id}）。
+家庭状态与通勤在对应真源接入后再扩展，不伪造数据。
 """
 
 from __future__ import annotations
@@ -26,6 +27,7 @@ from sqlalchemy import select, update
 from sqlalchemy.exc import IntegrityError
 
 from app.cognition.store import CognitiveStore
+from app.contacts.store import ContactStore
 from app.db import AppUserRecord, DailyBriefRecord, Database
 from app.ids import uuid7
 from app.schemas.common import PrivacyLevel, StrictModel
@@ -35,6 +37,7 @@ from app.tasks.store import TaskStore
 TRIGGER_KIND_BRIEF = "brief.daily"
 MAX_TASK_FACTS = 5
 MAX_GOAL_FACTS = 5
+MAX_CONTACT_DATE_FACTS = 5
 MAX_TEXT_CHARS = 1_200
 
 
@@ -98,6 +101,7 @@ class DailyBriefService:
         task_store: TaskStore,
         cognitive_store: CognitiveStore,
         *,
+        contact_store: ContactStore | None = None,
         weather_fetcher: BriefWeatherFetcher | None = None,
         timezone_name: str = "Asia/Shanghai",
         clock: Callable[[], datetime] | None = None,
@@ -105,6 +109,7 @@ class DailyBriefService:
         self._database = database
         self._tasks = task_store
         self._goals = cognitive_store
+        self._contacts = contact_store
         self._weather = weather_fetcher
         self._tz = ZoneInfo(timezone_name)
         self._clock = clock or (lambda: datetime.now(UTC))
@@ -192,6 +197,24 @@ class DailyBriefService:
                 summary += f"（今日 {weather.low_c}~{weather.high_c}°C）"
             facts.append(BriefFact(kind="weather", text=summary, source="amap:weather"))
 
+        if self._contacts is not None:
+            matched_contacts = await self._contacts.contacts_with_date(
+                user_id, month=brief_date.month, day=brief_date.day
+            )
+            for contact in matched_contacts[:MAX_CONTACT_DATE_FACTS]:
+                labels = "、".join(
+                    item.label
+                    for item in contact.important_dates
+                    if item.month == brief_date.month and item.day == brief_date.day
+                )
+                facts.append(
+                    BriefFact(
+                        kind="contact_date",
+                        text=f"今天是{contact.display_name}的{labels}",
+                        source=f"contact:{contact.id}",
+                    )
+                )
+
         due_tasks = []
         for task in await self._tasks.list_tasks(user_id, status=TaskStatus.ACTIVE, limit=200):
             next_fire = _aware(task.next_fire_at)
@@ -277,19 +300,23 @@ def compose_brief_text(brief_date: date, facts: list[BriefFact]) -> str:
     weather = [fact.text for fact in facts if fact.kind == "weather"]
     tasks = [fact.text for fact in facts if fact.kind == "task"]
     goals = [fact.text for fact in facts if fact.kind == "goal"]
+    contact_dates = [fact.text for fact in facts if fact.kind == "contact_date"]
 
     lines: list[str] = []
     if weather:
         lines.append(f"{header} · {weather[0]}")
     else:
         lines.append(header)
+    if contact_dates:
+        lines.append(f"今日重要日期（{len(contact_dates)}）：")
+        lines.extend(f"· {item}" for item in contact_dates)
     if tasks:
         lines.append(f"今日待办（{len(tasks)}）：")
         lines.extend(f"· {item}" for item in tasks)
     if goals:
         lines.append(f"到期承诺（{len(goals)}）：")
         lines.extend(f"· {item}" for item in goals)
-    if not tasks and not goals:
+    if not tasks and not goals and not contact_dates:
         lines.append("今天没有到期的任务或承诺。")
     text = "\n".join(lines)
     if len(text) > MAX_TEXT_CHARS:
