@@ -230,4 +230,3 @@ async def test_release_for_generation(
     assert await coordinator.release_audio_lease_for_generation(generation) is True
     assert await coordinator.current_audio_holder() is None
     assert await coordinator.release_audio_lease_for_generation(generation) is False
-
