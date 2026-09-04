@@ -1,6 +1,6 @@
 # Aria 当前任务
 
-> 最后更新：2026-09-03
+> 最后更新：2026-09-04
 > 详细设计入口：[00-文档索引与架构总览.md](./00-文档索引与架构总览.md)
 
 本文件只维护当前执行队列、未完成门槛和最新质量基线。历史交付细节留在对应阶段文档，不在这里重复。
@@ -31,7 +31,7 @@
 - [ ] **硬件到位后恢复：ESP32 + LD2410 第一硬件闭环。** Hub 侧 MQTT → L3 `EphemeralSignal` → 5 秒稳定窗 → L1 `presence.changed` → Perception → Proactive Pipeline 已接通，ESPHome 固件样例与单设备 topic ACL 已落地；因暂时没有硬件，剩余刷写真机与 7 天验收不阻塞软件主线。
 - [x] **手机 PWA Batch A：可安装移动壳。** 现有 Chat 已增加 manifest、多尺寸/可遮罩图标、Service Worker 与离线降级页；窄屏改为顶部导航 + 会话/形象双抽屉，补齐刘海屏安全区、44px 触摸目标和输入法友好字号。安装后模式的访问令牌只进入 `sessionStorage`，不写长期 `localStorage`。
 - [ ] **手机 PWA Batch B：真机聊天闭环。** 前后台恢复逻辑已完成：回到前台会补拉当前会话并重连/同步 WebSocket，进入后台会释放语音会话，离线时停止发送并在网络恢复后自动同步。移动浏览器会在麦克风、播报开关或发送按钮的可信用户手势内预先解锁 `AudioContext`，后续 TTS 解码/播放失败会结束忙碌态并显示可操作提示。剩余是在 iOS Safari 和 Android Chrome 完成添加到主屏、登录、文字/streaming、麦克风/定位权限、TTS 播放与异常降级真机验收。
-- [ ] **手机 PWA Batch C：通知与会话漫游。** 会话游标补拉与消息去重底座已完成：REST 支持 `after_seq` 增量查询和 500 条分页循环，WebSocket 每页 200 条并用 `has_more/next_after_seq` 自动续拉，客户端按消息 ID 去重后按 `seq` 稳定合并。移动通知 endpoint 代码闭环（2026-09-03）：`0032_web_push` 迁移建 `push_subscription` 表并放宽回执 channel 约束、`/api/v1/push`（VAPID 公钥下发/订阅/退订）、`WebPushAdapter` 以 `web_push` 通道接入主动投递（通知正文按 `entity_id` 打 tag 去重、404/410 自动清订阅、L2 由配置校验硬禁）、Chat「🔔移动通知」开关（权限申请在用户手势内）与 SW `push`/`notificationclick`（聚焦/打开聊天回到前台补拉）已接通。剩余：VAPID 密钥生成与真实推送服务（iOS Safari 需先安装 PWA）真机验收，以及多端音频与麦克风租约；L2 文本不进入系统通知。
+- [ ] **手机 PWA Batch C：通知与会话漫游。** 会话游标补拉与消息去重底座已完成：REST 支持 `after_seq` 增量查询和 500 条分页循环，WebSocket 每页 200 条并用 `has_more/next_after_seq` 自动续拉，客户端按消息 ID 去重后按 `seq` 稳定合并。移动通知 endpoint 代码闭环（2026-09-03）：`0032_web_push` 迁移建 `push_subscription` 表并放宽回执 channel 约束、`/api/v1/push`（VAPID 公钥下发/订阅/退订）、`WebPushAdapter` 以 `web_push` 通道接入主动投递（通知正文按 `entity_id` 打 tag 去重、404/410 自动清订阅、L2 由配置校验硬禁）、Chat「🔔移动通知」开关（权限申请在用户手势内）与 SW `push`/`notificationclick`（聚焦/打开聊天回到前台补拉）已接通。多端音频与麦克风租约代码闭环（2026-09-04）：连接级稳定 `device_id` 作租约持有者，"最新获取者抢占、旧持有者尽快停止"——新语音回合抢占 audio_output 并向旧会话发 `voice.audio_preempted` 打断其回合，话语采集开始抢占 microphone 并发 `voice.microphone_preempted` 停止旧采集，speak 逐句续约失持即降级纯文字，桌宠播报纳管租约、逐块检查被抢占即中止；客户端处理两个抢占事件（停本地采集/清播放队列）；修复 interrupt 按 generation 误释放与 recover_after_restart 未接线，启动时恢复不安全回合并清理过期租约。剩余：VAPID 密钥生成与真实推送服务、双端同时语音的真机验收；L2 文本不进入系统通知。
 - [ ] **并行门槛：Tauri 透明桌宠真机收口。** 待验收 macOS 热插拔、60fps、常驻内存 <300MB 和长时间运行。
 - [ ] **并行门槛：M2 语音延迟与识别质量。** 重置统计窗口后完成 20 个完整回合 + 20 个打断样本，新低延迟模型端点继续暂缓。
 
@@ -153,6 +153,7 @@
 
 ## 3. 最近完成
 
+- [x] 多端音频与麦克风租约（PWA Batch C 收尾项）：`VoiceSession` 增加连接级稳定 `device_id` 作为租约持有者（不再每回合随机生成），统一"最新获取者抢占、旧持有者尽快停止"策略——新语音回合获取 audio_output 后消费抢占结果，向旧持有会话发 `voice.audio_preempted` 并打断其回合；话语采集（PTT 与 VAD 自动两条路径）开始时获取 microphone 租约，抢占方接管、被抢占会话收到 `voice.microphone_preempted` 且丢弃在途话语；speak 逐句续约，失持后剩余句子降级纯文字（delta 照常）；桌宠 `stream_device_speech` 持有 audio_output 逐块检查持有权，被语音回合抢占即发 `audio_preempted` 中止剩余音频；客户端新增两个抢占事件处理（停止本地采集/清空播放队列）。修复 TurnCoordinator.interrupt 按 generation 误当持有者释放租约的 no-op bug（新增 `release_for_generation`）；`recover_after_restart` 与过期租约清理接入 lifespan 启动。新增 `tests/test_voice_multi_device.py` 4 例：麦克风抢占停旧采集且释放后第三方可获取、音频抢占通知+打断旧回合、桌宠播报被抢占中止且不动他人租约、按 generation 释放。
 - [x] PWA Batch C 移动通知底座（Web Push）：新增 `app/push` 包（订阅 Store 按 endpoint upsert/失效即删、`WebPushSender` VAPID 签名 + RFC8291 加密经 pywebpush 发送、`WebPushAdapter` 以 `web_push` 通道接入 `ProactiveDeliveryService`）；`0032_web_push` 迁移建 `push_subscription` 表并把回执 channel 约束扩展到 `web_push`；配置中心新增 `integrations.push`（VAPID 公钥明文 + 私钥 secret_value/secret_ref 双模式，未配齐密钥禁止启用）与 `proactive_output.web_push` 通道（默认优先级 70，L2 禁入由校验器硬拦）；用户 API `/api/v1/push/vapid-key|subscribe|unsubscribe`；Chat 输入区新增「🔔移动通知」开关（权限申请严格在用户手势内、状态恢复不触发询问），Service Worker 新增 `push` 展示与 `notificationclick` 点击回流（聚焦已打开窗口，前台后走既有补拉）；Admin 主动通道页新增 Web Push 通道卡。通知正文按事件 ID 打 tag 去重、截断 120 字，推送服务 404/410 自动清理订阅。
 - [x] 聊天端自然语言建提醒/建日程工具：新增 `reminder_create`（`app/tasks/tools.py`，写 TASK-01 任务存储，支持 once/daily/weekdays/weekly/interval 周期与到家/离家事件触发，本地时间按 `ARIA_DEFAULT_TIMEZONE` 解释）与 `calendar_create`（`app/calendar/tools.py`，两段式契约：首次调用只做时间规范化 + 冲突预览并要求模型向用户复述，`confirmed=true` 才落库，时间冲突即使确认也服务端硬拦）。两者同回合按 turn 幂等（重复调用返回已建实体不重复写入）；挂载门禁仅 L1 开放（L0 公开模式不写个人数据，L2 私密会话内容不入库，工具执行层兜底拒绝），要求工具模型就绪；`tool.started` 标签与 main.py 按 service 就绪挂载已接通。TODO-01 的聊天建任务已由既有 `pnkx_create_life` resource=todo 覆盖，不另建通道。
 - [x] 聊天 Markdown 渲染 + TTS 前文本清洗：Chat 气泡由纯文本改为 markdown-it 安全渲染（`html=false` 转义原始 HTML、链接强制 `noopener noreferrer`、流式期间保持 pre-wrap），新增 `MarkdownContent.vue`/`markdown.ts`；语音侧新增 `speech_text.py`（`MarkdownSpeechFilter` 跨句记住 fenced code 状态、`markdown_to_speech_text` 移除标题/链接/URL/行内代码/表格线/HTML 标签），接入流式分句、桌宠播报与完整语音回复三条路径，清洗后为空则安全跳过或返回 `tts_empty_text`。语音播报不再念出 Markdown 符号与代码块。
@@ -232,6 +233,7 @@
 
 ## 4. 最新质量基线
 
+- 2026-09-04 多端音频与麦克风租约：新增 `tests/test_voice_multi_device.py` **4 通过**（麦克风抢占停旧采集并通知、释放后第三方无旧持有者、音频抢占通知+打断旧回合、桌宠播报被抢占中止且不动他人租约、按 generation 释放往返）；既有 `test_voice_websocket.py` + `test_runtime.py` **39 通过**确认无回归；非 soak 全量 pytest **657 通过 / 0 失败**（1 个 soak 用例 deselect）；Ruff、严格 mypy（278 source files）、Chat typecheck 与 production build、`git diff --check` 全部通过。双端同时语音/桌宠并发播报的真机行为待验收。
 - 2026-09-03 Web Push 通知底座：新增 `tests/test_push.py` **14 通过**（endpoint upsert 重绑、owner 级退订、失败计数重置；VAPID 配置缺钥禁启用、L2 通道禁入、secret_value/env 双模式解析；发送器 201/410 状态映射、生成脚本私钥 d 值格式契约；适配器未配置/无订阅/投递成功清失效订阅/全失败带原因/长正文截断；API 401/422/201/204 全链）；非 soak 全量 pytest **653 通过 / 0 失败**（1 个 soak 用例 deselect）；Ruff、严格 mypy（277 source files）、Chat/Admin typecheck 与 production build、SW 语法、`git diff --check` 全部通过；Alembic SQLite 空库升级到单 head `0032_web_push`。VAPID 密钥生成（`server/scripts/generate_vapid_keys.py`）与真实推送服务（含 iOS Safari 已安装 PWA）真机验收待做。
 - 2026-09-03 聊天端建提醒/建日程工具：新增 `tests/test_assistant_tools.py` **12 通过**（本地 naive 时间转时区、周期与事件触发映射、同回合幂等、过期触发拒绝、L2/缺 turn 拒绝；日历两段式预览不落库、确认后建事件并关联提醒任务、冲突即使确认也硬拦、倒置窗口拒绝、幂等；L1 挂载/L0/L2 不挂载、无工具能力模型不挂载）；非 soak 全量 pytest **639 通过 / 0 失败**（1 个 soak 用例 deselect）；Ruff、严格 mypy（271 source files）与 `git diff --check` 通过。真实模型端的自然语言解析效果（模型是否先追问/复述再调用）待真机验收。
 - 2026-09-03 Markdown 渲染/TTS 清洗/情景记忆/Admin 修复批次收口：新增 `test_voice.py` Markdown 清洗 3 例、`test_memory.py` 情景事件独立追加 1 例；非 soak 全量 pytest **627 通过 / 0 失败**（1 个 soak 用例 deselect）；Ruff、严格 mypy（268 source files）、Chat/Admin typecheck 与 production build、`git diff --check` 全部通过；分 5 个逻辑提交入库。同日 `TODO-01` livecheck 对真实 pnkx 实例全链 4 阶段零错误（拉取 109/镜像/新建推送/完成推送/清理）。语音真机播报效果仍待验收。
