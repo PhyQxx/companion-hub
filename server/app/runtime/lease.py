@@ -141,6 +141,21 @@ class LeaseManager:
             )
             return int(cast(CursorResult[Any], result).rowcount or 0) > 0
 
+    async def release_for_generation(
+        self,
+        lease_type: LeaseType,
+        generation_id: UUID,
+    ) -> bool:
+        """按回合释放租约：中断路径只知道 generation，不知道持有者是谁。"""
+        async with self._database.sessions.begin() as session:
+            result = await session.execute(
+                delete(RuntimeLeaseRecord).where(
+                    RuntimeLeaseRecord.lease_type == lease_type,
+                    RuntimeLeaseRecord.generation_id == generation_id,
+                )
+            )
+            return int(cast(CursorResult[Any], result).rowcount or 0) > 0
+
     async def current_holder(
         self, lease_type: LeaseType
     ) -> LeaseResult | None:

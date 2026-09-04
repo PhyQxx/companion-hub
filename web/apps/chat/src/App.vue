@@ -457,6 +457,20 @@ function handleVoiceEvent(event: VoiceControlEvent) {
     case "voice.wake_unavailable":
       voiceStatus.value = "唤醒词不可用，已切回自动监听 / PTT";
       break;
+    case "voice.microphone_preempted":
+      // 另一设备抢占了麦克风：本地立即停止采集（服务端已丢弃本连接话语）
+      if (voiceRecording.value) {
+        voiceRecording.value = false;
+        void microphone.stop();
+        voiceStatus.value = "麦克风已被其他设备接管";
+      }
+      break;
+    case "voice.audio_preempted":
+      // 音频输出被其他设备/桌宠抢占：清空本地播放队列，文字仍会正常到达
+      playback.interrupt();
+      voiceSentence = null;
+      voiceStatus.value = "语音播报已由其他设备接管";
+      break;
     case "voice.transcript":
       voiceTranscript.value = event.text ?? "";
       voiceStatus.value = textReplyVoice.value

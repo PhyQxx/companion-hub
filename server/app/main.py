@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import os
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager, suppress
@@ -481,6 +482,8 @@ def create_app(
             telemetry_buffer=MqttTelemetryBuffer(),
         )
 
+    turn_coordinator: TurnCoordinator | None = None
+
     @asynccontextmanager
     async def lifespan(_: FastAPI) -> AsyncIterator[None]:
         if runtime_config is not None:
@@ -498,6 +501,14 @@ def create_app(
             await theme_store.load_builtin_themes()
         if runtime_chat_service is not None:
             await runtime_chat_service.recover_incomplete_turns()
+        if turn_coordinator is not None:
+            # 重启后把不安全的未完成回合标记为 cancelled，并清理遗留音频/麦克风租约
+            recovered_turns = await turn_coordinator.recover_after_restart()
+            await turn_coordinator.expire_stale_leases()
+            if recovered_turns:
+                logging.getLogger(__name__).info(
+                    "recovered %s unsafe turns after restart", recovered_turns
+                )
         if config_watcher is not None:
             await config_watcher.start()
         if worker is not None:

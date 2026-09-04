@@ -266,9 +266,10 @@ class TurnCoordinator:
             if int(cast(CursorResult[Any], result).rowcount or 0) == 0:
                 return False
 
-        # 异步释放租约（不阻塞状态转移事务）
+        # 异步释放租约（不阻塞状态转移事务）。租约持有者是连接级 device_id，
+        # 中断路径只掌握 generation，按 generation 释放。
         with contextlib.suppress(Exception):
-            await self._leases.release("audio_output", record.generation_id)
+            await self._leases.release_for_generation("audio_output", record.generation_id)
 
         # 通过 ChatService 传播取消
         if user_id is not None:
@@ -378,6 +379,19 @@ class TurnCoordinator:
 
     async def release_audio_lease(self, device_id: UUID) -> bool:
         return await self._leases.release("audio_output", device_id)
+
+    async def expire_stale_leases(self) -> int:
+        """清理已过期的音频/麦克风租约；启动时调用兜底崩溃遗留。"""
+        expired = await self._leases.expire_stale()
+        return len(expired)
+
+    async def current_audio_holder(self) -> UUID | None:
+        """当前 audio_output 租约持有者；无人持有时返回 None。"""
+        result = await self._leases.current_holder("audio_output")
+        return result.holder_device_id if result is not None else None
+
+    async def release_audio_lease_for_generation(self, generation_id: UUID) -> bool:
+        return await self._leases.release_for_generation("audio_output", generation_id)
 
     async def release_microphone(self, device_id: UUID) -> bool:
         return await self._leases.release("microphone", device_id)

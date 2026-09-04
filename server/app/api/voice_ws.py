@@ -97,6 +97,8 @@ class VoiceSession:
 
     websocket: WebSocket
     principal: ChatPrincipal
+    # 连接级稳定设备身份：多端租约仲裁的持有者标识（同一连接跨回合不变）。
+    device_id: UUID = field(default_factory=uuid7)
     conversation_id: UUID | None = None
     privacy_level: PrivacyLevel = PrivacyLevel.L1
     # 连接级临时位置(voice.hello/text.submit 携带, TTL 15 分钟, 仅内存)。
@@ -148,13 +150,88 @@ class VoiceWebSocketManager:
         self._latency_metrics.clear()
         return self._latency_metrics.snapshot()
 
+    # ------------------------------------------------------------------
+    # 多端租约仲裁：同类型租约"最新获取者抢占，旧持有者尽快停止"。
+    # ------------------------------------------------------------------
+
+    def _session_by_device(self, device_id: UUID) -> VoiceSession | None:
+        for session in self._sessions.values():
+            if session.device_id == device_id:
+                return session
+        return None
+
+    async def _preempt_audio_holder(
+        self, previous_holder: UUID, *, exclude: VoiceSession | None
+    ) -> None:
+        """新回合抢占音频输出后，通知旧持有者并打断其进行中的回合。"""
+        other = self._session_by_device(previous_holder)
+        if other is None or other is exclude:
+            return
+        try:
+            if other.turn_task is not None:
+                await self._send(
+                    other,
+                    "voice.audio_preempted",
+                    {
+                        "generation_id": str(other.generation_id)
+                        if other.generation_id
+                        else None,
+                        "by_device": str(exclude.device_id) if exclude else None,
+                    },
+                )
+                await self._interrupt(other, reason="audio_lease_preempted")
+        except Exception:
+            logger.warning(
+                "audio lease preemption notify failed device=%s", previous_holder, exc_info=True
+            )
+
+    async def _acquire_microphone(self, session: VoiceSession) -> None:
+        """话语采集开始时获取麦克风租约；抢占其他正在采集的连接。"""
+        if self._turns is None:
+            return
+        try:
+            result = await self._turns.acquire_microphone(session.device_id, ttl_seconds=120)
+        except Exception:
+            logger.warning("microphone lease acquire failed", exc_info=True)
+            return
+        if result.previous_holder is None or result.previous_holder == session.device_id:
+            return
+        other = self._session_by_device(result.previous_holder)
+        if other is None or other is session:
+            return
+        other.collecting = False
+        other.ptt_active = False
+        other.wake_armed = False
+        other.utterance.clear()
+        self._discard_asr_prefetch(other)
+        try:
+            await self._send(
+                other,
+                "voice.microphone_preempted",
+                {"by_device": str(session.device_id)},
+            )
+        except Exception:
+            logger.warning("microphone preemption notify failed", exc_info=True)
+
+    async def _release_microphone(self, session: VoiceSession) -> None:
+        if self._turns is None:
+            return
+        try:
+            await self._turns.release_microphone(session.device_id)
+        except Exception:
+            logger.warning("microphone lease release failed", exc_info=True)
+
     async def stream_device_speech(
         self,
         text: str,
         privacy_level: PrivacyLevel,
         emit: Callable[[str, dict[str, JsonValue]], Awaitable[None]],
     ) -> bool:
-        """通过设备签名帧投递一段 TTS；L2 仍由 provider chain 强制本地。"""
+        """通过设备签名帧投递一段 TTS；L2 仍由 provider chain 强制本地。
+
+        播报期间持有 audio_output 租约：语音回合随时可抢占，被抢占时
+        停止发送剩余音频块（桌面端按 failed 终止播放）。
+        """
         _, tts_chain = await self._voice_source.resolve()
         if tts_chain is None:
             await emit("pet.audio.failed", {"reason_code": "tts_not_configured"})
@@ -172,6 +249,18 @@ class VoiceWebSocketManager:
             await emit("pet.audio.failed", {"reason_code": "tts_generation_failed"})
             return False
         provider = selection.provider
+        lease_device: UUID | None = None
+        if self._turns is not None:
+            try:
+                lease_device = uuid7()
+                lease = await self._turns.acquire_audio_lease(
+                    lease_device, uuid7(), ttl_seconds=120
+                )
+                if lease.previous_holder is not None:
+                    await self._preempt_audio_holder(lease.previous_holder, exclude=None)
+            except Exception:
+                logger.warning("pet audio lease acquire failed", exc_info=True)
+                lease_device = None
         await emit(
             "pet.audio.start",
             {
@@ -186,6 +275,13 @@ class VoiceWebSocketManager:
             async for chunk in _prepend_audio_chunk(
                 selection.first_chunk, selection.stream
             ):
+                if lease_device is not None and not await self._still_holds_audio(
+                    lease_device
+                ):
+                    await emit(
+                        "pet.audio.failed", {"reason_code": "audio_preempted"}
+                    )
+                    return False
                 for offset in range(0, len(chunk), DEVICE_AUDIO_CHUNK_BYTES):
                     part = chunk[offset : offset + DEVICE_AUDIO_CHUNK_BYTES]
                     if total_bytes + len(part) > DEVICE_AUDIO_MAX_BYTES:
@@ -207,11 +303,20 @@ class VoiceWebSocketManager:
             tts_chain.report_failure(provider)
             await emit("pet.audio.failed", {"reason_code": "tts_stream_failed"})
             return False
+        finally:
+            if lease_device is not None and self._turns is not None:
+                with suppress(Exception):
+                    await self._turns.release_audio_lease(lease_device)
         await emit(
             "pet.audio.end",
             {"chunks": index, "bytes": total_bytes},
         )
         return True
+
+    async def _still_holds_audio(self, device_id: UUID) -> bool:
+        assert self._turns is not None
+        holder = await self._turns.current_audio_holder()
+        return holder is not None and holder == device_id
 
     async def run(self, session: VoiceSession) -> None:
         """连接主循环：JSON 控制 + 二进制音频。"""
@@ -330,6 +435,7 @@ class VoiceWebSocketManager:
                 session.wake_armed = True
                 session.collecting = True
                 session.utterance.clear()
+                await self._acquire_microphone(session)
             case "utterance.end":
                 session.ptt_active = False
                 await self._finalize_utterance(session)
@@ -481,11 +587,13 @@ class VoiceWebSocketManager:
             session.collecting = True
             session.utterance.clear()
             session.utterance.extend(pcm)
+            await self._acquire_microphone(session)
         elif event.kind == "utterance_ended":
             await self._finalize_utterance(session)
 
     async def _finalize_utterance(self, session: VoiceSession) -> None:
         session.collecting = False
+        await self._release_microphone(session)
         session.vad.force_end()
         if session.wake_word is not None:
             session.wake_word.reset()
@@ -583,7 +691,6 @@ class VoiceWebSocketManager:
         started = time.perf_counter()
         transcript_at = first_token_at = first_audio_at = 0.0
         pending: PendingTurn | None = None
-        lease_device_id: UUID | None = None
         session.turn_committed = False
         try:
             try:
@@ -637,16 +744,18 @@ class VoiceWebSocketManager:
             generation_id = pending.generation_id
             session.generation_id = generation_id
             session.turn_id = pending.turn_id
-            # 状态机与音频租约
+            # 状态机与音频租约：连接级 device_id 作为持有者，抢占旧持有者并打断其回合
             if self._turns is not None:
                 await self._turns.transition(pending.turn_id, 1, "thinking")
-                # 获取音频输出租约（device_id 临时生成，后续与设备注册表对齐）
-                lease_device_id = uuid7()
-                await self._turns.acquire_audio_lease(
-                    lease_device_id,
+                lease = await self._turns.acquire_audio_lease(
+                    session.device_id,
                     generation_id,
                     ttl_seconds=60,
                 )
+                if lease.previous_holder is not None:
+                    await self._preempt_audio_holder(
+                        lease.previous_holder, exclude=session
+                    )
             await self._send(
                 session,
                 "turn.accepted",
@@ -661,11 +770,29 @@ class VoiceWebSocketManager:
             )
             speech_filter = MarkdownSpeechFilter()
             sentence_index = 0
+            # 音频输出被抢占后本回合剩余句子降级为纯文字（delta 仍在发送）
+            audio_lost = False
 
             async def speak(sentence: str) -> None:
-                nonlocal sentence_index, first_audio_at
+                nonlocal sentence_index, first_audio_at, audio_lost
                 sentence = speech_filter.clean(sentence)
                 if not sentence:
+                    return
+                if not audio_lost and self._turns is not None:
+                    try:
+                        renewal = await self._turns.renew_audio_lease(
+                            session.device_id, ttl_seconds=60
+                        )
+                        if not renewal.acquired:
+                            audio_lost = True
+                            await self._send(
+                                session,
+                                "voice.audio_preempted",
+                                {"generation_id": str(generation_id), "by_device": None},
+                            )
+                    except Exception:
+                        logger.warning("audio lease renew failed", exc_info=True)
+                if audio_lost:
                     return
                 if tts_chain is None:
                     # 未配置任何 TTS：纯文字语音回合，只提示一次
@@ -840,9 +967,12 @@ class VoiceWebSocketManager:
             session.generation_id = None
             session.turn_committed = False
             session.turn_task = None
-            # 释放音频租约
-            if self._turns is not None and lease_device_id is not None:
-                await self._turns.release_audio_lease(lease_device_id)
+            # 释放音频租约（仅当仍是持有者时生效）
+            if self._turns is not None:
+                try:
+                    await self._turns.release_audio_lease(session.device_id)
+                except Exception:
+                    logger.warning("audio lease release failed", exc_info=True)
 
     async def _interrupt(self, session: VoiceSession, *, reason: str) -> None:
         started = time.perf_counter()
@@ -896,6 +1026,7 @@ class VoiceWebSocketManager:
 
     async def disconnect(self, session: VoiceSession) -> None:
         self._discard_asr_prefetch(session)
+        await self._release_microphone(session)
         task = session.turn_task
         if task is not None:
             task.cancel()
@@ -905,6 +1036,9 @@ class VoiceWebSocketManager:
                 pass
             except Exception:
                 logger.warning("voice turn task failed on disconnect", exc_info=True)
+        if self._turns is not None:
+            with suppress(Exception):
+                await self._turns.release_audio_lease(session.device_id)
 
     async def _send_failure(
         self, session: VoiceSession, pending: PendingTurn | None, reason_code: str
