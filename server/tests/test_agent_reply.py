@@ -42,3 +42,19 @@ def test_malformed_control_safely_falls_back_to_visible_text() -> None:
 
     assert reply.text == "正常文本"
     assert reply.parse_status == "fallback"
+
+
+def test_control_only_reply_never_leaks_private_protocol() -> None:
+    raw = (
+        f'{CONTROL_START}{{"schema_version":1,"emotion":"happy",'
+        '"tts_text":null,"expressions":[],"actions":[]}'
+        f"{CONTROL_END}"
+    )
+
+    reply = parse_agent_reply(raw, PersonaConfig(expression_map={"happy": "smile"}))
+
+    assert reply.text == "抱歉，我暂时没有生成有效回复。"
+    assert CONTROL_START not in reply.text
+    assert reply.emotion == "happy"
+    assert reply.expressions == ["smile"]
+    assert reply.parse_status == "fallback"

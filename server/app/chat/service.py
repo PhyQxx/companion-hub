@@ -410,7 +410,17 @@ class ChatService:
                 consistency_request = self._tool_followup_request(
                     pending.request, result, execution
                 )
-                result = await backend.complete(consistency_request)
+                direct_reply = _render_mail_send_receipt(execution.result)
+                if direct_reply is not None:
+                    result = result.model_copy(
+                        update={
+                            "text": direct_reply,
+                            "tool_calls": [],
+                            "finish_reason": "stop",
+                        }
+                    )
+                else:
+                    result = await backend.complete(consistency_request)
             consistency = await self._memory_consistency_guard.enforce(
                 result=result,
                 request=consistency_request,
@@ -833,6 +843,17 @@ class ChatService:
                     )
                     if execution.result.tool_name.startswith("pnkx_"):
                         direct_reply = _render_pnkx_tool_reply(execution.result)
+                        await filtered_delta(direct_reply)
+                        result = result.model_copy(
+                            update={
+                                "text": direct_reply,
+                                "tool_calls": [],
+                                "finish_reason": "stop",
+                            }
+                        )
+                    elif (
+                        direct_reply := _render_mail_send_receipt(execution.result)
+                    ) is not None:
                         await filtered_delta(direct_reply)
                         result = result.model_copy(
                             update={
@@ -1689,6 +1710,27 @@ def _render_pnkx_tool_reply(result: ToolResult) -> str:
     if len(rendered) > 2_000:
         rendered = rendered[:2_000] + "…"
     return f"PNKX {label}：{rendered}"
+
+
+def _render_mail_send_receipt(result: ToolResult) -> str | None:
+    """Render a confirmed SMTP receipt without another fallible model pass."""
+    if result.tool_name != "mail_send" or not result.ok:
+        return None
+    duplicate = result.data.get("duplicate") is True
+    sent = result.data.get("sent") is True
+    if not sent and not duplicate:
+        # The preview/confirmation phase still needs the model to restate the
+        # recipient, subject and body for explicit user approval.
+        return None
+    recipients = result.data.get("recipients")
+    recipient_text = ""
+    if isinstance(recipients, list):
+        rendered = [str(item).strip() for item in recipients if str(item).strip()]
+        if rendered:
+            recipient_text = f"收件人：{'、'.join(rendered)}。"
+    if duplicate:
+        return f"这封邮件已经发送成功，本次没有重复发送。{recipient_text}"
+    return f"邮件已发送成功。{recipient_text}"
 
 
 def _pnkx_item_summary(item: object) -> str:

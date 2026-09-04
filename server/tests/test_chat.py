@@ -15,7 +15,7 @@ from app.api import create_chat_router
 from app.auth import AuthService
 from app.avatar import AvatarStore
 from app.chat import ChatService, RuntimeActionCapability
-from app.chat.service import _render_pnkx_tool_reply
+from app.chat.service import _render_mail_send_receipt, _render_pnkx_tool_reply
 from app.cognition import (
     AttentionEngine,
     CognitiveCycle,
@@ -325,6 +325,39 @@ def _append_chat_delta(target: list[str]) -> Callable[[str], Awaitable[None]]:
         target.append(delta)
 
     return append
+
+
+def test_mail_send_receipt_is_deterministic() -> None:
+    sent = ToolResult(
+        ok=True,
+        tool_name="mail_send",
+        latency_ms=12,
+        data={"sent": True, "recipients": ["friend@example.com"]},
+    )
+    duplicate = ToolResult(
+        ok=True,
+        tool_name="mail_send",
+        latency_ms=2,
+        data={
+            "sent": False,
+            "duplicate": True,
+            "recipients": ["friend@example.com"],
+        },
+    )
+    preview = ToolResult(
+        ok=True,
+        tool_name="mail_send",
+        latency_ms=1,
+        data={"sent": False, "confirmation_required": True},
+    )
+
+    assert _render_mail_send_receipt(sent) == (
+        "邮件已发送成功。收件人：friend@example.com。"
+    )
+    assert _render_mail_send_receipt(duplicate) == (
+        "这封邮件已经发送成功，本次没有重复发送。收件人：friend@example.com。"
+    )
+    assert _render_mail_send_receipt(preview) is None
 
 
 async def create_user(database: Database, name: str = "Test") -> AppUserRecord:

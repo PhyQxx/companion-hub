@@ -54,6 +54,19 @@ def parse_agent_reply(raw: str, persona: PersonaConfig) -> AgentReply:
                     expressions=expressions,
                     actions=control.actions,
                 )
+            # A valid control block without user-visible text is still an invalid
+            # reply. Never fall back to the raw value here, otherwise the private
+            # control protocol leaks into chat history and the UI.
+            fallback = "抱歉，我暂时没有生成有效回复。"
+            mapped = persona.expression_map.get(control.emotion)
+            return AgentReply(
+                text=fallback,
+                tts_text=fallback,
+                emotion=control.emotion,
+                expressions=[mapped] if mapped else [],
+                actions=control.actions,
+                parse_status="fallback",
+            )
         except ValidationError:
             pass
 
