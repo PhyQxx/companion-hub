@@ -62,6 +62,10 @@ class FeedbackResponse(StrictModel):
     reflection_candidate: ReflectionCandidate | None = None
 
 
+class PlanCancelPayload(StrictModel):
+    reason: Annotated[str, Field(min_length=1, max_length=160)] = "user_cancelled"
+
+
 def create_cognition_router(
     store: CognitiveStore,
     auth_service: AuthService,
@@ -244,11 +248,13 @@ def create_cognition_router(
         async def cancel_action_plan(
             plan_id: UUID,
             principal: Annotated[ChatPrincipal, Depends(guard)],
+            body: PlanCancelPayload | None = None,
         ) -> ActionPlanView:
             try:
                 return await action_plan_service.cancel_plan(
                     user_id=principal.user_id,
                     plan_id=plan_id,
+                    reason=body.reason if body is not None else "user_cancelled",
                 )
             except LookupError as error:
                 raise HTTPException(status.HTTP_404_NOT_FOUND, detail=str(error)) from error

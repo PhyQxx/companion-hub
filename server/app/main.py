@@ -64,6 +64,7 @@ from app.cognition import (
     CognitiveCycle,
     CognitiveStore,
     GoalTracker,
+    PlanExecutionEvent,
     RouterDeliberator,
     RuleBasedDeliberator,
     ToolActionRunner,
@@ -1203,6 +1204,15 @@ def create_app(
                 avatar_control_publisher=device_command_gateway,
             )
             app.state.chat_websocket_manager = websocket_manager
+            if action_plan_service is not None:
+
+                async def push_plan_execution(event: PlanExecutionEvent) -> None:
+                    await websocket_manager.broadcast_to_user(
+                        event.user_id,
+                        {"type": "plan.execution", **event.model_dump(mode="json")},
+                    )
+
+                action_plan_service.set_execution_listener(push_plan_execution)
             if device_command_gateway is not None:
                 device_command_gateway.set_pet_message_handler(
                     websocket_manager.submit_device_message

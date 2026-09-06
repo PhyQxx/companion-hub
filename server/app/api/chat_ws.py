@@ -328,6 +328,21 @@ class ChatWebSocketManager:
             if isinstance(result, Exception):
                 self.disconnect(connection)
 
+    async def broadcast_to_user(self, user_id: UUID, event: dict[str, object]) -> None:
+        """PC-02：计划执行进度推给该用户全部在线聊天连接（不依赖会话订阅）。"""
+        connections = [
+            connection
+            for connection in self._connections.values()
+            if connection.principal.user_id == user_id
+        ]
+        results = await asyncio.gather(
+            *(connection.send(event) for connection in connections),
+            return_exceptions=True,
+        )
+        for connection, result in zip(connections, results, strict=True):
+            if isinstance(result, Exception):
+                self.disconnect(connection)
+
     async def broadcast_proactive(self, user_id: UUID, message: MessageView) -> None:
         await self.broadcast(
             user_id,

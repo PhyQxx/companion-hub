@@ -877,6 +877,11 @@ class ActionPlanRecord(Base):
     plan_kind: Mapped[str] = mapped_column(
         String(24), nullable=False, default="standard", server_default="standard"
     )
+    # PC-02 执行中停止：协作式取消标记。取消请求落库后，执行循环不再启动
+    # 新步骤；在途步骤按自身超时收敛，迟到结果不会推进后续步骤。
+    cancel_requested: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default=false()
+    )
     source_plan_id: Mapped[UUID | None] = mapped_column(
         Uuid(as_uuid=True), ForeignKey("action_plan.id", ondelete="SET NULL")
     )

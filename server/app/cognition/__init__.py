@@ -8,6 +8,7 @@ from .action_plan import (
     ActionStepStatus,
     ActionStepView,
     ActionVerificationStatus,
+    PlanExecutionEvent,
 )
 from .action_registry import (
     ActionDefinition,
@@ -80,6 +81,7 @@ __all__ = [
     "GoalStatus",
     "GoalTracker",
     "GoalView",
+    "PlanExecutionEvent",
     "ReflectionCandidate",
     "ReflectionEngine",
     "RouterDeliberator",
