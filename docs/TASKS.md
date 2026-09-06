@@ -1,6 +1,6 @@
 # Aria 当前任务
 
-> 最后更新：2026-09-04
+> 最后更新：2026-09-06
 > 详细设计入口：[00-文档索引与架构总览.md](./00-文档索引与架构总览.md)
 
 本文件只维护当前执行队列、未完成门槛和最新质量基线。历史交付细节留在对应阶段文档，不在这里重复。
@@ -14,12 +14,12 @@
 | P6 Batch A～C 语音 | 主链完成 | 真浏览器 ASR/LLM/TTS/viseme/打断已打通；延迟继续优化 |
 | M3A 地图/天气第一批 | 已完成 | 查询、定位、卡片、Admin 自检、200 条台账与延迟报告已落地，见 `docs/35` |
 | M3A 多终端与感知 | 进行中 | Browser Bridge、macOS Desktop 活动窗口/交互选择器与隐私门禁已通过真机验收；主动输出已接入 Web、macOS 通知和在线语音 |
-| M3B 认知调度闭环 | v1 完成，Action v2 进行中 | 被动/主动认知闭环已落地；ACT-01～03 已完成，ACT-04 已扩展灯光亮度、媒体和 L0/L1 桌面通知，模型自主 `act` 仍关闭 |
+| M3B 认知调度闭环 | v1 完成，Action v2 代码闭环 | 被动/主动认知闭环已落地；ACT-01～04 完成——动作目录 18 个（HA/桌面/浏览器/剪贴板），执行中可协作停止，模型自主 `act` 仍关闭 |
 | 形象与主题底座 | 已完成（v1） | 形象包/实例/Persona 绑定、主题同步、自定义立绘与 Live2D 安全导入均已落地 |
 | Admin 信息架构重整 | 已完成（v1） | 领域分组、URL 可恢复二级 Tab、真实数据页与浏览器验收已完成 |
 | P6 Batch D Live2D/桌宠 | 联动代码完成 | 透明窗口、拖拽、穿透、位置恢复、Hub 同源舞台及签名情绪/动作/口型同步已接通；M2 与真机性能仍是发布门槛 |
 | M4B 手机 PWA | 进行中 | 可安装壳、离线降级、移动布局、前后台恢复、移动音频解锁及游标分页补拉/去重底座已完成；待真机验收、通知与多端租约 |
-| 个人管家闭环 J1～J8 | J2 完成，J3/J4/J5 进行中 | ACT-01～03 已完成、ACT-04 进行中；J2 四项全部代码闭环；SAT-01/02 确定性核心已落地（音频与真机待硬件）；CAL-01 日历代码闭环、聊天端建提醒/建日程工具已落地，TODO-01 pnkx 真机联调通过；MAIL v1 已落地（真机联调通过）；CONTACT-01 联系人代码闭环（真机验收待做）；PC-01 白名单桌面动作、WEB-01 浏览器工作流与 FLOW-01 可复用流程代码闭环（真机验收待做）；PC-02 执行可视化后端闭环（执行中停止+事件流，前端面板待做）；J5 全部启动完毕，J6～J8 未启动，见 `docs/39` |
+| 个人管家闭环 J1～J8 | **J1～J6 全部代码闭环**，J7/J8 未启动 | ACT-01～03 完成、ACT-04 动作目录已扩到 18 个（含桌面/浏览器/剪贴板）；J2 四项（TASK/GOAL/BRIEF/REVIEW）代码闭环；J3 卫星核心 + XIAOAI 网关代码闭环；J4 四项（CAL/TODO/MAIL/CONTACT）代码闭环（TODO/MAIL 已真机联调）；J5 四项（PC-01/WEB-01/FLOW-01/PC-02 含 Chat 进度面板）代码闭环；J6 三项（COMMUTE/FOCUS/HOME）代码闭环，MEET-01 未启动；**全部待验收项集中在 [40-验收清单](./40-验收清单.md)** |
 
 ## 2. 当前执行队列
 
@@ -50,7 +50,7 @@
 - [x] `ACT-01` 动作注册表：已落地独立于 `ToolRegistry` 的动作安全目录，声明参数 Schema、A0～A3 风险、可逆性、确认策略、幂等范围、超时、回读验证器和补偿动作；首批注册灯光/开关开关及空调设温，鉴权目录接口为 `GET /api/v1/cognition/actions/catalog`。
 - [x] `ACT-02` 计划—确认—执行：新增持久化 `action_plan/action_step`、`0024_action_plan` 迁移及创建/查询/确认/取消/执行 API；Runner 只接受注册表预编译的工具和参数，顺序执行、部分成功、后续跳过、执行前取消、超时/中断 `unknown_outcome` 和禁止自动重试均已落地。A1 当前默认仍需确认，A2 必须每次确认，模型自主 `act` 继续关闭。
 - [x] `ACT-03` 结果回读与撤销：HA 控制响应会刷新状态缓存，Runner 对开关状态和空调目标温度执行写后回读；步骤持久化验证状态、最小证据和验证时间，不一致或验证器不可用统一记为 `unknown_outcome` 且不重试。已完成的可逆步骤可通过 `POST /api/v1/cognition/action-plans/{plan_id}/undo` 逆序生成幂等补偿计划，补偿计划必须重新确认且禁止递归撤销。
-- [ ] `ACT-04` 首批真实动作（进行中）：已注册并接通灯光亮度、媒体播放/暂停、音量设置及 L0/L1 桌面通知；亮度及播放控制为 A1 预授权候选，音量为 A2 每次确认，HA 动作具备写后回读。桌面通知复用 `notification.show` 能力，只接受显式 L0/L1、步骤幂等键和设备成功回执。提醒仍依赖 TASK-01 的持久调度，打开应用/网页仍依赖新增桌面白名单能力；这些尚未完成，不通过通用命令提前开放。A3 继续默认禁止。
+- [x] `ACT-04` 首批真实动作（代码闭环，待真机验收）：动作目录从 5 个 HA 动作扩展到 18 个——HA 灯光/开关/空调/媒体、桌面通知、桌面白名单动作（打开应用/URL、音量、剪贴板 A2）、浏览器工作流（打开页面/读表单/填写、提交 A2）。HA 动作写后回读，设备命令类动作以 `succeeded` 终态回执为验证；桌面/浏览器动作不挂载为聊天工具，只能经计划—确认—执行触发。A3 继续默认禁止；模型自主 `act` 保持关闭。
 
 #### J2 任务与主动管家
 
@@ -80,9 +80,15 @@
 - [x] `FLOW-01` 可复用流程（代码闭环，待真机验收）：`workflow` 表（`0034_workflows` 迁移，用户内名称唯一）保存已注册动作的有序模板（1-10 步，`ActionInvocation` 形状）。保存与运行都经 ActionRegistry **重新编译**——动作被移除、参数 Schema 漂移或 A3 禁止时显式失败（注册表异常归一为 ValueError），绝不带病执行历史模板。红线「保存前展示全部动作与权限」：`preview`（纯读）返回每步的动作标签、风险等级、确认策略、可逆性与参数；聊天工具 `workflow_save` 两段式（先预览复述、confirmed 才落库、同 turn 幂等、同名拒绝），`workflow_run` 把模板展开为待确认 ActionPlan（确认策略/幂等/TTL/执行/撤销全部复用 ACT-02 计划底座，按 turn 幂等）。用户 API `/api/v1/workflows`（列表/preview/创建/详情/删除/运行）走聊天会话鉴权。两个工具仅 L1 挂载。
 - [x] `PC-02` 执行可视化（代码闭环，待真机验收）：执行中停止——`cancel_plan` 新增 EXECUTING 分支，置位 `action_plan.cancel_requested`（`0035_plan_cancel` 迁移，计划保持 executing）后由执行循环在步骤边界协作收敛：不再启动新步骤、在途步骤按自身超时结束并如实记录终态（成功保留/失败记 failed/任务级取消记 unknown_outcome）、剩余步骤记 cancelled 而非 skipped；**迟到结果不会推进后续步骤**。用户取消意图优先：带取消请求的计划在失败路径也收敛为 cancelled 而非 failed。执行事件流——`PlanExecutionEvent`（phase=execution.started/step.started/step.finished/execution.finished，含步骤序号/动作/状态/验证证据状态/completed/total，绝不含步骤参数）经可注入 listener 发出，监听器异常不中断执行；main 接线到 Chat WebSocket `broadcast_to_user`（新增，推给该用户全部在线聊天连接），取消端点支持可选 reason 透传。视图新增 `cancel_requested` 供 UI 停止按钮状态。
 
-#### J6～J8 后续产品化
+#### J6 情境理解
 
-- [ ] `MEET-01/FOCUS-01/COMMUTE-01/HOME-01`：会议、专注、出行和家庭情境助手。
+- [x] `COMMUTE-01` 出行管家（代码闭环，待真实验收）：`tools.commute` 配置（启用需 origin 出发点，driving/transit/walking + 缓冲分钟）；`CommuteService` 找时间窗内下一个带地点的日历事件，geocode → 高德路线耗时 → 建议出发时刻 = 开始 - 耗时 - 缓冲（已过钳到尽快出发），目的地天气摘要与导航 URI；出发提醒复用 TASK-01（source_ref=commute:{event_id} 撤旧建新）；provider 异常归一 `CommuteRouteError`；`commute_check` 工具仅 L1，耗时来源随结果透出可解释。
+- [x] `FOCUS-01` 专注守护（代码闭环，待真实验收）：确定性分析核心（纯函数）——长时工作（跨度 ≥90 分钟）、主题切换（30 分钟内 ≥5 个不同主题，bigram 聚合）、偏离目标（会话关键词与近期主题全部无关），建议文案不含屏幕原始内容；`FocusService` 内存会话 + `FocusScheduler` 周期评估经主动通道投递（20 分钟冷却，DND/预算沿用）；`focus_start/stop/status` 仅 L1。**只建议不拦截**。
+- [x] `HOME-01` 家庭场景（代码闭环，待真实验收）：`home_scene` 表定义触发器（Perception 事件精确匹配 / manual 仅手动）+ 生效时段（支持跨夜）+ 1-10 步动作；保存时逐动作编译校验；感知观察口组合分发（任务调度 + 场景），场景按事件幂等展开为**待确认行动计划**（重放返回同一计划）；manual 对感知事件免疫、禁用场景不可运行；计划-确认-执行全由 ACT-02 把关；`/api/v1/home/scenes` + `home_scene_run/list`（仅 L1）。
+- [ ] `MEET-01` 会议助手：会前资料、授权转写、决定和行动项、会后摘要（涉录音授权，留真机阶段评估）。
+
+#### J7～J8 后续产品化
+
 - [ ] `IOS-01/AND-01`：PWA 稳定后评估 App Intents、快捷指令、锁屏/Live Activity、小组件和穿戴设备入口。
 - [ ] `ID-01` 多人身份：设备身份为主、声纹辅助、访客降级、记忆和播报隔离。
 - [ ] `SAFE-01/SAFE-02` 家庭守护：环境异常、分级提醒和预授权紧急联系人升级。
@@ -157,7 +163,7 @@
 - [x] 情境助手 `HOME-01` 家庭场景 v1（代码闭环）：`home_scene` 表（`0036_home_scenes` 迁移，用户内名称唯一）定义触发器（Perception 事件 kind 如 user_arrived_home/user_left_home，manual 仅手动）+ 可选生效时段（HH:MM-HH:MM，支持跨夜）+ 1-10 个动作步骤；保存时逐动作经 ActionRegistry 编译校验（未知动作/参数漂移/A3 即拒）。触发链路：Perception 观察口改为组合分发（task_scheduler + home_scene_service），场景按事件幂等展开为**待确认行动计划**（幂等键 scene:{id}:{event_id}，重放同事件返回同一计划绝不重复建；manual 场景对感知事件免疫、禁用场景手动运行也不可用）；计划-确认-执行/撤销全部复用 ACT-02 底座，场景层不直接执行任何设备动作。用户 API `/api/v1/home/scenes`（CRUD/启停/手动运行）+ 聊天工具 `home_scene_run`/`home_scene_list`（仅 L1）。
 - [x] 情境助手 `FOCUS-01` 专注守护 v1（代码闭环）：确定性分析核心（纯函数）——长时工作（观察跨度 ≥90 分钟）、主题切换（30 分钟内不同主题 ≥5 次，bigram 相似度聚合）、偏离目标（会话关键词与近期主题全部无关），建议文案为确定性模板且**不含屏幕原始内容**；`FocusService` 内存会话注册表（一人一会话、新替旧、到期自动清理、可注入时钟）；`FocusScheduler` 周期评估（默认 120s，`ARIA_FOCUS_INTERVAL` 可调）经 ProactiveDeliveryService 投递（trigger_kind=focus.nudge，DND/预算/降频沿用既有闸门），同会话同类型信号 20 分钟冷却绝不刷屏，监听/投递异常不中断调度；聊天工具 `focus_start`/`focus_stop`/`focus_status` 仅 L1 挂载——**只建议不拦截**，无任何应用拦截能力。
 - [x] 情境助手 `COMMUTE-01` 出行管家 v1（代码闭环）：`tools.commute` 配置（启用需显式 origin 出发点，driving/transit/walking + 缓冲分钟数）；`CommuteService` 找时间窗内下一个带地点的日历事件，geocode 起终点 → 高德路线耗时 → 建议出发时刻 = 开始 - 耗时 - 缓冲（已过时刻钳到尽快出发），目的地 adcode 天气实时摘要，一键导航 URI；出发提醒复用 TASK-01 调度（source_ref=commute:{event_id} 撤旧建新，不重复打扰）；provider 异常归一为 `CommuteRouteError` 结构化 reason；`commute_check` 聊天工具仅 L1 挂载（L0 不读个人日程、L2 不落提醒库），amap/日历未就绪或未启用时安全降级。建议的每项来源（duration_source、缓冲配置）随结果透出。
-- [x] 个人管家 `PC-02` 执行可视化后端 v1（代码闭环）：执行中协作式停止（cancel_requested 标记 + 步骤边界收敛 + 迟到结果不推进）+ `PlanExecutionEvent` 执行进度事件流（目标/步骤/进度/证据状态，经 Chat WS broadcast_to_user 实时推送）+ 取消端点 reason 透传。前端进度面板待做。
+- [x] 个人管家 `PC-02` 执行可视化后端 v1（代码闭环）：执行中协作式停止（cancel_requested 标记 + 步骤边界收敛 + 迟到结果不推进）+ `PlanExecutionEvent` 执行进度事件流（目标/步骤/进度/证据状态，经 Chat WS broadcast_to_user 实时推送）+ 取消端点 reason 透传。前端进度面板已随同批落地（见下一条）。
 - [x] 个人管家 `FLOW-01` 可复用流程 v1（代码闭环）：`workflow` 表（0034 迁移，用户内名称唯一）+ `WorkflowService`（保存/运行都经 ActionRegistry 重新编译，注册表异常归一 ValueError）+ `workflow_save` 两段式聊天工具（预览含每步动作标签/风险/确认策略/可逆性，confirmed 才落库，同 turn 幂等）+ `workflow_run`（模板展开为待确认 ActionPlan，确认/执行/撤销复用 ACT-02 底座）+ `/api/v1/workflows` 用户 API（列表/preview/CRUD/运行）。仅 L1 挂载。
 - [x] 个人管家 `WEB-01` 浏览器工作流 v1（代码闭环）：`tools.browser_workflow.enabled` 总开关 + Browser Bridge 扩展 4 命令（tab.open 只放行 http/https、form.read 顺序 ref 枚举且密码值不回传、form.fill 原型 setter 写值兼容受控组件且密码框硬跳过、form.submit requestSubmit）+ Hub 四工具（设备回执验证，不挂载聊天）+ Registry 四动作（read=A0、open/fill=A1 预授权、**submit=A2 每次确认**）。
 - [x] 个人管家 `PC-01` 白名单桌面动作 v1（代码闭环）：`tools.desktop_actions` 白名单配置（casefold 精确匹配 + scheme 模式校验，默认全关）+ 4 个受控工具（open_app/open_url/set_volume/clipboard_write，经设备命令网关下发、设备 `succeeded` 回执验证）+ Action Registry 四个动作（A1 预授权 ×3 + A2 剪贴板每次确认）+ Desktop 客户端 4 个新命令与能力声明（Rust 端应用名字符集白名单、http/https scheme 强制、无 shell 数组传参、锁屏拒绝）。动作不挂载为聊天工具，只能经计划—确认—执行触发；聚焦窗口/文件操作留后续批次。
