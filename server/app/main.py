@@ -89,6 +89,7 @@ from app.devices import (
     MqttPresenceBridge,
 )
 from app.devices.mqtt_client import MqttDeviceClient, MqttTelemetryBuffer
+from app.focus import FocusScheduler, FocusService, FocusStartTool, FocusStatusTool, FocusStopTool
 from app.home_assistant import (
     HomeAssistantManager,
     HomeAssistantProactiveEngine,
@@ -335,6 +336,22 @@ def create_app(
             interval_seconds=float(os.getenv("ARIA_GOAL_REMINDER_INTERVAL", "60")),
         )
         if cognitive_store is not None
+        else None
+    )
+    focus_service = (
+        FocusService(
+            timeline_store,
+            long_work_minutes=int(os.getenv("ARIA_FOCUS_LONG_WORK_MINUTES", "90")),
+        )
+        if timeline_store is not None
+        else None
+    )
+    focus_scheduler = (
+        FocusScheduler(
+            focus_service,
+            interval_seconds=float(os.getenv("ARIA_FOCUS_INTERVAL", "120")),
+        )
+        if focus_service is not None
         else None
     )
 
@@ -594,6 +611,8 @@ def create_app(
             task_scheduler.start()
         if goal_reminder_scheduler is not None:
             goal_reminder_scheduler.start()
+        if focus_scheduler is not None:
+            focus_scheduler.start()
         if daily_brief_scheduler is not None:
             daily_brief_scheduler.start()
         if daily_review_scheduler is not None:
@@ -1072,6 +1091,14 @@ def create_app(
             if workflow_service is not None:
                 device_tools.append(WorkflowSaveTool(workflow_service))
                 device_tools.append(WorkflowRunTool(workflow_service))
+            if focus_service is not None:
+                device_tools.extend(
+                    [
+                        FocusStartTool(focus_service),
+                        FocusStopTool(focus_service),
+                        FocusStatusTool(focus_service),
+                    ]
+                )
             if runtime_config is not None:
                 device_tools.extend(create_mail_tools(runtime_config))
             if pnkx_life_client is not None:
@@ -1190,6 +1217,9 @@ def create_app(
                 app.state.task_store = task_store
                 app.state.task_scheduler = task_scheduler
                 app.state.goal_reminder_scheduler = goal_reminder_scheduler
+            if focus_service is not None:
+                app.state.focus_service = focus_service
+                app.state.focus_scheduler = focus_scheduler
             if daily_brief_service is not None:
                 app.include_router(create_briefs_router(daily_brief_service, auth_service))
                 app.state.daily_brief_service = daily_brief_service
@@ -1301,6 +1331,29 @@ def create_app(
                     task_scheduler.set_deliverer(deliver_task_reminder)
                 if goal_reminder_scheduler is not None:
                     goal_reminder_scheduler.set_deliverer(deliver_goal_reminder)
+                if focus_scheduler is not None:
+
+                    async def deliver_focus_nudge(
+                        text: str,
+                        *,
+                        user_id: UUID,
+                        entity_id: str,
+                        trigger_kind: str,
+                        privacy_level: str,
+                    ) -> list[str] | None:
+                        result = await proactive_delivery.deliver(
+                            text,
+                            entity_id=entity_id,
+                            rule_id=entity_id,
+                            trigger_kind=trigger_kind,
+                            privacy_level=PrivacyLevel(privacy_level),
+                            target_user_id=user_id,
+                        )
+                        if result is None:
+                            return None
+                        return list(result.delivered_channels)
+
+                    focus_scheduler.set_deliverer(deliver_focus_nudge)
                 if daily_brief_scheduler is not None:
 
                     async def deliver_daily_brief(

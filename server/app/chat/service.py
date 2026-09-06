@@ -171,6 +171,9 @@ def _device_tool_ready(
         "workflow_save",
         "workflow_run",
         "commute_check",
+        "focus_start",
+        "focus_stop",
+        "focus_status",
     }:
         # 助手工具：写/读个人任务、日历、联系人与流程库。L0 公开模式不读写
         # 个人数据，L2 私密会话内容不入库（工具执行层同样兜底拒绝），仅 L1 开放。
@@ -1863,6 +1866,8 @@ def _tool_label(tool_name: str) -> str:
         "calendar_create": "正在创建日程…",
         "contact_save": "正在保存联系人…",
         "commute_check": "正在规划出行…",
+        "focus_start": "正在开始专注…",
+        "focus_status": "正在查看专注状态…",
         "contact_query": "正在查找联系人…",
         "mail_read": "正在读取邮箱…",
         "mail_send": "正在发送邮件…",
