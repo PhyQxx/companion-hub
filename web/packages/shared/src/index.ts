@@ -378,6 +378,27 @@ export type ToolPresentation =
       duration_s?: number | null; steps?: string[]; navigation_uri?: string;
     };
 
+/** PC-02：计划步骤（对齐 ActionStepView 前端所需子集） */
+export interface ActionPlanStep {
+  position: number;
+  action_id: string;
+  status: string;
+  risk: string;
+  verification_status: string;
+  reason_code: string | null;
+}
+
+/** PC-02：计划执行进度（对齐 ActionPlanView 前端所需子集） */
+export interface ActionPlanProgress {
+  id: string;
+  title: string | null;
+  status: string;
+  cancel_requested: boolean;
+  cancel_reason: string | null;
+  reason_code: string | null;
+  steps: ActionPlanStep[];
+}
+
 export interface SocketEvent {
   proto_version: number;
   stream: string;
@@ -604,6 +625,24 @@ export class ChatApi {
 
   listConversations(token: string) {
     return this.request<Conversation[]>("/api/v1/chat/conversations", { method: "GET" }, token);
+  }
+
+  /** PC-02：拉取计划执行详情（目标/步骤/进度/证据状态） */
+  getActionPlan(token: string, planId: string) {
+    return this.request<ActionPlanProgress>(
+      `/api/v1/cognition/action-plans/${planId}`,
+      { method: "GET" },
+      token,
+    );
+  }
+
+  /** PC-02：立即停止执行中的计划（执行中为协作式停止） */
+  cancelActionPlan(token: string, planId: string, reason = "user_cancelled") {
+    return this.request<ActionPlanProgress>(
+      `/api/v1/cognition/action-plans/${planId}/cancel`,
+      { method: "POST", body: JSON.stringify({ reason }) },
+      token,
+    );
   }
 
   createConversation(token: string, title: string | null) {

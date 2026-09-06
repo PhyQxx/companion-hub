@@ -1207,9 +1207,13 @@ def create_app(
             if action_plan_service is not None:
 
                 async def push_plan_execution(event: PlanExecutionEvent) -> None:
+                    # 与其他 Chat WS 帧一致的信封：客户端按 event.payload 取字段。
                     await websocket_manager.broadcast_to_user(
                         event.user_id,
-                        {"type": "plan.execution", **event.model_dump(mode="json")},
+                        {
+                            "type": "plan.execution",
+                            "payload": event.model_dump(mode="json"),
+                        },
                     )
 
                 action_plan_service.set_execution_listener(push_plan_execution)
