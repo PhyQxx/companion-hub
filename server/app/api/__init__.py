@@ -24,6 +24,7 @@ from .device_commands import (
     verify_device_signature,
 )
 from .devices import DeviceCredentialGuard, create_device_routers
+from .home_scenes import create_home_scenes_router
 from .model_capabilities import create_model_capability_router
 from .pnkx import create_pnkx_router
 from .push import create_push_router
@@ -63,6 +64,7 @@ __all__ = [
     "create_deletion_ledger_router",
     "create_device_command_routers",
     "create_device_routers",
+    "create_home_scenes_router",
     "create_logs_stream_router",
     "create_model_capability_router",
     "create_pnkx_router",

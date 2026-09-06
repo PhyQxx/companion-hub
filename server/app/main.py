@@ -7,7 +7,7 @@ from contextlib import asynccontextmanager, suppress
 from datetime import UTC, datetime
 from datetime import time as dt_time
 from pathlib import Path
-from typing import cast
+from typing import Any, cast
 from uuid import UUID
 
 from fastapi import FastAPI
@@ -39,6 +39,7 @@ from app.api import (
     create_deletion_ledger_router,
     create_device_command_routers,
     create_device_routers,
+    create_home_scenes_router,
     create_logs_stream_router,
     create_model_capability_router,
     create_pnkx_router,
@@ -68,6 +69,7 @@ from app.cognition import (
     PlanExecutionEvent,
     RouterDeliberator,
     RuleBasedDeliberator,
+    SemanticEvent,
     ToolActionRunner,
     WorldStateBuilder,
     build_builtin_action_registry,
@@ -96,6 +98,12 @@ from app.home_assistant import (
     HomeControlTool,
     HomeGetHistoryTool,
     HomeGetStateTool,
+)
+from app.home_scene import (
+    HomeSceneListTool,
+    HomeSceneRunTool,
+    HomeSceneService,
+    HomeSceneStore,
 )
 from app.jobs import AssetStore, JobEngine
 from app.llm.provider import EnvSecretProvider
@@ -326,8 +334,16 @@ def create_app(
             interval_seconds=float(os.getenv("ARIA_TASK_SCHEDULER_INTERVAL", "15")),
         )
         if perception_pipeline is not None:
+            async def dispatch_semantic_event(event: SemanticEvent) -> None:
+                await task_scheduler.on_semantic_event(cast(Any, event))
+                if home_scene_service is not None:
+                    with suppress(Exception):
+                        await home_scene_service.handle_semantic_event(
+                            event.user_id, event.event_id, event.kind
+                        )
+
             perception_pipeline.set_event_observer(
-                cast(EventObserver, task_scheduler.on_semantic_event)
+                cast(EventObserver, dispatch_semantic_event)
             )
     goal_tracker = GoalTracker(cognitive_store) if cognitive_store is not None else None
     goal_reminder_scheduler = (
@@ -352,6 +368,16 @@ def create_app(
             interval_seconds=float(os.getenv("ARIA_FOCUS_INTERVAL", "120")),
         )
         if focus_service is not None
+        else None
+    )
+    # HOME-01：场景服务惰性引用计划服务；观察口在 pipeline 就绪处组合分发
+    home_scene_service = (
+        HomeSceneService(
+            HomeSceneStore(runtime_database),
+            lambda: action_plan_service,  # type: ignore[arg-type,return-value]
+            build_builtin_action_registry(),
+        )
+        if runtime_database is not None
         else None
     )
 
@@ -1099,6 +1125,13 @@ def create_app(
                         FocusStatusTool(focus_service),
                     ]
                 )
+            if home_scene_service is not None:
+                device_tools.extend(
+                    [
+                        HomeSceneRunTool(home_scene_service),
+                        HomeSceneListTool(home_scene_service),
+                    ]
+                )
             if runtime_config is not None:
                 device_tools.extend(create_mail_tools(runtime_config))
             if pnkx_life_client is not None:
@@ -1234,6 +1267,9 @@ def create_app(
             if contact_store is not None:
                 app.include_router(create_contacts_router(contact_store, auth_service))
                 app.state.contact_store = contact_store
+            if home_scene_service is not None:
+                app.include_router(create_home_scenes_router(home_scene_service, auth_service))
+                app.state.home_scene_service = home_scene_service
             if workflow_service is not None:
                 app.include_router(create_workflows_router(workflow_service, auth_service))
                 app.state.workflow_service = workflow_service
