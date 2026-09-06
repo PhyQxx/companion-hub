@@ -163,9 +163,16 @@ def _device_tool_ready(
         # PC-01/WEB-01 桌面与浏览器动作：只经 Action Registry 计划—确认—执行
         # 链路触发，不作为聊天工具直接暴露给模型（docs/39 J5「提交前展示并确认」）。
         return False
-    if name in {"reminder_create", "calendar_create", "contact_save", "contact_query"}:
-        # 助手工具：写/读个人任务、日历与联系人库。L0 公开模式不读写个人数据，
-        # L2 私密会话内容不入库（工具执行层同样兜底拒绝），仅 L1 开放。
+    if name in {
+        "reminder_create",
+        "calendar_create",
+        "contact_save",
+        "contact_query",
+        "workflow_save",
+        "workflow_run",
+    }:
+        # 助手工具：写/读个人任务、日历、联系人与流程库。L0 公开模式不读写
+        # 个人数据，L2 私密会话内容不入库（工具执行层同样兜底拒绝），仅 L1 开放。
         return privacy_level is PrivacyLevel.L1 and _cloud_tool_model_ready(config, llm_route)
     if name in {"mail_read", "mail_send"}:
         # 邮件是云端账号操作（读摘要/出站发送），L2 私密会话禁止外发，仅 L1 开放；

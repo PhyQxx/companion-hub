@@ -1510,3 +1510,32 @@ class ContactRecord(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now()
     )
+
+
+class WorkflowRecord(Base):
+    """FLOW-01 可复用流程：已注册动作的持久化模板。
+
+    steps 是 ActionInvocation 形状的有序列表（action_id + 固定参数）；
+    保存与运行时都经 ActionRegistry 重新编译校验，注册表变更会让
+    过期模板在预览/运行时显式失败而不是带病执行。
+    """
+
+    __tablename__ = "workflow"
+    __table_args__ = (
+        Index("ix_workflow_user", "user_id"),
+        UniqueConstraint("user_id", "name", name="uq_workflow_user_name"),
+    )
+
+    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True)
+    user_id: Mapped[UUID] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("app_user.id", ondelete="CASCADE"), nullable=False
+    )
+    name: Mapped[str] = mapped_column(String(120), nullable=False)
+    description: Mapped[str | None] = mapped_column(String(500))
+    steps: Mapped[list[dict[str, Any]]] = mapped_column(JSON, nullable=False, default=list)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now()
+    )

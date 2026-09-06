@@ -47,6 +47,7 @@ from app.api import (
     create_theme_router,
     create_todo_router,
     create_voice_websocket_router,
+    create_workflows_router,
     create_xiaoai_websocket_router,
 )
 from app.api.admin_config import set_runtime_admin_token
@@ -152,6 +153,12 @@ from app.tools.location import resolve_location
 from app.tools.screen import CapabilityScreenAnalyzer, CaptureScreenTool
 from app.tools.sensors import ReadSensorsTool
 from app.voice import ConfigVoiceSource
+from app.workflows import (
+    WorkflowRunTool,
+    WorkflowSaveTool,
+    WorkflowService,
+    WorkflowStore,
+)
 from app.xiaoai_config import XiaoAiConfigMaterializer
 
 
@@ -264,6 +271,16 @@ def create_app(
     action_registry = build_builtin_action_registry()
     action_plan_service = (
         ActionPlanService(runtime_database, action_registry)
+        if runtime_database is not None
+        else None
+    )
+    # FLOW-01：惰性引用计划服务，运行时展开计划即可拿到最终注入的 runner。
+    workflow_service = (
+        WorkflowService(
+            WorkflowStore(runtime_database),
+            action_registry,
+            lambda: action_plan_service,  # type: ignore[arg-type,return-value]
+        )
         if runtime_database is not None
         else None
     )
@@ -1024,6 +1041,9 @@ def create_app(
             if contact_store is not None:
                 device_tools.append(ContactSaveTool(contact_store))
                 device_tools.append(ContactQueryTool(contact_store))
+            if workflow_service is not None:
+                device_tools.append(WorkflowSaveTool(workflow_service))
+                device_tools.append(WorkflowRunTool(workflow_service))
             if runtime_config is not None:
                 device_tools.extend(create_mail_tools(runtime_config))
             if pnkx_life_client is not None:
@@ -1156,6 +1176,9 @@ def create_app(
             if contact_store is not None:
                 app.include_router(create_contacts_router(contact_store, auth_service))
                 app.state.contact_store = contact_store
+            if workflow_service is not None:
+                app.include_router(create_workflows_router(workflow_service, auth_service))
+                app.state.workflow_service = workflow_service
             if todo_sync_service is not None:
                 app.include_router(create_todo_router(todo_sync_service, auth_service))
                 app.state.todo_sync_service = todo_sync_service
