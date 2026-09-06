@@ -39,6 +39,10 @@ def test_builtin_action_catalog_has_safe_home_actions() -> None:
         "desktop.url.open",
         "system.volume.set",
         "desktop.clipboard.write",
+        "browser.tab.open",
+        "browser.form.read",
+        "browser.form.fill",
+        "browser.form.submit",
     }
     assert definitions["home.light.turn_off"].risk == ActionRisk.A1_LOW
     assert (
@@ -56,7 +60,7 @@ def test_builtin_action_catalog_has_safe_home_actions() -> None:
     assert all(
         item.verification_policy == "receipt"
         for action_id, item in definitions.items()
-        if action_id.startswith("desktop.") or action_id.startswith("system.")
+        if not action_id.startswith("home.")
     )
 
 

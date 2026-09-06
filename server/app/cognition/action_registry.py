@@ -8,6 +8,12 @@ from pydantic import BaseModel, ConfigDict, Field, JsonValue, model_validator
 
 from app.schemas import PrivacyLevel
 from app.schemas.common import StrictModel, TokenName
+from app.tools.browser_form import (
+    BrowserFormFillArgs,
+    BrowserFormReadArgs,
+    BrowserFormSubmitArgs,
+    BrowserOpenTabArgs,
+)
 from app.tools.desktop import DesktopNotifyArgs
 from app.tools.desktop_actions import (
     DesktopClipboardWriteArgs,
@@ -363,6 +369,75 @@ def build_builtin_action_registry() -> ActionRegistry:
                 max_privacy_level=PrivacyLevel.L1,
             ),
             DesktopClipboardWriteArgs,
+        ),
+        (
+            ActionDefinition(
+                action_id="browser.tab.open",
+                label="打开浏览器页面",
+                description="在用户浏览器设备上新开标签页并导航到 http/https URL。",
+                risk=ActionRisk.A1_LOW,
+                confirmation_policy=ConfirmationPolicy.PREAUTHORIZED,
+                reversible=False,
+                tool_name="browser_open_tab",
+                arguments_schema=BrowserOpenTabArgs.model_json_schema(),
+                timeout_seconds=15,
+                verification_policy=VerificationPolicy.RECEIPT,
+                verifier_id="device.command_receipt",
+                max_privacy_level=PrivacyLevel.L1,
+            ),
+            BrowserOpenTabArgs,
+        ),
+        (
+            ActionDefinition(
+                action_id="browser.form.read",
+                label="读取页面表单",
+                description="读取当前页面可见表单控件（顺序 ref 与标签），纯读操作。",
+                risk=ActionRisk.A0_READ,
+                confirmation_policy=ConfirmationPolicy.NEVER,
+                reversible=False,
+                tool_name="browser_form_read",
+                arguments_schema=BrowserFormReadArgs.model_json_schema(),
+                timeout_seconds=15,
+                verification_policy=VerificationPolicy.RECEIPT,
+                verifier_id="device.command_receipt",
+                max_privacy_level=PrivacyLevel.L1,
+            ),
+            BrowserFormReadArgs,
+        ),
+        (
+            ActionDefinition(
+                action_id="browser.form.fill",
+                label="填写页面表单",
+                description="向页面表单写入字段值，绝不提交；密码框被设备端跳过。",
+                risk=ActionRisk.A1_LOW,
+                confirmation_policy=ConfirmationPolicy.PREAUTHORIZED,
+                reversible=False,
+                tool_name="browser_form_fill",
+                arguments_schema=BrowserFormFillArgs.model_json_schema(),
+                timeout_seconds=15,
+                verification_policy=VerificationPolicy.RECEIPT,
+                verifier_id="device.command_receipt",
+                max_privacy_level=PrivacyLevel.L1,
+            ),
+            BrowserFormFillArgs,
+        ),
+        (
+            ActionDefinition(
+                action_id="browser.form.submit",
+                label="提交页面表单",
+                description="对外发送：提交页面表单前必须向用户展示目标站点、"
+                "全部字段值与填写后证据，每次都需确认。",
+                risk=ActionRisk.A2_CONFIRM,
+                confirmation_policy=ConfirmationPolicy.ALWAYS,
+                reversible=False,
+                tool_name="browser_form_submit",
+                arguments_schema=BrowserFormSubmitArgs.model_json_schema(),
+                timeout_seconds=15,
+                verification_policy=VerificationPolicy.RECEIPT,
+                verifier_id="device.command_receipt",
+                max_privacy_level=PrivacyLevel.L1,
+            ),
+            BrowserFormSubmitArgs,
         ),
         (
             ActionDefinition(

@@ -177,12 +177,23 @@ class DesktopActionsConfig(StrictModel):
         return data
 
 
+class BrowserWorkflowConfig(StrictModel):
+    """WEB-01 浏览器工作流总开关：读取/定位/填写/提交四命令的 Hub 侧闸门。
+
+    导航与填写的目标站点不做白名单（浏览器的本职就是任意站点）；危险动作
+    （提交=对外发送）由 Action Registry 的 A2 每次确认强制把关。默认关闭。
+    """
+
+    enabled: bool = False
+
+
 class ToolsConfig(StrictModel):
     enabled: bool = False
     max_tool_rounds: Literal[1] = 1
     query: QueryToolConfig = Field(default_factory=QueryToolConfig)
     amap: AmapToolConfig = Field(default_factory=AmapToolConfig)
     desktop_actions: DesktopActionsConfig = Field(default_factory=DesktopActionsConfig)
+    browser_workflow: BrowserWorkflowConfig = Field(default_factory=BrowserWorkflowConfig)
 
     @model_validator(mode="after")
     def validate_provider(self) -> ToolsConfig:

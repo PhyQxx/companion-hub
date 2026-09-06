@@ -155,9 +155,13 @@ def _device_tool_ready(
         "desktop_open_url",
         "desktop_set_volume",
         "desktop_clipboard_write",
+        "browser_open_tab",
+        "browser_form_read",
+        "browser_form_fill",
+        "browser_form_submit",
     }:
-        # PC-01 桌面动作：v1 只经 Action Registry 计划—确认—执行链路触发，
-        # 不作为聊天工具直接暴露给模型（docs/39 J5「不通过通用命令提前开放」）。
+        # PC-01/WEB-01 桌面与浏览器动作：只经 Action Registry 计划—确认—执行
+        # 链路触发，不作为聊天工具直接暴露给模型（docs/39 J5「提交前展示并确认」）。
         return False
     if name in {"reminder_create", "calendar_create", "contact_save", "contact_query"}:
         # 助手工具：写/读个人任务、日历与联系人库。L0 公开模式不读写个人数据，

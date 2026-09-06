@@ -1,6 +1,7 @@
 from .database import DatabaseConfigStore, DatabaseConfigVersion
 from .models import (
     AmapToolConfig,
+    BrowserWorkflowConfig,
     DesktopActionsConfig,
     HomeAssistantConfig,
     HomeAssistantEntityConfig,
@@ -18,6 +19,7 @@ from .store import ConfigAudit, ConfigSnapshot, ConfigStore, ConfigWatcher
 
 __all__ = [
     "AmapToolConfig",
+    "BrowserWorkflowConfig",
     "ConfigAudit",
     "ConfigSnapshot",
     "ConfigStore",

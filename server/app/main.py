@@ -69,7 +69,13 @@ from app.cognition import (
     WorldStateBuilder,
     build_builtin_action_registry,
 )
-from app.config import ConfigStore, ConfigWatcher, DatabaseConfigStore, DesktopActionsConfig
+from app.config import (
+    BrowserWorkflowConfig,
+    ConfigStore,
+    ConfigWatcher,
+    DatabaseConfigStore,
+    DesktopActionsConfig,
+)
 from app.contacts import ContactQueryTool, ContactSaveTool, ContactStore
 from app.db import Database, create_database
 from app.devices import (
@@ -130,6 +136,12 @@ from app.tools import (
     build_query_tool_runtime,
 )
 from app.tools.browser import InspectWebpageTool
+from app.tools.browser_form import (
+    BrowserFormFillTool,
+    BrowserFormReadTool,
+    BrowserFormSubmitTool,
+    BrowserOpenTabTool,
+)
 from app.tools.desktop_actions import (
     DesktopClipboardWriteTool,
     DesktopOpenAppTool,
@@ -1050,6 +1062,35 @@ def create_app(
                                     device_target_resolver,
                                     device_command_gateway,
                                     desktop_actions_config,
+                                ),
+                            ]
+                        )
+                    if runtime_config is not None:
+
+                        def browser_workflow_config() -> BrowserWorkflowConfig:
+                            return runtime_config.current.config.tools.browser_workflow
+
+                        device_tools.extend(
+                            [
+                                BrowserOpenTabTool(
+                                    device_target_resolver,
+                                    device_command_gateway,
+                                    browser_workflow_config,
+                                ),
+                                BrowserFormReadTool(
+                                    device_target_resolver,
+                                    device_command_gateway,
+                                    browser_workflow_config,
+                                ),
+                                BrowserFormFillTool(
+                                    device_target_resolver,
+                                    device_command_gateway,
+                                    browser_workflow_config,
+                                ),
+                                BrowserFormSubmitTool(
+                                    device_target_resolver,
+                                    device_command_gateway,
+                                    browser_workflow_config,
                                 ),
                             ]
                         )
