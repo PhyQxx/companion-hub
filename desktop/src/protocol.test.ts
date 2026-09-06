@@ -4,11 +4,15 @@ import {
   captureFailureCode,
   consumeScreenCaptureGrant,
   createScreenCaptureGrant,
+  parseClipboardWriteRequest,
   parseNotificationRequest,
   parseAvatarControl,
+  parseOpenAppRequest,
+  parseOpenUrlRequest,
   parsePetAudioFrame,
   parsePetMessageState,
   parseScreenCaptureRequest,
+  parseSetVolumeRequest,
   screenCaptureGrantActive,
 } from "./client";
 import { canonicalFrame, signFrame, verifyFrame, websocketUrl } from "./protocol";
@@ -48,6 +52,34 @@ describe("device command protocol", () => {
       .toBeNull();
     expect(parseNotificationRequest({ title: "Aria", body: "hello", privacy_level: "L3" }))
       .toBeNull();
+  });
+
+  it("validates PC-01 desktop action arguments strictly", () => {
+    expect(parseOpenAppRequest({ app: "Visual Studio Code" })).toEqual({
+      app: "Visual Studio Code",
+    });
+    // 路径分隔/引号/通配等注入字符一律拒绝
+    expect(parseOpenAppRequest({ app: "../sbin/launch" })).toBeNull();
+    expect(parseOpenAppRequest({ app: 'Safari"; rm -rf' })).toBeNull();
+    expect(parseOpenAppRequest({ app: "" })).toBeNull();
+    expect(parseOpenAppRequest({ app: 42 })).toBeNull();
+
+    expect(parseOpenUrlRequest({ url: "https://github.com/aria" })).toEqual({
+      url: "https://github.com/aria",
+    });
+    expect(parseOpenUrlRequest({ url: "ftp://github.com/aria" })).toBeNull();
+    expect(parseOpenUrlRequest({ url: "javascript:alert(1)" })).toBeNull();
+    expect(parseOpenUrlRequest({ url: "not a url" })).toBeNull();
+
+    expect(parseSetVolumeRequest({ volume: 0 })).toEqual({ volume: 0 });
+    expect(parseSetVolumeRequest({ volume: 100 })).toEqual({ volume: 100 });
+    expect(parseSetVolumeRequest({ volume: 101 })).toBeNull();
+    expect(parseSetVolumeRequest({ volume: 30.5 })).toBeNull();
+    expect(parseSetVolumeRequest({ volume: "30" })).toBeNull();
+
+    expect(parseClipboardWriteRequest({ text: "复制这段话" })).toEqual({ text: "复制这段话" });
+    expect(parseClipboardWriteRequest({ text: "" })).toBeNull();
+    expect(parseClipboardWriteRequest({ text: "x".repeat(5001) })).toBeNull();
   });
 
   it("accepts only bounded pet message lifecycle frames", () => {

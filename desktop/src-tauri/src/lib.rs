@@ -11,11 +11,15 @@ use tauri::{
 const KEYRING_SERVICE: &str = "com.aria.companion.desktop";
 const KEYRING_ACCOUNT: &str = "device-access-token";
 const KEYRING_HUB_ACCOUNT: &str = "device-hub-url";
-const CLIENT_CAPABILITIES: [&str; 4] = [
+const CLIENT_CAPABILITIES: [&str; 8] = [
     "device.ping",
     "notification.show",
     "avatar.render",
     "avatar.chat",
+    "desktop.open_app",
+    "desktop.open_url",
+    "system.volume",
+    "clipboard.write",
 ];
 
 #[derive(Serialize)]
@@ -252,6 +256,150 @@ fn show_native_notification(title: &str, body: &str) -> Result<(), String> {
 #[cfg(not(target_os = "macos"))]
 fn show_native_notification(_title: &str, _body: &str) -> Result<(), String> {
     Err("当前平台暂不支持系统通知".to_string())
+}
+
+/// PC-01 桌面白名单动作：Hub 侧做配置白名单硬校验，设备端再做结构校验
+/// 与锁屏拒绝。命令一律不带 shell，参数经数组传递。
+
+#[tauri::command]
+fn open_app(app: String) -> Result<(), String> {
+    let app = app.trim();
+    // 只允许安全的应用名字符集，杜绝参数注入（路径分隔、通配、引号）。
+    if app.is_empty()
+        || app.chars().count() > 80
+        || !app
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == ' ' || c == '.' || c == '_' || c == '-')
+    {
+        return Err("应用名无效".to_string());
+    }
+    if screen_is_locked() {
+        return Err("设备已锁屏，拒绝打开应用".to_string());
+    }
+    open_native_app(app)
+}
+
+#[cfg(target_os = "macos")]
+fn open_native_app(app: &str) -> Result<(), String> {
+    let status = Command::new("/usr/bin/open")
+        .args(["-a", app])
+        .status()
+        .map_err(|error| format!("无法启动应用：{error}"))?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(format!("打开应用失败：{app}"))
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+fn open_native_app(_app: &str) -> Result<(), String> {
+    Err("当前平台暂不支持打开应用".to_string())
+}
+
+#[tauri::command]
+fn open_url(url: String) -> Result<(), String> {
+    let url = url.trim();
+    if url.is_empty() || url.chars().count() > 2048 {
+        return Err("URL 无效".to_string());
+    }
+    let parsed = reqwest::Url::parse(url).map_err(|_| "URL 无效".to_string())?;
+    let scheme = parsed.scheme().to_ascii_lowercase();
+    if scheme != "http" && scheme != "https" {
+        return Err("只允许 http/https 链接".to_string());
+    }
+    if parsed.host_str().map(str::is_empty).unwrap_or(true) {
+        return Err("URL 缺少主机名".to_string());
+    }
+    if screen_is_locked() {
+        return Err("设备已锁屏，拒绝打开链接".to_string());
+    }
+    open_native_url(url)
+}
+
+#[cfg(target_os = "macos")]
+fn open_native_url(url: &str) -> Result<(), String> {
+    let status = Command::new("/usr/bin/open")
+        .arg(url)
+        .status()
+        .map_err(|error| format!("无法调用系统打开链接：{error}"))?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err("打开链接失败".to_string())
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+fn open_native_url(_url: &str) -> Result<(), String> {
+    Err("当前平台暂不支持打开链接".to_string())
+}
+
+#[tauri::command]
+fn set_volume(volume: u8) -> Result<(), String> {
+    if screen_is_locked() {
+        return Err("设备已锁屏，拒绝调整音量".to_string());
+    }
+    set_native_volume(volume)
+}
+
+#[cfg(target_os = "macos")]
+fn set_native_volume(volume: u8) -> Result<(), String> {
+    let script = format!("set volume output volume {volume}");
+    let status = Command::new("/usr/bin/osascript")
+        .args(["-e", &script])
+        .status()
+        .map_err(|error| format!("无法调用系统音量：{error}"))?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err("设置音量失败".to_string())
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+fn set_native_volume(_volume: u8) -> Result<(), String> {
+    Err("当前平台暂不支持设置音量".to_string())
+}
+
+#[tauri::command]
+fn write_clipboard(text: String) -> Result<(), String> {
+    if text.is_empty() || text.chars().count() > 5000 {
+        return Err("剪贴板文本长度无效".to_string());
+    }
+    if screen_is_locked() {
+        return Err("设备已锁屏，拒绝写入剪贴板".to_string());
+    }
+    write_native_clipboard(&text)
+}
+
+#[cfg(target_os = "macos")]
+fn write_native_clipboard(text: &str) -> Result<(), String> {
+    use std::io::Write;
+    let mut child = Command::new("/usr/bin/pbcopy")
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .map_err(|error| format!("无法调用系统剪贴板：{error}"))?;
+    if let Some(stdin) = child.stdin.as_mut() {
+        stdin
+            .write_all(text.as_bytes())
+            .map_err(|error| format!("写入剪贴板失败：{error}"))?;
+    }
+    let status = child
+        .wait()
+        .map_err(|error| format!("等待剪贴板命令失败：{error}"))?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err("写入剪贴板失败".to_string())
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+fn write_native_clipboard(_text: &str) -> Result<(), String> {
+    Err("当前平台暂不支持写入剪贴板".to_string())
 }
 
 #[tauri::command]
@@ -665,6 +813,10 @@ pub fn run() {
             screen_capture_permission,
             screen_capture_environment,
             show_notification,
+            open_app,
+            open_url,
+            set_volume,
+            write_clipboard,
             capture_and_upload
         ])
         .run(tauri::generate_context!())

@@ -2,8 +2,12 @@ import { disable, enable, isEnabled } from "@tauri-apps/plugin-autostart";
 import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { emit, listen } from "@tauri-apps/api/event";
 import {
+  CLIPBOARD_WRITE_CAPABILITY,
   DESKTOP_BASE_CAPABILITIES,
   DESKTOP_NOTIFICATION_CAPABILITY,
+  DESKTOP_OPEN_APP_CAPABILITY,
+  DESKTOP_OPEN_URL_CAPABILITY,
+  SYSTEM_VOLUME_CAPABILITY,
   DeviceConnection,
   forgetAccessToken,
   loadAccessToken,
@@ -147,7 +151,16 @@ void listen<{ text: string; privacyLevel: "L0" | "L1" | "L2"; speak: boolean }>(
 
 function activeCapabilities(): string[] {
   const capabilities: string[] = [...DESKTOP_BASE_CAPABILITIES];
-  if (!screenLocked && !privacyPause.checked) capabilities.push(DESKTOP_NOTIFICATION_CAPABILITY);
+  if (!screenLocked && !privacyPause.checked) {
+    // PC-01 桌面动作与通知同一闸门：锁屏或隐私暂停时不声明，Hub 不会选中本机。
+    capabilities.push(
+      DESKTOP_NOTIFICATION_CAPABILITY,
+      DESKTOP_OPEN_APP_CAPABILITY,
+      DESKTOP_OPEN_URL_CAPABILITY,
+      SYSTEM_VOLUME_CAPABILITY,
+      CLIPBOARD_WRITE_CAPABILITY,
+    );
+  }
   if (
     permissionGranted && !screenLocked && !privacyPause.checked &&
     screenCaptureGrantActive(screenGrant)

@@ -13,6 +13,10 @@ export const DESKTOP_BASE_CAPABILITIES = [
   "avatar.chat",
 ] as const;
 export const DESKTOP_NOTIFICATION_CAPABILITY = "notification.show" as const;
+export const DESKTOP_OPEN_APP_CAPABILITY = "desktop.open_app" as const;
+export const DESKTOP_OPEN_URL_CAPABILITY = "desktop.open_url" as const;
+export const SYSTEM_VOLUME_CAPABILITY = "system.volume" as const;
+export const CLIPBOARD_WRITE_CAPABILITY = "clipboard.write" as const;
 
 export interface PairResult {
   device_id: string;
@@ -241,6 +245,62 @@ export function parseNotificationRequest(
   ) return null;
   return { title, body, privacyLevel: privacyLevel as "L0" | "L1" | "L2" };
 }
+
+export interface OpenAppRequest {
+  app: string;
+}
+
+export interface OpenUrlRequest {
+  url: string;
+}
+
+export interface SetVolumeRequest {
+  volume: number;
+}
+
+export interface ClipboardWriteRequest {
+  text: string;
+}
+
+const APP_NAME_PATTERN = /^[A-Za-z0-9 ._-]{1,80}$/;
+
+export function parseOpenAppRequest(args: Record<string, unknown>): OpenAppRequest | null {
+  const app = typeof args.app === "string" ? args.app.trim() : "";
+  if (!APP_NAME_PATTERN.test(app)) return null;
+  return { app };
+}
+
+export function parseOpenUrlRequest(args: Record<string, unknown>): OpenUrlRequest | null {
+  const url = typeof args.url === "string" ? args.url.trim() : "";
+  if (!url || url.length > 2048) return null;
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    return null;
+  }
+  const scheme = parsed.protocol.replace(":", "").toLowerCase();
+  if (scheme !== "http" && scheme !== "https") return null;
+  if (!parsed.hostname) return null;
+  return { url };
+}
+
+export function parseSetVolumeRequest(args: Record<string, unknown>): SetVolumeRequest | null {
+  const volume = args.volume;
+  if (typeof volume !== "number" || !Number.isInteger(volume) || volume < 0 || volume > 100) {
+    return null;
+  }
+  return { volume };
+}
+
+export function parseClipboardWriteRequest(
+  args: Record<string, unknown>,
+): ClipboardWriteRequest | null {
+  const text = typeof args.text === "string" ? args.text : "";
+  if (!text || text.length > 5000) return null;
+  return { text };
+}
+
 
 export function parseScreenCaptureRequest(
   args: Record<string, unknown>,
@@ -508,6 +568,57 @@ export class DeviceConnection {
       await invoke("show_notification", { title: request.title, body: request.body });
       resultMeta = {
         privacy_level: request.privacyLevel,
+        latency_ms: Math.round(performance.now() - started),
+      };
+    } else if (frame.command === "desktop.open_app") {
+      if (!this.capabilities.includes("desktop.open_app")) {
+        this.sendResult(frame.command_id, "failed", "desktop_open_app_unavailable", {});
+        return;
+      }
+      const request = parseOpenAppRequest(args);
+      if (request === null) {
+        this.sendResult(frame.command_id, "failed", "invalid_command_args", {});
+        return;
+      }
+      await invoke("open_app", { app: request.app });
+      resultMeta = { app: request.app, latency_ms: Math.round(performance.now() - started) };
+    } else if (frame.command === "desktop.open_url") {
+      if (!this.capabilities.includes("desktop.open_url")) {
+        this.sendResult(frame.command_id, "failed", "desktop_open_url_unavailable", {});
+        return;
+      }
+      const request = parseOpenUrlRequest(args);
+      if (request === null) {
+        this.sendResult(frame.command_id, "failed", "invalid_command_args", {});
+        return;
+      }
+      await invoke("open_url", { url: request.url });
+      resultMeta = { url: request.url, latency_ms: Math.round(performance.now() - started) };
+    } else if (frame.command === "system.volume.set") {
+      if (!this.capabilities.includes("system.volume")) {
+        this.sendResult(frame.command_id, "failed", "system_volume_unavailable", {});
+        return;
+      }
+      const request = parseSetVolumeRequest(args);
+      if (request === null) {
+        this.sendResult(frame.command_id, "failed", "invalid_command_args", {});
+        return;
+      }
+      await invoke("set_volume", { volume: request.volume });
+      resultMeta = { volume: request.volume, latency_ms: Math.round(performance.now() - started) };
+    } else if (frame.command === "clipboard.write") {
+      if (!this.capabilities.includes("clipboard.write")) {
+        this.sendResult(frame.command_id, "failed", "clipboard_write_unavailable", {});
+        return;
+      }
+      const request = parseClipboardWriteRequest(args);
+      if (request === null) {
+        this.sendResult(frame.command_id, "failed", "invalid_command_args", {});
+        return;
+      }
+      await invoke("write_clipboard", { text: request.text });
+      resultMeta = {
+        chars: request.text.length,
         latency_ms: Math.round(performance.now() - started),
       };
     } else {
