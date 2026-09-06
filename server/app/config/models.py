@@ -187,6 +187,25 @@ class BrowserWorkflowConfig(StrictModel):
     enabled: bool = False
 
 
+class CommuteConfig(StrictModel):
+    """COMMUTE-01 出行管家：以配置的常驻出发点（如家/公司）为路线起点。
+
+    enabled 需要显式配置 origin（geocodable 地址文本）；缓冲分钟数叠加在
+    路线耗时之上得到建议出发时刻，来源与耗时随工具结果透出，可解释。
+    """
+
+    enabled: bool = False
+    origin: Annotated[str, Field(min_length=1, max_length=200)] | None = None
+    mode: Literal["driving", "transit", "walking"] = "driving"
+    buffer_minutes: Annotated[int, Field(ge=0, le=180)] = 10
+
+    @model_validator(mode="after")
+    def require_origin(self) -> CommuteConfig:
+        if self.enabled and (self.origin is None or not self.origin.strip()):
+            raise ValueError("enabled commute requires origin address")
+        return self
+
+
 class ToolsConfig(StrictModel):
     enabled: bool = False
     max_tool_rounds: Literal[1] = 1
@@ -194,6 +213,7 @@ class ToolsConfig(StrictModel):
     amap: AmapToolConfig = Field(default_factory=AmapToolConfig)
     desktop_actions: DesktopActionsConfig = Field(default_factory=DesktopActionsConfig)
     browser_workflow: BrowserWorkflowConfig = Field(default_factory=BrowserWorkflowConfig)
+    commute: CommuteConfig = Field(default_factory=CommuteConfig)
 
     @model_validator(mode="after")
     def validate_provider(self) -> ToolsConfig:

@@ -4,6 +4,7 @@ import logging
 import os
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager, suppress
+from datetime import UTC, datetime
 from datetime import time as dt_time
 from pathlib import Path
 from typing import cast
@@ -71,6 +72,7 @@ from app.cognition import (
     WorldStateBuilder,
     build_builtin_action_registry,
 )
+from app.commute import CommuteCheckTool, CommuteService
 from app.config import (
     BrowserWorkflowConfig,
     ConfigStore,
@@ -381,6 +383,30 @@ def create_app(
             await runtime.close()
 
     contact_store = ContactStore(runtime_database) if runtime_database is not None else None
+
+    def build_commute_service() -> CommuteService | None:
+        """按需构建出行服务（含高德 provider，调用方用完即关）。"""
+        if runtime_config is None or runtime_database is None or task_store is None:
+            return None
+        if calendar_service is None:
+            return None
+        commute_config = runtime_config.current.config.tools.commute
+        if not commute_config.enabled or commute_config.origin is None:
+            return None
+        try:
+            runtime = build_query_tool_runtime(runtime_config.current.config, EnvSecretProvider())
+        except ValueError:
+            return None
+        return CommuteService(
+            calendar_service.store,
+            task_store,
+            runtime.provider,
+            origin=commute_config.origin,
+            mode=commute_config.mode,
+            buffer_minutes=commute_config.buffer_minutes,
+            default_city=runtime_config.current.config.tools.query.default_city,
+            clock=lambda: datetime.now(UTC),
+        )
     daily_brief_service = (
         DailyBriefService(
             runtime_database,
@@ -1042,6 +1068,7 @@ def create_app(
             if contact_store is not None:
                 device_tools.append(ContactSaveTool(contact_store))
                 device_tools.append(ContactQueryTool(contact_store))
+            device_tools.append(CommuteCheckTool(build_commute_service))
             if workflow_service is not None:
                 device_tools.append(WorkflowSaveTool(workflow_service))
                 device_tools.append(WorkflowRunTool(workflow_service))
