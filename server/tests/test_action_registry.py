@@ -35,6 +35,10 @@ def test_builtin_action_catalog_has_safe_home_actions() -> None:
         "home.media.pause",
         "home.media.set_volume",
         "desktop.notification.show",
+        "desktop.app.open",
+        "desktop.url.open",
+        "system.volume.set",
+        "desktop.clipboard.write",
     }
     assert definitions["home.light.turn_off"].risk == ActionRisk.A1_LOW
     assert (
@@ -43,10 +47,16 @@ def test_builtin_action_catalog_has_safe_home_actions() -> None:
     )
     assert definitions["home.media.set_volume"].risk == ActionRisk.A2_CONFIRM
     assert definitions["desktop.notification.show"].verification_policy == "receipt"
+    # HA 写动作必须写后回读；设备命令类动作以设备终态回执为准。
     assert all(
         item.verification_policy == "read_after_write"
         for action_id, item in definitions.items()
-        if action_id != "desktop.notification.show"
+        if action_id.startswith("home.")
+    )
+    assert all(
+        item.verification_policy == "receipt"
+        for action_id, item in definitions.items()
+        if action_id.startswith("desktop.") or action_id.startswith("system.")
     )
 
 

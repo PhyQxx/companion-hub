@@ -9,6 +9,12 @@ from pydantic import BaseModel, ConfigDict, Field, JsonValue, model_validator
 from app.schemas import PrivacyLevel
 from app.schemas.common import StrictModel, TokenName
 from app.tools.desktop import DesktopNotifyArgs
+from app.tools.desktop_actions import (
+    DesktopClipboardWriteArgs,
+    DesktopOpenAppArgs,
+    DesktopOpenUrlArgs,
+    DesktopSetVolumeArgs,
+)
 
 
 class ActionRisk(StrEnum):
@@ -289,6 +295,74 @@ def build_builtin_action_registry() -> ActionRegistry:
             confirmation_policy=ConfirmationPolicy.ALWAYS,
             arguments_model=HomeVolumeArgs,
             action="volume_set",
+        ),
+        (
+            ActionDefinition(
+                action_id="desktop.app.open",
+                label="打开桌面应用",
+                description="打开白名单（tools.desktop_actions.allowed_apps）里的应用。",
+                risk=ActionRisk.A1_LOW,
+                confirmation_policy=ConfirmationPolicy.PREAUTHORIZED,
+                reversible=False,
+                tool_name="desktop_open_app",
+                arguments_schema=DesktopOpenAppArgs.model_json_schema(),
+                timeout_seconds=12,
+                verification_policy=VerificationPolicy.RECEIPT,
+                verifier_id="device.command_receipt",
+                max_privacy_level=PrivacyLevel.L1,
+            ),
+            DesktopOpenAppArgs,
+        ),
+        (
+            ActionDefinition(
+                action_id="desktop.url.open",
+                label="打开网页",
+                description="在桌面默认浏览器打开白名单 scheme/主机的 URL。",
+                risk=ActionRisk.A1_LOW,
+                confirmation_policy=ConfirmationPolicy.PREAUTHORIZED,
+                reversible=False,
+                tool_name="desktop_open_url",
+                arguments_schema=DesktopOpenUrlArgs.model_json_schema(),
+                timeout_seconds=12,
+                verification_policy=VerificationPolicy.RECEIPT,
+                verifier_id="device.command_receipt",
+                max_privacy_level=PrivacyLevel.L1,
+            ),
+            DesktopOpenUrlArgs,
+        ),
+        (
+            ActionDefinition(
+                action_id="system.volume.set",
+                label="设置桌面音量",
+                description="设置桌面设备系统输出音量（0-100），需 allow_volume 开关。",
+                risk=ActionRisk.A1_LOW,
+                confirmation_policy=ConfirmationPolicy.PREAUTHORIZED,
+                reversible=False,
+                tool_name="desktop_set_volume",
+                arguments_schema=DesktopSetVolumeArgs.model_json_schema(),
+                timeout_seconds=12,
+                verification_policy=VerificationPolicy.RECEIPT,
+                verifier_id="device.command_receipt",
+                max_privacy_level=PrivacyLevel.L1,
+            ),
+            DesktopSetVolumeArgs,
+        ),
+        (
+            ActionDefinition(
+                action_id="desktop.clipboard.write",
+                label="写入桌面剪贴板",
+                description="把文本写入桌面剪贴板（≤5000 字符），需 allow_clipboard 开关。",
+                risk=ActionRisk.A2_CONFIRM,
+                confirmation_policy=ConfirmationPolicy.ALWAYS,
+                reversible=False,
+                tool_name="desktop_clipboard_write",
+                arguments_schema=DesktopClipboardWriteArgs.model_json_schema(),
+                timeout_seconds=12,
+                verification_policy=VerificationPolicy.RECEIPT,
+                verifier_id="device.command_receipt",
+                max_privacy_level=PrivacyLevel.L1,
+            ),
+            DesktopClipboardWriteArgs,
         ),
         (
             ActionDefinition(

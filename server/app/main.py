@@ -69,7 +69,7 @@ from app.cognition import (
     WorldStateBuilder,
     build_builtin_action_registry,
 )
-from app.config import ConfigStore, ConfigWatcher, DatabaseConfigStore
+from app.config import ConfigStore, ConfigWatcher, DatabaseConfigStore, DesktopActionsConfig
 from app.contacts import ContactQueryTool, ContactSaveTool, ContactStore
 from app.db import Database, create_database
 from app.devices import (
@@ -130,6 +130,12 @@ from app.tools import (
     build_query_tool_runtime,
 )
 from app.tools.browser import InspectWebpageTool
+from app.tools.desktop_actions import (
+    DesktopClipboardWriteTool,
+    DesktopOpenAppTool,
+    DesktopOpenUrlTool,
+    DesktopSetVolumeTool,
+)
 from app.tools.location import resolve_location
 from app.tools.screen import CapabilityScreenAnalyzer, CaptureScreenTool
 from app.tools.sensors import ReadSensorsTool
@@ -1018,6 +1024,35 @@ def create_app(
                     device_tools.append(
                         DesktopNotifyTool(device_target_resolver, device_command_gateway)
                     )
+                    if runtime_config is not None:
+
+                        def desktop_actions_config() -> DesktopActionsConfig:
+                            return runtime_config.current.config.tools.desktop_actions
+
+                        device_tools.extend(
+                            [
+                                DesktopOpenAppTool(
+                                    device_target_resolver,
+                                    device_command_gateway,
+                                    desktop_actions_config,
+                                ),
+                                DesktopOpenUrlTool(
+                                    device_target_resolver,
+                                    device_command_gateway,
+                                    desktop_actions_config,
+                                ),
+                                DesktopSetVolumeTool(
+                                    device_target_resolver,
+                                    device_command_gateway,
+                                    desktop_actions_config,
+                                ),
+                                DesktopClipboardWriteTool(
+                                    device_target_resolver,
+                                    device_command_gateway,
+                                    desktop_actions_config,
+                                ),
+                            ]
+                        )
                 action_plan_service.set_runner(
                     ToolActionRunner(
                         ToolExecutor(ToolRegistry(device_tools)),

@@ -136,11 +136,53 @@ class ScreenAwarenessConfig(StrictModel):
         return self
 
 
+class DesktopActionsConfig(StrictModel):
+    """PC-01 桌面白名单动作：只放行显式列出的应用与 URL。
+
+    默认完全关闭；enabled=true 且对应子开关打开才可用。应用名与主机名
+    一律精确匹配（大小写不敏感，去重去空白），不做前缀/子串匹配，避免
+    白名单旁路。allowed_url_hosts 为空表示不限主机（scheme 仍校验）。
+    """
+
+    enabled: bool = False
+    allowed_apps: list[Annotated[str, Field(min_length=1, max_length=80)]] = Field(
+        default_factory=list, max_length=64
+    )
+    allowed_url_schemes: list[
+        Annotated[str, Field(min_length=1, max_length=16, pattern=r"^[a-z][a-z0-9+.-]*$")]
+    ] = Field(default_factory=lambda: ["http", "https"], max_length=8)
+    allowed_url_hosts: list[Annotated[str, Field(min_length=1, max_length=253)]] = Field(
+        default_factory=list, max_length=64
+    )
+    allow_volume: bool = False
+    allow_clipboard: bool = False
+
+    @model_validator(mode="before")
+    @classmethod
+    def _normalize_lists(cls, data: Any) -> Any:
+        if isinstance(data, dict):
+            for key in ("allowed_apps", "allowed_url_schemes", "allowed_url_hosts"):
+                raw = data.get(key)
+                if isinstance(raw, list):
+                    seen: set[str] = set()
+                    cleaned: list[str] = []
+                    for value in raw:
+                        if not isinstance(value, str):
+                            continue
+                        folded = value.strip().lower()
+                        if folded and folded not in seen:
+                            seen.add(folded)
+                            cleaned.append(folded)
+                    data[key] = cleaned
+        return data
+
+
 class ToolsConfig(StrictModel):
     enabled: bool = False
     max_tool_rounds: Literal[1] = 1
     query: QueryToolConfig = Field(default_factory=QueryToolConfig)
     amap: AmapToolConfig = Field(default_factory=AmapToolConfig)
+    desktop_actions: DesktopActionsConfig = Field(default_factory=DesktopActionsConfig)
 
     @model_validator(mode="after")
     def validate_provider(self) -> ToolsConfig:
