@@ -19,7 +19,7 @@
 | Admin 信息架构重整 | 已完成（v1） | 领域分组、URL 可恢复二级 Tab、真实数据页与浏览器验收已完成 |
 | P6 Batch D Live2D/桌宠 | 联动代码完成 | 透明窗口、拖拽、穿透、位置恢复、Hub 同源舞台及签名情绪/动作/口型同步已接通；M2 与真机性能仍是发布门槛 |
 | M4B 手机 PWA | 进行中 | 可安装壳、离线降级、移动布局、前后台恢复、移动音频解锁及游标分页补拉/去重底座已完成；待真机验收、通知与多端租约 |
-| 个人管家闭环 J1～J8 | J2 完成，J3/J4 进行中 | ACT-01～03 已完成、ACT-04 进行中；J2 四项全部代码闭环；SAT-01/02 确定性核心已落地（音频与真机待硬件）；CAL-01 日历代码闭环、聊天端建提醒/建日程工具已落地，TODO-01 pnkx 真机联调通过；MAIL v1 已落地（真机联调通过）；CONTACT-01 联系人代码闭环（真机验收待做）；J5～J8 未启动，见 `docs/39` |
+| 个人管家闭环 J1～J8 | J2 完成，J3/J4/J5 进行中 | ACT-01～03 已完成、ACT-04 进行中；J2 四项全部代码闭环；SAT-01/02 确定性核心已落地（音频与真机待硬件）；CAL-01 日历代码闭环、聊天端建提醒/建日程工具已落地，TODO-01 pnkx 真机联调通过；MAIL v1 已落地（真机联调通过）；CONTACT-01 联系人代码闭环（真机验收待做）；PC-01 白名单桌面动作代码闭环（真机验收待做）；J6～J8 未启动，见 `docs/39` |
 
 ## 2. 当前执行队列
 
@@ -75,7 +75,7 @@
 
 #### J5 受控电脑操作代理
 
-- [ ] `PC-01` 白名单桌面动作：打开应用/URL、聚焦窗口、文件移动/重命名、剪贴板和音量；删除、覆盖、发送需确认。
+- [x] `PC-01` 白名单桌面动作（代码闭环，待真机验收）：配置中心新增 `tools.desktop_actions`（默认全关；应用名/URL 主机 casefold 精确白名单去重，scheme 强制 `[a-z][a-z0-9+.-]*` 模式，音量/剪贴板独立开关）。四个受控工具 `desktop_open_app`/`desktop_open_url`/`desktop_set_volume`/`desktop_clipboard_write` 经既有设备命令网关下发，Hub 侧先做白名单硬校验再解析设备，L2 由工具声明 `max_privacy_level=L1` 经 EgressGuard 执行层拦截；**不挂载为聊天工具**（`_device_tool_ready` 恒 False），只能经 Action Registry 计划—确认—执行触发：打开应用/URL/设音量为 A1 预授权候选，剪贴板为 A2 每次确认，全部以设备 `succeeded` 终态回执为验证。Desktop 客户端新增 4 个能力声明（锁屏/隐私暂停时不声明）与 Rust 命令——应用名只允许 `[A-Za-z0-9 ._-]` 字符集、URL 只放行 http/https 且禁参数注入、osascript/pbcopy 数组传参无 shell。聚焦窗口与文件移动/重命名未开放（后续批次），删除/覆盖/对外发送维持禁止。
 - [ ] `WEB-01` 浏览器工作流：读取、定位控件、填写不提交，展示字段和证据后才允许提交。
 - [ ] `FLOW-01` 可复用流程：保存上班、会议、睡眠等步骤化流程，保存前展示全部动作与权限。
 - [ ] `PC-02` 执行可视化：目标、步骤、进度、证据和立即停止；禁止无限制鼠标键盘权限。
@@ -154,6 +154,7 @@
 
 ## 3. 最近完成
 
+- [x] 个人管家 `PC-01` 白名单桌面动作 v1（代码闭环）：`tools.desktop_actions` 白名单配置（casefold 精确匹配 + scheme 模式校验，默认全关）+ 4 个受控工具（open_app/open_url/set_volume/clipboard_write，经设备命令网关下发、设备 `succeeded` 回执验证）+ Action Registry 四个动作（A1 预授权 ×3 + A2 剪贴板每次确认）+ Desktop 客户端 4 个新命令与能力声明（Rust 端应用名字符集白名单、http/https scheme 强制、无 shell 数组传参、锁屏拒绝）。动作不挂载为聊天工具，只能经计划—确认—执行触发；聚焦窗口/文件操作留后续批次。
 - [x] `CONTACT-01` 联系人上下文 v1（代码闭环）：`contact` 表 + `ContactStore`（名称/别名 casefold 唯一裁决、时区 ZoneInfo 校验、重要日期按年历校验、用户隔离）+ `/api/v1/contacts` 用户 API + `contact_save`/`contact_query` 聊天工具（仅 L1、同 turn 幂等、按名称 upsert、查询返回当地当前时间与重要日期倒计时）+ BRIEF-01 简报接入今日重要日期事实。仓库零推断：关系与偏好只能由用户显式陈述写入。
 - [x] 修复工具执行层隐私兜底的存量死代码：`StrictModel` 的 `use_enum_values=True` 使 `ToolContext.privacy_level` 在运行时是普通字符串，`reminder_create`/`calendar_create` 里的 `is PrivacyLevel.X` 比较永不成立——L2 兜底拒绝实际失效（挂载门禁仍有效故无泄露）。统一改为 `==` 比较，并把既有 L2 测试改为传运行时真实的普通字符串（此前 `model_copy` 传枚举成员掩盖了问题）。
 - [x] `XIAOAI` 小爱音箱网关 v1（代码闭环）：独立 `integrations/xiaoai_gateway` Node 容器用 `@mi-gpt/next` 拿小爱识别文本，仅前缀命中（默认"请阿莉娅"）的 Query 经 `stableEventId` 哈希去重后送 Hub，逐句播放 TTS 并按字数估算等待避免吞句；Hub 侧 `/ws/adapters/xiaoai` 以常量时间比对网关令牌鉴权，`xiaoai.hello` 绑定/复用 owner 会话（库恢复后自动重建），`xiaoai.query` 走 L1 语音路由流式分句 + Markdown 语音清洗回传，新查询抢占旧回合、取消透传 `cancel_turn`，`OrderedDict` LRU 按连接去重 event_id。配置中心 `integrations.xiaoai`（账号/密码/passToken/网关密钥全部 secret_value/secret_ref 双模式，启用时硬性校验账号、音箱、owner 与密钥齐全，TTS SIID/AIID 必须成对）；`XiaoAiConfigMaterializer` 启动与配置发布时把运行配置以 0600 原子写入 `xiaoai-state` 共享卷，网关循环等待热读取；Admin 配置 GET 脱敏三个 secret、PUT/草稿按掩码还原，HA 实体接口新增设备注册表元数据（device_id/名称/厂商/型号）支撑音箱下拉与型号推断。仓库零凭据。
@@ -238,6 +239,7 @@
 
 ## 4. 最新质量基线
 
+- 2026-09-06 `PC-01` 白名单桌面动作：新增 `tests/test_desktop_actions.py` **11 通过**（配置 casefold 去重/scheme 模式拒绝、split_url 边界、应用白名单未命中与禁用拒绝、URL scheme/主机白名单、音量与剪贴板开关、幂等键/用户/离线设备守卫、失败回执 reason 透传、Registry 四动作注册与 A1/A2 契约、L2 经 EgressGuard 拦截、聊天挂载恒 False）；`test_action_registry.py` catalog 断言扩展为 14 动作并把验证策略断言按动作类别收窄（home=read_after_write、desktop/system=receipt）；Desktop `protocol.test.ts` 新增 PC-01 参数校验 1 例（注入字符/越界/非法 scheme 全拒）共 **21 通过**；非 soak 全量 pytest **701 通过 / 0 失败**（1 个 soak 用例 deselect）；Ruff、严格 mypy（294 source files）、Desktop `tsc + vite` build、`cargo check`、`git diff --check` 全部通过；无新迁移。真实设备端到端（真机打开应用/URL/音量/剪贴板 + Action Plan 确认流）待验收。
 - 2026-09-04 `CONTACT-01` 联系人上下文：新增 `tests/test_contacts.py` **14 通过**（创建规范化/别名去重/按别名 casefold 查找、名称与别名冲突拒绝（含大小写）、非法时区与 2/30 等非法日期拒绝、更新替换与空串清时区/自我更新不误判冲突、删除释放名称与用户隔离、next_occurrence 含 2/29 跨闰年、contacts_with_date 月日过滤、工具建后同 turn 幂等、按名称 upsert、L2/缺 turn/非法参数拒绝、查询返回当地时间与倒计时、简报 contact_date 事实与正文分区、API 401/201/422/搜索/改/删全链）；非 soak 全量 pytest **690 通过 / 0 失败**（1 个 soak 用例 deselect）；Ruff、严格 mypy（292 source files）、`git diff --check` 通过；Alembic SQLite 空库升级到单 head `0033_contacts`。同批修复 `reminder_create`/`calendar_create` 执行层 `is PrivacyLevel` 死代码（改 `==`，测试改传普通字符串复现运行时路径），`tests/test_assistant_tools.py` 12 例复验通过。真实模型端的联系人保存/查询体验待真机验收。
 - 2026-09-04 `XIAOAI` 小爱音箱网关：新增 `tests/test_xiaoai_config.py` **4 通过**（配置物化含密钥/权限 0600、启用硬校验、passToken 登录路径、TTS SIID/AIID 成对）与 `tests/test_xiaoai_websocket.py` **3 通过**（鉴权+分句流式+event_id 去重全链、错误令牌 4401、L2 拒绝），`test_home_assistant.py` 新增设备注册表元数据解析 1 例；非 soak 全量 pytest **677 通过 / 0 失败**（1 个 soak 用例 deselect）；Ruff、严格 mypy（286 source files，含修复 `170f3ad` 遗留的 mail 收据 walrus 类型回归）、Shared/Chat/Admin typecheck 与 production build、网关 `tsc` 构建与产物语法检查、`git diff --check` 全部通过；无新迁移。真实小米账号登录（验证码/passToken）与音箱真机端到端待验收。
 - 2026-09-04 `MAIL-01` 邮件助手 v1：新增 `tests/test_mail.py` **11 通过**（配置缺账号禁启用、secret 双模式解析、工具随配置切换 available；发送构造 MIME 头/认证失败映射；两段式预览不发送、确认后发送且同回合幂等、非法地址与 L2 拒绝；读取摘要结构与 L2 拒绝；地址模式；示例 yaml 加载）；非 soak 全量 pytest **668 通过 / 0 失败**；Ruff、严格 mypy（282 source files）与 `git diff --check` 通过。真实 QQ 邮箱 livecheck 全链通过（SMTP message_id 回执 + IMAP 搜索命中）。
