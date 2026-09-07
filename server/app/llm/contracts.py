@@ -68,7 +68,8 @@ class CompletionRequest(StrictModel):
     max_tokens: Annotated[int, Field(gt=0, le=131_072)] = 1_024
     temperature: Annotated[float, Field(ge=0, le=2)] = 0.7
     json_mode: bool = False
-    tools: Annotated[list[ToolDefinition], Field(max_length=16)] = Field(default_factory=list)
+    # 工具目录随能力增长（设备/助手/情境工具合计已 >16），上限只做卫生约束
+    tools: Annotated[list[ToolDefinition], Field(max_length=32)] = Field(default_factory=list)
     tool_choice: Literal["auto", "none"] = "auto"
 
 

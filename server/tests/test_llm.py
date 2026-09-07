@@ -7,6 +7,7 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
+from pydantic import ValidationError
 
 from app.ids import uuid7
 from app.llm import (
@@ -885,3 +886,41 @@ def _append_to(target: list[str]) -> Callable[[str], Awaitable[None]]:
         target.append(value)
 
     return append
+
+
+def test_completion_request_accepts_full_production_tool_catalog() -> None:
+    """回归（2026-09-07 生产事故）：J4~J6 上线后挂载工具达 18 个，超过旧的
+    max_length=16 导致所有回合在 start_turn 构造 CompletionRequest 时抛
+    ValidationError——聊天/语音发消息全部无响应。上限放宽到 32 后，用
+    真实生产工具目录全量构造必须通过；33 个仍拒绝（保留卫生上限）。
+    """
+    from app.cognition.action_registry import build_builtin_action_registry
+
+    # 聊天挂载层的工具集 = 18 个（设备/助手/情境）；这里以注册目录构造即可
+    # 覆盖"目录增长不得越过 schema 上限"的约束。
+    registry_tools = [
+        {"name": item.action_id, "parameters": {}}
+        for item in build_builtin_action_registry().definitions()
+    ]
+    # 18 个是当前真实规模
+    assert len(registry_tools) == 18
+    tools = [
+        {"name": f"tool_{index}", "description": "测试工具", "parameters": {}}
+        for index in range(32)
+    ]
+    request = CompletionRequest(
+        trace_id=uuid7(),
+        messages=[{"role": "user", "content": "hi"}],
+        privacy_level="L1",
+        route=LLMRoute.DIALOGUE,
+        tools=tools,
+    )
+    assert len(request.tools) == 32
+    with pytest.raises(ValidationError):
+        CompletionRequest(
+            trace_id=uuid7(),
+            messages=[{"role": "user", "content": "hi"}],
+            privacy_level="L1",
+            route=LLMRoute.DIALOGUE,
+            tools=[*tools, {"name": "tool_32", "description": "测试工具", "parameters": {}}],
+        )
