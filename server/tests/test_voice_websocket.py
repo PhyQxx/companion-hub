@@ -196,6 +196,37 @@ class RecordingWebSocket:
         self._closed.set()
 
 
+async def test_voice_generation_keepalive_emits_during_slow_first_token(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.api import voice_ws
+
+    monkeypatch.setattr(voice_ws, "WEBSOCKET_KEEPALIVE_SECONDS", 0.01)
+    socket = RecordingWebSocket()
+    manager = VoiceWebSocketManager(
+        cast(ChatService, object()),
+        voice_source=StaticVoiceSource(None, None),
+    )
+    session = VoiceSession(
+        websocket=cast(WebSocket, socket),
+        principal=ChatPrincipal(
+            session_id=uuid7(),
+            user_id=uuid7(),
+            display_name="Owner",
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        ),
+        conversation_id=uuid7(),
+    )
+    task = asyncio.create_task(manager._keep_connection_alive(session, uuid7()))
+    await asyncio.sleep(0.035)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert len(socket.texts) >= 2
+    assert all(event["type"] == "connection.keepalive" for event in socket.texts)
+
+
 async def test_device_speech_streams_audio_and_keeps_l2_local_only() -> None:
     cloud = VoiceWebSocketManager(
         cast(ChatService, object()),

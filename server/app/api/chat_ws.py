@@ -24,6 +24,7 @@ from app.tools import ClientLocation, ClientLocationPayload
 
 logger = logging.getLogger(__name__)
 SYNC_PAGE_SIZE = 200
+WEBSOCKET_KEEPALIVE_SECONDS = 2.0
 
 
 class AuthenticateFrame(StrictModel):
@@ -148,6 +149,7 @@ class ChatWebSocketManager:
 
     async def _generate(self, connection: ChatConnection, frame: SendFrame) -> None:
         pending: PendingTurn | None = None
+        keepalive_task: asyncio.Task[None] | None = None
         try:
             pending = await self._service.start_turn(
                 frame.conversation_id,
@@ -175,6 +177,14 @@ class ChatWebSocketManager:
                     generation_id=pending.generation_id,
                     payload={"turn_id": str(pending.turn_id), "turn_seq": pending.turn_seq},
                 ),
+            )
+            keepalive_task = asyncio.create_task(
+                self._keep_connection_alive(
+                    connection,
+                    frame.conversation_id,
+                    pending.generation_id,
+                ),
+                name=f"chat-keepalive-{pending.generation_id}",
             )
             delta_index = 0
 
@@ -285,8 +295,31 @@ class ChatWebSocketManager:
             logger.exception("chat generation failed for conversation %s", frame.conversation_id)
             await self._send_failure(connection, frame, pending, "generation_failed")
         finally:
+            if keepalive_task is not None:
+                keepalive_task.cancel()
+                with suppress(asyncio.CancelledError, Exception):
+                    await keepalive_task
             if pending is not None:
                 self._tasks.pop(pending.generation_id, None)
+
+    @staticmethod
+    async def _keep_connection_alive(
+        connection: ChatConnection,
+        conversation_id: UUID,
+        generation_id: UUID,
+    ) -> None:
+        """Keep slow first-token requests alive through short-idle proxies."""
+        while True:
+            await asyncio.sleep(WEBSOCKET_KEEPALIVE_SECONDS)
+            await connection.send(
+                _event(
+                    conversation_id=conversation_id,
+                    event_type="connection.keepalive",
+                    seq=None,
+                    generation_id=generation_id,
+                    payload={},
+                )
+            )
 
     async def _send_failure(
         self,

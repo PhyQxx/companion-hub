@@ -85,6 +85,39 @@ class StreamingBackend:
         )
 
 
+async def test_generation_keepalive_emits_before_slow_first_token(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.api import chat_ws
+
+    monkeypatch.setattr(chat_ws, "WEBSOCKET_KEEPALIVE_SECONDS", 0.01)
+
+    class FakeWebSocket:
+        def __init__(self) -> None:
+            self.events: list[dict[str, object]] = []
+
+        async def send_json(self, event: dict[str, object]) -> None:
+            self.events.append(event)
+
+    websocket = FakeWebSocket()
+    connection = ChatConnection(
+        websocket=websocket,  # type: ignore[arg-type]
+        principal=SimpleNamespace(user_id=uuid4()),  # type: ignore[arg-type]
+    )
+    task = asyncio.create_task(
+        ChatWebSocketManager._keep_connection_alive(
+            connection, uuid4(), uuid4()
+        )
+    )
+    await asyncio.sleep(0.035)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert len(websocket.events) >= 2
+    assert all(event["type"] == "connection.keepalive" for event in websocket.events)
+
+
 def test_websocket_stream_cancel_and_cursor_catchup(tmp_path: Path) -> None:
     database = create_database(f"sqlite+aiosqlite:///{tmp_path / 'ws.db'}")
     config_path = tmp_path / "hub.yaml"

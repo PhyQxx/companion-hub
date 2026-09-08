@@ -55,6 +55,7 @@ from .auth import ChatSessionGuard
 from .chat_ws import AuthenticateFrame
 
 logger = logging.getLogger(__name__)
+WEBSOCKET_KEEPALIVE_SECONDS = 2.0
 
 SUPPORTED_FORMAT = "pcm_s16le"
 SUPPORTED_SAMPLE_RATE = 16_000
@@ -115,6 +116,7 @@ class VoiceSession:
     turn_task: asyncio.Task[None] | None = None
     asr_prefetch: AsrPrefetch | None = None
     tts_unavailable_notified: bool = False
+    send_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
 
     def resolve_location(self, payload: object) -> ClientLocation | None:
         """更新或复用连接缓存位置; 非法载荷忽略并保留原值, 不打断语音回合。"""
@@ -405,9 +407,9 @@ class VoiceWebSocketManager:
             },
         )
         try:
-            await session.websocket.send_bytes(selection.first_chunk)
+            await self._send_bytes(session, selection.first_chunk)
             async for chunk in selection.stream:
-                await session.websocket.send_bytes(chunk)
+                await self._send_bytes(session, chunk)
         except Exception:
             tts_chain.report_failure(selection.provider)
             logger.warning("proactive voice TTS failed", exc_info=True)
@@ -691,6 +693,7 @@ class VoiceWebSocketManager:
         started = time.perf_counter()
         transcript_at = first_token_at = first_audio_at = 0.0
         pending: PendingTurn | None = None
+        keepalive_task: asyncio.Task[None] | None = None
         session.turn_committed = False
         try:
             try:
@@ -764,6 +767,10 @@ class VoiceWebSocketManager:
                     "turn_id": str(pending.turn_id),
                     "privacy_level": session.privacy_level.value,
                 },
+            )
+            keepalive_task = asyncio.create_task(
+                self._keep_connection_alive(session, generation_id),
+                name=f"voice-keepalive-{generation_id}",
             )
             buffer = SentenceBuffer(
                 first_chunk_chars=pending.config.voice.first_tts_chunk_chars
@@ -841,7 +848,7 @@ class VoiceWebSocketManager:
                                 },
                             )
                             viseme_index += 1
-                    await session.websocket.send_bytes(chunk)
+                    await self._send_bytes(session, chunk)
                     if first_audio_at == 0.0:
                         first_audio_at = time.perf_counter()
 
@@ -964,6 +971,10 @@ class VoiceWebSocketManager:
                     session, "voice.tts_unavailable", {"reason": "local_tts_required"}
                 )
         finally:
+            if keepalive_task is not None:
+                keepalive_task.cancel()
+                with suppress(asyncio.CancelledError, Exception):
+                    await keepalive_task
             session.generation_id = None
             session.turn_committed = False
             session.turn_task = None
@@ -1055,9 +1066,10 @@ class VoiceWebSocketManager:
     async def _send(
         self, session: VoiceSession, event_type: str, payload: dict[str, Any]
     ) -> None:
-        await session.websocket.send_text(
-            json.dumps({"type": event_type, **payload}, ensure_ascii=False)
-        )
+        async with session.send_lock:
+            await session.websocket.send_text(
+                json.dumps({"type": event_type, **payload}, ensure_ascii=False)
+            )
         control: dict[str, JsonValue] = {}
         if event_type == "voice.sentence":
             control = {"speaking": True, "lipSyncMilli": 0}
@@ -1076,6 +1088,23 @@ class VoiceWebSocketManager:
         }:
             control = {"speaking": False, "lipSyncMilli": 0}
         self._schedule_avatar_control(session.principal.user_id, control)
+
+    @staticmethod
+    async def _send_bytes(session: VoiceSession, chunk: bytes) -> None:
+        async with session.send_lock:
+            await session.websocket.send_bytes(chunk)
+
+    async def _keep_connection_alive(
+        self, session: VoiceSession, generation_id: UUID
+    ) -> None:
+        """Keep slow first-token and TTS work alive through short-idle proxies."""
+        while True:
+            await asyncio.sleep(WEBSOCKET_KEEPALIVE_SECONDS)
+            await self._send(
+                session,
+                "connection.keepalive",
+                {"generation_id": str(generation_id)},
+            )
 
     def _schedule_avatar_control(
         self, owner_user_id: UUID, control: dict[str, JsonValue]
