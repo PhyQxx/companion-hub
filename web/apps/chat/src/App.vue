@@ -396,7 +396,11 @@ async function ensureVoiceSocket(): Promise<VoiceSocket> {
           if (voiceSocket === next) {
             voiceReady.value = false;
             voiceBusy.value = false;
+            if (streaming.value?.conversationId === activeId.value) {
+              streaming.value = null;
+            }
             voiceStatus.value = "语音连接已断开";
+            setStatus("语音连接已断开，请重新发送", true);
           }
         },
       },
