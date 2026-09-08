@@ -9,6 +9,7 @@ import {
   VoiceSocket,
   broadcastThemePreference,
   readThemePreference,
+  safeWebStorage,
   saveThemePreference,
   matchesLocationIntent,
   type AgentReplyControl,
@@ -53,7 +54,7 @@ const isStandalone =
 const isIos =
   /iPad|iPhone|iPod/.test(navigator.userAgent) ||
   (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
-const authStorage: Storage = isStandalone ? sessionStorage : localStorage;
+const authStorage = safeWebStorage(isStandalone ? "session" : "local");
 // 与服务端 tools/location.py 的 LOCATION_TTL(15 分钟)保持一致。
 const LOCATION_TTL_MS = 15 * 60 * 1000;
 

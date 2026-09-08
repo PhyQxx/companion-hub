@@ -60,9 +60,43 @@ const THEME_TOKENS = {
   },
 } as const;
 
+/** 内存态 Storage 兜底：与 Storage 接口兼容，页面内有效、刷新即失。 */
+class MemoryStorage implements Storage {
+  private readonly values = new Map<string, string>();
+  get length(): number { return this.values.size; }
+  clear(): void { this.values.clear(); }
+  getItem(key: string): string | null { return this.values.has(key) ? this.values.get(key)! : null; }
+  key(index: number): string | null { return Array.from(this.values.keys())[index] ?? null; }
+  removeItem(key: string): void { this.values.delete(key); }
+  setItem(key: string, value: string): void { this.values.set(key, String(value)); }
+}
+
+/**
+ * 安全的 Web 存储访问：隐私模式或部分国产浏览器沙盒（提示"沙盒存储失败：Class
+ * not found"的那类）会让 localStorage/sessionStorage 抛异常，甚至仅在访问
+ * 属性时就抛。先做一次探测读写，失败则回退内存实现——页面内功能完整，
+ * 刷新后需要重新登录（安装态令牌本就只在 sessionStorage）。
+ */
+export function safeWebStorage(kind: "local" | "session"): Storage {
+  try {
+    const storage = kind === "local" ? window.localStorage : window.sessionStorage;
+    const probe = "__aria_storage_probe__";
+    storage.setItem(probe, "1");
+    storage.removeItem(probe);
+    return storage;
+  } catch {
+    return new MemoryStorage();
+  }
+}
+
 export function readThemePreference(): ThemePreference {
   if (typeof localStorage === "undefined") return "pure-light";
-  const saved = localStorage.getItem(THEME_STORAGE_KEY);
+  let saved: string | null = null;
+  try {
+    saved = localStorage.getItem(THEME_STORAGE_KEY);
+  } catch {
+    return "pure-light";
+  }
   return THEME_OPTIONS.some((option) => option.value === saved)
     ? saved as ThemePreference
     : "pure-light";
@@ -82,7 +116,11 @@ export function applyThemePreference(preference: ThemePreference): void {
 }
 
 export function saveThemePreference(preference: ThemePreference): void {
-  if (typeof localStorage !== "undefined") localStorage.setItem(THEME_STORAGE_KEY, preference);
+  try {
+    if (typeof localStorage !== "undefined") localStorage.setItem(THEME_STORAGE_KEY, preference);
+  } catch {
+    // 存储被浏览器沙盒拒绝：仅应用到当前文档，不持久化
+  }
   applyThemePreference(preference);
 }
 
