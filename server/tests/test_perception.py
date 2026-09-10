@@ -271,3 +271,30 @@ def test_home_assistant_transition_mapper_emits_only_semantic_changes() -> None:
     mapped = _semantic_transition(presence, absent, present)
     assert mapped is not None
     assert mapped[0] == "presence.changed"
+
+
+async def test_departure_observer_survives_dnd_but_ignores_replay_and_expiry(
+    database: Database, user_id: UUID
+) -> None:
+    pipeline = create_pipeline(database)
+    departures: list[UUID] = []
+    normal: list[UUID] = []
+
+    async def departure(value: SemanticEvent) -> None:
+        departures.append(value.event_id)
+
+    async def observer(value: SemanticEvent) -> None:
+        normal.append(value.event_id)
+
+    pipeline.set_departure_observer(departure)
+    pipeline.set_event_observer(observer)
+    leaving = event(user_id, "user_left_home", dnd=True)
+    result = await pipeline.process(leaving)
+    assert result.disposition == PerceptionDisposition.SUPPRESSED
+    assert departures == [leaving.event_id]
+    assert normal == []
+    await pipeline.process(leaving)
+    await pipeline.process(
+        event(user_id, "user_left_home", expires_at=datetime.now(UTC) - timedelta(seconds=1))
+    )
+    assert departures == [leaving.event_id]

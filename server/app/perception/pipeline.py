@@ -35,10 +35,15 @@ class PerceptionPipeline:
         self._locks: dict[tuple[UUID, str], asyncio.Lock] = {}
         self._recent: dict[tuple[UUID, str], tuple[UUID, datetime]] = {}
         self._event_observer: EventObserver | None = None
+        self._departure_observer: EventObserver | None = None
 
     def set_event_observer(self, observer: EventObserver | None) -> None:
         """注册语义事件观察者（如任务调度器的事件触发）；异常不外溢到主管线。"""
         self._event_observer = observer
+
+    def set_departure_observer(self, observer: EventObserver) -> None:
+        """Cancellation-only hook: DND must not keep an arrival plan running."""
+        self._departure_observer = observer
 
     async def stop(self) -> None:
         tasks = tuple(self._tasks.values())
@@ -79,6 +84,22 @@ class PerceptionPipeline:
         lock = self._locks.setdefault(key, asyncio.Lock())
         async with lock:
             result = await self._process_locked(event, key=key)
+        if (
+            self._departure_observer is not None
+            and event.kind == "user_left_home"
+            and result.disposition
+            in {
+                PerceptionDisposition.PROCESSED,
+                PerceptionDisposition.MERGED,
+                PerceptionDisposition.SUPPRESSED,
+            }
+            and result.reason_code != "event_already_processed"
+            and (event.expires_at is None or event.expires_at > datetime.now(UTC))
+        ):
+            try:
+                await self._departure_observer(event)
+            except Exception:
+                logger.exception("departure observer failed: %s", event.event_id)
         if self._event_observer is not None and result.disposition in {
             PerceptionDisposition.PROCESSED,
             PerceptionDisposition.MERGED,
@@ -99,9 +120,7 @@ class PerceptionPipeline:
         dedupe_key = key[1]
         cutoff = now - timedelta(seconds=self._policy.settings.dedupe_window_seconds)
         self._recent = {
-            recent_key: value
-            for recent_key, value in self._recent.items()
-            if value[1] >= cutoff
+            recent_key: value for recent_key, value in self._recent.items() if value[1] >= cutoff
         }
         existing = await self._store.get(event.event_id)
         if existing is not None:

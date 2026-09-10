@@ -141,6 +141,15 @@ class TaskStore:
         record = await self._get_record(user_id, task_id)
         return _to_view(record)
 
+    async def find_by_source_ref(self, user_id: UUID, source_ref: str) -> TaskView | None:
+        query = select(TaskItemRecord).where(
+            TaskItemRecord.user_id == user_id,
+            TaskItemRecord.source_ref == source_ref,
+        )
+        async with self._database.sessions() as session:
+            record = await session.scalar(query)
+        return _to_view(record) if record is not None else None
+
     async def complete_task(
         self,
         user_id: UUID,

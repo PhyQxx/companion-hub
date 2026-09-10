@@ -17,7 +17,7 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from io import BytesIO
-from typing import Any, Protocol
+from typing import Any, Protocol, cast
 from uuid import UUID
 
 from PIL import Image
@@ -143,7 +143,7 @@ class LoopState:
 def perceptual_hash(data: bytes) -> int:
     """64 位平均感知哈希：8x8 灰度均值二值化。"""
     image = Image.open(BytesIO(data)).convert("L").resize((8, 8))
-    pixels = list(image.getdata())
+    pixels = cast(list[int], image.get_flattened_data())
     average = sum(pixels) / len(pixels)
     return sum(1 << index for index, value in enumerate(pixels) if value > average)
 

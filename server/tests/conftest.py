@@ -1,11 +1,12 @@
 from __future__ import annotations
 
-from collections.abc import Iterator
+from collections.abc import AsyncIterator, Iterator
 from datetime import UTC, datetime, timedelta
 
 import pytest
 
 from app.api.admin_config import set_runtime_admin_token
+from app.db.session import Database, set_database_observer
 from app.schemas import (
     AdapterCapabilities,
     AdapterManifest,
@@ -37,6 +38,19 @@ UUIDS = {
     )
 }
 NOW = datetime(2026, 8, 17, 10, 0, tzinfo=UTC)
+
+
+@pytest.fixture(autouse=True)
+async def _dispose_test_databases() -> AsyncIterator[None]:
+    """Close every engine created by a test before pytest closes its event loop."""
+    databases: list[Database] = []
+    set_database_observer(databases.append)
+    try:
+        yield
+    finally:
+        set_database_observer(None)
+        for database in reversed(databases):
+            await database.close()
 
 
 @pytest.fixture(autouse=True)
