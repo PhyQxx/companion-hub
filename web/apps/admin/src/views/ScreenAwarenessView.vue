@@ -67,6 +67,9 @@ interface CurrentConfig {
 const status = ref<StatusResponse | null>(null);
 const observations = ref<ObservationItem[]>([]);
 const devices = ref<DeviceItem[]>([]);
+const observationTotal = ref(0);
+const observationPage = ref(1);
+const observationPageSize = ref(20);
 const loading = ref(false);
 const observationLoading = ref(false);
 const deviceLoading = ref(false);
@@ -120,14 +123,20 @@ async function loadObservations() {
   observationLoading.value = true;
   try {
     const result = await api.request<{ items: ObservationItem[]; total: number }>(
-      "/api/v1/admin/screen-awareness/observations?limit=50",
+      `/api/v1/admin/screen-awareness/observations?limit=${observationPageSize.value}`
+        + `&offset=${(observationPage.value - 1) * observationPageSize.value}`,
     );
     observations.value = result.items;
+    observationTotal.value = result.total;
   } catch (error) {
     emit("status", error instanceof Error ? error.message : "观察记录加载失败", true);
   } finally {
     observationLoading.value = false;
   }
+}
+
+function onObservationPageChange() {
+  void loadObservations();
 }
 
 async function loadDevices() {
@@ -197,8 +206,12 @@ async function updateDisplays(value: unknown) {
 }
 
 async function refresh() {
-  if (props.mode === "observations") await loadObservations();
-  else await Promise.all([loadStatus(), loadDevices()]);
+  if (props.mode === "observations") {
+    observationPage.value = 1;
+    await loadObservations();
+  } else {
+    await Promise.all([loadStatus(), loadDevices()]);
+  }
   emit("status", "屏幕感知状态已刷新");
 }
 
@@ -206,8 +219,12 @@ async function refresh() {
 watch(
   () => props.mode,
   async (mode) => {
-    if (mode === "observations") await loadObservations();
-    else await Promise.all([loadStatus(), loadDevices()]);
+    if (mode === "observations") {
+      observationPage.value = 1;
+      await loadObservations();
+    } else {
+      await Promise.all([loadStatus(), loadDevices()]);
+    }
   },
 );
 
@@ -298,8 +315,8 @@ onDeactivated(() => {
     <template v-else>
     <div class="panel">
       <div class="panel-head">
-        <div><h2>观察记录</h2><p>最近 50 条屏幕观察摘要（来源：时间线 screen.observed）。</p></div>
-        <el-button size="small" :loading="observationLoading" @click="loadObservations">刷新记录</el-button>
+        <div><h2>观察记录</h2><p>屏幕观察摘要（来源：时间线 screen.observed）。</p></div>
+        <el-button size="small" :loading="observationLoading" @click="loadObservations">刷新本页</el-button>
       </div>
       <el-table v-loading="observationLoading" :data="observations" empty-text="还没有观察记录" style="width:100%">
         <el-table-column label="时间" width="170"><template #default="{ row }">{{ fmt(row.occurred_at) }}</template></el-table-column>
@@ -307,6 +324,18 @@ onDeactivated(() => {
         <el-table-column label="摘要" min-width="420"><template #default="{ row }">{{ row.summary }}</template></el-table-column>
         <el-table-column label="重要度" width="90"><template #default="{ row }">{{ row.importance.toFixed(2) }}</template></el-table-column>
       </el-table>
+      <div class="pager">
+        <el-pagination
+          v-model:current-page="observationPage"
+          v-model:page-size="observationPageSize"
+          :total="observationTotal"
+          :page-sizes="[20, 50, 100]"
+          layout="total, sizes, prev, pager, next, jumper"
+          background
+          @current-change="onObservationPageChange"
+          @size-change="onObservationPageChange"
+        />
+      </div>
     </div>
     </template>
   </section>
@@ -329,6 +358,7 @@ onDeactivated(() => {
 .panel-head h2 { margin: 0; font-size: 15px; }
 .panel-head p { margin: 4px 0 0; color: var(--muted); font-size: 12px; }
 .error-alert { border-radius: 10px; }
+.pager { display: flex; justify-content: flex-end; margin-top: 12px; }
 @media (max-width: 1000px) {
   .stats { grid-template-columns: repeat(2, minmax(150px, 1fr)); }
 }

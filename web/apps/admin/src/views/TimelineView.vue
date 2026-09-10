@@ -24,6 +24,9 @@ interface TimelineItem {
 
 interface TimelineQueryResult {
   candidate_count: number;
+  total: number;
+  limit: number;
+  offset: number;
   events: TimelineItem[];
 }
 
@@ -66,7 +69,9 @@ const actor = ref("");
 const sourceType = ref("");
 const eventType = ref("");
 const conversationId = ref("");
-const limit = ref(50);
+const page = ref(1);
+const limit = ref(20);
+const total = ref(0);
 const timeRange = ref<[Date, Date] | null>(null);
 const loading = ref(false);
 const events = ref<TimelineItem[]>([]);
@@ -77,7 +82,7 @@ const sourceUnavailable = ref(false);
 
 const resultText = computed(() => {
   if (!userId.value) return "输入 user_id 后可查询历史索引";
-  return `${candidateCount.value} 个时间范围候选 · 显示 ${events.value.length} 条`;
+  return `共 ${total.value} 条 · 本页显示 ${events.value.length} 条`;
 });
 
 const fmt = (value: string | null) => (value ? new Date(value).toLocaleString() : "—");
@@ -86,10 +91,10 @@ const pretty = (value: unknown) => JSON.stringify(value, null, 2);
 async function resolveDefaultUser() {
   if (userId.value) return;
   try {
-    const rows = await api.request<Array<{ user_id: string }>>(
+    const rows = await api.request<{ items: Array<{ user_id: string }> }>(
       "/api/v1/admin/memories?status=active&limit=1",
     );
-    if (rows[0]?.user_id) userId.value = rows[0].user_id;
+    if (rows.items[0]?.user_id) userId.value = rows.items[0].user_id;
   } catch {
     // Timeline 本身不依赖 Memory；没有默认用户时保留手工输入即可。
   }
@@ -109,6 +114,12 @@ function clearFilters() {
   conversationId.value = "";
   privacy.value = "L1";
   timeRange.value = null;
+  startQuery();
+}
+
+function startQuery() {
+  page.value = 1;
+  void runQuery();
 }
 
 async function runQuery() {
@@ -125,6 +136,7 @@ async function runQuery() {
       query: query.value.trim(),
       privacy_level: privacy.value,
       limit: limit.value,
+      offset: (page.value - 1) * limit.value,
       actors: actor.value ? [actor.value] : [],
       source_types: sourceType.value ? [sourceType.value] : [],
       event_types: eventType.value.trim() ? [eventType.value.trim()] : [],
@@ -139,6 +151,7 @@ async function runQuery() {
       body: JSON.stringify(body),
     });
     candidateCount.value = result.candidate_count;
+    total.value = result.total;
     events.value = result.events;
     emit("status", `时间线查询完成：${result.events.length} 条`);
   } catch (error) {
@@ -146,6 +159,10 @@ async function runQuery() {
   } finally {
     loading.value = false;
   }
+}
+
+function onPageChange() {
+  void runQuery();
 }
 
 async function showDetail(item: TimelineItem) {
@@ -194,7 +211,7 @@ onMounted(async () => {
 
       <div class="filters primary-filters">
         <el-input v-model="userId" placeholder="user_id" clearable />
-        <el-input v-model="query" placeholder="主题 / 关键词，例如：星际穿越" clearable @keyup.enter="runQuery" />
+        <el-input v-model="query" placeholder="主题 / 关键词，例如：星际穿越" clearable @keyup.enter="startQuery" />
         <el-date-picker
           v-model="timeRange"
           type="datetimerange"
@@ -203,7 +220,7 @@ onMounted(async () => {
           end-placeholder="结束时间"
           :clearable="true"
         />
-        <el-button type="primary" :loading="loading" @click="runQuery">查询</el-button>
+        <el-button type="primary" :loading="loading" @click="startQuery">查询</el-button>
       </div>
 
       <div class="filters secondary-filters">
@@ -219,8 +236,8 @@ onMounted(async () => {
         </el-select>
         <el-input v-model="eventType" placeholder="event_type，例如 conversation.message" clearable />
         <el-input class="conversation-filter" v-model="conversationId" placeholder="conversation_id（可选）" clearable />
-        <el-select v-model="limit" placeholder="数量">
-          <el-option v-for="value in [20, 50, 100]" :key="value" :label="`${value} 条`" :value="value" />
+        <el-select v-model="limit" placeholder="每页数量" @change="startQuery">
+          <el-option v-for="value in [20, 50, 100]" :key="value" :label="`${value} 条/页`" :value="value" />
         </el-select>
       </div>
 
@@ -255,6 +272,18 @@ onMounted(async () => {
           <template #default="{ row }"><el-button size="small" @click="showDetail(row as TimelineItem)">证据</el-button></template>
         </el-table-column>
       </el-table>
+      <div class="pager">
+        <el-pagination
+          v-model:current-page="page"
+          v-model:page-size="limit"
+          :total="total"
+          :page-sizes="[20, 50, 100]"
+          layout="total, sizes, prev, pager, next, jumper"
+          background
+          @current-change="onPageChange"
+          @size-change="startQuery"
+        />
+      </div>
     </div>
 
     <el-dialog :model-value="!!selected" width="760px" :title="selected ? `Timeline #${selected.id}` : 'Timeline 详情'" @update:model-value="value => { if (!value) selected = null }">
@@ -298,6 +327,7 @@ onMounted(async () => {
 .intro p { margin-top: 6px; }
 .panel-head, .source-head { display: flex; justify-content: space-between; align-items: center; gap: 12px; }
 .hint { color: var(--muted); font-size: 12px; margin: 0; }
+.pager { display: flex; justify-content: flex-end; margin-top: 12px; }
 .quick-range { display: flex; gap: 6px; flex-wrap: wrap; }
 .filters { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
 .primary-filters > :nth-child(1) { width: 250px; }

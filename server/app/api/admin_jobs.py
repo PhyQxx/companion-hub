@@ -100,7 +100,10 @@ def create_admin_jobs_router(
         )
         return JobListResponse(
             jobs=[_to_list_item(j) for j in jobs],
-            total=len(jobs),
+            total=await job_engine.count_jobs(
+                status=status,  # type: ignore[arg-type]
+                kind=kind,
+            ),
         )
 
     @router.get("/{job_id}", response_model=JobDetailResponse)

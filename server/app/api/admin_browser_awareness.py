@@ -50,6 +50,8 @@ class BrowserObservationItem(StrictModel):
 class BrowserObservationsResponse(StrictModel):
     items: list[BrowserObservationItem]
     total: int
+    limit: int
+    offset: int
 
 
 def _loop_from(request: Request) -> BrowserAwarenessLoop | None:
@@ -113,23 +115,25 @@ def create_admin_browser_awareness_router(
 
     @router.get("/observations", response_model=BrowserObservationsResponse)
     async def observations(
-        limit: Annotated[int, Query(ge=1, le=200)] = 50,
+        limit: Annotated[int, Query(ge=1, le=200)] = 20,
+        offset: Annotated[int, Query(ge=0)] = 0,
     ) -> BrowserObservationsResponse:
         if timeline is None:
-            return BrowserObservationsResponse(items=[], total=0)
+            return BrowserObservationsResponse(items=[], total=0, limit=limit, offset=offset)
         async with timeline.database.sessions() as session:
             owner = await session.scalar(
                 select(AppUserRecord.id).order_by(AppUserRecord.created_at)
             )
         if owner is None:
-            return BrowserObservationsResponse(items=[], total=0)
-        result = await timeline.search(
-            user_id=UUID(str(owner)),
-            source_types=(TimelineSourceType.DEVICE,),
-            event_types=("browser.observed",),
-            privacy_levels=(PrivacyLevel.L0, PrivacyLevel.L1),
-            limit=limit,
-        )
+            return BrowserObservationsResponse(items=[], total=0, limit=limit, offset=offset)
+        filters = {
+            "source_types": (TimelineSourceType.DEVICE,),
+            "event_types": ("browser.observed",),
+            "privacy_levels": (PrivacyLevel.L0, PrivacyLevel.L1),
+        }
+        total = await timeline.count_events(user_id=UUID(str(owner)), **filters)
+        result = await timeline.search(user_id=UUID(str(owner)), **filters,
+                                       limit=limit, offset=offset)
         items = [
             BrowserObservationItem(
                 id=event.id,
@@ -143,6 +147,6 @@ def create_admin_browser_awareness_router(
             )
             for event in result.events
         ]
-        return BrowserObservationsResponse(items=items, total=len(items))
+        return BrowserObservationsResponse(items=items, total=total, limit=limit, offset=offset)
 
     return router

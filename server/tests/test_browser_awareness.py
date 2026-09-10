@@ -350,4 +350,5 @@ async def test_browser_awareness_admin_endpoints_degrade_without_loop(
     assert unauthorized.status_code == 401
     assert status.status_code == 200
     assert status.json()["loop_running"] is False
-    assert observations.json() == {"items": [], "total": 0}
+    assert observations.json()["items"] == []
+    assert observations.json()["total"] == 0

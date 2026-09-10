@@ -197,7 +197,7 @@ def test_signed_command_websocket_ack_result_cancel_and_idempotency(
             params={"device_id": str(device_id)},
         )
         assert listed.status_code == 200
-        assert [item["status"] for item in listed.json()] == [
+        assert [item["status"] for item in listed.json()["items"]] == [
             "failed",
             "failed",
             "cancelled",

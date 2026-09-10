@@ -985,8 +985,9 @@ async def test_admin_memory_api_manages_lifecycle(
     assert assistant_created.json()["subject_key"] == "assistant:primary"
     assert assistant_created.json()["fact_key"] == "profile.measurements"
     assert assistant_created.json()["origin_kind"] == "manual"
-    assert [item["id"] for item in assistant_listing.json()] == [assistant_created.json()["id"]]
-    assert any(item["content"] == "用户在杭州工作" for item in listing.json())
+    assistant_items = assistant_listing.json()["items"]
+    assert [item["id"] for item in assistant_items] == [assistant_created.json()["id"]]
+    assert any(item["content"] == "用户在杭州工作" for item in listing.json()["items"])
     assert detail.json()["sources"][0]["source_kind"] == "manual"
     assert edited.json()["content"] == "用户在上海工作"
     assert edited.json()["id"] != memory_id
@@ -1099,10 +1100,10 @@ async def test_admin_delete_and_ledger_api(
     assert unauthorized.status_code == 401
     assert deleted.status_code == 200
     assert deleted.json()["deleted_ids"] == [first.id, second.id]
-    assert deleted.json()["ledger_id"] == ledger.json()[0]["id"]
+    assert deleted.json()["ledger_id"] == ledger.json()["items"][0]["id"]
     assert missing.status_code == 404
-    assert ledger.json()[0]["reason"] == "用户要求清除"
-    assert ledger.json()[0]["deleted_ids"] == [first.id, second.id]
+    assert ledger.json()["items"][0]["reason"] == "用户要求清除"
+    assert ledger.json()["items"][0]["deleted_ids"] == [first.id, second.id]
 
 
 class ScriptedRouter:

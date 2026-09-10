@@ -132,6 +132,20 @@ class DeletionLedgerView(StrictModel):
     created_at: datetime
 
 
+class MemoryListResponse(StrictModel):
+    items: list[MemoryView]
+    total: int
+    limit: int
+    offset: int
+
+
+class DeletionLedgerListResponse(StrictModel):
+    items: list[DeletionLedgerView]
+    total: int
+    limit: int
+    offset: int
+
+
 class ReplayRequest(StrictModel):
     dry_run: bool = True
 
@@ -216,7 +230,7 @@ def create_admin_memory_router(store: MemoryStore, *, admin_token: str | None) -
             ],
         )
 
-    @router.get("", response_model=list[MemoryView])
+    @router.get("", response_model=MemoryListResponse)
     async def list_memories(
         user_id: UUID | None = None,
         subject: MemorySubjectKind | None = None,
@@ -227,19 +241,26 @@ def create_admin_memory_router(store: MemoryStore, *, admin_token: str | None) -
         memory_status: Annotated[MemoryStatus | None, Query(alias="status")] = None,
         min_importance: float | None = None,
         limit: Annotated[int, Query(ge=1, le=200)] = 50,
-    ) -> list[MemoryView]:
-        entries = await store.list_memories(
-            user_id=user_id,
-            subject_kind=subject,
-            subject_key=subject_key,
-            fact_key=fact_key,
-            origin_kind=origin_kind,
-            type=type,
-            status=memory_status,
-            min_importance=min_importance,
+        offset: Annotated[int, Query(ge=0)] = 0,
+    ) -> MemoryListResponse:
+        filters = {
+            "user_id": user_id,
+            "subject_kind": subject,
+            "subject_key": subject_key,
+            "fact_key": fact_key,
+            "origin_kind": origin_kind,
+            "type": type,
+            "status": memory_status,
+            "min_importance": min_importance,
+        }
+        total = await store.count_memories(**filters)
+        entries = await store.list_memories(**filters, limit=limit, offset=offset)
+        return MemoryListResponse(
+            items=[_view(entry) for entry in entries],
+            total=total,
             limit=limit,
+            offset=offset,
         )
-        return [_view(entry) for entry in entries]
 
     @router.post("", response_model=MemoryView, status_code=status.HTTP_201_CREATED)
     async def create_memory(payload: ManualMemoryCreate) -> MemoryView:
@@ -356,22 +377,28 @@ def create_deletion_ledger_router(store: MemoryStore, *, admin_token: str | None
         dependencies=[Depends(AdminTokenGuard(admin_token))],
     )
 
-    @router.get("", response_model=list[DeletionLedgerView])
+    @router.get("", response_model=DeletionLedgerListResponse)
     async def ledger_entries(
         limit: Annotated[int, Query(ge=1, le=200)] = 50,
-    ) -> list[DeletionLedgerView]:
-        return [
-            DeletionLedgerView(
-                id=item.id,
-                entity_kind=item.entity_kind,
-                entity_id=item.entity_id,
-                deleted_ids=list(item.deleted_ids),
-                requested_by=item.requested_by,
-                reason=item.reason,
-                created_at=item.created_at,
-            )
-            for item in await store.list_deletion_ledger(limit=limit)
-        ]
+        offset: Annotated[int, Query(ge=0)] = 0,
+    ) -> DeletionLedgerListResponse:
+        return DeletionLedgerListResponse(
+            items=[
+                DeletionLedgerView(
+                    id=item.id,
+                    entity_kind=item.entity_kind,
+                    entity_id=item.entity_id,
+                    deleted_ids=list(item.deleted_ids),
+                    requested_by=item.requested_by,
+                    reason=item.reason,
+                    created_at=item.created_at,
+                )
+                for item in await store.list_deletion_ledger(limit=limit, offset=offset)
+            ],
+            total=await store.count_deletion_ledger(),
+            limit=limit,
+            offset=offset,
+        )
 
     @router.post("/replay", response_model=ReplayResponse)
     async def replay(payload: ReplayRequest) -> ReplayResponse:

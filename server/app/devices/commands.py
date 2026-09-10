@@ -1,11 +1,12 @@
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any, Literal, cast
 from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 
 from app.db import Database, DeviceClientRecord, DeviceCommandRecord
@@ -209,14 +210,18 @@ class DeviceCommandStore:
         *,
         device_id: UUID | None = None,
         limit: int = 100,
+        offset: int = 0,
+        exclude_idempotency_prefixes: Sequence[str] = (),
     ) -> list[CommandSnapshot]:
         query = (
             select(DeviceCommandRecord)
             .order_by(DeviceCommandRecord.issued_at.desc())
             .limit(limit)
+            .offset(offset)
         )
         if device_id is not None:
             query = query.where(DeviceCommandRecord.device_id == device_id)
+        query = _exclude_idempotency_prefixes(query, exclude_idempotency_prefixes)
         async with self._database.sessions() as session:
             records = list(await session.scalars(query))
         results: list[CommandSnapshot] = []
@@ -227,6 +232,19 @@ class DeviceCommandStore:
             else:
                 results.append(_snapshot(record))
         return results
+
+    async def count(
+        self,
+        *,
+        device_id: UUID | None = None,
+        exclude_idempotency_prefixes: Sequence[str] = (),
+    ) -> int:
+        query = select(func.count()).select_from(DeviceCommandRecord)
+        if device_id is not None:
+            query = query.where(DeviceCommandRecord.device_id == device_id)
+        query = _exclude_idempotency_prefixes(query, exclude_idempotency_prefixes)
+        async with self._database.sessions() as session:
+            return int(await session.scalar(query) or 0)
 
     async def _find_idempotent(
         self, device_id: UUID, idempotency_key: str
@@ -291,6 +309,13 @@ class DeviceCommandStore:
             raise DeviceCommandConflict(
                 "idempotency key was already used with a different command request"
             )
+
+
+def _exclude_idempotency_prefixes(query: Any, prefixes: Sequence[str]) -> Any:
+    """按幂等键前缀排除感知循环的轮询命令，list/count 保持同一条件。"""
+    for prefix in prefixes:
+        query = query.where(~DeviceCommandRecord.idempotency_key.startswith(prefix))
+    return query
 
 
 def _snapshot(record: DeviceCommandRecord) -> CommandSnapshot:

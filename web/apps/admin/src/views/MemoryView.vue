@@ -91,7 +91,13 @@ const statusLabels: Record<string, string> = {
 const memories = ref<MemoryItem[]>([]);
 const ledger = ref<LedgerItem[]>([]);
 const stats = reactive({ active: 0, conflict: 0, archived: 0, deleted: 0 });
-const filters = reactive({ subject: "", type: "", status: "", factKey: "", minImportance: "", limit: "50" });
+const filters = reactive({ subject: "", type: "", status: "", factKey: "", minImportance: "" });
+const memoryPage = ref(1);
+const memoryPageSize = ref(20);
+const memoryTotal = ref(0);
+const ledgerPage = ref(1);
+const ledgerPageSize = ref(20);
+const ledgerTotal = ref(0);
 const fallbackUser = ref("");
 
 const detail = ref<MemoryDetail | null>(null);
@@ -119,32 +125,51 @@ const memoryParams = computed(() => {
   if (filters.status) params.set("status", filters.status);
   if (filters.factKey.trim()) params.set("fact_key", filters.factKey.trim());
   if (filters.minImportance) params.set("min_importance", filters.minImportance);
-  params.set("limit", filters.limit);
+  params.set("limit", String(memoryPageSize.value));
+  params.set("offset", String((memoryPage.value - 1) * memoryPageSize.value));
   return params.toString();
 });
 
 const fmt = (value: string | null) => (value ? new Date(value).toLocaleString() : "—");
 
-/** 并行拉取列表、四类统计与台账；有活跃记忆时记住默认 user_id */
+/** 并行拉取列表、四类统计与台账；统计读 total 不再整表下载 */
 async function load() {
   try {
-    const [items, active, conflict, archived, ledgerRows] = await Promise.all([
-      api.request<MemoryItem[]>(`/api/v1/admin/memories?${memoryParams.value}`),
-      api.request<MemoryItem[]>("/api/v1/admin/memories?status=active&limit=200"),
-      api.request<MemoryItem[]>("/api/v1/admin/memories?status=conflict&limit=200"),
-      api.request<MemoryItem[]>("/api/v1/admin/memories?status=archived&limit=200"),
-      api.request<LedgerItem[]>("/api/v1/admin/deletion-ledger?limit=200"),
+    const [page, active, conflict, archived, ledgerPageData] = await Promise.all([
+      api.request<{ items: MemoryItem[]; total: number }>(`/api/v1/admin/memories?${memoryParams.value}`),
+      api.request<{ items: MemoryItem[]; total: number }>("/api/v1/admin/memories?status=active&limit=1"),
+      api.request<{ items: MemoryItem[]; total: number }>("/api/v1/admin/memories?status=conflict&limit=1"),
+      api.request<{ items: MemoryItem[]; total: number }>("/api/v1/admin/memories?status=archived&limit=1"),
+      api.request<{ items: LedgerItem[]; total: number }>(
+        `/api/v1/admin/deletion-ledger?limit=${ledgerPageSize.value}`
+          + `&offset=${(ledgerPage.value - 1) * ledgerPageSize.value}`,
+      ),
     ]);
-    memories.value = items;
-    if (active[0]) fallbackUser.value = active[0].user_id;
-    stats.active = active.length;
-    stats.conflict = conflict.length;
-    stats.archived = archived.length;
-    stats.deleted = ledgerRows.length;
-    ledger.value = ledgerRows;
+    memories.value = page.items;
+    memoryTotal.value = page.total;
+    if (active.items[0]) fallbackUser.value = active.items[0].user_id;
+    stats.active = active.total;
+    stats.conflict = conflict.total;
+    stats.archived = archived.total;
+    stats.deleted = ledgerPageData.total;
+    ledger.value = ledgerPageData.items;
+    ledgerTotal.value = ledgerPageData.total;
   } catch (error) {
     emit("status", error instanceof Error ? error.message : "加载失败", true);
   }
+}
+
+function onMemoryPageChange() {
+  void load();
+}
+
+function onLedgerPageChange() {
+  void load();
+}
+
+function applyFilters() {
+  memoryPage.value = 1;
+  void load();
 }
 
 async function showDetail(id: number) {
@@ -361,7 +386,7 @@ onMounted(load);
         <h2>记忆列表</h2>
         <el-button type="primary" @click="adding = true">手动添加</el-button>
       </div>
-      <el-radio-group v-model="filters.subject" class="subject-switch" @change="load">
+      <el-radio-group v-model="filters.subject" class="subject-switch" @change="applyFilters">
         <el-radio-button value="">全部主体</el-radio-button>
         <el-radio-button v-for="subject in subjects" :key="subject" :value="subject">
           {{ subjectLabels[subject] }}
@@ -372,8 +397,7 @@ onMounted(load);
         <el-select v-model="filters.status" placeholder="全部状态" clearable><el-option v-for="s in statuses" :key="s" :label="statusLabels[s] ?? s" :value="s" /></el-select>
         <el-input v-model="filters.factKey" placeholder="fact_key" clearable />
         <el-input v-model="filters.minImportance" placeholder="最低重要性" />
-        <el-select v-model="filters.limit"><el-option v-for="limit in ['25','50','100','200']" :key="limit" :label="`${limit} 条`" :value="limit" /></el-select>
-        <el-button @click="load">应用过滤</el-button>
+        <el-button @click="applyFilters">应用过滤</el-button>
       </div>
       <el-table :data="memories" empty-text="没有匹配的记忆" style="width:100%">
         <el-table-column label="ID" width="100"><template #default="{ row }"><strong>#{{ row.id }}</strong><small v-if="row.superseded_by">→ #{{ row.superseded_by }}</small><small v-if="row.conflict_with">⚠ vs #{{ row.conflict_with }}</small></template></el-table-column>
@@ -386,6 +410,18 @@ onMounted(load);
         <el-table-column prop="access_count" label="访问" width="75" />
         <el-table-column label="操作" min-width="320" fixed="right"><template #default="{ row }"><div class="actions"><el-button size="small" @click="showDetail(row.id)">溯源</el-button><el-button v-if="row.status === 'active' || row.status === 'conflict'" size="small" @click="openEdit(row as MemoryItem)">编辑</el-button><el-button v-if="row.status === 'active'" size="small" @click="archive(row.id)">归档</el-button><template v-if="row.status === 'conflict'"><el-button type="primary" size="small" @click="resolve(row.id, 'adopt')">采纳</el-button><el-button size="small" @click="resolve(row.id, 'keep')">保留旧值</el-button></template><el-button type="danger" plain size="small" @click="remove(row.id)">删除</el-button></div></template></el-table-column>
       </el-table>
+      <div class="pager">
+        <el-pagination
+          v-model:current-page="memoryPage"
+          v-model:page-size="memoryPageSize"
+          :total="memoryTotal"
+          :page-sizes="[20, 50, 100, 200]"
+          layout="total, sizes, prev, pager, next, jumper"
+          background
+          @current-change="onMemoryPageChange"
+          @size-change="onMemoryPageChange"
+        />
+      </div>
     </div>
 
     <div v-if="props.mode === 'deletion'" class="panel">
@@ -404,6 +440,18 @@ onMounted(load);
         <el-table-column label="原因" min-width="180"><template #default="{ row }">{{ row.reason ?? '—' }}</template></el-table-column>
         <el-table-column label="时间" min-width="180"><template #default="{ row }">{{ fmt(row.created_at) }}</template></el-table-column>
       </el-table>
+      <div class="pager">
+        <el-pagination
+          v-model:current-page="ledgerPage"
+          v-model:page-size="ledgerPageSize"
+          :total="ledgerTotal"
+          :page-sizes="[20, 50, 100]"
+          layout="total, sizes, prev, pager, next, jumper"
+          background
+          @current-change="onLedgerPageChange"
+          @size-change="onLedgerPageChange"
+        />
+      </div>
     </div>
 
     <el-dialog :model-value="!!detail" width="680px" :title="detail ? `记忆 #${detail.id}` : '记忆详情'" @update:model-value="value => { if (!value) detail = null }">
@@ -486,6 +534,7 @@ onMounted(load);
 .query-result .hit { display: flex; gap: 10px; padding: 5px 0; border-bottom: 1px dashed #232736; font-size: 13px; }
 .score { color: var(--accent); min-width: 46px; font-variant-numeric: tabular-nums; }
 .filters { display: flex; gap: 8px; flex-wrap: wrap; }
+.pager { display: flex; justify-content: flex-end; margin-top: 12px; }
 .subject-switch { justify-self: start; }
 .filters :deep(.el-select) { width: 150px; }
 .filters :deep(.el-input) { width: 150px; }

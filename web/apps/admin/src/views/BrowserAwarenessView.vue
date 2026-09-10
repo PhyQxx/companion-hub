@@ -53,6 +53,9 @@ interface CurrentConfig {
 
 const status = ref<StatusResponse | null>(null);
 const observations = ref<ObservationItem[]>([]);
+const observationTotal = ref(0);
+const observationPage = ref(1);
+const observationPageSize = ref(20);
 const loading = ref(false);
 const saving = ref(false);
 const blockedHostsText = ref("");
@@ -77,15 +80,21 @@ async function loadStatus() {
 async function loadObservations() {
   loading.value = true;
   try {
-    const result = await api.request<{ items: ObservationItem[] }>(
-      "/api/v1/admin/browser-awareness/observations?limit=50",
+    const result = await api.request<{ items: ObservationItem[]; total: number }>(
+      `/api/v1/admin/browser-awareness/observations?limit=${observationPageSize.value}`
+        + `&offset=${(observationPage.value - 1) * observationPageSize.value}`,
     );
     observations.value = result.items;
+    observationTotal.value = result.total;
   } catch (error) {
     emit("status", error instanceof Error ? error.message : "浏览观察记录加载失败", true);
   } finally {
     loading.value = false;
   }
+}
+
+function onObservationPageChange() {
+  void loadObservations();
 }
 
 async function updateConfig(patch: Partial<BrowserAwarenessConfig>, message: string) {
@@ -117,8 +126,12 @@ async function saveBlockedHosts() {
 }
 
 async function refresh() {
-  if (props.mode === "browser_observations") await loadObservations();
-  else await loadStatus();
+  if (props.mode === "browser_observations") {
+    observationPage.value = 1;
+    await loadObservations();
+  } else {
+    await loadStatus();
+  }
 }
 
 watch(() => props.mode, refresh);
@@ -179,7 +192,7 @@ onDeactivated(() => {
 
     <template v-else>
       <div class="panel">
-        <div class="panel-head"><div><h2>浏览观察记录</h2><p>最近 50 条 browser.observed 摘要，不含页面路径、查询串和正文。</p></div><el-button :loading="loading" @click="loadObservations">刷新</el-button></div>
+        <div class="panel-head"><div><h2>浏览观察记录</h2><p>browser.observed 摘要，不含页面路径、查询串和正文。</p></div><el-button size="small" :loading="loading" @click="loadObservations">刷新本页</el-button></div>
         <el-table v-loading="loading" :data="observations" empty-text="还没有浏览观察记录">
           <el-table-column label="时间" width="170"><template #default="{ row }">{{ fmt(row.occurred_at) }}</template></el-table-column>
           <el-table-column label="站点" min-width="190"><template #default="{ row }"><code>{{ row.origin }}</code></template></el-table-column>
@@ -187,6 +200,18 @@ onDeactivated(() => {
           <el-table-column prop="summary" label="摘要" min-width="320" />
           <el-table-column label="重要度" width="90"><template #default="{ row }">{{ row.importance.toFixed(2) }}</template></el-table-column>
         </el-table>
+        <div class="pager">
+          <el-pagination
+            v-model:current-page="observationPage"
+            v-model:page-size="observationPageSize"
+            :total="observationTotal"
+            :page-sizes="[20, 50, 100]"
+            layout="total, sizes, prev, pager, next, jumper"
+            background
+            @current-change="onObservationPageChange"
+            @size-change="onObservationPageChange"
+          />
+        </div>
       </div>
     </template>
   </section>
@@ -204,6 +229,7 @@ onDeactivated(() => {
 .stats span, small { color: var(--muted); font-size: 11px; }
 .stats strong { font-size: 22px; }
 .switch-row, .panel-head { display: flex; justify-content: space-between; align-items: center; gap: 16px; }
+.pager { display: flex; justify-content: flex-end; margin-top: 12px; }
 .details dl { display: grid; grid-template-columns: 110px 1fr; gap: 10px 16px; margin: 16px 0 0; font-size: 13px; }
 .details dt { color: var(--muted); }
 .details dd { margin: 0; word-break: break-word; }

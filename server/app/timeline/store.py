@@ -7,7 +7,7 @@ from typing import Any, cast
 from urllib.parse import urlsplit
 from uuid import UUID
 
-from sqlalchemy import delete, select
+from sqlalchemy import Select, delete, func, select
 from sqlalchemy.engine import CursorResult
 from sqlalchemy.exc import IntegrityError
 
@@ -218,38 +218,24 @@ class TimelineStore:
         conversation_id: UUID | None = None,
         privacy_levels: Sequence[PrivacyLevel] = (PrivacyLevel.L0, PrivacyLevel.L1),
         limit: int = 20,
+        offset: int = 0,
         candidate_limit: int = 300,
     ) -> TimelineSearchResult:
-        statement = select(TimelineEventRecord).where(
-            TimelineEventRecord.user_id == user_id,
-            TimelineEventRecord.privacy_level.in_([level.value for level in privacy_levels]),
-        )
-        if start_at is not None:
-            statement = statement.where(TimelineEventRecord.occurred_at >= _utc(start_at))
-        if end_at is not None:
-            statement = statement.where(TimelineEventRecord.occurred_at < _utc(end_at))
-        if actors:
-            statement = statement.where(
-                TimelineEventRecord.actor.in_([TimelineActor(item).value for item in actors])
-            )
-        if source_types:
-            statement = statement.where(
-                TimelineEventRecord.source_type.in_(
-                    [TimelineSourceType(item).value for item in source_types]
-                )
-            )
-        if event_types:
-            statement = statement.where(TimelineEventRecord.event_type.in_(list(event_types)))
-        if conversation_id is not None:
-            statement = statement.where(TimelineEventRecord.conversation_id == conversation_id)
-        statement = statement.order_by(TimelineEventRecord.occurred_at.desc()).limit(
-            candidate_limit
-        )
+        statement = _event_filter(
+            user_id=user_id,
+            start_at=start_at,
+            end_at=end_at,
+            actors=actors,
+            source_types=source_types,
+            event_types=event_types,
+            conversation_id=conversation_id,
+            privacy_levels=privacy_levels,
+        ).order_by(TimelineEventRecord.occurred_at.desc()).limit(candidate_limit)
         async with self._database.sessions() as session:
             records = list(await session.scalars(statement))
 
         if not query.strip():
-            selected = records[:limit]
+            selected = records[offset : offset + limit]
         else:
             query_tokens = _token_set(query)
             scored = [
@@ -258,11 +244,39 @@ class TimelineStore:
             ]
             scored = [item for item in scored if item[0] > 0]
             scored.sort(key=lambda item: (item[0], item[1].occurred_at), reverse=True)
-            selected = [record for _, record in scored[:limit]]
+            selected = [record for _, record in scored[offset : offset + limit]]
         return TimelineSearchResult(
             events=tuple(_entry(record) for record in selected),
             candidate_count=len(records),
         )
+
+    async def count_events(
+        self,
+        *,
+        user_id: UUID,
+        start_at: datetime | None = None,
+        end_at: datetime | None = None,
+        actors: Sequence[TimelineActor] | None = None,
+        source_types: Sequence[TimelineSourceType] | None = None,
+        event_types: Sequence[str] | None = None,
+        conversation_id: UUID | None = None,
+        privacy_levels: Sequence[PrivacyLevel] = (PrivacyLevel.L0, PrivacyLevel.L1),
+    ) -> int:
+        """与 search 同过滤条件的精确总数，供分页使用（无文本相关性过滤）。"""
+        statement = select(func.count()).select_from(
+            _event_filter(
+                user_id=user_id,
+                start_at=start_at,
+                end_at=end_at,
+                actors=actors,
+                source_types=source_types,
+                event_types=event_types,
+                conversation_id=conversation_id,
+                privacy_levels=privacy_levels,
+            ).subquery()
+        )
+        async with self._database.sessions() as session:
+            return int(await session.scalar(statement) or 0)
 
     async def expand_sources(
         self,
@@ -419,6 +433,42 @@ def _aware(value: datetime) -> datetime:
 def _utc(value: datetime) -> datetime:
     aware = _aware(value)
     return aware.astimezone(UTC)
+
+
+def _event_filter(
+    *,
+    user_id: UUID,
+    start_at: datetime | None,
+    end_at: datetime | None,
+    actors: Sequence[TimelineActor] | None,
+    source_types: Sequence[TimelineSourceType] | None,
+    event_types: Sequence[str] | None,
+    conversation_id: UUID | None,
+    privacy_levels: Sequence[PrivacyLevel],
+) -> Select:
+    statement = select(TimelineEventRecord).where(
+        TimelineEventRecord.user_id == user_id,
+        TimelineEventRecord.privacy_level.in_([level.value for level in privacy_levels]),
+    )
+    if start_at is not None:
+        statement = statement.where(TimelineEventRecord.occurred_at >= _utc(start_at))
+    if end_at is not None:
+        statement = statement.where(TimelineEventRecord.occurred_at < _utc(end_at))
+    if actors:
+        statement = statement.where(
+            TimelineEventRecord.actor.in_([TimelineActor(item).value for item in actors])
+        )
+    if source_types:
+        statement = statement.where(
+            TimelineEventRecord.source_type.in_(
+                [TimelineSourceType(item).value for item in source_types]
+            )
+        )
+    if event_types:
+        statement = statement.where(TimelineEventRecord.event_type.in_(list(event_types)))
+    if conversation_id is not None:
+        statement = statement.where(TimelineEventRecord.conversation_id == conversation_id)
+    return statement
 
 
 def _index_summary(text: str) -> str:

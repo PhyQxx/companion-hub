@@ -63,29 +63,45 @@ const statusLabel = (s: string): string => {
 };
 
 const stats = computed(() => {
-  const total = jobs.value.length;
   const running = jobs.value.filter((j) => j.status === "running").length;
   const queued = jobs.value.filter((j) => j.status === "queued").length;
   const failed = jobs.value.filter((j) => j.status === "failed").length;
   const succeeded = jobs.value.filter((j) => j.status === "succeeded").length;
-  return { total, running, queued, failed, succeeded };
+  return { total: total.value, running, queued, failed, succeeded };
 });
+
+const page = ref(1);
+const pageSize = ref(20);
+const total = ref(0);
 
 async function loadJobs() {
   loading.value = true;
   try {
-    const params = new URLSearchParams();
+    const params = new URLSearchParams({
+      limit: String(pageSize.value),
+      offset: String((page.value - 1) * pageSize.value),
+    });
     if (filterStatus.value) params.set("status", filterStatus.value);
     if (filterKind.value) params.set("kind", filterKind.value);
     const res = await api.request<{ jobs: JobItem[]; total: number }>(
       `/api/v1/admin/jobs?${params.toString()}`
     );
     jobs.value = res.jobs;
+    total.value = res.total;
   } catch (e) {
     emit("status", String(e), true);
   } finally {
     loading.value = false;
   }
+}
+
+function onPageChange() {
+  void loadJobs();
+}
+
+function onFilterChange() {
+  page.value = 1;
+  void loadJobs();
 }
 
 async function cancelJob(id: string) {
@@ -125,11 +141,11 @@ onMounted(loadJobs);
         <div class="stat-card"><span class="stat-num" style="color:#14c8c8">{{ stats.succeeded }}</span><span class="stat-label">成功</span></div>
       </div>
       <div class="filters">
-        <el-select v-model="filterStatus" placeholder="状态筛选" clearable style="width:140px" @change="loadJobs">
+        <el-select v-model="filterStatus" placeholder="状态筛选" clearable style="width:140px" @change="onFilterChange">
           <el-option v-for="o in statusOptions" :key="o.value" :label="o.label" :value="o.value" />
         </el-select>
-        <el-input v-model="filterKind" placeholder="类型筛选" clearable style="width:160px" @keyup.enter="loadJobs" />
-        <el-button @click="loadJobs">搜索</el-button>
+        <el-input v-model="filterKind" placeholder="类型筛选" clearable style="width:160px" @keyup.enter="onFilterChange" />
+        <el-button @click="onFilterChange">搜索</el-button>
         <el-button type="primary" @click="loadJobs">刷新</el-button>
         <el-button @click="expireLeases">清理过期租约</el-button>
       </div>
@@ -171,6 +187,18 @@ onMounted(loadJobs);
         </template>
       </el-table-column>
     </el-table>
+    <div class="pager">
+      <el-pagination
+        v-model:current-page="page"
+        v-model:page-size="pageSize"
+        :total="total"
+        :page-sizes="[20, 50, 100]"
+        layout="total, sizes, prev, pager, next, jumper"
+        background
+        @current-change="onPageChange"
+        @size-change="onPageChange"
+      />
+    </div>
   </section>
 </template>
 
@@ -182,5 +210,6 @@ onMounted(loadJobs);
 .stat-num { font-size: 22px; font-weight: 700; color: var(--text); }
 .stat-label { font-size: 12px; color: var(--muted); }
 .filters { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+.pager { display: flex; justify-content: flex-end; margin-top: 12px; }
 .id-code { font-size: 11px; color: #606c80; background: #f4f6f9; padding: 2px 6px; border-radius: 4px; }
 </style>

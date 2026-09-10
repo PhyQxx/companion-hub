@@ -6,7 +6,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any, Literal, cast
 from uuid import UUID
 
-from sqlalchemy import select, update
+from sqlalchemy import func, select, update
 from sqlalchemy.engine import CursorResult
 
 from app.db import Database, JobRecord, JobStepRecord
@@ -143,6 +143,23 @@ class JobEngine:
                 stmt = stmt.where(JobRecord.kind == kind)
             records = list(await session.scalars(stmt))
             return [self._to_view(r) for r in records]
+
+    async def count_jobs(
+        self,
+        *,
+        owner: str | None = None,
+        status: JobStatus | None = None,
+        kind: str | None = None,
+    ) -> int:
+        async with self._database.sessions() as session:
+            stmt = select(func.count()).select_from(JobRecord)
+            if owner is not None:
+                stmt = stmt.where(JobRecord.owner == owner)
+            if status is not None:
+                stmt = stmt.where(JobRecord.status == status)
+            if kind is not None:
+                stmt = stmt.where(JobRecord.kind == kind)
+            return int(await session.scalar(stmt) or 0)
 
     # ------------------------------------------------------------------ #
     # Worker 领取与租约

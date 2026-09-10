@@ -14,7 +14,7 @@ from datetime import UTC, datetime
 from typing import cast
 from uuid import UUID
 
-from sqlalchemy import bindparam, delete, or_, select, text, update
+from sqlalchemy import bindparam, delete, func, or_, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db import (
@@ -46,6 +46,39 @@ from .models import (
 class RetrievalCandidate:
     entry: MemoryEntry
     embedding: list[float] | None
+
+
+def _list_filter(
+    *,
+    user_id: UUID | None,
+    subject_kind: MemorySubjectKind | None,
+    subject_key: str | None,
+    fact_key: str | None,
+    origin_kind: MemoryOriginKind | None,
+    type: MemoryType | None,
+    status: MemoryStatus | None,
+    min_importance: float | None,
+):
+    query = select(MemoryRecord)
+    if user_id is not None:
+        query = query.where(MemoryRecord.user_id == user_id)
+    if subject_kind is not None:
+        query = query.where(
+            MemoryRecord.subject_kind == MemorySubjectKind(subject_kind).value
+        )
+    if subject_key is not None:
+        query = query.where(MemoryRecord.subject_key == subject_key)
+    if fact_key is not None:
+        query = query.where(MemoryRecord.fact_key == fact_key)
+    if origin_kind is not None:
+        query = query.where(MemoryRecord.origin_kind == MemoryOriginKind(origin_kind).value)
+    if type is not None:
+        query = query.where(MemoryRecord.type == type.value)
+    if status is not None:
+        query = query.where(MemoryRecord.status == status.value)
+    if min_importance is not None:
+        query = query.where(MemoryRecord.importance >= min_importance)
+    return query
 
 
 class MemoryStore:
@@ -159,32 +192,50 @@ class MemoryStore:
         status: MemoryStatus | None = None,
         min_importance: float | None = None,
         limit: int = 100,
+        offset: int = 0,
     ) -> list[MemoryEntry]:
-        query = select(MemoryRecord).order_by(
-            MemoryRecord.importance.desc(), MemoryRecord.id.desc()
-        )
-        if user_id is not None:
-            query = query.where(MemoryRecord.user_id == user_id)
-        if subject_kind is not None:
-            query = query.where(
-                MemoryRecord.subject_kind == MemorySubjectKind(subject_kind).value
-            )
-        if subject_key is not None:
-            query = query.where(MemoryRecord.subject_key == subject_key)
-        if fact_key is not None:
-            query = query.where(MemoryRecord.fact_key == fact_key)
-        if origin_kind is not None:
-            query = query.where(MemoryRecord.origin_kind == MemoryOriginKind(origin_kind).value)
-        if type is not None:
-            query = query.where(MemoryRecord.type == type.value)
-        if status is not None:
-            query = query.where(MemoryRecord.status == status.value)
-        if min_importance is not None:
-            query = query.where(MemoryRecord.importance >= min_importance)
-        query = query.limit(limit)
+        query = _list_filter(
+            user_id=user_id,
+            subject_kind=subject_kind,
+            subject_key=subject_key,
+            fact_key=fact_key,
+            origin_kind=origin_kind,
+            type=type,
+            status=status,
+            min_importance=min_importance,
+        ).order_by(MemoryRecord.importance.desc(), MemoryRecord.id.desc())
+        query = query.limit(limit).offset(offset)
         async with self._database.sessions() as session:
             records = list(await session.scalars(query))
         return [self._entry(record) for record in records]
+
+    async def count_memories(
+        self,
+        *,
+        user_id: UUID | None = None,
+        subject_kind: MemorySubjectKind | None = None,
+        subject_key: str | None = None,
+        fact_key: str | None = None,
+        origin_kind: MemoryOriginKind | None = None,
+        type: MemoryType | None = None,
+        status: MemoryStatus | None = None,
+        min_importance: float | None = None,
+    ) -> int:
+        """与 list_memories 同过滤条件的精确总数，供管理端分页。"""
+        statement = select(func.count()).select_from(
+            _list_filter(
+                user_id=user_id,
+                subject_kind=subject_kind,
+                subject_key=subject_key,
+                fact_key=fact_key,
+                origin_kind=origin_kind,
+                type=type,
+                status=status,
+                min_importance=min_importance,
+            ).subquery()
+        )
+        async with self._database.sessions() as session:
+            return int(await session.scalar(statement) or 0)
 
     async def retrieval_candidates(
         self,
@@ -646,13 +697,16 @@ class MemoryStore:
                 )
             ]
 
-    async def list_deletion_ledger(self, *, limit: int = 50) -> list[DeletionLedgerEntry]:
+    async def list_deletion_ledger(
+        self, *, limit: int = 50, offset: int = 0
+    ) -> list[DeletionLedgerEntry]:
         async with self._database.sessions() as session:
             records = list(
                 await session.scalars(
                     select(DeletionLedgerRecord)
                     .order_by(DeletionLedgerRecord.id.desc())
                     .limit(limit)
+                    .offset(offset)
                 )
             )
         return [
@@ -667,6 +721,13 @@ class MemoryStore:
             )
             for item in records
         ]
+
+    async def count_deletion_ledger(self) -> int:
+        async with self._database.sessions() as session:
+            return int(
+                await session.scalar(select(func.count()).select_from(DeletionLedgerRecord))
+                or 0
+            )
 
     async def _collect_lineage_ids(
         self, session: AsyncSession, seed_ids: Sequence[int]

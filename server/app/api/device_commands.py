@@ -18,6 +18,7 @@ from fastapi import (
     Depends,
     Header,
     HTTPException,
+    Query,
     Request,
     WebSocket,
     WebSocketDisconnect,
@@ -124,6 +125,13 @@ class CommandResponse(StrictModel):
     completed_at: datetime | None
     reason_code: str | None
     result_meta: dict[str, JsonValue] | None
+
+
+class CommandListResponse(StrictModel):
+    items: list[CommandResponse]
+    total: int
+    limit: int
+    offset: int
 
 
 class DeviceAssetResponse(StrictModel):
@@ -1323,14 +1331,28 @@ def create_device_command_routers(
             raise HTTPException(status.HTTP_409_CONFLICT, detail=str(error)) from error
         return _command_response(result)
 
-    @admin.get("/api/v1/admin/device-commands", response_model=list[CommandResponse])
+    @admin.get("/api/v1/admin/device-commands", response_model=CommandListResponse)
     async def list_commands(
         device_id: UUID | None = None,
         limit: Annotated[int, Field(ge=1, le=200)] = 100,
-    ) -> list[CommandResponse]:
-        return [
-            _command_response(value) for value in await store.list(device_id=device_id, limit=limit)
-        ]
+        offset: Annotated[int, Field(ge=0)] = 0,
+        hide_polls: Annotated[bool, Query()] = False,
+    ) -> CommandListResponse:
+        # 感知循环每分钟产生 screen-monitor-* / browser-observe-* 轮询命令；
+        # 管理端默认折叠，list 与 count 使用同一排除条件保证分页总数一致。
+        exclude = ("screen-monitor-", "browser-observe-") if hide_polls else ()
+        return CommandListResponse(
+            items=[
+                _command_response(value)
+                for value in await store.list(
+                    device_id=device_id, limit=limit, offset=offset,
+                    exclude_idempotency_prefixes=exclude,
+                )
+            ],
+            total=await store.count(device_id=device_id, exclude_idempotency_prefixes=exclude),
+            limit=limit,
+            offset=offset,
+        )
 
     @admin.get("/api/v1/admin/device-commands/{command_id}", response_model=CommandResponse)
     async def command_detail(command_id: UUID) -> CommandResponse:

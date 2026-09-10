@@ -46,10 +46,14 @@ class TimelineQueryRequest(StrictModel):
     conversation_id: UUID | None = None
     privacy_level: PrivacyLevel = PrivacyLevel.L1
     limit: Annotated[int, Field(ge=1, le=100)] = 20
+    offset: Annotated[int, Field(ge=0)] = 0
 
 
 class TimelineQueryResult(StrictModel):
     candidate_count: int
+    total: int
+    limit: int
+    offset: int
     events: list[TimelineView]
 
 
@@ -131,20 +135,32 @@ def create_admin_timeline_router(
             if payload.privacy_level == PrivacyLevel.L2
             else (PrivacyLevel.L0, PrivacyLevel.L1)
         )
+        filters = {
+            "start_at": payload.start_at,
+            "end_at": payload.end_at,
+            "actors": payload.actors or None,
+            "source_types": payload.source_types or None,
+            "event_types": payload.event_types or None,
+            "conversation_id": payload.conversation_id,
+            "privacy_levels": levels,
+        }
         result = await store.search(
             user_id=payload.user_id,
             query=payload.query,
-            start_at=payload.start_at,
-            end_at=payload.end_at,
-            actors=payload.actors or None,
-            source_types=payload.source_types or None,
-            event_types=payload.event_types or None,
-            conversation_id=payload.conversation_id,
-            privacy_levels=levels,
+            **filters,
             limit=payload.limit,
+            offset=payload.offset,
         )
+        # 文本相关性过滤在内存打分，无法精确计数；无文本时走 SQL 精确总数
+        if payload.query.strip():
+            total = result.candidate_count
+        else:
+            total = await store.count_events(user_id=payload.user_id, **filters)
         return TimelineQueryResult(
             candidate_count=result.candidate_count,
+            total=total,
+            limit=payload.limit,
+            offset=payload.offset,
             events=[_view(item) for item in result.events],
         )
 

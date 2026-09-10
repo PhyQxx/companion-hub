@@ -49,6 +49,8 @@ class ScreenObservationItem(StrictModel):
 class ScreenObservationsResponse(StrictModel):
     items: list[ScreenObservationItem]
     total: int
+    limit: int
+    offset: int
 
 
 def _loop_from(request: Request) -> ScreenAwarenessLoop | None:
@@ -109,10 +111,11 @@ def create_admin_screen_awareness_router(
 
     @router.get("/observations", response_model=ScreenObservationsResponse)
     async def observations(
-        limit: Annotated[int, Query(ge=1, le=200)] = 50,
+        limit: Annotated[int, Query(ge=1, le=200)] = 20,
+        offset: Annotated[int, Query(ge=0)] = 0,
     ) -> ScreenObservationsResponse:
         if timeline is None:
-            return ScreenObservationsResponse(items=[], total=0)
+            return ScreenObservationsResponse(items=[], total=0, limit=limit, offset=offset)
         async with timeline.database.sessions() as session:
             from sqlalchemy import select
 
@@ -122,13 +125,15 @@ def create_admin_screen_awareness_router(
                 select(AppUserRecord.id).order_by(AppUserRecord.created_at)
             )
         if owner is None:
-            return ScreenObservationsResponse(items=[], total=0)
+            return ScreenObservationsResponse(items=[], total=0, limit=limit, offset=offset)
+        filters = {
+            "source_types": (TimelineSourceType.DEVICE,),
+            "event_types": ("screen.observed",),
+            "privacy_levels": (PrivacyLevel.L0, PrivacyLevel.L1),
+        }
+        total = await timeline.count_events(user_id=UUID(str(owner)), **filters)
         result = await timeline.search(
-            user_id=UUID(str(owner)),
-            source_types=(TimelineSourceType.DEVICE,),
-            event_types=("screen.observed",),
-            privacy_levels=(PrivacyLevel.L0, PrivacyLevel.L1),
-            limit=limit,
+            user_id=UUID(str(owner)), **filters, limit=limit, offset=offset
         )
         items = []
         for event in result.events:
@@ -145,6 +150,6 @@ def create_admin_screen_awareness_router(
                     metadata=dict(event.metadata or {}),
                 )
             )
-        return ScreenObservationsResponse(items=items, total=len(items))
+        return ScreenObservationsResponse(items=items, total=total, limit=limit, offset=offset)
 
     return router

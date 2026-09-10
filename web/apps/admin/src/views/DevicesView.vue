@@ -124,22 +124,10 @@ const selectedDeviceName = computed(
 
 const commandPage = ref(1);
 const commandPageSize = ref(20);
-// 感知循环的轮询命令（screen-monitor-* / browser-observe-*）默认折叠，保持台账聚焦人工操作
-const AWARENESS_POLL_PREFIXES = ["screen-monitor-", "browser-observe-"];
+const commandTotal = ref(0);
+// 感知循环的轮询命令（screen-monitor-* / browser-observe-*）默认折叠，
+// 过滤在服务端执行，保证分页总数一致
 const hidePollCommands = ref(true);
-const visibleCommands = computed(() =>
-  hidePollCommands.value
-    ? commands.value.filter(
-        (item) => !AWARENESS_POLL_PREFIXES.some((prefix) => item.idempotency_key.startsWith(prefix)),
-      )
-    : commands.value,
-);
-const pagedCommands = computed(() =>
-  visibleCommands.value.slice(
-    (commandPage.value - 1) * commandPageSize.value,
-    commandPage.value * commandPageSize.value,
-  ),
-);
 
 function fmt(value: string | null) {
   return value ? new Date(value).toLocaleString() : "—";
@@ -180,17 +168,31 @@ async function loadDevices() {
 async function loadCommands() {
   commandLoading.value = true;
   try {
-    const query = selectedDeviceId.value
-      ? `?device_id=${encodeURIComponent(selectedDeviceId.value)}&limit=100`
-      : "?limit=100";
-    commands.value = await api.request<CommandItem[]>(
-      `/api/v1/admin/device-commands${query}`,
+    const params = new URLSearchParams({
+      limit: String(commandPageSize.value),
+      offset: String((commandPage.value - 1) * commandPageSize.value),
+      hide_polls: String(hidePollCommands.value),
+    });
+    if (selectedDeviceId.value) params.set("device_id", selectedDeviceId.value);
+    const result = await api.request<{ items: CommandItem[]; total: number }>(
+      `/api/v1/admin/device-commands?${params.toString()}`,
     );
+    commands.value = result.items;
+    commandTotal.value = result.total;
   } catch (error) {
     emit("status", error instanceof Error ? error.message : "命令台账加载失败", true);
   } finally {
     commandLoading.value = false;
   }
+}
+
+function onCommandPageChange() {
+  void loadCommands();
+}
+
+function onPollFilterChange() {
+  commandPage.value = 1;
+  void loadCommands();
 }
 
 async function onDeviceFilterChange() {
@@ -389,7 +391,7 @@ onMounted(refresh);
       <article><span>活跃设备</span><strong>{{ activeCount }}</strong><small>含离线设备</small></article>
       <article><span>当前在线</span><strong>{{ onlineCount }}</strong><small>90 秒心跳窗口</small></article>
       <article><span>可用能力</span><strong>{{ effectiveCount }}</strong><small>授权与声明的交集</small></article>
-      <article><span>最近命令</span><strong>{{ commands.length }}</strong><small>最多显示 100 条</small></article>
+      <article><span>命令台账</span><strong>{{ commandTotal }}</strong><small>{{ hidePollCommands ? "已折叠感知轮询" : "含感知轮询" }}</small></article>
     </div>
 
     <div v-if="props.mode === 'registry'" class="panel device-panel">
@@ -440,13 +442,13 @@ onMounted(refresh);
       <div class="panel-head">
         <div><h2>命令台账</h2><p>{{ selectedDeviceName }} · 参数与结果均为脱敏摘要。</p></div>
         <div class="command-filters">
-          <el-checkbox v-model="hidePollCommands">隐藏感知轮询</el-checkbox>
+          <el-checkbox v-model="hidePollCommands" @change="onPollFilterChange">隐藏感知轮询</el-checkbox>
           <el-select v-model="selectedDeviceId" placeholder="全部设备" clearable @change="onDeviceFilterChange">
             <el-option v-for="item in devices" :key="item.id" :label="item.name" :value="item.id" />
           </el-select>
         </div>
       </div>
-      <el-table v-loading="commandLoading" :data="pagedCommands" empty-text="没有命令记录" style="width:100%">
+      <el-table v-loading="commandLoading" :data="commands" empty-text="没有命令记录" style="width:100%">
         <el-table-column label="发起时间" min-width="170"><template #default="{ row }">{{ fmt(row.issued_at) }}</template></el-table-column>
         <el-table-column prop="command" label="命令" min-width="180" />
         <el-table-column label="设备" min-width="150"><template #default="{ row }">{{ devices.find(item => item.id === row.device_id)?.name ?? row.device_id.slice(0, 8) }}</template></el-table-column>
@@ -465,10 +467,12 @@ onMounted(refresh);
         <el-pagination
           v-model:current-page="commandPage"
           v-model:page-size="commandPageSize"
-          :total="visibleCommands.length"
-          :page-sizes="[20, 50, 100]"
+          :total="commandTotal"
+          :page-sizes="[20, 50, 100, 200]"
           layout="total, sizes, prev, pager, next, jumper"
           background
+          @current-change="onCommandPageChange"
+          @size-change="onCommandPageChange"
         />
       </div>
     </div>
