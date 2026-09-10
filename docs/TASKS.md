@@ -1,6 +1,6 @@
 # Aria 当前任务
 
-> 最后更新：2026-09-06
+> 最后更新：2026-09-08
 > 详细设计入口：[00-文档索引与架构总览.md](./00-文档索引与架构总览.md)
 
 本文件只维护当前执行队列、未完成门槛和最新质量基线。历史交付细节留在对应阶段文档，不在这里重复。
@@ -19,9 +19,23 @@
 | Admin 信息架构重整 | 已完成（v1） | 领域分组、URL 可恢复二级 Tab、真实数据页与浏览器验收已完成 |
 | P6 Batch D Live2D/桌宠 | 联动代码完成 | 透明窗口、拖拽、穿透、位置恢复、Hub 同源舞台及签名情绪/动作/口型同步已接通；M2 与真机性能仍是发布门槛 |
 | M4B 手机 PWA | 进行中 | 可安装壳、离线降级、移动布局、前后台恢复、移动音频解锁及游标分页补拉/去重底座已完成；待真机验收、通知与多端租约 |
-| 个人管家闭环 J1～J8 | **J1～J6 全部代码闭环**，J7/J8 未启动 | ACT-01～03 完成、ACT-04 动作目录已扩到 18 个（含桌面/浏览器/剪贴板）；J2 四项（TASK/GOAL/BRIEF/REVIEW）代码闭环；J3 卫星核心 + XIAOAI 网关代码闭环；J4 四项（CAL/TODO/MAIL/CONTACT）代码闭环（TODO/MAIL 已真机联调）；J5 四项（PC-01/WEB-01/FLOW-01/PC-02 含 Chat 进度面板）代码闭环；J6 三项（COMMUTE/FOCUS/HOME）代码闭环，MEET-01 未启动；**全部待验收项集中在 [40-验收清单](./40-验收清单.md)** |
+| 个人管家闭环 J1～J8 | **J1～J6 Hub 代码闭环，待真实验收**，J7/J8 未启动 | ACT-01～03 完成、ACT-04 动作目录已扩到 18 个（含桌面/浏览器/剪贴板）；J2 四项（TASK/GOAL/BRIEF/REVIEW）代码闭环；J3 Hub 侧卫星协议、音频链路、仲裁与播报路由代码闭环，设备端唤醒/VAD 和硬件全链待验收；J4 四项（CAL/TODO/MAIL/CONTACT）代码闭环（TODO/MAIL 已真机联调）；J5 四项（PC-01/WEB-01/FLOW-01/PC-02 含 Chat 进度面板）代码闭环；J6 COMMUTE/FOCUS/HOME/MEET 均已实现，会议真实录音客户端待接入；**全部待验收项集中在 [40-验收清单](./40-验收清单.md)** |
 
 ## 2. 当前执行队列
+
+### 0.0 核查后优先修复（2026-09-08）
+
+以下为文档与实际代码对照发现的开发缺口，不应仅标记为“待真机验收”。FIX-01、FIX-02、FIX-03、FIX-01B、SAT-01～03、MEET-01 Hub 侧链路、QA-01 以及设备工具 Token 优化 A/B 和浏览观察 v1 已完成；PWA Batch B 依用户决定暂跳，Batch C 保留真实推送/双端验收。当前是单用户使用，`ID-01` 多人身份于 2026-09-08 按用户决定暂缓。用户随后要求启动 MCP；通用 MCP-C0 已完成，下一步是选定一个真实只读 MCP Server 做 C1 认证、发现、调用、裁剪和审计全链验证。浏览观察的聊天召回融合顺延到 C1 之后。
+
+- [x] **FIX-01 邮件服务端确认闭环（2026-09-08）。** `mail_send` 仅创建服务端预览，模型传 `confirmed=true` 显式拒绝。鉴权 API `/api/v1/mail/drafts` 列表/确认/取消与 Chat 完整邮件卡片已接入；确认只接受预览 ID + 内容摘要，发送服务器保存的完整收件人/抄送/主题/正文。预览绑定用户、15 分钟有效，同回合修改撤销旧预览；并发发送先认领，成功重放回执，超时/取消进入 `unknown_outcome` 禁重试。内存预览限 256 条，重启失效；当前采用单进程临时确认，不提供跨 worker 共享或持久化草稿。回归覆盖未确认/直接 true/篡改/跨用户/过期/取消/重复与并发发送/结果未知；隔离浏览器预览、确认、取消通过，未发送真实邮件。真实模型与邮箱端到端仍待验收。
+- [x] **FIX-01B 日历/流程保存确认一致性（2026-09-08）。** `calendar_create` 与 `workflow_save` 现在只创建服务端临时预览，模型传 `confirmed=true` 明确拒绝。Chat 展示日程完整时间/地点/参与人/提醒，以及流程各步参数/风险/确认策略/可撤销性；用户点击后由鉴权 API 携预览 ID + 内容摘要创建或保存。预览绑定用户和回合、15 分钟有效，同回合修改废弃旧预览；确认先认领，成功重放结果，取消/过期/摘要篡改/跨用户均拒绝。单进程内存预览限 256 条，重启失效；底层用户管理 API 保持原契约。真实模型体验仍待验收。
+- [x] **FIX-02 浏览器表单目标稳定性（2026-09-08）。** 读取返回 5 分钟有效的 `snapshot_id`，填写/提交必须携带；扩展隔离世界保存原 DOM 实例、顺序、父节点、属性、选项、表单目的地与本地值状态。切换标签、导航/重载、控件增删/重排/同形替换或外部改值均使旧快照失败；全量预检后按原实例填写，事件引起重排时停止并报告已写数量。提交先消费凭证，拒绝重放；密码值不跨注入结果边界。回执限制到 3800 UTF-8 字节，未返回字段不能填写。Hub 通过 `browser.form.snapshot_v1` 协议标志拒绝旧扩展。扩展 28 项回归、后端 766 项测试及本地真实浏览器页面验收通过；已安装 Chrome 扩展到 Hub 的全链仍待验收，须同步更新 Hub/扩展，旧计划需重读后重建。
+- [x] **FIX-03 家庭场景待确认计划通知（代码完成）。** 计划创建/确认/取消按用户推送 `plan.changed`；Chat 多计划卡片展示完整参数，显式确认后执行，支持取消与执行中停止。鉴权列表分页恢复待确认/执行中计划，断线轮询补偿、重复通知去重、过期展示与用户隔离已覆盖。离家取消自动到家计划，勿扰不阻断取消，迟到离家事件不误伤新计划；在途步骤如实结束，后续步骤不执行。真实 HA 联动仍待验收。
+- [x] **QA-01 测试资源回收与统计核对（2026-09-08）。** 测试 fixture 现在跟踪并在事件循环关闭前 dispose 每个 `create_database` 产生的 engine；资源告警和 pytest 未处理线程异常均提升为错误后，非 soak 全量仍通过。剩余 7 条为上游 Starlette/FastAPI 弃用提示，不含 aiosqlite/Pillow 资源泄漏。历史数量差异来自在制功能新增和收集范围，不是用例丢失。
+- [x] **OPT-41 设备工具 Token 优化 A/B（2026-09-08）。** 默认按需设备上下文、本地 `search_devices`、最多 5 项游标分页、房间/类型/动作筛选、隐私先过滤和短期会话指代已落地；`full` / `compact` 回退模式保留。MCP C/D 按真实外部目标启动，不作为 A/B 交付前提。
+- [x] **BROWSE-42 浏览器观察 v1 P1/P2（2026-09-08）。** Hub 拉取循环、origin/黑名单隐私闸门、变化检测、Timeline/记忆/主动感知分支、管理 API 和 Admin 状态/观察记录页已落地。P3 心跳指纹、台账过滤和聊天召回融合保留为可选优化。
+- [x] **MCP-C0 通用客户端底座（2026-09-08）。** 官方 Python SDK v2、Streamable HTTP、配置/凭据边界、分页工具目录、本地白名单、只读默认、Server 命名空间、连接状态、结果裁剪、稳定错误码和 Admin 状态/目录页已落地。写工具直接调用被硬拦截，待 MCP-D 接入 Action Plan。
+- [ ] **MCP-C1 Context7 真实只读试点。** 已选定 `https://mcp.context7.com/mcp`，仅允许 `resolve-library-id` / `query-docs`，通过 `ARIA_MCP_CONTEXT7_API_KEY` 做 Bearer 认证。2026-09-09 已完成 `2026-07-28` 协议协商、两项只读工具发现和匿名限额调用；当前凭据被远端拒绝，Context7 要求有效 Key 以 `ctx7sk` 开头。待换入有效凭据后完成鉴权调用、结果裁剪、L2/私密上下文禁止、审计和错误码验收。
 
 ### 0. 当前功能主线
 
@@ -30,8 +44,8 @@
 - [x] **macOS 系统内容选择器。** `capture_screen(target=interactive)` 的系统框选/取消、视觉回答、结构化错误码、临时授权与原图销毁已经完成代码、隔离 E2E 和用户确认的真机验收。
 - [ ] **硬件到位后恢复：ESP32 + LD2410 第一硬件闭环。** Hub 侧 MQTT → L3 `EphemeralSignal` → 5 秒稳定窗 → L1 `presence.changed` → Perception → Proactive Pipeline 已接通，ESPHome 固件样例与单设备 topic ACL 已落地；因暂时没有硬件，剩余刷写真机与 7 天验收不阻塞软件主线。
 - [x] **手机 PWA Batch A：可安装移动壳。** 现有 Chat 已增加 manifest、多尺寸/可遮罩图标、Service Worker 与离线降级页；窄屏改为顶部导航 + 会话/形象双抽屉，补齐刘海屏安全区、44px 触摸目标和输入法友好字号。安装后模式的访问令牌只进入 `sessionStorage`，不写长期 `localStorage`。
-- [ ] **手机 PWA Batch B：真机聊天闭环。** 前后台恢复逻辑已完成：回到前台会补拉当前会话并重连/同步 WebSocket，进入后台会释放语音会话，离线时停止发送并在网络恢复后自动同步。移动浏览器会在麦克风、播报开关或发送按钮的可信用户手势内预先解锁 `AudioContext`，后续 TTS 解码/播放失败会结束忙碌态并显示可操作提示。剩余是在 iOS Safari 和 Android Chrome 完成添加到主屏、登录、文字/streaming、麦克风/定位权限、TTS 播放与异常降级真机验收。
-- [ ] **手机 PWA Batch C：通知与会话漫游。** 会话游标补拉与消息去重底座已完成：REST 支持 `after_seq` 增量查询和 500 条分页循环，WebSocket 每页 200 条并用 `has_more/next_after_seq` 自动续拉，客户端按消息 ID 去重后按 `seq` 稳定合并。移动通知 endpoint 代码闭环（2026-09-03）：`0032_web_push` 迁移建 `push_subscription` 表并放宽回执 channel 约束、`/api/v1/push`（VAPID 公钥下发/订阅/退订）、`WebPushAdapter` 以 `web_push` 通道接入主动投递（通知正文按 `entity_id` 打 tag 去重、404/410 自动清订阅、L2 由配置校验硬禁）、Chat「🔔移动通知」开关（权限申请在用户手势内）与 SW `push`/`notificationclick`（聚焦/打开聊天回到前台补拉）已接通。多端音频与麦克风租约代码闭环（2026-09-04）：连接级稳定 `device_id` 作租约持有者，"最新获取者抢占、旧持有者尽快停止"——新语音回合抢占 audio_output 并向旧会话发 `voice.audio_preempted` 打断其回合，话语采集开始抢占 microphone 并发 `voice.microphone_preempted` 停止旧采集，speak 逐句续约失持即降级纯文字，桌宠播报纳管租约、逐块检查被抢占即中止；客户端处理两个抢占事件（停本地采集/清播放队列）；修复 interrupt 按 generation 误释放与 recover_after_restart 未接线，启动时恢复不安全回合并清理过期租约。剩余：VAPID 密钥生成与真实推送服务、双端同时语音的真机验收；L2 文本不进入系统通知。
+- [ ] **手机 PWA Batch B：真机聊天闭环（用户于 2026-09-08 选择暂跳）。** 前后台恢复逻辑已完成：回到前台会补拉当前会话并重连/同步 WebSocket，进入后台会释放语音会话，离线时停止发送并在网络恢复后自动同步。移动浏览器会在可信用户手势内预先解锁 `AudioContext`。剩余是在 iOS Safari 和 Android Chrome 完成添加到主屏、登录、文字/streaming、麦克风/定位权限、TTS 播放与异常降级真机验收。
+- [ ] **手机 PWA Batch C：通知与会话漫游。** 会话游标补拉、消息去重、Web Push 和多端音频/麦克风租约代码均已接通。2026-09-08 补齐推送恢复安全边界：已有订阅在登录恢复时重新登记到当前用户，服务端订阅表丢失可自愈；VAPID 公钥轮换会撤销旧订阅并用新 key 重建；恢复登记失败会撤销本地旧订阅，退出登录也同步退订，避免旧账号通知继续到达；Docker Compose 已透传 `ARIA_VAPID_PRIVATE_KEY`。剩余：生成并部署真实 VAPID 密钥、锁屏推送，以及双端同时语音的真机验收；L2 文本不进入系统通知。
 - [ ] **并行门槛：Tauri 透明桌宠真机收口。** 待验收 macOS 热插拔、60fps、常驻内存 <300MB 和长时间运行。
 - [ ] **并行门槛：M2 语音延迟与识别质量。** 重置统计窗口后完成 20 个完整回合 + 20 个打断样本，新低延迟模型端点继续暂缓。
 
@@ -43,7 +57,7 @@
 
 ### 0.2 PWA 收口后的个人管家能力队列
 
-完整范围、风险边界、验收和预估见 [39-个人管家能力路线图.md](./39-个人管家能力路线图.md)。以下顺序是当前认可的实施队列；J1 开始前必须先完成 PWA Batch B/C、多端租约，并保留 M2 与桌宠发布门槛。
+完整范围、风险边界、验收和预估见 [39-个人管家能力路线图.md](./39-个人管家能力路线图.md)。以下记录各能力的实际交付范围与剩余工作。J1～J6 已有实现；当前先处理 0.0 的核查缺口，再收口 PWA Batch B/C、多端租约真机验收，并保留 M2 与桌宠发布门槛。
 
 #### J1 安全行动引擎 v2
 
@@ -62,35 +76,35 @@
 #### J3 全屋语音卫星
 
 - [ ] `XIAOAI` 小爱音箱网关（代码闭环，待真机验收）：非官方个人接入，把小爱音箱当作文字终端——音箱保留唤醒词/ASR/TTS 所有权，小米凭据不进 Hub 进程。独立 `integrations/xiaoai_gateway` 容器（`@mi-gpt/next`）只把匹配触发前缀（默认"请阿莉娅"）的识别文本经 `/ws/adapters/xiaoai` 网关令牌鉴权送到 Hub；Hub 侧复用 `ChatService` 语音路由流式分句回传，逐句交给音箱 TTS（MiNA 或型号专用 MIoT TTS action）。配置中心 `integrations.xiaoai` 保存账号/音箱/中枢用户/网关密钥（secret 双模式，Admin GET 脱敏、保存还原掩码），发布即物化到 `xiaoai-state` 共享卷供网关热读取；Admin「HA 实体授权」页新增网关卡片（音箱下拉来自 HA 设备注册表型号、密钥随机生成）。剩余：真实小米账号登录（触发验证码需 passToken）、真机端到端与长期稳定性。
-- [ ] `SAT-01` 房间终端协议（进行中）：`app/satellite` 模块已落地确定性核心——`idle/listening/processing/speaking` 四态状态机（非法转移抛 `InvalidSatelliteTransition`，cancel/error 任意态回 idle）、`SatelliteRegistry` 内存会话（重连重置 idle、计数保留观测、掉线注销）与设备命令通道三类签名帧（`satellite.hello` 注册房间、`satellite.wake` 唤醒上报、`satellite.state` 状态上报；`idle→listening` 只能由 Hub 仲裁下发，设备重申 idle 幂等接受），全部要求 `voice.satellite` 能力授权；SAT-02 的仲裁核心已随做（见下）。剩余：唤醒词/VAD 的设备端实现、音频上下行帧与单终端真机全链（旧手机/树莓派验证）。
-- [ ] `SAT-02` 就近响应（仲裁核心已随 SAT-01 落地）：`arbitrate_wake` 确定性判定——同 owner 已有进行中会话压制（session_active）、仲裁窗口内重复唤醒压制（arbitration_window，默认 2s）、否则胜出进入 listening；多终端同时听到唤醒词只有一个响应。剩余：普通/紧急播报策略与房间标签路由。
-- [ ] `SAT-03` 连续对话：多轮免唤醒、超时、打断和跨设备安全接管。
+- [x] `SAT-01` Hub 侧房间终端协议（代码闭环，设备端/真机待验收）：新增 `satellite.audio.start/chunk/end` 上行，固定 PCM16/16k/mono，连续分片、4 MiB 上限、结束字节数与 SHA-256 校验，断线/重连/乱序/越权均清理在途话语。完整 PCM 复用现有 ASR → ChatService 流式回合 → TTS 链，下行控制与 base64 音频分片仍走设备签名帧；每台卫星复用独立连续会话，L2 强制本地 ASR/TTS。剩余验收：旧手机/树莓派实现唤醒词、VAD、录放音并跑真实全链。
+- [x] `SAT-02` Hub 侧就近响应与播报路由（代码闭环，真机待验收）：同 owner 单活跃会话与 2 秒仲裁窗口；hello 登记 `room_id` 和 `max_privacy_level`。普通播报只选指定房间内一个空闲端（未指定房间时稳定选择一个），紧急播报覆盖所有符合隐私上限的空闲端；播报进入 speaking，完成或失败回 idle，并复用带音频租约和 L2 本地限制的 TTS 链。
+- [x] `SAT-03` Hub 侧连续对话（代码闭环，真机待验收）：hello 可设置 0～30 秒免唤醒窗口（默认 8 秒）；回复成功后回到 listening 并广播 `satellite.session.available`，窗口内直接接受下一段音频，超时自动发 `satellite.session.expired` 回 idle。`barge_in=true` 可在 processing/speaking 中撤销旧任务并立即开始新话语，任务代际检查阻止吞掉取消异常的旧回合覆盖新状态。新房间通过 `satellite.takeover` 显式接管同 owner 的有效连续窗口，旧端收到 transferred、新端收到 accepted；只有此操作会把 Chat 会话上下文从旧设备迁移到新设备，跨用户、过期窗口、忙碌目标均拒绝。
 
 #### J4 个人信息连接器
 
 - [x] `CAL-01` 日历（代码闭环，待真实验收）：v1 以 Hub 本地库为日历真源（`calendar_event` 表，`0030_calendar` 迁移同时给 `task_item` 加 `source_ref` 关联列）；外部 CalDAV/Google 后续按同契约接入。`CalendarStore` 半开区间重叠查询（首尾相接不算冲突）；`CalendarService` 提供 `preview`（纯读：规范化展示时间/参与人/目标日历 + 冲突列表，不落库，对应验收「写入前展示」）与显式 create/patch/cancel；会前提醒复用 TASK-01 调度底座（`source_ref=calendar:{id}`，默认提前 10 分钟，事件太近则尽快提醒；改期撤旧建新、取消撤旧，不引入新调度器）。API `/api/v1/calendar/events(/preview)` 全部走聊天会话鉴权；聊天端经 `calendar_create` 受控工具接入（两段式：先预览复述、用户确认后落库，时间冲突服务端硬拦），不开放模型对底层 API 的直呼。剩余：外部日历同步。
 - [x] `TODO-01` 单一任务真源（对接 pnkx，2026-09-03 真机联调通过）：**pnkx 待办为唯一真源**，Hub `task_item` 作本地镜像（`0031_todo_sync` 迁移加 `external_updated_at/priority/group_label` 三列）。鉴权按用户决策采用**内部集成令牌**：pnkx 侧新增 `IntegrationTokenFilter`（`X-Integration-Token` 头常量时间比对，绑定 `pnkx.integration.userId` 指定身份，未配置完全不生效），Aria 侧 `ARIA_PNKX_BASE_URL` + `ARIA_PNKX_TOKEN` 两个 env 齐备才启用——无密码存储、无会话过期。同步引擎 `TodoSyncService`：全量分页拉取（跳过子任务）→ 按 `source_ref=pnkx:{id}` upsert 镜像、`external_updated_at` 变更才更新、远端删除→本地取消；本地完成→推送 `status=1`；Aria 手建任务经 `clientUuid=aria:{task_id}` 推送 pnkx，推送后崩溃未回填时按 clientUuid 从拉取快照认领，绝不重复创建。镜像 `next_fire_at` 恒为 NULL 不产生本地提醒（pnkx 自带 Quartz 提醒，避免双端重复打扰）；简报/回顾自动包含镜像任务。调度器默认 300s（`ARIA_TODO_SYNC_INTERVAL`），API `POST /api/v1/todo/sync` 手动触发返回统计。剩余：延期/优先级的反向推送（聊天端自然语言建任务已由 `pnkx_create_life` resource=todo 覆盖）。
-- [ ] `MAIL-01` 邮件助手（v1 代码闭环，QQ 邮箱真机联调通过）：`integrations.mail` 配置（SMTP/IMAP 主机端口 + 授权码 secret_value/secret_ref 双模式，未配齐禁启用）；`app/mail` 客户端（smtplib/imaplib 经 asyncio.to_thread，SMTP 登录发送返回 Message-ID，IMAP INBOX 拉取/TEXT 关键词搜索 + MIME 解析摘要：发件人/主题/时间/正文前 200 字）。聊天工具 `mail_read`（只读摘要）与 `mail_send`（两段式：首次调用只返回收件人/主题/正文预览，模型复述、用户确认后 `confirmed=true` 才发送；同回合幂等绝不重复投递）；两者仅 L1 挂载（L2 私密会话禁止外发，执行层兜底拒绝），账号未配置时 available=False 不挂载。`scripts/mail_livecheck.py` 对真实 QQ 邮箱全链通过（SMTP 自发自收 + IMAP 首次搜索命中、摘要解析正确）。剩余：草稿暂存/附件、归类与未读管理、真实模型端的复述确认体验验收。
+- [ ] `MAIL-01` 邮件助手（v1 主体与 FIX-01 已实现，待更新后的真实体验验收）：SMTP/IMAP 配置、收件摘要、QQ 邮箱历史联调已通过；发送现改为 `mail_send` 只准备预览，用户在 Chat 完整邮件卡片点击确认，经鉴权 API 核对身份/有效期/内容摘要后发送，模型 `confirmed=true` 不再允许发送。临时预览重启失效，结果未知不得自动重试。剩余：新确认流程真实模型/邮箱验收、持久化草稿/附件、归类与未读管理。
 - [x] `CONTACT-01` 联系人上下文（代码闭环，待真实验收）：`contact` 表（`0033_contacts` 迁移）保存名称、别名、关系、IANA 时区、重要日期（月/日/可选年，按真实年历校验）与授权偏好；`ContactStore` 在用户内做名称/别名 casefold 唯一裁决（冲突拒绝不静默合并）、`find_by_name` 精确匹配、`contacts_with_date` 支撑简报事实。红线「不自动推断敏感关系属性」：relationship 与 preferences 只来自用户显式陈述，无任何后台提取路径；写入只有用户 API 与用户明确请求的 `contact_save` 工具（不传 contact_id 时按名称 upsert）。聊天工具 `contact_save`（同 turn 幂等）与 `contact_query`（返回关系、时区当地当前时间、重要日期倒计时与偏好）仅 L1 挂载、L2 执行层兜底拒绝；用户 API `/api/v1/contacts`（列表/搜索/CRUD）走聊天会话鉴权。BRIEF-01 每日简报新增 `contact_date` 事实（今日重要日期，带 `contact:{id}` 来源引用）。
 
 #### J5 受控电脑操作代理
 
 - [x] `PC-01` 白名单桌面动作（代码闭环，待真机验收）：配置中心新增 `tools.desktop_actions`（默认全关；应用名/URL 主机 casefold 精确白名单去重，scheme 强制 `[a-z][a-z0-9+.-]*` 模式，音量/剪贴板独立开关）。四个受控工具 `desktop_open_app`/`desktop_open_url`/`desktop_set_volume`/`desktop_clipboard_write` 经既有设备命令网关下发，Hub 侧先做白名单硬校验再解析设备，L2 由工具声明 `max_privacy_level=L1` 经 EgressGuard 执行层拦截；**不挂载为聊天工具**（`_device_tool_ready` 恒 False），只能经 Action Registry 计划—确认—执行触发：打开应用/URL/设音量为 A1 预授权候选，剪贴板为 A2 每次确认，全部以设备 `succeeded` 终态回执为验证。Desktop 客户端新增 4 个能力声明（锁屏/隐私暂停时不声明）与 Rust 命令——应用名只允许 `[A-Za-z0-9 ._-]` 字符集、URL 只放行 http/https 且禁参数注入、osascript/pbcopy 数组传参无 shell。聚焦窗口与文件移动/重命名未开放（后续批次），删除/覆盖/对外发送维持禁止。
-- [x] `WEB-01` 浏览器工作流（代码闭环，待真机验收）：配置中心新增 `tools.browser_workflow.enabled` 总开关（默认关闭）。Browser Bridge 扩展新增 4 个命令与能力——`browser.tab.open`（只放行 http/https 的新标签导航）、`browser.form.read`（按文档顺序枚举可见表单控件为 `f{序号}`/`form{序号}` 稳定 ref，密码框值永不回传，控件数/文本长度有界）、`browser.form.fill`（按同一枚举重放定位写入，走原型 setter + input/change 事件兼容受控组件，select 只接受已有 option，密码框硬跳过并返回 skipped 原因，**永不提交**）、`browser.form.submit`（requestSubmit 触发，form_ref 不存在返回 form_not_found）。Hub 侧四个对应工具（`browser_open_tab`/`browser_form_read`/`browser_form_fill`/`browser_form_submit`）经设备命令网关下发、设备 `succeeded` 回执验证，**不挂载为聊天工具**，只能经 Action Registry 计划—确认—执行触发：form.read 为 A0 NEVER，tab.open/form.fill 为 A1 预授权候选，**form.submit 为 A2 每次确认**（对外发送红线，计划确认即「提交前展示目标、字段与证据」闸门）。
-- [x] `FLOW-01` 可复用流程（代码闭环，待真机验收）：`workflow` 表（`0034_workflows` 迁移，用户内名称唯一）保存已注册动作的有序模板（1-10 步，`ActionInvocation` 形状）。保存与运行都经 ActionRegistry **重新编译**——动作被移除、参数 Schema 漂移或 A3 禁止时显式失败（注册表异常归一为 ValueError），绝不带病执行历史模板。红线「保存前展示全部动作与权限」：`preview`（纯读）返回每步的动作标签、风险等级、确认策略、可逆性与参数；聊天工具 `workflow_save` 两段式（先预览复述、confirmed 才落库、同 turn 幂等、同名拒绝），`workflow_run` 把模板展开为待确认 ActionPlan（确认策略/幂等/TTL/执行/撤销全部复用 ACT-02 计划底座，按 turn 幂等）。用户 API `/api/v1/workflows`（列表/preview/创建/详情/删除/运行）走聊天会话鉴权。两个工具仅 L1 挂载。
+- [ ] `WEB-01` 浏览器工作流（FIX-02 已修复，Chrome 全链真机验收未完成）：`tools.browser_workflow.enabled` 默认关闭；四个命令覆盖打开页面、读取表单、填写和提交。读取返回 snapshot_id 与快照内字段 ref；填写/提交必须绑定同一次读取，校验页面与原 DOM 实例后才操作。密码值不回传，密码框不写；原型 setter + input/change 支持受控输入，填写不主动调用提交，页面事件逻辑仍会执行。协议、过期与重读要求见 FIX-02 和扩展 README。四工具经设备命令网关下发，不挂载聊天，只能经 Action Registry 计划—确认—执行：read 为 A0，open/fill 为 A1 预授权候选，submit 为 A2 每次确认，执行前须展示目标、字段与证据。
+- [x] `FLOW-01` 可复用流程（代码闭环，待真机验收）：`workflow` 表（`0034_workflows` 迁移，用户内名称唯一）保存已注册动作的有序模板（1-10 步，`ActionInvocation` 形状）。保存与运行都经 ActionRegistry **重新编译**——动作被移除、参数 Schema 漂移或 A3 禁止时显式失败（注册表异常归一为 ValueError）。`preview` 返回每步动作标签、风险、确认策略、可逆性与参数；聊天工具 `workflow_save` 只准备服务端预览，用户在 Chat 卡片点击并由鉴权 API 校验预览 ID 与摘要后保存，模型不能确认。`workflow_run` 把模板展开为待确认 ActionPlan。用户 API `/api/v1/workflows` 保持列表/preview/创建/详情/删除/运行契约；聊天工具仅 L1 挂载。
 - [x] `PC-02` 执行可视化（代码闭环，待真机验收）：执行中停止——`cancel_plan` 新增 EXECUTING 分支，置位 `action_plan.cancel_requested`（`0035_plan_cancel` 迁移，计划保持 executing）后由执行循环在步骤边界协作收敛：不再启动新步骤、在途步骤按自身超时结束并如实记录终态（成功保留/失败记 failed/任务级取消记 unknown_outcome）、剩余步骤记 cancelled 而非 skipped；**迟到结果不会推进后续步骤**。用户取消意图优先：带取消请求的计划在失败路径也收敛为 cancelled 而非 failed。执行事件流——`PlanExecutionEvent`（phase=execution.started/step.started/step.finished/execution.finished，含步骤序号/动作/状态/验证证据状态/completed/total，绝不含步骤参数）经可注入 listener 发出，监听器异常不中断执行；main 接线到 Chat WebSocket `broadcast_to_user`（新增，推给该用户全部在线聊天连接），取消端点支持可选 reason 透传。视图新增 `cancel_requested` 供 UI 停止按钮状态。
 
 #### J6 情境理解
 
 - [x] `COMMUTE-01` 出行管家（代码闭环，待真实验收）：`tools.commute` 配置（启用需 origin 出发点，driving/transit/walking + 缓冲分钟）；`CommuteService` 找时间窗内下一个带地点的日历事件，geocode → 高德路线耗时 → 建议出发时刻 = 开始 - 耗时 - 缓冲（已过钳到尽快出发），目的地天气摘要与导航 URI；出发提醒复用 TASK-01（source_ref=commute:{event_id} 撤旧建新）；provider 异常归一 `CommuteRouteError`；`commute_check` 工具仅 L1，耗时来源随结果透出可解释。
 - [x] `FOCUS-01` 专注守护（代码闭环，待真实验收）：确定性分析核心（纯函数）——长时工作（跨度 ≥90 分钟）、主题切换（30 分钟内 ≥5 个不同主题，bigram 聚合）、偏离目标（会话关键词与近期主题全部无关），建议文案不含屏幕原始内容；`FocusService` 内存会话 + `FocusScheduler` 周期评估经主动通道投递（20 分钟冷却，DND/预算沿用）；`focus_start/stop/status` 仅 L1。**只建议不拦截**。
-- [x] `HOME-01` 家庭场景（代码闭环，待真实验收）：`home_scene` 表定义触发器（Perception 事件精确匹配 / manual 仅手动）+ 生效时段（支持跨夜）+ 1-10 步动作；保存时逐动作编译校验；感知观察口组合分发（任务调度 + 场景），场景按事件幂等展开为**待确认行动计划**（重放返回同一计划）；manual 对感知事件免疫、禁用场景不可运行；计划-确认-执行全由 ACT-02 把关；`/api/v1/home/scenes` + `home_scene_run/list`（仅 L1）。
-- [ ] `MEET-01` 会议助手：会前资料、授权转写、决定和行动项、会后摘要（涉录音授权，留真机阶段评估）。
+- [ ] `HOME-01` 家庭场景（计划生成、FIX-03 通知/确认/离家取消已实现，真实验收未完成）：`home_scene` 表定义触发器（Perception 事件精确匹配 / manual 仅手动）+ 生效时段（支持跨夜）+ 1-10 步动作；保存时逐动作编译校验；感知观察口组合分发（任务调度 + 场景），场景按事件幂等展开为**待确认行动计划**（重放返回同一计划）；manual 对感知事件免疫、禁用场景不可运行；计划-确认-执行全由 ACT-02 把关；`/api/v1/home/scenes` + `home_scene_run/list`（仅 L1）。
+- [x] `MEET-01` 会议助手（Hub 代码闭环，录音客户端/真机待验收）：新增持久化会议会话与鉴权 API；可从本地日历生成标题、参与人、时间、地点和备注简报。只有用户显式提交 `authorized=true` 后才接受文本转写，撤销后立即停止；Hub 不接收或保存原始音频，发言人必须属于显式参与人或本人。结束后按 L1 utility / L2 private 路由生成摘要、决定与行动项，模型不能直接把行动项标成任务；用户逐项确认并补齐未来期限后才写入 TASK-01。数据库唯一认领与 `source_ref` 恢复保证并发确认最多创建一个任务，未知结果禁止盲重试。迁移为 `0037_meetings`；真实录音采集、说话人标注与现场授权交互仍待客户端接入和真机验收。
 
 #### J7～J8 后续产品化
 
 - [ ] `IOS-01/AND-01`：PWA 稳定后评估 App Intents、快捷指令、锁屏/Live Activity、小组件和穿戴设备入口。
-- [ ] `ID-01` 多人身份：设备身份为主、声纹辅助、访客降级、记忆和播报隔离。
+- [ ] `ID-01` 多人身份（暂缓，2026-09-08 用户决定）：当前只有一位使用者，暂不引入家庭成员、声纹辅助、访客降级和多人记忆/播报隔离；出现第二位长期用户或共享设备的私密播报需求时再启动。
 - [ ] `SAFE-01/SAFE-02` 家庭守护：环境异常、分级提醒和预授权紧急联系人升级。
 
 ### A. 多终端设备底座
@@ -160,11 +174,15 @@
 
 ## 3. 最近完成
 
-- [x] 情境助手 `HOME-01` 家庭场景 v1（代码闭环）：`home_scene` 表（`0036_home_scenes` 迁移，用户内名称唯一）定义触发器（Perception 事件 kind 如 user_arrived_home/user_left_home，manual 仅手动）+ 可选生效时段（HH:MM-HH:MM，支持跨夜）+ 1-10 个动作步骤；保存时逐动作经 ActionRegistry 编译校验（未知动作/参数漂移/A3 即拒）。触发链路：Perception 观察口改为组合分发（task_scheduler + home_scene_service），场景按事件幂等展开为**待确认行动计划**（幂等键 scene:{id}:{event_id}，重放同事件返回同一计划绝不重复建；manual 场景对感知事件免疫、禁用场景手动运行也不可用）；计划-确认-执行/撤销全部复用 ACT-02 底座，场景层不直接执行任何设备动作。用户 API `/api/v1/home/scenes`（CRUD/启停/手动运行）+ 聊天工具 `home_scene_run`/`home_scene_list`（仅 L1）。
+- [x] 语音连接断开后的输入框恢复：Chat 在语音 socket 断开回调里清掉当前会话的 streaming 状态并提示「语音连接已断开，请重新发送」，避免断线后回合卡在忙碌态、输入框无法继续发送。
+- [x] WebSocket 生成期保活：Chat 与语音 WS 在回合生成期间每 2 秒发送 `connection.keepalive` 事件，避免短空闲代理（反代 idle timeout）在慢首 token/TTS 期间掐断连接；语音侧同时为文本/二进制发送加连接级锁，防止 keepalive 文本帧与音频块交错；回合结束取消保活任务并抑制异常。
+- [x] 浏览器沙盒存储兜底：新增 shared `safeWebStorage()`——隐私模式与部分国产浏览器沙盒会让 `localStorage/sessionStorage` 抛异常，先探测读写失败即回退内存实现（页面内功能完整，刷新需重新登录）；Chat 登录令牌存取改走该入口，主题读写同步加 try 保护。
+- [x] 生产工具目录上限修复：`CompletionRequest.tools` 上限从 16 提升到 32——设备/助手/情境工具按能力就绪全量挂载后已超过 16，生产环境回合会被 Schema 校验直接拒绝；上限只作卫生约束，新增 `tests/test_llm.py` 回归覆盖 32 工具通过与超限拒绝。
+- [x] 情境助手 `HOME-01` 家庭场景 v1（代码闭环）：`home_scene` 表（`0036_home_scenes` 迁移，用户内名称唯一）定义触发器（Perception 事件 kind 如 user_arrived_home/user_left_home，manual 仅手动）+ 可选生效时段（HH:MM-HH:MM，支持跨夜）+ 1-10 个动作步骤；保存时逐动作经 ActionRegistry 编译校验（未知动作/参数漂移/A3 即拒）。触发链路：Perception 观察口改为组合分发（task_scheduler + home_scene_service），场景按事件幂等展开为**待确认行动计划**（到家幂等键 scene-arrival:{id}:{event_id}（兼容旧 scene: 键），其他触发仍用 scene:{id}:{event_id}；重放同事件返回同一计划绝不重复建；manual 场景对感知事件免疫、禁用场景手动运行也不可用）；计划-确认-执行/撤销全部复用 ACT-02 底座，场景层不直接执行任何设备动作。用户 API `/api/v1/home/scenes`（CRUD/启停/手动运行）+ 聊天工具 `home_scene_run`/`home_scene_list`（仅 L1）。
 - [x] 情境助手 `FOCUS-01` 专注守护 v1（代码闭环）：确定性分析核心（纯函数）——长时工作（观察跨度 ≥90 分钟）、主题切换（30 分钟内不同主题 ≥5 次，bigram 相似度聚合）、偏离目标（会话关键词与近期主题全部无关），建议文案为确定性模板且**不含屏幕原始内容**；`FocusService` 内存会话注册表（一人一会话、新替旧、到期自动清理、可注入时钟）；`FocusScheduler` 周期评估（默认 120s，`ARIA_FOCUS_INTERVAL` 可调）经 ProactiveDeliveryService 投递（trigger_kind=focus.nudge，DND/预算/降频沿用既有闸门），同会话同类型信号 20 分钟冷却绝不刷屏，监听/投递异常不中断调度；聊天工具 `focus_start`/`focus_stop`/`focus_status` 仅 L1 挂载——**只建议不拦截**，无任何应用拦截能力。
 - [x] 情境助手 `COMMUTE-01` 出行管家 v1（代码闭环）：`tools.commute` 配置（启用需显式 origin 出发点，driving/transit/walking + 缓冲分钟数）；`CommuteService` 找时间窗内下一个带地点的日历事件，geocode 起终点 → 高德路线耗时 → 建议出发时刻 = 开始 - 耗时 - 缓冲（已过时刻钳到尽快出发），目的地 adcode 天气实时摘要，一键导航 URI；出发提醒复用 TASK-01 调度（source_ref=commute:{event_id} 撤旧建新，不重复打扰）；provider 异常归一为 `CommuteRouteError` 结构化 reason；`commute_check` 聊天工具仅 L1 挂载（L0 不读个人日程、L2 不落提醒库），amap/日历未就绪或未启用时安全降级。建议的每项来源（duration_source、缓冲配置）随结果透出。
 - [x] 个人管家 `PC-02` 执行可视化后端 v1（代码闭环）：执行中协作式停止（cancel_requested 标记 + 步骤边界收敛 + 迟到结果不推进）+ `PlanExecutionEvent` 执行进度事件流（目标/步骤/进度/证据状态，经 Chat WS broadcast_to_user 实时推送）+ 取消端点 reason 透传。前端进度面板已随同批落地（见下一条）。
-- [x] 个人管家 `FLOW-01` 可复用流程 v1（代码闭环）：`workflow` 表（0034 迁移，用户内名称唯一）+ `WorkflowService`（保存/运行都经 ActionRegistry 重新编译，注册表异常归一 ValueError）+ `workflow_save` 两段式聊天工具（预览含每步动作标签/风险/确认策略/可逆性，confirmed 才落库，同 turn 幂等）+ `workflow_run`（模板展开为待确认 ActionPlan，确认/执行/撤销复用 ACT-02 底座）+ `/api/v1/workflows` 用户 API（列表/preview/CRUD/运行）。仅 L1 挂载。
+- [x] 个人管家 `FLOW-01` 可复用流程 v1（代码闭环）：`workflow` 表（0034 迁移，用户内名称唯一）+ `WorkflowService`（保存/运行都经 ActionRegistry 重新编译）+ `workflow_save` 服务端预览与 Chat 鉴权点击确认（每步动作标签/风险/确认策略/可逆性/参数完整展示）+ `workflow_run`（模板展开为待确认 ActionPlan）+ `/api/v1/workflows` 用户 API。仅 L1 挂载。
 - [x] 个人管家 `WEB-01` 浏览器工作流 v1（代码闭环）：`tools.browser_workflow.enabled` 总开关 + Browser Bridge 扩展 4 命令（tab.open 只放行 http/https、form.read 顺序 ref 枚举且密码值不回传、form.fill 原型 setter 写值兼容受控组件且密码框硬跳过、form.submit requestSubmit）+ Hub 四工具（设备回执验证，不挂载聊天）+ Registry 四动作（read=A0、open/fill=A1 预授权、**submit=A2 每次确认**）。
 - [x] 个人管家 `PC-01` 白名单桌面动作 v1（代码闭环）：`tools.desktop_actions` 白名单配置（casefold 精确匹配 + scheme 模式校验，默认全关）+ 4 个受控工具（open_app/open_url/set_volume/clipboard_write，经设备命令网关下发、设备 `succeeded` 回执验证）+ Action Registry 四个动作（A1 预授权 ×3 + A2 剪贴板每次确认）+ Desktop 客户端 4 个新命令与能力声明（Rust 端应用名字符集白名单、http/https scheme 强制、无 shell 数组传参、锁屏拒绝）。动作不挂载为聊天工具，只能经计划—确认—执行触发；聚焦窗口/文件操作留后续批次。
 - [x] `CONTACT-01` 联系人上下文 v1（代码闭环）：`contact` 表 + `ContactStore`（名称/别名 casefold 唯一裁决、时区 ZoneInfo 校验、重要日期按年历校验、用户隔离）+ `/api/v1/contacts` 用户 API + `contact_save`/`contact_query` 聊天工具（仅 L1、同 turn 幂等、按名称 upsert、查询返回当地当前时间与重要日期倒计时）+ BRIEF-01 简报接入今日重要日期事实。仓库零推断：关系与偏好只能由用户显式陈述写入。
@@ -173,14 +191,14 @@
 - [x] 个人连接器 `MAIL-01` 邮件助手 v1：配置中心 `integrations.mail`（授权码双模式）+ `app/mail` 客户端（SMTP 发送/IMAP 收取，同步库全部 to_thread）+ `mail_read`/`mail_send` 聊天工具（两段式确认发送、同回合幂等、仅 L1、未配置不挂载）；`scripts/mail_livecheck.py` 对真实 QQ 邮箱联调一次通过。真实凭据只经环境变量进入运行时，仓库零凭据（提交前全仓 grep 复核）。
 - [x] 多端音频与麦克风租约（PWA Batch C 收尾项）：`VoiceSession` 增加连接级稳定 `device_id` 作为租约持有者（不再每回合随机生成），统一"最新获取者抢占、旧持有者尽快停止"策略——新语音回合获取 audio_output 后消费抢占结果，向旧持有会话发 `voice.audio_preempted` 并打断其回合；话语采集（PTT 与 VAD 自动两条路径）开始时获取 microphone 租约，抢占方接管、被抢占会话收到 `voice.microphone_preempted` 且丢弃在途话语；speak 逐句续约，失持后剩余句子降级纯文字（delta 照常）；桌宠 `stream_device_speech` 持有 audio_output 逐块检查持有权，被语音回合抢占即发 `audio_preempted` 中止剩余音频；客户端新增两个抢占事件处理（停止本地采集/清空播放队列）。修复 TurnCoordinator.interrupt 按 generation 误当持有者释放租约的 no-op bug（新增 `release_for_generation`）；`recover_after_restart` 与过期租约清理接入 lifespan 启动。新增 `tests/test_voice_multi_device.py` 4 例：麦克风抢占停旧采集且释放后第三方可获取、音频抢占通知+打断旧回合、桌宠播报被抢占中止且不动他人租约、按 generation 释放。
 - [x] PWA Batch C 移动通知底座（Web Push）：新增 `app/push` 包（订阅 Store 按 endpoint upsert/失效即删、`WebPushSender` VAPID 签名 + RFC8291 加密经 pywebpush 发送、`WebPushAdapter` 以 `web_push` 通道接入 `ProactiveDeliveryService`）；`0032_web_push` 迁移建 `push_subscription` 表并把回执 channel 约束扩展到 `web_push`；配置中心新增 `integrations.push`（VAPID 公钥明文 + 私钥 secret_value/secret_ref 双模式，未配齐密钥禁止启用）与 `proactive_output.web_push` 通道（默认优先级 70，L2 禁入由校验器硬拦）；用户 API `/api/v1/push/vapid-key|subscribe|unsubscribe`；Chat 输入区新增「🔔移动通知」开关（权限申请严格在用户手势内、状态恢复不触发询问），Service Worker 新增 `push` 展示与 `notificationclick` 点击回流（聚焦已打开窗口，前台后走既有补拉）；Admin 主动通道页新增 Web Push 通道卡。通知正文按事件 ID 打 tag 去重、截断 120 字，推送服务 404/410 自动清理订阅。
-- [x] 聊天端自然语言建提醒/建日程工具：新增 `reminder_create`（`app/tasks/tools.py`，写 TASK-01 任务存储，支持 once/daily/weekdays/weekly/interval 周期与到家/离家事件触发，本地时间按 `ARIA_DEFAULT_TIMEZONE` 解释）与 `calendar_create`（`app/calendar/tools.py`，两段式契约：首次调用只做时间规范化 + 冲突预览并要求模型向用户复述，`confirmed=true` 才落库，时间冲突即使确认也服务端硬拦）。两者同回合按 turn 幂等（重复调用返回已建实体不重复写入）；挂载门禁仅 L1 开放（L0 公开模式不写个人数据，L2 私密会话内容不入库，工具执行层兜底拒绝），要求工具模型就绪；`tool.started` 标签与 main.py 按 service 就绪挂载已接通。TODO-01 的聊天建任务已由既有 `pnkx_create_life` resource=todo 覆盖，不另建通道。
+- [x] 聊天端自然语言建提醒/建日程工具：`reminder_create` 支持 once/daily/weekdays/weekly/interval 周期及到家/离家触发；`calendar_create` 只做时间规范化、冲突检查并准备服务端预览，用户在 Chat 卡片点击确认后由鉴权 API 校验内容摘要并落库，模型 `confirmed=true` 被拒绝，时间冲突仍由服务端硬拦。挂载门禁仅 L1 开放；`tool.started` 标签与 main.py 按 service 就绪挂载已接通。
 - [x] 聊天 Markdown 渲染 + TTS 前文本清洗：Chat 气泡由纯文本改为 markdown-it 安全渲染（`html=false` 转义原始 HTML、链接强制 `noopener noreferrer`、流式期间保持 pre-wrap），新增 `MarkdownContent.vue`/`markdown.ts`；语音侧新增 `speech_text.py`（`MarkdownSpeechFilter` 跨句记住 fenced code 状态、`markdown_to_speech_text` 移除标题/链接/URL/行内代码/表格线/HTML 标签），接入流式分句、桌宠播报与完整语音回复三条路径，清洗后为空则安全跳过或返回 `tts_empty_text`。语音播报不再念出 Markdown 符号与代码块。
 - [x] 情景记忆按事件追加（修复屏幕观察重复入库冲突）：`MemoryIngester` 对 EPISODIC 候选直接追加，不再进入稳定事实的"相似但不同即冲突"裁决——相似文本描述的是不同时间的事件可以同时为真；上游事件管线继续按事件 ID、截图哈希与时间窗口去重。`docs/38` 同步更新，新增两条相似屏幕观察各自独立创建的回归。
 - [x] Admin 三处修复：设备命令台账与 HA 实体列表加分页（20/50/100(/200) 档位、筛选变化重置页码、HA 表格跨页保留勾选）；修复模型工作区保存时 `structuredClone` 无法克隆 Vue 响应式 Proxy 导致的崩溃——改为递归重建普通对象。
 - [x] `TODO-01` 真机联调通过：livecheck 对 `https://admin.pnkx.top:8` 全链验收——分页拉取 109 条、镜像 109 条建立零错误（active 6 条含标题/优先级/分组正确）；本地新建经 `clientUuid=aria:{id}` 推送且远端绑定身份 `createBy` 正确；完成推送后远端 `status/finishTime` 落位；测试任务远端删除成功。livecheck 脚本同步增强为输出全量同步统计。生产 Hub 启用同步仍需部署侧配置 `ARIA_PNKX_BASE_URL/ARIA_PNKX_TOKEN`。
 - [x] 个人连接器 `TODO-01` 任务单一真源（对接 pnkx）：集成令牌鉴权（pnkx 侧 IntegrationTokenFilter + X-Integration-Token，Aria 侧双 env 门控）；TodoSyncService 拉取镜像/删检测/推完成/推新建（clientUuid 幂等 + 崩溃认领）；TodoSyncScheduler 300s 循环 + `/api/v1/todo/sync` 手动触发。pnkx 仓同步提交过滤器与配置（编译通过）。
 - [x] 个人连接器 `CAL-01` 日历：`calendar_event` 表 + `CalendarStore`（半开区间重叠冲突检查）+ `CalendarService`（preview 纯读展示写入内容与冲突、显式 CRUD、会前提醒经 `task_item.source_ref` 复用 TASK-01 调度并联动改期/取消）+ `/api/v1/calendar` 用户 API 与 main 接线。J4 第一项代码闭环。
-- [x] 全屋语音 `SAT-01/SAT-02` 确定性核心：`app/satellite` 状态机 + 内存会话注册表 + 唤醒仲裁（同 owner 单会话、2s 窗口去重、多终端唯一响应），接入 `/ws/devices` 签名帧（hello/wake/state，`voice.satellite` 能力门禁，非法转移/越权上报返回结构化错误帧）。音频上下行与真机全链待硬件。
+- [x] 全屋语音 `SAT-01/SAT-02` Hub 链路：状态机、内存注册表、同 owner 单会话与 2 秒唤醒仲裁；签名设备通道覆盖 hello/wake/state 和带序号、大小、SHA-256 校验的 PCM 上行，复用现有 ASR/Chat/TTS 回合并以签名 base64 分片下行；普通播报单房间单端、紧急播报多端覆盖，按 room 与隐私上限筛选。设备端与真机全链保留在验收清单。
 - [x] 个人管家 `REVIEW-01` 晚间回顾：`DailyReviewService` 四区块采集（完成/未完成/新承诺/明日重点，各带来源引用）+ 逐项修正（confirm/remove/note 只作用于回顾自身并重渲染正文）+ `(user_id, review_date)` 唯一约束每晚一次；`DailyReviewScheduler` 本地时区 21:30（`ARIA_REVIEW_TIME` 可调）经主动通道投递；`/api/v1/reviews` 查看与幂等预览。`CognitiveStore.create_goal/set_goal_status` 补可注入时钟，`goals_created_between/goals_completed_between` 支撑回顾查询。J2 四项（TASK/GOAL/BRIEF/REVIEW）代码闭环全部完成。
 - [x] 个人管家 `BRIEF-01` 每日智能简报：`DailyBriefService` 确定性事实采集（天气/当日任务/到期承诺，各带来源引用）+ 模板拼装（无重要内容一行短句）+ `(user_id, brief_date)` 唯一约束每日一次；`DailyBriefScheduler` 本地时区时间门后为活跃用户投递；`/api/v1/briefs` 查看与幂等预览。main.py 完成天气闭包（按需构建高德运行时、任何失败静默降级）与调度器生命周期接线。
 - [x] 个人管家 `GOAL-01` 承诺跟踪：目标提醒 pre_due/due 各一次的乐观认领、稍后/忽略降频闸门与反馈 API；`GoalTracker` 聊天后台承诺识别（消息证据 + 幂等 + 宁缺勿滥）；`GoalReminderScheduler` 复用主动通道投递。`ChatService` 新增 `goal_tracker` 参数与后台提取任务，`main.py` 完成 scheduler 生命周期与投递接线。
@@ -251,6 +269,29 @@
 
 ## 4. 最新质量基线
 
+- 2026-09-08 `MCP-C0`：新增官方 MCP Python SDK v2 依赖与独立适配边界，完成安全配置、分页目录、白名单、只读调用裁剪、连接管理、Admin API/UI 和 7 项 MCP 专项回归。MCP/配置/API 定向 **19 通过**；严格资源告警模式下非 soak 全量 **819 通过 / 2 跳过 / 6 条上游弃用提示**，Ruff、全量严格 mypy（343 source files）、Admin typecheck/production build 与 `git diff --check` 通过。尚未连接真实外部 MCP Server，C1 需选定试点。
+
+- 2026-09-08 `QA-01 + OPT-41 + BROWSE-42`：测试数据库 engine 在事件循环关闭前统一 dispose，Pillow 感知哈希已迁移到新 API；将 `ResourceWarning` 和 `PytestUnhandledThreadExceptionWarning` 提升为错误后，非 soak 全量 **812 通过 / 2 跳过 / 7 条上游弃用提示**。设备 Token 优化 A/B 完成默认按需上下文、本地检索与短期指代；浏览观察 P1/P2 完成 Hub 循环、隐私闸门、Timeline/记忆/主动分支和 Admin 界面。定向 pytest **57 通过**，Ruff、mypy（255 source files）、Admin typecheck/production build 与 `git diff --check` 通过；Admin 构建仅有已知 Node 18/大 chunk 警告。
+
+- 2026-09-08 `MEET-01` Hub 侧会议助手：新增 `meeting` / `meeting_action_claim` 持久化与 `0037_meetings` 迁移、鉴权会议 API、日历会前简报、显式授权/撤销后的文本转写门禁、L1/L2 摘要路由、决定/行动项候选，以及用户确认后写入 TASK-01 的跨 worker 单次认领和未知结果保护。会议版本号乐观更新保证上传与撤销竞态不会在撤销后落字，也防止并发上传/行动项确认互相覆盖；摘要生成期间转写变化会拒绝旧摘要并要求重新生成。会议定向与任务/日历回归 **39 通过**；非 soak 全量 pytest **798 通过 / 2 跳过 / 1 排除**，Ruff、严格 mypy（246 source files）、SQLite 空库升级至单 head `0037_meetings` 与 `git diff --check` 通过。Hub 不接收或保存原始音频；真实录音采集、说话人标注与现场授权交互待客户端和真机验收。
+
+- 2026-09-08 PWA Batch C 订阅恢复修复：Chat typecheck 与 production build、Service Worker 语法、Docker Compose 配置解析、`git diff --check` 通过；Web Push + 多端语音定向 pytest **18 通过**。隔离浏览器验证同 key 订阅恢复会重绑当前账号，公钥轮换按“撤旧 → 新建 → 重绑”执行。未生成或部署真实 VAPID 私钥，未发送真实推送；Batch B 依用户决定暂跳。
+
+- 2026-09-08 `SAT-01/SAT-02` Hub 音频与路由收口：新增卫星 PCM 上行完整性边界、现有 ASR/Chat/TTS 链复用、签名音频下行、每设备连续会话、room/隐私标签，以及普通单端/紧急多端播报策略；卫星与语音/输出定向 pytest **52 通过**，非 soak 全量 **782 通过 / 2 跳过 / 1 排除**，Ruff 与严格 mypy（240 source files）通过。未做设备端唤醒/VAD 或实体硬件录放音。
+
+- 2026-09-08 `SAT-03` Hub 连续对话收口：新增可配置免唤醒窗口、超时退出、卫星 barge-in、连续窗口发现与同 owner 显式跨房间接管；会话上下文保持每设备隔离，只在通过接管校验时迁移。卫星/语音/多端租约定向 pytest **45 通过**，非 soak 全量 **788 通过 / 2 跳过 / 1 排除**，Ruff、严格 mypy（240 source files）与 `git diff --check` 通过；实体设备移动房间、录放音与打断延迟仍待真机。
+
+- 2026-09-08 FIX-01B 日历/流程保存确认：非 soak 全量 pytest **778 通过 / 2 跳过 / 1 排除**；Ruff、严格 mypy（324 source files）、Shared/Chat/Admin typecheck 与 production build 通过。新增临时确认底座及 4 项测试，覆盖身份/摘要/有效期绑定、同回合修改、单次认领与成功重放、日历确认创建、流程确认或取消；既有工具测试改为验证模型 `confirmed=true` 无法写入。隔离浏览器验证完整日程/流程卡片、日程点击确认后创建及流程取消不保存；保留既有 aiosqlite/弃用与 Admin 构建警告。无新迁移，未部署或写入真实日历/流程。
+
+- 2026-09-08 FIX-03 家庭场景确认：非 soak 全量 pytest **774 通过 / 2 跳过 / 1 排除**；Ruff、严格 mypy（322 source files）、Shared/Chat/Admin typecheck 与 production build 通过。新增 8 项回归覆盖通知/重放、数据库恢复、分页/用户隔离/过期、监听失败、离家在途取消、步骤领取前取消、旧幂等键兼容及勿扰/迟到离家事件。隔离浏览器验证多计划、重复通知无写入、确认后执行及取消不执行；保留既有 aiosqlite/弃用与 Admin 构建警告。无新迁移，未部署或调用真实 HA。
+
+- 2026-09-08 FIX-02 表单快照：非 soak 全量 pytest **766 通过 / 2 跳过 / 1 排除**，39 条警告（含既有 aiosqlite 资源回收问题）；Ruff、严格 mypy（322 source files）、扩展 **28 项测试**与 `tsc + vite` build 通过。本地真实浏览器验证旧快照拒绝且零写入、重读后正确填写、提交一次与重放拒绝；测试页取消提交事件，无真实表单外发。无新迁移，未部署或更新已安装扩展。
+
+- 2026-09-08 FIX-01 邮件确认：非 soak 全量 pytest **758 通过 / 2 跳过 / 1 排除**；Ruff、严格 mypy（322 source files）、Shared/Chat/Admin typecheck 与 production build 通过（既有 Admin chunk/注解警告）。隔离浏览器完整预览、模拟确认成功和取消移除通过；测试邮件传输均为 mock。无新迁移、未部署生产或发送真实邮件。
+
+- 2026-09-08 文档/代码核查复验：`uv run pytest -k 'not soak'` **755 通过 / 2 跳过 / 1 排除，46 警告**；Ruff、严格 mypy（321 source files）与 Shared/Chat/Admin typecheck 通过；`alembic heads` 为单 head `0036_home_scenes`。本次未运行 production build、真机联调或生产库迁移；历史 756 通过的记录保留，差异待 QA-01 核对。
+
+- 2026-09-08 生产修复批（工具上限 16→32 / 浏览器沙盒存储兜底 / WS 生成期保活 / 语音断线输入框恢复）：`tests/test_llm.py` **28 通过**（含新增工具目录上限回归），`test_chat_websocket.py + test_voice_websocket.py + test_voice_multi_device.py` **28 通过**确认保活改动无回归；非 soak 全量 pytest **756 通过 / 0 失败**（2 跳过）；Ruff、严格 mypy（321 source files）、Shared/Chat/Admin typecheck 与 production build（仅既有 admin 大 chunk 警告）、`git diff --check` 全部通过；无新迁移，Alembic 保持单 head `0036_home_scenes`。反代保活与真实沙盒浏览器（微信内置/隐私模式）行为待生产观察。
 - 2026-09-06 `HOME-01` 家庭场景：新增 `tests/test_home_scenes.py` **8 通过**（时段规范化与跨夜判定、CRUD/同名拒绝/步骤数边界/启停/删除、感知触发展开为计划（标题/动作落位）+ 同事件幂等重放返回同一计划 + 不同事件再触发、时段窗外/触发器不匹配/manual 对感知事件免疫/禁用场景手动运行不可用、工具 run/list 与 L0/L2/未找到拒绝、API 401/422/201/启停/run/删除全链）；非 soak 全量 pytest **752 通过 / 0 失败**（1 个 soak 用例 deselect）；Ruff、严格 mypy（321 source files）、`git diff --check` 通过；Alembic SQLite 空库升级到单 head `0036_home_scenes`。真实 HA 场景联动（到达触发计划确认到执行）待真机验收。
 - 2026-09-06 `FOCUS-01` 专注守护：新增 `tests/test_focus.py` **11 通过**（长时工作跨度计算、主题切换 bigram 聚合去重、偏离目标判定与目标匹配豁免、空观察、会话替换/停止/到期清理（含修复 dict.pop 返回被删值的 bug）、Timeline 真实读写评估、调度器投递与 20 分钟冷却、监听异常、工具生命周期与 L0/L2/匿名门禁）；非 soak 全量 pytest **744 通过 / 0 失败**（1 个 soak 用例 deselect）；Ruff、严格 mypy（314 source files）、`git diff --check` 全部通过；无新迁移。真实屏幕感知数据下的提醒体验待验收。
 - 2026-09-06 `COMMUTE-01` 出行管家：新增 `tests/test_commute.py` **9 通过**（next_outing 跳过无地点日程/时间窗/空日历、出发时刻计算与 duration_source 来源、目的地天气降级、提醒撤旧建新不重复、geocode/路由异常归一 CommuteRouteError、过去时刻钳到尽快出发、工具 has_outing/未配置/L0+L2/匿名拒绝、配置启用必须 origin、within_hours 边界）；非 soak 全量 pytest **733 通过 / 0 失败**（1 个 soak 用例 deselect）；Ruff、严格 mypy（308 source files）、`git diff --check` 全部通过；无新迁移。真实高德密钥下的联调（真实路线耗时与天气）待验收。

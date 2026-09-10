@@ -20,6 +20,8 @@ dependencies = [
   "pillow>=11,<13",
   "python-multipart>=0.0.20,<1",
   "pywebpush>=2.5.0",
+  "mcp>=2,<3",
+  "httpx2>=2,<3",
 ]
 
 [project.optional-dependencies]

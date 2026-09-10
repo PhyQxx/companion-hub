@@ -57,6 +57,7 @@ services:
       ARIA_CONFIG_PATH: ${ARIA_CONFIG_PATH:-config/hub.example.yaml}
       ARIA_WATCH_CONFIG: ${ARIA_WATCH_CONFIG:-true}
       ARIA_ADMIN_TOKEN: ${ARIA_ADMIN_TOKEN:-}
+      ARIA_VAPID_PRIVATE_KEY: ${ARIA_VAPID_PRIVATE_KEY:-}
       ARIA_XIAOAI_CONFIG_PATH: /var/lib/aria/xiaoai/config.json
     depends_on:
       postgres:

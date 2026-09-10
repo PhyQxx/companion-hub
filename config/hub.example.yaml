@@ -170,6 +170,8 @@ tools:
 integrations:
   home_assistant:
     enabled: false
+    # full / compact / on_demand；默认按需检索，避免全量设备清单常驻模型上下文。
+    device_context_mode: on_demand
     instance_id: home-main
     base_url: https://ha.pnkx.top:8
     verify_tls: true
@@ -215,6 +217,49 @@ integrations:
     # address: you@example.com
     # display_name: Aria
     # secret_ref: env:ARIA_MAIL_SECRET
+
+# 浏览器观察默认关闭。启用后 Hub 周期读取已配对浏览器的当前标签页，
+# 只持久化摘要、origin 和截断标题；页面原文在分析后即销毁。
+browser_awareness:
+  enabled: false
+  interval_seconds: 60
+  analysis_prompt: 概括用户当前浏览的网页内容，并判断是否值得记录或主动提醒。
+  memory_enabled: true
+  proactive_enabled: true
+  max_text_chars: 8000
+  blocked_hosts: []
+
+# 外部 MCP Server 默认不连接。一期只允许 Streamable HTTP；工具先进入
+# Hub 本地目录，不会因发现成功就全量注入聊天提示词。
+mcp:
+  enabled: false
+  max_tools_per_turn: 8
+  servers:
+    # MCP-C1 首选试点：Context7 公开技术文档检索。启用前同时打开顶层和 Server 开关，
+    # 并在运行环境设置 ARIA_MCP_CONTEXT7_API_KEY。
+    - server_id: context7
+      enabled: false
+      transport: streamable_http
+      endpoint: https://mcp.context7.com/mcp
+      secret_ref: env:ARIA_MCP_CONTEXT7_API_KEY
+      allowed_tools: [resolve-library-id, query-docs]
+      allow_write_tools: false
+      connect_timeout_seconds: 5
+      call_timeout_seconds: 15
+      catalog_ttl_seconds: 300
+      max_result_bytes: 32000
+  # 其他 Server 模板：
+  # - server_id: readonly-example
+  #   enabled: false
+  #   transport: streamable_http
+  #   endpoint: https://example.com/mcp
+  #   secret_ref: env:ARIA_MCP_EXAMPLE_TOKEN
+  #   allowed_tools: [search, get_item]
+  #   allow_write_tools: false
+  #   connect_timeout_seconds: 5
+  #   call_timeout_seconds: 15
+  #   catalog_ttl_seconds: 300
+  #   max_result_bytes: 32000
 
 # 主动输出通道。Desktop 通知还需要设备端声明并获授 notification.show；
 # Voice 仅投递到当前在线且空闲的语音会话；Web Push 需 integrations.push 启用
