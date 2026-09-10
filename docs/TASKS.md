@@ -35,7 +35,7 @@
 - [x] **OPT-41 设备工具 Token 优化 A/B（2026-09-08）。** 默认按需设备上下文、本地 `search_devices`、最多 5 项游标分页、房间/类型/动作筛选、隐私先过滤和短期会话指代已落地；`full` / `compact` 回退模式保留。MCP C/D 按真实外部目标启动，不作为 A/B 交付前提。
 - [x] **BROWSE-42 浏览器观察 v1 全量（P1/P2 于 2026-09-08，P3 于 2026-09-10）。** Hub 拉取循环、origin/黑名单隐私闸门、变化检测、Timeline/记忆/主动感知分支、管理 API 和 Admin 状态/观察记录页已落地。P3 已完成：心跳轻量指纹（仅 Hub 声明 `observe_tab_hint` 时上报 origin+标题，稳态零命令）、命令台账服务端分页与「隐藏感知轮询」过滤（screen-monitor-\*/browser-observe-\* 前缀折叠）、聊天端浏览召回融合（`BrowserActivityRecallService` 按站点聚合，`【浏览活动回顾】` 上下文，decision_meta mode=browser_activity）；受限页面（restricted_page）按静默跳过处理不计失败。2026-09-10 真机验证通过：观察记录持续产出、管理端分页生效、心跳指纹与台账过滤工作正常。
 - [x] **MCP-C0 通用客户端底座（2026-09-08）。** 官方 Python SDK v2、Streamable HTTP、配置/凭据边界、分页工具目录、本地白名单、只读默认、Server 命名空间、连接状态、结果裁剪、稳定错误码和 Admin 状态/目录页已落地。写工具直接调用被硬拦截，待 MCP-D 接入 Action Plan。
-- [ ] **MCP-C1 Context7 真实只读试点。** 已选定 `https://mcp.context7.com/mcp`，仅允许 `resolve-library-id` / `query-docs`，通过 `ARIA_MCP_CONTEXT7_API_KEY` 做 Bearer 认证。2026-09-09 已完成 `2026-07-28` 协议协商、两项只读工具发现和匿名限额调用；当前凭据被远端拒绝，Context7 要求有效 Key 以 `ctx7sk` 开头。待换入有效凭据后完成鉴权调用、结果裁剪、L2/私密上下文禁止、审计和错误码验收。
+- [x] **MCP-C1 Context7 真实只读试点（2026-09-10 验收通过）。** 已选定 `https://mcp.context7.com/mcp`，仅允许 `resolve-library-id` / `query-docs`；有效凭据（`ctx7sk-*`）已入 `.env`（`ARIA_MCP_CONTEXT7_API_KEY`，gitignored）并以 `secret_value` 写入 Hub 运行配置（`context7` server，MCP 总开关开启），经 Admin 刷新即热生效，无需重启。真实验收：`2026-07-28` 协议协商（服务端 Context7 4.0.7）、目录 2 工具、鉴权调用返回真实文档数据、`max_result_bytes` 裁剪生效（>10KB 结果截到 1020 字节/1024 上限）、未知工具稳定返回 `mcp_tool_unavailable`。已知边界：Context7 把无效凭据当普通工具结果返回（`is_error=false`，正文为 "Invalid API key..."），Hub 协议层无法区分，需真 Key 才有真实数据与更高限额；工具 schema 已从旧版参数（`libraryName`+`query` 双必填、`query-docs` 需 `libraryId`）演进，挂载聊天时按现行 schema 生成。L2/私密上下文禁止属聊天挂载层（MCP-D 范围），C1 不适用。
 
 ### 0. 当前功能主线
 
