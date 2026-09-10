@@ -8,8 +8,10 @@ from uuid import UUID
 from app.chat.capabilities import RuntimeActionCapability
 from app.config import ConfigStore, DatabaseConfigStore, HomeAssistantEntityConfig
 from app.llm.provider import EnvSecretProvider, SecretNotFound
+from app.schemas import PrivacyLevel
 
 from .bridge import GatewayFactory, HomeAssistantBridge, default_gateway_factory
+from .directory import DeviceDirectory, DeviceSearchPage
 from .models import (
     HomeAssistantError,
     HomeAssistantHealth,
@@ -49,6 +51,7 @@ class HomeAssistantManager:
         self._bridge: HomeAssistantBridge | None = None
         self._startup_reason: str | None = None
         self._state_change_handler: StateChangeHandler | None = None
+        self._directory = DeviceDirectory()
 
     def set_state_change_handler(self, handler: StateChangeHandler | None) -> None:
         self._state_change_handler = handler
@@ -77,6 +80,7 @@ class HomeAssistantManager:
         self._bridge = HomeAssistantBridge(
             config, gateway, state_change_handler=self._state_change_handler
         )
+        self._directory.rebuild(tuple(config.entities))
         await self._bridge.start()
 
     async def reconfigure(self) -> None:
@@ -155,6 +159,39 @@ class HomeAssistantManager:
         if self._bridge is None:
             raise HomeAssistantError("ha_offline")
         return self._bridge.get_state(entity_id)
+
+    def search_devices(
+        self,
+        *,
+        privacy_level: PrivacyLevel,
+        query: str | None = None,
+        room: str | None = None,
+        domain: str | None = None,
+        action: str | None = None,
+        limit: int = 5,
+        cursor: str | None = None,
+    ) -> DeviceSearchPage:
+        bridge = self._bridge
+        if bridge is None or not self.health().connected:
+            raise HomeAssistantError("ha_offline")
+
+        def available(entity_id: str) -> bool:
+            try:
+                bridge.get_state(entity_id)
+            except HomeAssistantError:
+                return False
+            return True
+
+        return self._directory.search(
+            privacy_level=privacy_level,
+            available=available,
+            query=query,
+            room=room,
+            domain=domain,
+            action=action,
+            limit=limit,
+            cursor=cursor,
+        )
 
     async def control(
         self,

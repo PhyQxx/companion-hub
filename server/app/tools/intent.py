@@ -121,6 +121,7 @@ def supports_device_capability(tool_name: str, capability_ids: Iterable[str]) ->
 # 工具 → 在线能力要求。挂载只看能力与配置就绪；何时调用由模型根据工具描述自行判断。
 # 顺序即 select_device_tools 的确定性优先级：浏览器读取先于屏幕截图。
 DEVICE_TOOL_REQUIREMENTS: dict[str, Callable[[str], bool]] = {
+    "search_devices": lambda value: value.startswith("home_assistant:"),
     "inspect_webpage": lambda value: value.endswith(":browser.current_tab.read")
     or value.endswith(":browser.current_tab.capture"),
     "capture_screen": lambda value: value.endswith(":screen.capture"),

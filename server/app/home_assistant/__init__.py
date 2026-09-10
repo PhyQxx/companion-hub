@@ -1,5 +1,6 @@
 from .bridge import HomeAssistantBridge, HomeAssistantGateway
 from .client import HomeAssistantClient
+from .directory import DeviceDirectory, DeviceDirectoryEntry, DeviceSearchPage
 from .manager import HomeAssistantManager
 from .models import (
     HomeAssistantError,
@@ -17,9 +18,14 @@ from .tools import (
     HomeGetHistoryTool,
     HomeGetStateArgs,
     HomeGetStateTool,
+    SearchDevicesArgs,
+    SearchDevicesTool,
 )
 
 __all__ = [
+    "DeviceDirectory",
+    "DeviceDirectoryEntry",
+    "DeviceSearchPage",
     "HomeAssistantBridge",
     "HomeAssistantClient",
     "HomeAssistantError",
@@ -37,4 +43,6 @@ __all__ = [
     "HomeGetHistoryTool",
     "HomeGetStateArgs",
     "HomeGetStateTool",
+    "SearchDevicesArgs",
+    "SearchDevicesTool",
 ]

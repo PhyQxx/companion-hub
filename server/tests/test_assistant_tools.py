@@ -211,34 +211,38 @@ class TestCalendarCreateTool:
         assert preview["participants"] == ["小明"]
         assert preview["reminder_lead_minutes"] == 10
 
-    async def test_confirmed_call_creates_event_and_reminder(
+    async def test_ui_confirmation_creates_event_and_reminder(
         self, database: Database, context: ToolContext
     ) -> None:
         tool = CalendarCreateTool(_calendar_service(database), timezone_name="Asia/Shanghai")
 
-        result = await tool.execute(
+        prepared = await tool.execute(
             CalendarCreateTool.arguments_model.model_validate(
                 {
                     "title": "项目评审",
                     "starts_at": "2026-09-04T14:00",
                     "ends_at": "2026-09-04T15:00",
-                    "confirmed": True,
                 }
             ),
             context,
         )
-
-        assert result.ok is True
-        assert result.data["created"] is True
-        event = result.data["event"]
-        assert event["reminder_task_id"]
         assert context.user_id is not None
+        result = await tool.confirm(
+            context.user_id,
+            UUID(str(prepared.data["draft_id"])),
+            str(tool.list_drafts(context.user_id)[0]["digest"]),
+        )
+        result_payload = result["result"]
+        assert isinstance(result_payload, dict)
+        event = result_payload["event"]
+        assert isinstance(event, dict)
+        assert event["reminder_task_id"]
         tasks = await _calendar_service(database).task_store.list_tasks(context.user_id)
         assert [task.source_ref for task in tasks] == [
             f"calendar:{event['id']}"
         ]
 
-    async def test_conflict_blocks_creation_even_when_confirmed(
+    async def test_conflict_blocks_preview_and_model_confirmation_is_rejected(
         self, database: Database, context: ToolContext
     ) -> None:
         service = _calendar_service(database)
@@ -258,7 +262,6 @@ class TestCalendarCreateTool:
                     "title": "撞档的会",
                     "starts_at": (NOW + timedelta(days=1, minutes=30)).isoformat(),
                     "ends_at": (NOW + timedelta(days=1, minutes=90)).isoformat(),
-                    "confirmed": True,
                 }
             ),
             context,
@@ -269,7 +272,21 @@ class TestCalendarCreateTool:
         assert result.data["time_conflict"] is True
         assert result.data["conflicts"][0]["title"] == "既有会议"
 
-    async def test_created_event_is_idempotent_within_turn(
+        direct = await tool.execute(
+            CalendarCreateTool.arguments_model.model_validate(
+                {
+                    "title": "模型直写",
+                    "starts_at": "2026-09-04T14:00",
+                    "ends_at": "2026-09-04T15:00",
+                    "confirmed": True,
+                }
+            ),
+            context,
+        )
+        assert direct.ok is False
+        assert direct.reason_code == "user_confirmation_required"
+
+    async def test_preview_and_confirmation_are_idempotent_within_turn(
         self, database: Database, context: ToolContext
     ) -> None:
         tool = CalendarCreateTool(_calendar_service(database), timezone_name="Asia/Shanghai")
@@ -278,16 +295,18 @@ class TestCalendarCreateTool:
                 "title": "体检",
                 "starts_at": "2026-09-05T09:00",
                 "ends_at": "2026-09-05T10:00",
-                "confirmed": True,
             }
         )
 
         first = await tool.execute(args, context)
         second = await tool.execute(args, context)
 
-        assert first.data["created"] is True
-        assert second.data["duplicate"] is True
-        assert second.data["event"]["id"] == first.data["event"]["id"]
+        assert first.data["draft_id"] == second.data["draft_id"]
+        assert context.user_id is not None
+        digest = str(tool.list_drafts(context.user_id)[0]["digest"])
+        saved = await tool.confirm(context.user_id, UUID(str(first.data["draft_id"])), digest)
+        replay = await tool.confirm(context.user_id, UUID(str(first.data["draft_id"])), digest)
+        assert saved["result"] == replay["result"]
 
     async def test_rejects_inverted_window_and_private_session(
         self, database: Database, context: ToolContext
@@ -300,7 +319,6 @@ class TestCalendarCreateTool:
                     "title": "倒置",
                     "starts_at": "2026-09-04T15:00",
                     "ends_at": "2026-09-04T14:00",
-                    "confirmed": True,
                 }
             ),
             context,

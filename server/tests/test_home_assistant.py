@@ -16,6 +16,7 @@ from app.config import (
     HomeAssistantProactiveRuleConfig,
 )
 from app.home_assistant import (
+    DeviceDirectory,
     HomeAssistantBridge,
     HomeAssistantClient,
     HomeAssistantError,
@@ -30,8 +31,11 @@ from app.home_assistant import (
     HomeGetHistoryTool,
     HomeGetStateArgs,
     HomeGetStateTool,
+    SearchDevicesArgs,
+    SearchDevicesTool,
 )
 from app.home_assistant.manager import home_assistant_service_for_action
+from app.schemas import PrivacyLevel
 from app.tools import ToolContext
 from app.tools.intent import select_device_tools
 
@@ -45,12 +49,14 @@ def _entity(
     history_allowed: bool = False,
     allowed_actions: list[str] | None = None,
     confirmation_required_actions: list[str] | None = None,
+    room: str | None = None,
 ) -> HomeAssistantEntityConfig:
     return HomeAssistantEntityConfig.model_validate(
         {
             "entity_id": entity_id,
             "display_name": name,
             "aliases": ["主灯"] if entity_id == "light.living_room" else [],
+            "room": room,
             "read_allowed": read_allowed,
             "history_allowed": history_allowed,
             "history_max_hours": 24,
@@ -214,6 +220,74 @@ def test_home_assistant_config_requires_https_and_unique_names() -> None:
     )
     assert direct_secret.secret_ref is None
     assert direct_secret.secret_value == "stored-by-admin"
+    assert direct_secret.device_context_mode == "on_demand"
+
+
+async def test_device_directory_filters_before_pagination_and_tool_limits_results() -> None:
+    policies = (
+        _entity(
+            "light.bedroom",
+            name="卧室台灯",
+            room="卧室",
+            allowed_actions=["turn_on", "turn_off"],
+        ).model_copy(update={"aliases": ["小米台灯"]}),
+        _entity(
+            "light.study",
+            name="书房灯",
+            room="书房",
+            privacy_level="L2",
+            allowed_actions=["turn_on"],
+        ),
+        _entity("sensor.secret", name="秘密传感器", privacy_level="L3"),
+    )
+    directory = DeviceDirectory(policies)
+
+    class Provider:
+        def search_devices(self, **kwargs: Any):  # type: ignore[no-untyped-def]
+            return directory.search(
+                available=lambda entity_id: entity_id != "light.study", **kwargs
+            )
+
+    tool = SearchDevicesTool(Provider())
+    result = await tool.execute(
+        SearchDevicesArgs(query="小米台灯", room="卧室", domain="light", limit=1),
+        ToolContext(privacy_level="L1"),
+    )
+
+    assert result.ok is True
+    assert result.data["devices"] == [
+        {
+            "entity_id": "light.bedroom",
+            "name": "卧室台灯",
+            "room": "卧室",
+            "domain": "light",
+            "available": True,
+            "actions": ["turn_on", "turn_off"],
+            "confirmation_required_actions": [],
+            "match_kind": "alias_exact",
+        }
+    ]
+    assert result.data["has_more"] is False
+
+
+def test_device_directory_rejects_bad_cursor_and_never_exposes_l3() -> None:
+    directory = DeviceDirectory(
+        (
+            _entity("light.visible", name="可见灯"),
+            _entity("sensor.secret", name="秘密传感器", privacy_level="L3"),
+        )
+    )
+    with pytest.raises(HomeAssistantError, match="ha_search_cursor_invalid"):
+        directory.search(
+            privacy_level=PrivacyLevel.L2,
+            available=lambda _entity_id: True,
+            cursor="not-a-cursor",
+        )
+    page = directory.search(
+        privacy_level=PrivacyLevel.L2,
+        available=lambda _entity_id: True,
+    )
+    assert [item.entity_id for item in page.devices] == ["light.visible"]
 
 
 def test_home_assistant_semantic_actions_map_to_bounded_services() -> None:

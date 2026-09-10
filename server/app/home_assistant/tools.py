@@ -11,6 +11,7 @@ from app.llm import ToolDefinition
 from app.schemas import PrivacyLevel
 from app.tools import ToolContext, ToolResult
 
+from .directory import DeviceSearchPage
 from .models import HomeAssistantError, HomeAssistantLogEntry, HomeAssistantState
 
 
@@ -38,6 +39,93 @@ class HomeHistoryProvider(HomeStateProvider, Protocol):
     async def logbook(
         self, target: str, start: datetime, end: datetime
     ) -> tuple[HomeAssistantEntityConfig, tuple[HomeAssistantLogEntry, ...]]: ...
+
+
+class DeviceSearchProvider(Protocol):
+    def search_devices(
+        self,
+        *,
+        privacy_level: PrivacyLevel,
+        query: str | None = None,
+        room: str | None = None,
+        domain: str | None = None,
+        action: str | None = None,
+        limit: int = 5,
+        cursor: str | None = None,
+    ) -> DeviceSearchPage: ...
+
+
+class SearchDevicesArgs(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    query: Annotated[str, Field(min_length=1, max_length=160)] | None = None
+    room: Annotated[str, Field(min_length=1, max_length=120)] | None = None
+    domain: Annotated[str, Field(pattern=r"^[a-z0-9_]+$")] | None = None
+    action: Annotated[str, Field(pattern=r"^[a-z0-9_]+$")] | None = None
+    limit: Annotated[int, Field(ge=1, le=5)] = 5
+    cursor: Annotated[str, Field(min_length=1, max_length=200)] | None = None
+
+
+class SearchDevicesTool:
+    name = "search_devices"
+    description = (
+        "检索当前已授权的 Home Assistant 设备。设备名称不明确、按房间或类型查找时先调用；"
+        "最多返回 5 项。候选只用于定位，执行控制时仍会重新检查权限。"
+    )
+    arguments_model: type[BaseModel] = SearchDevicesArgs
+    runs_local = True
+    max_privacy_level = PrivacyLevel.L2
+
+    def __init__(self, provider: DeviceSearchProvider) -> None:
+        self._provider = provider
+
+    def definition(self) -> ToolDefinition:
+        return ToolDefinition(
+            name=self.name,
+            description=self.description,
+            parameters=SearchDevicesArgs.model_json_schema(),
+        )
+
+    async def execute(self, arguments: BaseModel, context: ToolContext) -> ToolResult:
+        started = perf_counter()
+        args = cast(SearchDevicesArgs, arguments)
+        try:
+            page = self._provider.search_devices(
+                privacy_level=PrivacyLevel(context.privacy_level),
+                query=args.query,
+                room=args.room,
+                domain=args.domain,
+                action=args.action,
+                limit=args.limit,
+                cursor=args.cursor,
+            )
+        except HomeAssistantError as error:
+            return _failure(self.name, error.reason_code, started)
+        return ToolResult(
+            ok=True,
+            tool_name=self.name,
+            provider="home_assistant",
+            data={
+                "devices": [
+                    {
+                        "entity_id": item.entity_id,
+                        "name": item.name,
+                        "room": item.room,
+                        "domain": item.domain,
+                        "available": item.available,
+                        "actions": list(item.actions),
+                        "confirmation_required_actions": list(
+                            item.confirmation_required_actions
+                        ),
+                        "match_kind": item.match_kind,
+                    }
+                    for item in page.devices
+                ],
+                "has_more": page.has_more,
+                "next_cursor": page.next_cursor,
+            },
+            latency_ms=(perf_counter() - started) * 1_000,
+        )
 
 
 class HomeGetStateArgs(BaseModel):
@@ -336,10 +424,16 @@ def _has_explicit_confirmation(user_text: str | None) -> bool:
 
 
 def _failure(tool_name: str, reason_code: str, started: float) -> ToolResult:
+    data = (
+        {"suggested_tool": "search_devices"}
+        if reason_code in {"ha_entity_not_found", "ha_target_ambiguous"}
+        else {}
+    )
     return ToolResult(
         ok=False,
         tool_name=tool_name,
         provider="home_assistant",
         reason_code=reason_code,
+        data=data,
         latency_ms=(perf_counter() - started) * 1_000,
     )

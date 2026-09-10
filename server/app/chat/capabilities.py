@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
-from typing import Protocol
+from typing import Literal, Protocol
 from uuid import UUID
 
 
@@ -41,7 +41,11 @@ class CompositeRuntimeCapabilityProvider:
         return tuple(actions.values())
 
 
-def render_reality_grounding(actions: Sequence[RuntimeActionCapability]) -> str:
+def render_reality_grounding(
+    actions: Sequence[RuntimeActionCapability],
+    *,
+    home_device_mode: Literal["full", "compact", "on_demand"] = "on_demand",
+) -> str:
     """把真实能力渲染成强约束系统提示。"""
     base = (
         "【现实能力边界】\n"
@@ -69,13 +73,45 @@ def render_reality_grounding(actions: Sequence[RuntimeActionCapability]) -> str:
             "移动物品或控制未接入设备。这个限制不影响你自然谈论自己的角色身体设定、"
             "个人档案、喜好和生活化自我描述。"
         )
-    lines = "\n".join(
-        f"- {item.capability_id}｜{item.label}：{item.description}" for item in actions
+    home_actions = tuple(
+        item for item in actions if item.capability_id.startswith("home_assistant:")
     )
+    visible_actions = tuple(item for item in actions if item not in home_actions)
+    lines = [
+        f"- {item.capability_id}｜{item.label}：{item.description}"
+        for item in visible_actions
+    ]
+    if home_actions and home_device_mode == "full":
+        lines.extend(
+            f"- {item.capability_id}｜{item.label}：{item.description}" for item in home_actions
+        )
+    elif home_actions and home_device_mode == "compact":
+        grouped: dict[str, tuple[str, set[str]]] = {}
+        for item in home_actions:
+            parts = item.capability_id.split(":")
+            entity_id = parts[1]
+            action = parts[2]
+            label, entity_actions = grouped.setdefault(entity_id, (item.label, set()))
+            entity_actions.add(action)
+            grouped[entity_id] = (label, entity_actions)
+        lines.extend(
+            f"- {entity_id}｜{label}：{', '.join(sorted(entity_actions))}"
+            for entity_id, (label, entity_actions) in sorted(grouped.items())
+        )
+    elif home_actions:
+        entity_count = len(
+            {item.capability_id.split(":", 2)[1] for item in home_actions}
+        )
+        lines.append(
+            f"- Home Assistant：当前有 {entity_count} 个已授权且在线的设备。"
+            "设备名称、房间、可用动作以 search_devices 返回为准；名称明确时可直接调用状态、"
+            "历史或控制工具，匹配失败或有歧义时先检索。不得编造设备，控制前后仍须校验权限、"
+            "确认要求和实际状态。"
+        )
     return (
         base
         + "\n当前可用现实能力：\n"
-        + lines
+        + "\n".join(lines)
         + "\n例如，只有列表里明确存在电视控制能力时，才可以建议‘我们看会儿电视吧，"
         "我可以帮你打开电视’。不得把角色设定中的场景当作真实能力。"
     )
