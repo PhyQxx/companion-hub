@@ -216,6 +216,20 @@ def create_cognition_router(
                     detail=str(error),
                 ) from error
 
+        @router.get("/action-plans", response_model=list[ActionPlanView])
+        async def list_action_plans(
+            principal: Annotated[ChatPrincipal, Depends(guard)],
+            active_only: bool = False,
+            before_id: UUID | None = None,
+            limit: Annotated[int, Field(ge=1, le=100)] = 100,
+        ) -> list[ActionPlanView]:
+            return await action_plan_service.list_plans(
+                user_id=principal.user_id,
+                active_only=active_only,
+                before_id=before_id,
+                limit=limit,
+            )
+
         @router.get("/action-plans/{plan_id}", response_model=ActionPlanView)
         async def get_action_plan(
             plan_id: UUID,

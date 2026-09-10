@@ -19,6 +19,7 @@ from app.schemas.common import StrictModel
 from app.workflows import (
     WorkflowPreview,
     WorkflowRunView,
+    WorkflowSaveTool,
     WorkflowService,
     WorkflowStep,
     WorkflowView,
@@ -33,9 +34,50 @@ class WorkflowPayload(StrictModel):
     steps: Annotated[list[WorkflowStep], Field(min_length=1, max_length=10)]
 
 
-def create_workflows_router(service: WorkflowService, auth_service: AuthService) -> APIRouter:
+class WorkflowDraftConfirmation(StrictModel):
+    digest: Annotated[str, Field(pattern=r"^[a-f0-9]{64}$")]
+
+
+def create_workflows_router(
+    service: WorkflowService,
+    auth_service: AuthService,
+    save_tool: WorkflowSaveTool | None = None,
+) -> APIRouter:
     guard = ChatSessionGuard(auth_service)
     router = APIRouter(prefix="/api/v1/workflows", tags=["workflows"])
+
+    if save_tool is not None:
+
+        @router.get("/drafts")
+        async def list_drafts(
+            principal: Annotated[ChatPrincipal, Depends(guard)],
+        ) -> list[dict[str, object]]:
+            return save_tool.list_drafts(principal.user_id)
+
+        @router.post("/drafts/{draft_id}/confirm")
+        async def confirm_draft(
+            draft_id: UUID,
+            body: WorkflowDraftConfirmation,
+            principal: Annotated[ChatPrincipal, Depends(guard)],
+        ) -> dict[str, object]:
+            try:
+                return await save_tool.confirm(principal.user_id, draft_id, body.digest)
+            except LookupError as error:
+                raise HTTPException(404, str(error)) from error
+            except ValueError as error:
+                raise HTTPException(409, str(error)) from error
+
+        @router.post("/drafts/{draft_id}/cancel")
+        async def cancel_draft(
+            draft_id: UUID,
+            principal: Annotated[ChatPrincipal, Depends(guard)],
+        ) -> dict[str, object]:
+            try:
+                return save_tool.cancel(principal.user_id, draft_id)
+            except LookupError as error:
+                raise HTTPException(404, str(error)) from error
+            except ValueError as error:
+                raise HTTPException(409, str(error)) from error
 
     @router.get("", response_model=list[WorkflowView])
     async def list_workflows(
