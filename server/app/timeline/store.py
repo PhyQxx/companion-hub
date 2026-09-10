@@ -4,6 +4,7 @@ import re
 from collections.abc import Sequence
 from datetime import UTC, datetime
 from typing import Any, cast
+from urllib.parse import urlsplit
 from uuid import UUID
 
 from sqlalchemy import delete, select
@@ -150,6 +151,50 @@ class TimelineStore:
             entities=[],
             keywords=_keywords(text)[:8],
             metadata_json={"display": display, **(metadata or {})},
+        )
+        return await self._insert(record)
+
+    async def index_browser_observation(
+        self,
+        *,
+        user_id: UUID,
+        observation_id: UUID,
+        origin: str,
+        title: str,
+        summary: str,
+        privacy_level: PrivacyLevel,
+        occurred_at: datetime,
+        metadata: dict[str, Any] | None = None,
+        importance: float = 0.3,
+    ) -> TimelineEvent | None:
+        """Store a browser summary, origin and title, never page text or URL paths."""
+        privacy = PrivacyLevel(privacy_level)
+        parsed = urlsplit(origin)
+        text = summary.strip()
+        if privacy is PrivacyLevel.L3 or not text:
+            return None
+        if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+            return None
+        safe_origin = f"{parsed.scheme}://{parsed.netloc}"
+        host = parsed.hostname.casefold()
+        record = TimelineEventRecord(
+            user_id=user_id,
+            occurred_at=_utc(occurred_at),
+            source_type=TimelineSourceType.DEVICE.value,
+            source_id=str(observation_id),
+            actor=TimelineActor.DEVICE.value,
+            event_type="browser.observed",
+            title=f"浏览观察 · {host}",
+            summary=_index_summary(text),
+            privacy_level=privacy.value,
+            importance=importance,
+            entities=[],
+            keywords=_keywords(text)[:8],
+            metadata_json={
+                **(metadata or {}),
+                "origin": safe_origin,
+                "page_title": title[:200],
+            },
         )
         return await self._insert(record)
 

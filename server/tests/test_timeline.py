@@ -36,6 +36,7 @@ from app.memory import (
 from app.schemas import InputEnvelope, PrivacyLevel
 from app.schemas.common import SourceRef
 from app.timeline import (
+    BrowserActivityRecallService,
     HistoryRecallService,
     RecallMode,
     ScreenActivityRecallService,
@@ -43,6 +44,7 @@ from app.timeline import (
     TimelineActor,
     TimelineSourceType,
     TimelineStore,
+    has_browser_activity_intent,
     has_screen_activity_intent,
 )
 
@@ -732,3 +734,95 @@ async def test_admin_timeline_api_filters_and_returns_detail(
     assert detail.json()["source_type"] == "message"
     assert source.status_code == 200
     assert source.json()["text"] == "昨晚讨论了星际穿越"
+
+
+def test_browser_activity_intent_matches_browsing_summary_requests() -> None:
+    assert has_browser_activity_intent("总结我今天下午浏览了哪些网站。") is True
+    assert has_browser_activity_intent("回顾下我上午用浏览器看了什么。") is True
+    # 查看当前网页不是浏览总结，应交给 inspect_webpage 工具
+    assert has_browser_activity_intent("帮我看看当前网页") is False
+    assert has_browser_activity_intent("总结我今天在电脑上做了什么") is False
+
+
+async def test_browser_activity_recall_aggregates_by_site(
+    database: Database, user: AppUserRecord
+) -> None:
+    timezone = ZoneInfo("Asia/Shanghai")
+    now = datetime(2026, 9, 10, 10, 0, tzinfo=timezone)
+    timeline = TimelineStore(database)
+    for minutes, origin, title, summary in (
+        (0, "https://github.com", "companion-hub", "在 GitHub 查看 companion-hub 项目代码"),
+        (5, "https://github.com", "companion-hub", "在 GitHub 查看 companion-hub 项目代码"),
+        (30, "https://docs.example.com", "FastAPI 文档", "正在阅读 FastAPI 官方文档"),
+    ):
+        await timeline.index_browser_observation(
+            user_id=user.id,
+            observation_id=uuid7(),
+            origin=origin,
+            title=title,
+            summary=summary,
+            privacy_level=PrivacyLevel.L1,
+            occurred_at=datetime(2026, 9, 10, 8, minutes, tzinfo=timezone),
+        )
+    # 屏幕观察不能混入浏览总结
+    await timeline.index_screen_observation(
+        user_id=user.id,
+        observation_id=uuid7(),
+        display=1,
+        summary="正在使用浏览器查看 companion-hub 项目代码",
+        privacy_level=PrivacyLevel.L1,
+        occurred_at=datetime(2026, 9, 10, 8, 10, tzinfo=timezone),
+    )
+
+    recalled = await BrowserActivityRecallService(timeline).recall(
+        "总结我今天上午浏览了哪些网站。",
+        user_id=user.id,
+        privacy_level=PrivacyLevel.L1,
+        now=now,
+        timezone_name="Asia/Shanghai",
+    )
+
+    assert recalled is not None
+    assert len(recalled.events) == 3
+    assert len(recalled.segments) == 2
+    assert recalled.segments[0].host == "github.com"
+    assert recalled.segments[0].observation_count == 2
+    assert recalled.segments[1].host == "docs.example.com"
+    context = BrowserActivityRecallService.render_context(
+        recalled, timezone_name="Asia/Shanghai"
+    )
+    assert "【浏览活动回顾】" in context
+    assert "github.com" in context
+    assert "屏幕观察" not in context
+
+
+async def test_chat_injects_browser_activity_recall_and_records_meta(
+    database: Database, user: AppUserRecord, tmp_path: Path
+) -> None:
+    requests: list[CompletionRequest] = []
+    service, timeline = await _chat_service(database, tmp_path, requests)
+    observed_at = datetime.now(UTC) - timedelta(minutes=30)
+    await timeline.index_browser_observation(
+        user_id=user.id,
+        observation_id=uuid7(),
+        origin="https://github.com",
+        title="companion-hub",
+        summary="在 GitHub 查看 companion-hub 项目代码",
+        privacy_level=PrivacyLevel.L1,
+        occurred_at=observed_at,
+    )
+    conversation = await service.create_conversation(user_id=user.id, title="browser-recall")
+
+    turn = await service.send_message(
+        conversation.id,
+        user_id=user.id,
+        text="总结我过去2小时浏览了哪些网站。",
+        privacy_level=PrivacyLevel.L1,
+    )
+
+    system_prompt = requests[-1].messages[0].content
+    assert "【浏览活动回顾】" in system_prompt
+    assert "companion-hub" in system_prompt
+    recall_meta = (turn.assistant_message.decision_meta or {})["recall"]
+    assert recall_meta["mode"] == "browser_activity"
+    assert recall_meta["segment_count"] == 1

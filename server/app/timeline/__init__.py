@@ -1,3 +1,9 @@
+from .browser_recall import (
+    BrowserActivityRecallResult,
+    BrowserActivityRecallService,
+    BrowserActivitySegment,
+    has_browser_activity_intent,
+)
 from .models import (
     HistoryRecallResult,
     RecallMode,
@@ -19,6 +25,9 @@ from .screen_recall import (
 from .store import TimelineStore, timeline_record_from_event
 
 __all__ = [
+    "BrowserActivityRecallResult",
+    "BrowserActivityRecallService",
+    "BrowserActivitySegment",
     "HistoryRecallResult",
     "HistoryRecallService",
     "RecallMode",
@@ -34,6 +43,7 @@ __all__ = [
     "TimelineSearchResult",
     "TimelineSourceType",
     "TimelineStore",
+    "has_browser_activity_intent",
     "has_history_intent",
     "has_screen_activity_intent",
     "timeline_record_from_event",

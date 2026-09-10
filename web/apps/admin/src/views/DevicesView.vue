@@ -124,8 +124,18 @@ const selectedDeviceName = computed(
 
 const commandPage = ref(1);
 const commandPageSize = ref(20);
+// 感知循环的轮询命令（screen-monitor-* / browser-observe-*）默认折叠，保持台账聚焦人工操作
+const AWARENESS_POLL_PREFIXES = ["screen-monitor-", "browser-observe-"];
+const hidePollCommands = ref(true);
+const visibleCommands = computed(() =>
+  hidePollCommands.value
+    ? commands.value.filter(
+        (item) => !AWARENESS_POLL_PREFIXES.some((prefix) => item.idempotency_key.startsWith(prefix)),
+      )
+    : commands.value,
+);
 const pagedCommands = computed(() =>
-  commands.value.slice(
+  visibleCommands.value.slice(
     (commandPage.value - 1) * commandPageSize.value,
     commandPage.value * commandPageSize.value,
   ),
@@ -429,9 +439,12 @@ onMounted(refresh);
     <div v-if="props.mode === 'commands'" class="panel command-panel">
       <div class="panel-head">
         <div><h2>命令台账</h2><p>{{ selectedDeviceName }} · 参数与结果均为脱敏摘要。</p></div>
-        <el-select v-model="selectedDeviceId" placeholder="全部设备" clearable @change="onDeviceFilterChange">
-          <el-option v-for="item in devices" :key="item.id" :label="item.name" :value="item.id" />
-        </el-select>
+        <div class="command-filters">
+          <el-checkbox v-model="hidePollCommands">隐藏感知轮询</el-checkbox>
+          <el-select v-model="selectedDeviceId" placeholder="全部设备" clearable @change="onDeviceFilterChange">
+            <el-option v-for="item in devices" :key="item.id" :label="item.name" :value="item.id" />
+          </el-select>
+        </div>
       </div>
       <el-table v-loading="commandLoading" :data="pagedCommands" empty-text="没有命令记录" style="width:100%">
         <el-table-column label="发起时间" min-width="170"><template #default="{ row }">{{ fmt(row.issued_at) }}</template></el-table-column>
@@ -452,7 +465,7 @@ onMounted(refresh);
         <el-pagination
           v-model:current-page="commandPage"
           v-model:page-size="commandPageSize"
-          :total="commands.length"
+          :total="visibleCommands.length"
           :page-sizes="[20, 50, 100]"
           layout="total, sizes, prev, pager, next, jumper"
           background
@@ -515,6 +528,8 @@ onMounted(refresh);
 .stats strong { font-size: 24px; }
 .panel-head { display: flex; justify-content: space-between; align-items: center; gap: 16px; margin-bottom: 14px; }
 .panel-head :deep(.el-select) { width: 220px; }
+.command-filters { display: flex; align-items: center; gap: 14px; }
+.command-filters :deep(.el-checkbox) { height: auto; }
 .pager { display: flex; justify-content: flex-end; margin-top: 12px; }
 .device-name { display: block; font-size: 13px; margin-bottom: 4px; }
 .state { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; font-weight: 600; }
