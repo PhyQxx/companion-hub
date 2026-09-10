@@ -19,7 +19,6 @@ import {
   type ClientLocationPayload,
   type Conversation,
   type PrivacyLevel,
-  type ActionPlanProgress,
   type SocketEvent,
   type ThemePreference,
   type ToolPresentation,
@@ -32,7 +31,9 @@ import {
   type VoiceVisemeFrame,
 } from "./voice";
 import ToolResultCard from "./ToolResultCard.vue";
-import PlanProgressCard from "./PlanProgressCard.vue";
+import PlanInbox from "./PlanInbox.vue";
+import MailDrafts from "./MailDrafts.vue";
+import ConfirmationDrafts from "./ConfirmationDrafts.vue";
 import Live2DStage from "./Live2DStage.vue";
 import MarkdownContent from "./MarkdownContent.vue";
 import {
@@ -91,9 +92,7 @@ const streaming = ref<{
 } | null>(null);
 const socketReady = ref(false);
 // PC-02：计划执行进度面板（plan.execution 事件驱动，展示目标/步骤/进度/证据与停止按钮）
-const activePlan = ref<ActionPlanProgress | null>(null);
-const planStopping = ref(false);
-let planDismissTimer: number | null = null;
+const planRefresh = ref(0);
 const messagesRoot = ref<HTMLElement | null>(null);
 const voiceReady = ref(false);
 const voiceAsrConfigured = ref<boolean | null>(null);
@@ -841,6 +840,10 @@ async function logout() {
   const current = token.value;
   closeSocket();
   await closeVoice();
+  if (current && pushSupported) {
+    await disablePushNotifications(api, current);
+    notificationsEnabled.value = false;
+  }
   token.value = "";
   displayName.value = "";
   authStorage.removeItem(TOKEN_KEY);
@@ -1036,54 +1039,6 @@ function handleOffline() {
   setStatus("当前离线，消息不会发送", true);
 }
 
-/** PC-02：进度事件 → 拉取计划详情刷新面板；终态后 30s 自动收起 */
-async function handlePlanExecution(
-  payload: Partial<ActionPlanProgress> & { plan_id?: string },
-) {
-  const planId = payload.plan_id;
-  if (!planId || !token.value) return;
-  try {
-    const detail = await api.getActionPlan(token.value, planId);
-    activePlan.value = {
-      id: detail.id,
-      title: detail.title,
-      status: detail.status,
-      cancel_requested: detail.cancel_requested,
-      cancel_reason: detail.cancel_reason,
-      reason_code: detail.reason_code,
-      steps: detail.steps.map((step) => ({
-        position: step.position,
-        action_id: step.action_id,
-        status: step.status,
-        risk: step.risk,
-        verification_status: step.verification_status,
-        reason_code: step.reason_code,
-      })),
-    };
-  } catch {
-    return; // 计划可能已过期或无权限：静默忽略进度帧
-  }
-  if (planDismissTimer !== null) window.clearTimeout(planDismissTimer);
-  if (activePlan.value && activePlan.value.status !== "executing") {
-    planDismissTimer = window.setTimeout(() => {
-      activePlan.value = null;
-    }, 30_000);
-  }
-}
-
-async function stopActivePlan() {
-  if (!activePlan.value || !token.value || planStopping.value) return;
-  planStopping.value = true;
-  try {
-    const updated = await api.cancelActionPlan(token.value, activePlan.value.id, "user_cancelled");
-    activePlan.value = { ...activePlan.value, ...updated };
-  } catch {
-    setStatus("停止请求失败，请重试", true);
-  } finally {
-    planStopping.value = false;
-  }
-}
-
 /** WS 事件分发：delta 流式拼接、control 情绪标签、committed 落定 */
 function handleEvent(event: SocketEvent) {
   if (event.type === "protocol.error") {
@@ -1102,8 +1057,8 @@ function handleEvent(event: SocketEvent) {
     }
     return;
   }
-  if (event.type === "plan.execution") {
-    void handlePlanExecution(event.payload as Partial<ActionPlanProgress> & { plan_id?: string });
+  if (event.type === "plan.execution" || event.type === "plan.changed") {
+    planRefresh.value += 1;
     return;
   }
   if (event.type === "sync.completed") {
@@ -1366,13 +1321,11 @@ async function installPwa() {
         </div>
       </div>
 
-      <PlanProgressCard
-        v-if="activePlan"
-        :plan="activePlan"
-        :stopping="planStopping"
-        @stop="stopActivePlan"
-        @dismiss="activePlan = null"
-      />
+      <MailDrafts v-if="token && privacy === 'L1'" :key="token" :token="token" />
+
+      <ConfirmationDrafts v-if="token && privacy === 'L1'" :key="token" :token="token" />
+
+      <PlanInbox v-if="token && privacy === 'L1'" :key="token" :token="token" :refresh-key="planRefresh" />
 
       <footer class="composer">
         <div class="composer-meta">

@@ -22,6 +22,44 @@ function urlBase64ToUint8Array(base64: string): ArrayBuffer {
   return buffer;
 }
 
+function sameApplicationServerKey(subscription: PushSubscription, publicKey: string): boolean {
+  const existing = subscription.options.applicationServerKey;
+  if (!existing) return false;
+  const expected = new Uint8Array(urlBase64ToUint8Array(publicKey));
+  const actual = new Uint8Array(existing);
+  return actual.length === expected.length && actual.every((byte, index) => byte === expected[index]);
+}
+
+async function bindSubscription(
+  api: ChatApi,
+  token: string,
+  subscription: PushSubscription,
+): Promise<void> {
+  const json = subscription.toJSON();
+  if (!json.endpoint || !json.keys?.p256dh || !json.keys?.auth) {
+    throw new Error("push_subscription_incomplete");
+  }
+  await api.pushSubscribe(token, {
+    endpoint: json.endpoint,
+    keys: { p256dh: json.keys.p256dh, auth: json.keys.auth },
+  });
+}
+
+async function subscriptionForKey(
+  registration: ServiceWorkerRegistration,
+  publicKey: string,
+): Promise<PushSubscription> {
+  let subscription = await registration.pushManager.getSubscription();
+  if (subscription && !sameApplicationServerKey(subscription, publicKey)) {
+    await subscription.unsubscribe();
+    subscription = null;
+  }
+  return subscription ?? registration.pushManager.subscribe({
+    userVisibleOnly: true,
+    applicationServerKey: urlBase64ToUint8Array(publicKey),
+  });
+}
+
 async function serviceWorkerRegistration(): Promise<ServiceWorkerRegistration | null> {
   if (!("serviceWorker" in navigator)) return null;
   const existing = await navigator.serviceWorker.getRegistration();
@@ -61,16 +99,8 @@ export async function enablePushNotifications(
   const registration = await serviceWorkerRegistration();
   if (!registration) return "unsupported";
   try {
-    const subscription = await registration.pushManager.subscribe({
-      userVisibleOnly: true,
-      applicationServerKey: urlBase64ToUint8Array(key.public_key),
-    });
-    const json = subscription.toJSON();
-    if (!json.endpoint || !json.keys?.p256dh || !json.keys?.auth) return "failed";
-    await api.pushSubscribe(token, {
-      endpoint: json.endpoint,
-      keys: { p256dh: json.keys.p256dh, auth: json.keys.auth },
-    });
+    const subscription = await subscriptionForKey(registration, key.public_key);
+    await bindSubscription(api, token, subscription);
     return "enabled";
   } catch {
     return "failed";
@@ -96,13 +126,21 @@ export async function disablePushNotifications(
 
 /** 当前订阅状态：用于恢复 UI 开关（不触发权限询问）。 */
 export async function pushSubscriptionState(api: ChatApi, token: string): Promise<boolean> {
+  let subscription: PushSubscription | null = null;
   try {
     const registration = await navigator.serviceWorker?.getRegistration();
-    const subscription = await registration?.pushManager.getSubscription();
+    subscription = await registration?.pushManager.getSubscription() ?? null;
     if (!subscription) return false;
     const key = await api.pushVapidKey(token);
-    return key.enabled && Notification.permission === "granted";
+    if (!key.enabled || !key.public_key || Notification.permission !== "granted") return false;
+    subscription = await subscriptionForKey(registration!, key.public_key);
+    // Rebind on every authenticated restore. This repairs server DB loss and prevents
+    // one browser endpoint from remaining attached to a previously signed-in user.
+    await bindSubscription(api, token, subscription);
+    return true;
   } catch {
+    // A stale endpoint must not keep receiving the previous account's notifications.
+    await subscription?.unsubscribe().catch(() => undefined);
     return false;
   }
 }

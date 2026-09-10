@@ -1,3 +1,22 @@
+export interface MailDraft {
+  id: string;
+  content: { to: string[]; cc: string[]; subject: string; body: string };
+  digest: string;
+  expires_at: string;
+  status: string;
+  receipt: Record<string, unknown> | null;
+}
+
+export interface ConfirmationDraft {
+  id: string;
+  kind: "calendar_create" | "workflow_save";
+  preview: Record<string, unknown>;
+  digest: string;
+  expires_at: string;
+  status: string;
+  result: Record<string, unknown> | null;
+}
+
 /**
  * @aria/shared：chat 与 admin 前端共用的 API 客户端、WS 客户端与协议类型。
  * 类型与后端 Pydantic 模型一一对应，改动时保持两端同步。
@@ -418,6 +437,8 @@ export type ToolPresentation =
 
 /** PC-02：计划步骤（对齐 ActionStepView 前端所需子集） */
 export interface ActionPlanStep {
+  arguments: Record<string, unknown>;
+  confirmation_policy: string;
   position: number;
   action_id: string;
   status: string;
@@ -428,6 +449,8 @@ export interface ActionPlanStep {
 
 /** PC-02：计划执行进度（对齐 ActionPlanView 前端所需子集） */
 export interface ActionPlanProgress {
+  expires_at: string;
+  updated_at: string;
   id: string;
   title: string | null;
   status: string;
@@ -661,8 +684,48 @@ export class ChatApi {
     }, token);
   }
 
+  listMailDrafts(token: string) {
+    return this.request<MailDraft[]>("/api/v1/mail/drafts", { method: "GET" }, token);
+  }
+
+  mailDraftAction(token: string, id: string, action: "confirm" | "cancel", digest: string) {
+    return this.request<MailDraft>(`/api/v1/mail/drafts/${id}/${action}`, {
+      method: "POST", ...(action === "confirm" ? { body: JSON.stringify({ digest }) } : {}),
+    }, token);
+  }
+
+  listConfirmationDrafts(token: string, kind: "calendar" | "workflows") {
+    return this.request<ConfirmationDraft[]>(`/api/v1/${kind}/drafts`, { method: "GET" }, token);
+  }
+
+  confirmationDraftAction(
+    token: string,
+    kind: "calendar" | "workflows",
+    id: string,
+    action: "confirm" | "cancel",
+    digest: string,
+  ) {
+    return this.request<ConfirmationDraft>(`/api/v1/${kind}/drafts/${id}/${action}`, {
+      method: "POST", ...(action === "confirm" ? { body: JSON.stringify({ digest }) } : {}),
+    }, token);
+  }
+
   listConversations(token: string) {
     return this.request<Conversation[]>("/api/v1/chat/conversations", { method: "GET" }, token);
+  }
+
+  listActionPlans(token: string, activeOnly = false, beforeId?: string) {
+    const query = new URLSearchParams({ active_only: String(activeOnly), limit: "100" });
+    if (beforeId) query.set("before_id", beforeId);
+    return this.request<ActionPlanProgress[]>(`/api/v1/cognition/action-plans?${query}`, { method: "GET" }, token);
+  }
+
+  confirmActionPlan(token: string, id: string) {
+    return this.request<ActionPlanProgress>(`/api/v1/cognition/action-plans/${id}/confirm`, { method: "POST" }, token);
+  }
+
+  executeActionPlan(token: string, id: string) {
+    return this.request<ActionPlanProgress>(`/api/v1/cognition/action-plans/${id}/execute`, { method: "POST" }, token);
   }
 
   /** PC-02：拉取计划执行详情（目标/步骤/进度/证据状态） */

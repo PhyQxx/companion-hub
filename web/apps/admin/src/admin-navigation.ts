@@ -73,6 +73,7 @@ export const adminModules: AdminModule[] = [
       { key: "tools", label: "工具服务", description: "地图、天气与外部查询能力。", state: "ready" },
       { key: "voice", label: "语音服务", description: "ASR、TTS 和语音降级链。", state: "ready" },
       { key: "home_assistant", label: "HA 连接", description: "Home Assistant 地址、令牌和运行参数。", state: "ready" },
+      { key: "mcp", label: "MCP 工具", description: "外部 MCP Server 连接、协议与白名单工具目录。", state: "ready" },
     ],
   },
   {
@@ -87,6 +88,8 @@ export const adminModules: AdminModule[] = [
       { key: "home_assistant", label: "HA 实体授权", description: "HA 实体发现、读写权限、历史和主动感知。", state: "ready" },
       { key: "status", label: "屏幕感知", description: "周期截屏循环健康与各屏分析进度。", state: "ready" },
       { key: "observations", label: "观察记录", description: "屏幕观察摘要的时间线检索。", state: "ready" },
+      { key: "browser_status", label: "浏览感知", description: "浏览器标签页周期观察循环健康与最近分析。", state: "ready" },
+      { key: "browser_observations", label: "浏览观察记录", description: "网页观察摘要的时间线检索。", state: "ready" },
       { key: "commands", label: "命令记录", description: "设备命令、结果和脱敏台账。", state: "ready" },
       { key: "diagnostics", label: "健康诊断", description: "心跳、网络、版本和消息异常。" },
     ],
