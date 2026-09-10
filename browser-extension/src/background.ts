@@ -184,7 +184,7 @@ async function executeCommand(
     }
     await setStatus("online", `${frame.command} 已完成`);
   } catch (error) {
-    const allowed = new Set(["restricted_page", "invalid_command_args", "form_snapshot_missing",
+    const allowed = new Set(["restricted_page", "active_tab_missing", "invalid_command_args", "form_snapshot_missing",
       "form_snapshot_expired", "form_snapshot_changed", "control_not_found", "form_not_found",
       "control_not_editable", "option_not_found", "unsupported_field", "set_value_failed", "form_too_large"]);
     const reason = error instanceof Error && allowed.has(error.message) ? error.message : "browser_command_failed";

@@ -51,6 +51,9 @@ WAIT_TIMEOUT_SECONDS = 31
 FAILURE_COOLDOWN = timedelta(minutes=10)
 PROACTIVE_STABLE_SECONDS = 10.0
 TERMINAL_STATUSES = {"succeeded", "failed", "cancelled", "expired", "timed_out"}
+# 设备端隐私闸门的正常拒绝（chrome:// 等受限页/无活动标签页）：
+# 静默跳过，不计失败、不进冷却、不写 last_error。
+BENIGN_SKIP_REASONS = {"restricted_page", "active_tab_missing"}
 
 
 class BrowserAwarenessError(Exception):
@@ -334,6 +337,9 @@ class BrowserAwarenessLoop:
             payload = await self._read_document(device, owner)
             await self._observe(config, owner, device, payload, now)
         except BrowserAwarenessError as error:
+            if error.reason_code in BENIGN_SKIP_REASONS:
+                self._record_success()
+                return
             self._record_failure(error.reason_code, now)
         except Exception:
             self._record_failure("browser_analysis_failed", now)

@@ -63,15 +63,18 @@ class FakeAssets:
 
 
 class FakeGateway:
-    def __init__(self, data: bytes, *, fail: bool = False) -> None:
+    def __init__(
+        self, data: bytes, *, fail: bool = False, fail_reason: str = "browser_unavailable"
+    ) -> None:
         self.assets = FakeAssets(data)
         self.fail = fail
+        self.fail_reason = fail_reason
         self.issued: list[dict[str, Any]] = []
 
     async def issue(self, **kwargs: Any) -> FakeCommand:
         self.issued.append(kwargs)
         if self.fail:
-            return FakeCommand(status="failed", reason_code="browser_unavailable")
+            return FakeCommand(status="failed", reason_code=self.fail_reason)
         return FakeCommand()
 
     async def wait_for_terminal(self, *_: Any, **__: Any) -> FakeCommand:
@@ -252,6 +255,23 @@ async def test_three_failures_enter_cooldown(database: Database) -> None:
     assert len(gateway.issued) == 3
     assert loop.state.cooldown_until is not None
     assert loop.state.last_error == "browser_unavailable"
+
+
+async def test_restricted_page_rejection_is_a_silent_skip(database: Database) -> None:
+    # chrome:// 等受限页面是设备端隐私闸门的正常拒绝：不计失败、不进冷却、不写 last_error
+    gateway = FakeGateway(document(), fail=True, fail_reason="restricted_page")
+    analyzer = FakeAnalyzer()
+    loop, _ = make_loop(database, gateway, analyzer)
+    config = BrowserAwarenessConfig(enabled=True, interval_seconds=15)
+
+    for _ in range(4):
+        await loop._tick(config)
+
+    assert len(gateway.issued) == 4
+    assert loop.state.consecutive_failures == 0
+    assert loop.state.cooldown_until is None
+    assert loop.state.last_error is None
+    assert analyzer.calls == []
 
 
 def test_browser_analysis_bad_json_falls_back_without_escalation() -> None:
