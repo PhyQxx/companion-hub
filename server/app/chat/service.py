@@ -6,7 +6,7 @@ import logging
 import re
 from collections.abc import Awaitable, Callable, Coroutine, Iterable
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any, Protocol
 from uuid import UUID
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -41,6 +41,8 @@ from app.memory import (
 from app.persona import PersonaConfig, PersonaStore
 from app.schemas import PrivacyLevel
 from app.timeline import (
+    BrowserActivityRecallResult,
+    BrowserActivityRecallService,
     HistoryRecallResult,
     HistoryRecallService,
     RecallMode,
@@ -284,11 +286,21 @@ class PendingTurn:
     memory_retrieval: RetrievalResult | None = None
     history_recall: HistoryRecallResult | None = None
     screen_activity_recall: ScreenActivityRecallResult | None = None
+    browser_activity_recall: BrowserActivityRecallResult | None = None
     runtime_capabilities: tuple[RuntimeActionCapability, ...] = ()
     tool_names: tuple[str, ...] = ()
     # 连接级临时位置(L2 原始信号): 仅随轮次存活于内存, 不写入任何持久化记录。
     client_location: ClientLocation | None = None
     cognitive_decision: CognitiveDecision | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class RecentDeviceReference:
+    entity_id: str
+    name: str
+    user_id: UUID
+    source_turn_seq: int
+    updated_at: datetime
 
 
 class TurnCancelled(RuntimeError):
@@ -308,6 +320,7 @@ class ChatService:
         timeline_store: TimelineStore | None = None,
         history_recall_service: HistoryRecallService | None = None,
         screen_activity_recall_service: ScreenActivityRecallService | None = None,
+        browser_activity_recall_service: BrowserActivityRecallService | None = None,
         capability_provider: RuntimeCapabilityProvider | None = None,
         device_tool: ToolHandler | None = None,
         device_tools: Iterable[ToolHandler] = (),
@@ -326,6 +339,9 @@ class ChatService:
         self._screen_activity_recall = screen_activity_recall_service or (
             ScreenActivityRecallService(timeline_store) if timeline_store is not None else None
         )
+        self._browser_activity_recall = browser_activity_recall_service or (
+            BrowserActivityRecallService(timeline_store) if timeline_store is not None else None
+        )
         self._capability_provider = capability_provider
         self._cognitive_cycle = cognitive_cycle
         self._avatar_store = avatar_store
@@ -341,6 +357,7 @@ class ChatService:
         )
         # 后台记忆任务的强引用集合：既防止任务被 GC，也支持停机前等待收尾
         self._background_tasks: set[asyncio.Task[None]] = set()
+        self._recent_devices: dict[UUID, list[RecentDeviceReference]] = {}
         secrets = EnvSecretProvider()
         self._router_builder = router_builder or (lambda config: build_router(config, secrets))
 
@@ -640,7 +657,15 @@ class ChatService:
                 logger.warning("runtime capability lookup failed", exc_info=True)
         pnkx_intent = _has_pnkx_intent(text)
         reality_block = render_reality_grounding(
-            () if pnkx_intent else runtime_capabilities
+            () if pnkx_intent else runtime_capabilities,
+            home_device_mode=snapshot.config.integrations.home_assistant.device_context_mode,
+        )
+        recent_device_block = self._recent_device_context(
+            conversation_id,
+            user_id=user_id,
+            current_turn_seq=conversation.last_turn_seq,
+            runtime_capabilities=runtime_capabilities,
+            now=now,
         )
         time_block = render_time_context(now, user_timezone)
         history_intent = has_history_intent(text)
@@ -663,6 +688,8 @@ class ChatService:
         history_block = ""
         screen_activity_recall: ScreenActivityRecallResult | None = None
         screen_activity_block = ""
+        browser_activity_recall: BrowserActivityRecallResult | None = None
+        browser_activity_block = ""
         if self._screen_activity_recall is not None:
             try:
                 screen_activity_recall = await self._screen_activity_recall.recall(
@@ -681,8 +708,27 @@ class ChatService:
                 logger.warning(
                     "screen activity recall failed for turn %s", turn_id, exc_info=True
                 )
+        if self._browser_activity_recall is not None:
+            try:
+                browser_activity_recall = await self._browser_activity_recall.recall(
+                    text,
+                    user_id=user_id,
+                    privacy_level=privacy_level,
+                    now=now,
+                    timezone_name=user_timezone,
+                )
+                if browser_activity_recall is not None:
+                    browser_activity_block = BrowserActivityRecallService.render_context(
+                        browser_activity_recall,
+                        timezone_name=user_timezone,
+                    )
+            except Exception:
+                logger.warning(
+                    "browser activity recall failed for turn %s", turn_id, exc_info=True
+                )
         if (
             screen_activity_recall is None
+            and browser_activity_recall is None
             and self._history_recall is not None
             and history_intent
         ):
@@ -733,8 +779,10 @@ class ChatService:
                     + structured_reply_instruction(persona)
                     + f"\n\n{time_block}"
                     + f"\n\n{reality_block}"
+                    + (f"\n\n{recent_device_block}" if recent_device_block else "")
                     + (f"\n\n{memory_block}" if memory_block else "")
                     + (f"\n\n{screen_activity_block}" if screen_activity_block else "")
+                    + (f"\n\n{browser_activity_block}" if browser_activity_block else "")
                     + (f"\n\n{history_block}" if history_block else ""),
                 ),
                 *[
@@ -763,6 +811,7 @@ class ChatService:
             memory_retrieval=memory_retrieval,
             history_recall=history_recall,
             screen_activity_recall=screen_activity_recall,
+            browser_activity_recall=browser_activity_recall,
             runtime_capabilities=runtime_capabilities,
             tool_names=tool_names,
             client_location=client_location,
@@ -951,10 +1000,12 @@ class ChatService:
         )
         if self._device_tools.get(call.function.name) is not None:
             try:
-                return await ToolExecutor(self._device_tools).execute(
+                execution = await ToolExecutor(self._device_tools).execute(
                     call,
                     context,
                 )
+                self._remember_device(pending, execution.result)
+                return execution
             except Exception:
                 logger.warning(
                     "device tool runtime failed turn_id=%s tool=%s",
@@ -997,6 +1048,78 @@ class ChatService:
         finally:
             if runtime is not None:
                 await runtime.close()
+
+    def _remember_device(self, pending: PendingTurn, result: ToolResult) -> None:
+        if not result.ok or result.tool_name not in {
+            "search_devices",
+            "home_get_state",
+            "home_get_history",
+            "home_control",
+        }:
+            return
+        candidates: list[dict[str, Any]] = []
+        if result.tool_name == "search_devices":
+            raw = result.data.get("devices")
+            if isinstance(raw, list) and len(raw) == 1 and isinstance(raw[0], dict):
+                match_kind = raw[0].get("match_kind")
+                if match_kind in {"entity_exact", "name_exact", "alias_exact"}:
+                    candidates = [raw[0]]
+        elif result.tool_name == "home_get_state":
+            raw = result.data.get("entities")
+            if isinstance(raw, list) and len(raw) == 1 and isinstance(raw[0], dict):
+                candidates = [raw[0]]
+        else:
+            candidates = [result.data]
+        if len(candidates) != 1:
+            return
+        entity_id = candidates[0].get("entity_id")
+        name = candidates[0].get("name")
+        if not isinstance(entity_id, str) or not isinstance(name, str):
+            return
+        reference = RecentDeviceReference(
+            entity_id=entity_id,
+            name=name,
+            user_id=pending.user_id,
+            source_turn_seq=pending.turn_seq,
+            updated_at=datetime.now(UTC),
+        )
+        existing = [
+            item
+            for item in self._recent_devices.get(pending.conversation_id, [])
+            if item.entity_id != entity_id
+        ]
+        self._recent_devices[pending.conversation_id] = [reference, *existing][:3]
+
+    def _recent_device_context(
+        self,
+        conversation_id: UUID,
+        *,
+        user_id: UUID,
+        current_turn_seq: int,
+        runtime_capabilities: tuple[RuntimeActionCapability, ...],
+        now: datetime,
+    ) -> str:
+        authorized = {
+            item.capability_id.split(":", 2)[1]
+            for item in runtime_capabilities
+            if item.capability_id.startswith("home_assistant:")
+        }
+        valid = [
+            item
+            for item in self._recent_devices.get(conversation_id, [])
+            if item.user_id == user_id
+            and item.entity_id in authorized
+            and current_turn_seq - item.source_turn_seq <= 3
+            and now - item.updated_at <= timedelta(minutes=10)
+        ]
+        self._recent_devices[conversation_id] = valid
+        if len(valid) != 1:
+            return ""
+        item = valid[0]
+        return (
+            f"【近期设备指代】上一轮明确设备为 {item.name}（{item.entity_id}）。"
+            "仅可用于理解「它」指哪台设备；不能视为动作确认，调用工具时必须重新校验权限。"
+        )
 
     @staticmethod
     def _tool_followup_request(
@@ -1256,6 +1379,20 @@ class ChatService:
                 "candidate_count": screen_recall.candidate_count,
                 "segment_count": len(screen_recall.segments),
                 "truncated": screen_recall.truncated,
+            }
+        elif pending.browser_activity_recall is not None:
+            browser_recall = pending.browser_activity_recall
+            decision_meta["recall"] = {
+                "mode": "browser_activity",
+                "timeline_ids": [item.id for item in browser_recall.events],
+                "source_ids": [item.source_id for item in browser_recall.events],
+                "time_range": {
+                    "start_at": browser_recall.temporal_range.start_at.isoformat(),
+                    "end_at": browser_recall.temporal_range.end_at.isoformat(),
+                },
+                "candidate_count": browser_recall.candidate_count,
+                "segment_count": len(browser_recall.segments),
+                "truncated": browser_recall.truncated,
             }
         elif pending.history_recall is not None:
             recall_mode = pending.history_recall.mode.value

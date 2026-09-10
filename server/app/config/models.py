@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import re
+from contextlib import suppress
 from ipaddress import ip_address
 from typing import Annotated, Any, Literal
+from urllib.parse import urlparse
 from uuid import UUID
 
 from pydantic import AnyHttpUrl, Field, model_validator
@@ -133,6 +135,85 @@ class ScreenAwarenessConfig(StrictModel):
     def validate_displays(self) -> ScreenAwarenessConfig:
         if self.enabled and not self.displays:
             raise ValueError("enabled screen awareness requires at least one display index")
+        return self
+
+
+class BrowserAwarenessConfig(StrictModel):
+    """Hub 周期浏览感知；页面正文只用于当次分析，不持久化。"""
+
+    enabled: bool = False
+    interval_seconds: Annotated[int, Field(ge=15, le=600)] = 60
+    analysis_prompt: Annotated[str, Field(min_length=1, max_length=1_000)] = (
+        "概括用户当前浏览的网页内容，并判断是否值得记录或主动提醒。"
+    )
+    memory_enabled: bool = True
+    proactive_enabled: bool = True
+    max_text_chars: Annotated[int, Field(ge=500, le=30_000)] = 8_000
+    blocked_hosts: Annotated[list[str], Field(max_length=200)] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def normalize_blocked_hosts(self) -> BrowserAwarenessConfig:
+        normalized = [value.strip().casefold() for value in self.blocked_hosts]
+        if any(not value for value in normalized):
+            raise ValueError("browser awareness blocked hosts cannot be blank")
+        if any("/" in value or ":" in value for value in normalized):
+            raise ValueError("browser awareness blocked hosts must be host names")
+        if len(normalized) != len(set(normalized)):
+            raise ValueError("browser awareness blocked hosts must be unique")
+        object.__setattr__(self, "blocked_hosts", normalized)
+        return self
+
+
+class McpServerConfig(StrictModel):
+    """One allowlisted Streamable HTTP MCP server."""
+
+    server_id: Annotated[str, Field(pattern=r"^[a-z][a-z0-9_-]{1,63}$")]
+    enabled: bool = False
+    transport: Literal["streamable_http"] = "streamable_http"
+    endpoint: AnyHttpUrl
+    secret_ref: Annotated[str, Field(pattern=r"^env:[A-Z][A-Z0-9_]{2,127}$")] | None = None
+    secret_value: Annotated[str, Field(min_length=1, max_length=4096)] | None = None
+    allowed_tools: Annotated[list[str], Field(max_length=256)] = Field(default_factory=list)
+    allow_write_tools: bool = False
+    allow_insecure_local_http: bool = False
+    connect_timeout_seconds: Annotated[float, Field(ge=1, le=60)] = 5.0
+    call_timeout_seconds: Annotated[float, Field(ge=1, le=300)] = 15.0
+    catalog_ttl_seconds: Annotated[int, Field(ge=30, le=86_400)] = 300
+    max_result_bytes: Annotated[int, Field(ge=1_024, le=1_000_000)] = 32_000
+
+    @model_validator(mode="after")
+    def validate_server(self) -> McpServerConfig:
+        endpoint = urlparse(str(self.endpoint))
+        host = (endpoint.hostname or "").casefold()
+        if endpoint.username is not None or endpoint.password is not None:
+            raise ValueError("MCP endpoint cannot contain credentials")
+        if endpoint.query or endpoint.fragment:
+            raise ValueError("MCP endpoint cannot contain query or fragment")
+        if endpoint.scheme != "https":
+            local = host == "localhost" or host.endswith(".localhost")
+            with suppress(ValueError):
+                local = local or ip_address(host).is_loopback
+            if not (self.allow_insecure_local_http and local):
+                raise ValueError("MCP endpoint must use HTTPS unless loopback HTTP is allowed")
+        tools = [value.strip() for value in self.allowed_tools]
+        if any(not value for value in tools):
+            raise ValueError("MCP allowed tool names cannot be blank")
+        if len(tools) != len(set(tools)):
+            raise ValueError("MCP allowed tool names must be unique")
+        object.__setattr__(self, "allowed_tools", tools)
+        return self
+
+
+class McpConfig(StrictModel):
+    enabled: bool = False
+    max_tools_per_turn: Annotated[int, Field(ge=1, le=16)] = 8
+    servers: Annotated[list[McpServerConfig], Field(max_length=32)] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def validate_servers(self) -> McpConfig:
+        ids = [server.server_id for server in self.servers]
+        if len(ids) != len(set(ids)):
+            raise ValueError("MCP server_id values must be unique")
         return self
 
 
@@ -277,6 +358,7 @@ class HomeAssistantEntityConfig(StrictModel):
     ]
     display_name: Annotated[str, Field(min_length=1, max_length=160)]
     aliases: Annotated[list[str], Field(max_length=16)] = Field(default_factory=list)
+    room: Annotated[str, Field(min_length=1, max_length=120)] | None = None
     read_allowed: bool = False
     history_allowed: bool = False
     history_max_hours: Annotated[int, Field(ge=1, le=168)] = 24
@@ -365,6 +447,7 @@ class HomeAssistantConfig(StrictModel):
     reconnect_min_seconds: Annotated[float, Field(ge=0.1, le=30)] = 1
     reconnect_max_seconds: Annotated[float, Field(ge=1, le=300)] = 30
     state_cache_ttl_seconds: Annotated[int, Field(ge=5, le=86_400)] = 300
+    device_context_mode: Literal["full", "compact", "on_demand"] = "on_demand"
     proactive_enabled: bool = False
     proactive_quiet_hours_start: Annotated[str, Field(pattern=r"^(?:[01]\d|2[0-3]):[0-5]\d$")] = (
         "23:00"
@@ -579,6 +662,8 @@ class HubConfig(StrictModel):
     integrations: IntegrationsConfig = Field(default_factory=IntegrationsConfig)
     proactive_output: ProactiveOutputConfig = Field(default_factory=ProactiveOutputConfig)
     screen_awareness: ScreenAwarenessConfig = Field(default_factory=ScreenAwarenessConfig)
+    browser_awareness: BrowserAwarenessConfig = Field(default_factory=BrowserAwarenessConfig)
+    mcp: McpConfig = Field(default_factory=McpConfig)
 
     @model_validator(mode="before")
     @classmethod

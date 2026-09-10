@@ -1,9 +1,11 @@
 """HTTP API package."""
 from .admin_avatar import create_admin_avatar_router
+from .admin_browser_awareness import create_admin_browser_awareness_router
 from .admin_config import create_admin_config_router
 from .admin_dashboard import create_admin_dashboard_router
 from .admin_jobs import create_admin_jobs_router
 from .admin_logs_stream import create_logs_stream_router
+from .admin_mcp import create_admin_mcp_router
 from .admin_memory import create_admin_memory_router, create_deletion_ledger_router
 from .admin_persona import create_admin_persona_router
 from .admin_screen_awareness import create_admin_screen_awareness_router
@@ -25,6 +27,7 @@ from .device_commands import (
 )
 from .devices import DeviceCredentialGuard, create_device_routers
 from .home_scenes import create_home_scenes_router
+from .meetings import create_meetings_router
 from .model_capabilities import create_model_capability_router
 from .pnkx import create_pnkx_router
 from .push import create_push_router
@@ -44,9 +47,11 @@ __all__ = [
     "VoiceWebSocketManager",
     "XiaoAiWebSocketManager",
     "create_admin_avatar_router",
+    "create_admin_browser_awareness_router",
     "create_admin_config_router",
     "create_admin_dashboard_router",
     "create_admin_jobs_router",
+    "create_admin_mcp_router",
     "create_admin_memory_router",
     "create_admin_persona_router",
     "create_admin_screen_awareness_router",
@@ -66,6 +71,7 @@ __all__ = [
     "create_device_routers",
     "create_home_scenes_router",
     "create_logs_stream_router",
+    "create_meetings_router",
     "create_model_capability_router",
     "create_pnkx_router",
     "create_push_router",

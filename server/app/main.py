@@ -19,9 +19,11 @@ from app.adapters import AdapterRegistry
 from app.adapters.builtin import create_builtin_registry
 from app.api import (
     create_admin_avatar_router,
+    create_admin_browser_awareness_router,
     create_admin_config_router,
     create_admin_dashboard_router,
     create_admin_jobs_router,
+    create_admin_mcp_router,
     create_admin_memory_router,
     create_admin_persona_router,
     create_admin_screen_awareness_router,
@@ -41,6 +43,7 @@ from app.api import (
     create_device_routers,
     create_home_scenes_router,
     create_logs_stream_router,
+    create_meetings_router,
     create_model_capability_router,
     create_pnkx_router,
     create_push_router,
@@ -54,9 +57,18 @@ from app.api import (
 )
 from app.api.admin_config import set_runtime_admin_token
 from app.api.events import create_event_router
+from app.api.mail import create_mail_router
 from app.appearance import ThemeStore
 from app.auth import AuthService
 from app.avatar import AvatarAssetImporter, AvatarStore
+from app.browser_awareness import (
+    BrowserAwarenessAnalyzer,
+    BrowserAwarenessGateway,
+    BrowserAwarenessLoop,
+    BrowserAwarenessResolver,
+    BrowserAwarenessTabHints,
+    LlmBrowserAnalyzer,
+)
 from app.bus import DispatcherWorker, EventPublisher, LocalEventPublisher
 from app.calendar import CalendarCreateTool, CalendarService, CalendarStore
 from app.chat import ChatService, CompositeRuntimeCapabilityProvider, RuntimeCapabilityProvider
@@ -74,6 +86,7 @@ from app.cognition import (
     WorldStateBuilder,
     build_builtin_action_registry,
 )
+from app.cognition.action_plan import PlanChangedEvent
 from app.commute import CommuteCheckTool, CommuteService
 from app.config import (
     BrowserWorkflowConfig,
@@ -98,6 +111,7 @@ from app.home_assistant import (
     HomeControlTool,
     HomeGetHistoryTool,
     HomeGetStateTool,
+    SearchDevicesTool,
 )
 from app.home_scene import (
     HomeSceneListTool,
@@ -105,9 +119,11 @@ from app.home_scene import (
     HomeSceneService,
     HomeSceneStore,
 )
+from app.integrations.mcp import McpManager
 from app.jobs import AssetStore, JobEngine
 from app.llm.provider import EnvSecretProvider
-from app.mail import create_mail_tools
+from app.mail import MailSendTool, create_mail_tools
+from app.meetings import LlmMeetingSummarizer, MeetingService, MeetingStore
 from app.memory import (
     LlmMemoryExtractor,
     MemoryExtractor,
@@ -244,6 +260,8 @@ def create_app(
     runtime_chat_service: ChatService | None = None
     home_assistant_proactive: HomeAssistantProactiveEngine | None = None
     screen_awareness_loop: ScreenAwarenessLoop | None = None
+    browser_awareness_loop: BrowserAwarenessLoop | None = None
+    mcp_manager = McpManager(runtime_config) if runtime_config is not None else None
     proactive_delivery: ProactiveDeliveryService | None = None
     mqtt_presence_bridge: MqttPresenceBridge | None = None
     task_scheduler: TaskScheduler | None = None
@@ -334,17 +352,21 @@ def create_app(
             interval_seconds=float(os.getenv("ARIA_TASK_SCHEDULER_INTERVAL", "15")),
         )
         if perception_pipeline is not None:
-            async def dispatch_semantic_event(event: SemanticEvent) -> None:
-                await task_scheduler.on_semantic_event(cast(Any, event))
-                if home_scene_service is not None:
-                    with suppress(Exception):
-                        await home_scene_service.handle_semantic_event(
-                            event.user_id, event.event_id, event.kind
-                        )
 
-            perception_pipeline.set_event_observer(
-                cast(EventObserver, dispatch_semantic_event)
-            )
+            async def dispatch_semantic_event(event: SemanticEvent) -> None:
+                try:
+                    await task_scheduler.on_semantic_event(cast(Any, event))
+                except Exception:
+                    logging.getLogger(__name__).exception("task semantic observer failed")
+                if home_scene_service is not None:
+                    try:
+                        await home_scene_service.handle_semantic_event(
+                            event.user_id, event.event_id, event.kind, cancel_arrivals=False
+                        )
+                    except Exception:
+                        logging.getLogger(__name__).exception("home scene observer failed")
+
+            perception_pipeline.set_event_observer(cast(EventObserver, dispatch_semantic_event))
     goal_tracker = GoalTracker(cognitive_store) if cognitive_store is not None else None
     goal_reminder_scheduler = (
         GoalReminderScheduler(
@@ -380,6 +402,13 @@ def create_app(
         if runtime_database is not None
         else None
     )
+
+    if perception_pipeline is not None and home_scene_service is not None:
+
+        async def cancel_home_on_departure(event: SemanticEvent) -> None:
+            await home_scene_service.on_departure(event.user_id, event.occurred_at)
+
+        perception_pipeline.set_departure_observer(cancel_home_on_departure)
 
     async def fetch_brief_weather() -> BriefWeather | None:
         """按需构建高德运行时取一次天气；任何失败只意味着简报少一条事实。"""
@@ -450,6 +479,7 @@ def create_app(
             default_city=runtime_config.current.config.tools.query.default_city,
             clock=lambda: datetime.now(UTC),
         )
+
     daily_brief_service = (
         DailyBriefService(
             runtime_database,
@@ -493,6 +523,18 @@ def create_app(
     calendar_service = (
         CalendarService(CalendarStore(runtime_database), task_store)
         if runtime_database is not None and task_store is not None
+        else None
+    )
+    meeting_service = (
+        MeetingService(
+            MeetingStore(runtime_database),
+            CalendarStore(runtime_database),
+            task_store,
+            LlmMeetingSummarizer(runtime_config),
+        )
+        if runtime_database is not None
+        and task_store is not None
+        and runtime_config is not None
         else None
     )
     # TODO-01：pnkx 为任务单一真源；BASE_URL + 集成令牌齐备才启用，缺省完全关闭
@@ -633,6 +675,10 @@ def create_app(
             await worker.start()
         if screen_awareness_loop is not None:
             screen_awareness_loop.start()
+        if browser_awareness_loop is not None:
+            browser_awareness_loop.start()
+        if mcp_manager is not None:
+            mcp_manager.start()
         if task_scheduler is not None:
             task_scheduler.start()
         if goal_reminder_scheduler is not None:
@@ -662,6 +708,10 @@ def create_app(
                 await task_scheduler.stop()
             if screen_awareness_loop is not None:
                 await screen_awareness_loop.stop()
+            if browser_awareness_loop is not None:
+                await browser_awareness_loop.stop()
+            if mcp_manager is not None:
+                await mcp_manager.stop()
             if home_assistant_proactive is not None:
                 await home_assistant_proactive.stop()
             if mqtt_client is not None:
@@ -977,6 +1027,13 @@ def create_app(
                 on_proactive_test=test_home_assistant_proactive,
             )
         )
+        app.include_router(
+            create_admin_mcp_router(
+                mcp_manager,
+                admin_token=runtime_admin_token,
+            )
+        )
+        app.state.mcp_manager = mcp_manager
         if persona_store is not None:
             app.include_router(
                 create_admin_persona_router(
@@ -1030,6 +1087,12 @@ def create_app(
                     admin_token=runtime_admin_token,
                 )
             )
+            app.include_router(
+                create_admin_browser_awareness_router(
+                    timeline_store,
+                    admin_token=runtime_admin_token,
+                )
+            )
             if avatar_store is not None:
                 app.include_router(
                     create_admin_avatar_router(
@@ -1053,6 +1116,8 @@ def create_app(
                 )
             )
             device_tools: list[ToolHandler] = []
+            calendar_create_tool: CalendarCreateTool | None = None
+            workflow_save_tool: WorkflowSaveTool | None = None
             capability_providers: list[RuntimeCapabilityProvider] = []
             device_target_resolver: DeviceTargetResolver | None = None
             device_command_gateway = None
@@ -1094,6 +1159,7 @@ def create_app(
                         )
             if home_assistant_manager is not None:
                 capability_providers.append(home_assistant_manager)
+                device_tools.append(SearchDevicesTool(home_assistant_manager))
                 device_tools.append(HomeGetStateTool(home_assistant_manager))
                 device_tools.append(HomeGetHistoryTool(home_assistant_manager))
                 device_tools.append(HomeControlTool(home_assistant_manager))
@@ -1107,15 +1173,17 @@ def create_app(
             if task_store is not None:
                 device_tools.append(ReminderCreateTool(task_store, timezone_name=default_timezone))
             if calendar_service is not None:
-                device_tools.append(
-                    CalendarCreateTool(calendar_service, timezone_name=default_timezone)
+                calendar_create_tool = CalendarCreateTool(
+                    calendar_service, timezone_name=default_timezone
                 )
+                device_tools.append(calendar_create_tool)
             if contact_store is not None:
                 device_tools.append(ContactSaveTool(contact_store))
                 device_tools.append(ContactQueryTool(contact_store))
             device_tools.append(CommuteCheckTool(build_commute_service))
             if workflow_service is not None:
-                device_tools.append(WorkflowSaveTool(workflow_service))
+                workflow_save_tool = WorkflowSaveTool(workflow_service)
+                device_tools.append(workflow_save_tool)
                 device_tools.append(WorkflowRunTool(workflow_service))
             if focus_service is not None:
                 device_tools.extend(
@@ -1231,6 +1299,9 @@ def create_app(
             app.state.chat_service = runtime_chat_service
             app.include_router(create_auth_router(auth_service, admin_token=runtime_admin_token))
             app.include_router(create_chat_router(runtime_chat_service, auth_service))
+            for device_tool in device_tools:
+                if isinstance(device_tool, MailSendTool):
+                    app.include_router(create_mail_router(device_tool, auth_service))
             if avatar_store is not None and persona_store is not None:
                 app.include_router(create_avatar_router(avatar_store, persona_store, auth_service))
             if theme_store is not None:
@@ -1262,8 +1333,13 @@ def create_app(
                 app.state.daily_review_service = daily_review_service
                 app.state.daily_review_scheduler = daily_review_scheduler
             if calendar_service is not None:
-                app.include_router(create_calendar_router(calendar_service, auth_service))
+                app.include_router(
+                    create_calendar_router(calendar_service, auth_service, calendar_create_tool)
+                )
                 app.state.calendar_service = calendar_service
+            if meeting_service is not None:
+                app.include_router(create_meetings_router(meeting_service, auth_service))
+                app.state.meeting_service = meeting_service
             if contact_store is not None:
                 app.include_router(create_contacts_router(contact_store, auth_service))
                 app.state.contact_store = contact_store
@@ -1271,7 +1347,9 @@ def create_app(
                 app.include_router(create_home_scenes_router(home_scene_service, auth_service))
                 app.state.home_scene_service = home_scene_service
             if workflow_service is not None:
-                app.include_router(create_workflows_router(workflow_service, auth_service))
+                app.include_router(
+                    create_workflows_router(workflow_service, auth_service, workflow_save_tool)
+                )
                 app.state.workflow_service = workflow_service
             if todo_sync_service is not None:
                 app.include_router(create_todo_router(todo_sync_service, auth_service))
@@ -1309,7 +1387,14 @@ def create_app(
                         },
                     )
 
+                async def push_plan_changed(event: PlanChangedEvent) -> None:
+                    await websocket_manager.broadcast_to_user(
+                        event.user_id,
+                        {"type": "plan.changed", "payload": event.model_dump(mode="json")},
+                    )
+
                 action_plan_service.set_execution_listener(push_plan_execution)
+                action_plan_service.set_change_listener(push_plan_changed)
             if device_command_gateway is not None:
                 device_command_gateway.set_pet_message_handler(
                     websocket_manager.submit_device_message
@@ -1334,6 +1419,15 @@ def create_app(
                 app.state.voice_websocket_manager = voice_manager
                 if device_command_gateway is not None:
                     device_command_gateway.set_pet_audio_handler(voice_manager.stream_device_speech)
+                    device_command_gateway.set_satellite_utterance_handler(
+                        voice_manager.run_satellite_utterance
+                    )
+                    device_command_gateway.set_satellite_takeover_handler(
+                        voice_manager.transfer_satellite_conversation
+                    )
+                    voice_manager.set_satellite_broadcaster(
+                        device_command_gateway.broadcast_satellite
+                    )
                 app.include_router(voice_router)
             push_subscription_store = (
                 PushSubscriptionStore(runtime_database) if runtime_database is not None else None
@@ -1491,6 +1585,26 @@ def create_app(
                     cognitive_cycle=cognitive_cycle,
                 )
                 app.state.screen_awareness_loop = screen_awareness_loop
+                browser_awareness_loop = BrowserAwarenessLoop(
+                    config_store=runtime_config,
+                    database=runtime_database,
+                    resolver=cast(BrowserAwarenessResolver, device_target_resolver),
+                    gateway=cast(BrowserAwarenessGateway, device_command_gateway),
+                    analyzer=cast(
+                        BrowserAwarenessAnalyzer, LlmBrowserAnalyzer(runtime_config)
+                    ),
+                    timeline=timeline_store,
+                    memory_ingester=(
+                        MemoryIngester(memory_store) if memory_store is not None else None
+                    ),
+                    perception_pipeline=perception_pipeline,
+                    proactive_deliver=(
+                        proactive_delivery.deliver if proactive_delivery is not None else None
+                    ),
+                    cognitive_cycle=cognitive_cycle,
+                    tab_hints=cast(BrowserAwarenessTabHints, device_command_gateway),
+                )
+                app.state.browser_awareness_loop = browser_awareness_loop
 
     return app
 

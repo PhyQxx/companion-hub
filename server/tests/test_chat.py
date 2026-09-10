@@ -809,6 +809,58 @@ async def test_home_state_read_is_preexecuted_when_model_emits_no_tool_call(
     assert calls[0]["tool_name"] == "home_get_state"
 
 
+async def test_recent_home_device_reference_is_added_to_followup_prompt(
+    database: Database,
+    store: DatabaseConfigStore,
+) -> None:
+    candidate = store.current.config.model_dump(mode="python")
+    candidate["models"]["cloud"]["supports_tool_calling"] = True
+    candidate["integrations"] = {
+        "home_assistant": {
+            "enabled": True,
+            "base_url": "https://ha.example.test",
+            "secret_value": "test-token",
+            "entities": [
+                {
+                    "entity_id": "light.bedroom",
+                    "display_name": "主卧灯",
+                    "read_allowed": True,
+                }
+            ],
+        }
+    }
+    draft = await store.create_draft(HubConfig.model_validate(candidate), actor="test")
+    await store.publish(draft.version, actor="test")
+    requests: list[CompletionRequest] = []
+    service = ChatService(
+        database,
+        store,
+        router_builder=lambda config: FakeRouter(config.models["cloud"].model, requests),
+        capability_provider=FakeHomeCapabilityProvider(),
+        device_tools=(HomeGetStateTool(FakeHomeStateProvider()),),
+    )
+    user = await create_user(database)
+    conversation = await service.create_conversation(user_id=user.id, title="ha reference")
+
+    await service.send_message(
+        conversation.id,
+        user_id=user.id,
+        text="主卧灯现在开着吗",
+        privacy_level=PrivacyLevel.L1,
+    )
+    pending = await service.start_turn(
+        conversation.id,
+        user_id=user.id,
+        text="它怎么样了",
+        privacy_level=PrivacyLevel.L1,
+    )
+
+    system_prompt = pending.request.messages[0].content
+    assert "【近期设备指代】" in system_prompt
+    assert "主卧灯（light.bedroom）" in system_prompt
+    assert "不能视为动作确认" in system_prompt
+
+
 async def test_terse_followup_retries_previous_home_state_read_deterministically(
     database: Database,
     store: DatabaseConfigStore,
