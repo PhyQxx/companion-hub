@@ -6,9 +6,9 @@ Action Registry 中为 A2 每次确认，只能经计划—确认—执行链路
 四个工具都不挂载为聊天工具（`_device_tool_ready` 恒 False），由
 `tools.browser_workflow.enabled` 总开关把关，默认关闭。
 
-ref 契约：扩展端按文档顺序枚举可见表单控件，`f{序号}`/`form{序号}`；
-页面结构变化会导致 control_not_found 而不是静默错位。密码框在扩展端
-硬跳过，值也不回传。
+ref 契约：`f{序号}`/`form{序号}` 仅在同一次读取返回的 snapshot_id 内有效。
+扩展隔离世界绑定标签/页面/DOM 实例，变化返回 form_snapshot_changed 并要求重读；
+凭证 5 分钟失效，提交消费凭证，密码值不回传。
 """
 
 from __future__ import annotations
@@ -54,11 +54,15 @@ class FormFieldRef(BaseModel):
     value: Annotated[str, Field(min_length=1, max_length=5000)]
 
 
-class BrowserFormFillArgs(BrowserTargetArgs):
+class BrowserFormSnapshotArgs(BrowserTargetArgs):
+    snapshot_id: Annotated[str, Field(pattern=r"^[a-f0-9]{32}$")]
+
+
+class BrowserFormFillArgs(BrowserFormSnapshotArgs):
     fields: Annotated[list[FormFieldRef], Field(min_length=1, max_length=50)]
 
 
-class BrowserFormSubmitArgs(BrowserTargetArgs):
+class BrowserFormSubmitArgs(BrowserFormSnapshotArgs):
     form_ref: Annotated[str, Field(pattern=FORM_REF_PATTERN)]
 
 
@@ -117,6 +121,26 @@ class _BrowserWorkflowTool:
             "device_id": str(device.id),
             "status": terminal.status,
         }
+        # Device receipts already pass the gateway's size/redaction boundary. Keep only
+        # the bounded form result contract so a caller can use the read snapshot.
+        meta = getattr(terminal, "result_meta", None)
+        if isinstance(meta, dict) and command.startswith("browser.form."):
+            allowed = {
+                "snapshot_id",
+                "page_url",
+                "origin",
+                "title",
+                "field_count",
+                "truncated",
+                "fields",
+                "filled",
+                "total",
+                "skipped",
+                "pageUrl",
+                "submitted",
+                "reread_required",
+            }
+            data["result"] = {key: value for key, value in meta.items() if key in allowed}
         return ToolResult(
             ok=ok,
             tool_name=tool_name,
@@ -174,7 +198,7 @@ class BrowserFormReadTool:
     name = "browser_form_read"
     description = (
         "读取浏览器设备当前页面的可见表单控件（顺序 ref、标签、占位符、"
-        "是否必填；密码框值永不回传）。纯读操作，用于定位要填写的字段。"
+        "是否必填；密码框值永不回传）。回执含 snapshot_id，后续填写/提交必须携带。"
     )
     arguments_model: type[BaseModel] = BrowserFormReadArgs
     runs_local = True
@@ -213,7 +237,7 @@ class BrowserFormFillTool:
     name = "browser_form_fill"
     description = (
         "向浏览器页面表单填写字段值（ref 来自 browser_form_read），只写值"
-        "绝不提交。密码框会被跳过。用户必须先看到并认可要写入的每个字段值。"
+        "绝不主动提交。必须携带读取回执的 snapshot_id；页面变化需重读。密码框跳过。"
     )
     arguments_model: type[BaseModel] = BrowserFormFillArgs
     runs_local = True
@@ -241,7 +265,10 @@ class BrowserFormFillTool:
             tool_name=self.name,
             capability="browser.form.fill",
             command="browser.form.fill",
-            args={"fields": [item.model_dump(mode="json") for item in args.fields]},
+            args={
+                "snapshot_id": args.snapshot_id,
+                "fields": [item.model_dump(mode="json") for item in args.fields],
+            },
             target=args.target,
             context=context,
             started=started,
@@ -252,7 +279,7 @@ class BrowserFormSubmitTool:
     name = "browser_form_submit"
     description = (
         "提交浏览器页面上的表单（form_ref 来自 browser_form_read）。这是"
-        "对外发送动作：必须在计划确认中向用户展示目标站点、全部字段值和"
+        "对外发送动作：必须携带读取回执的 snapshot_id，在计划确认中展示目标站点、字段和"
         "填写后截图证据，用户明确同意后才可执行。"
     )
     arguments_model: type[BaseModel] = BrowserFormSubmitArgs
@@ -281,7 +308,7 @@ class BrowserFormSubmitTool:
             tool_name=self.name,
             capability="browser.form.submit",
             command="browser.form.submit",
-            args={"form_ref": args.form_ref},
+            args={"snapshot_id": args.snapshot_id, "form_ref": args.form_ref},
             target=args.target,
             context=context,
             started=started,

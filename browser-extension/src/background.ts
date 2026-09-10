@@ -1,6 +1,8 @@
+import { formPageOperation } from "./form-page";
 import {
   BROWSER_CAPABILITIES,
   buildFormFieldDescriptors,
+  buildTabHint,
   isExecuteCommand,
   isValidFormRef,
   parseFormFillFields,
@@ -11,6 +13,7 @@ import {
   type BrowserDocument,
   type ExecuteCommandFrame,
   type SignedFrame,
+  type TabHint,
 } from "./core";
 
 interface StoredBridgeConfig {
@@ -32,7 +35,19 @@ let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
 let heartbeatTimer: ReturnType<typeof setInterval> | null = null;
 let reconnectAttempt = 0;
 let connectGeneration = 0;
+let observeTabHint = false;
 const cancelledCommands = new Set<string>();
+let formSnapshot: { id: string; tabId: number; url: string; expires: number; refs: Set<string>; forms: Set<string> } | null = null;
+
+chrome.tabs.onActivated.addListener(({ tabId }) => {
+  if (formSnapshot && tabId !== formSnapshot.tabId) formSnapshot = null;
+});
+chrome.tabs.onUpdated.addListener((tabId, change) => {
+  if (formSnapshot?.tabId === tabId && (change.status === "loading" || change.url !== undefined)) formSnapshot = null;
+});
+chrome.tabs.onRemoved.addListener(tabId => {
+  if (formSnapshot?.tabId === tabId) formSnapshot = null;
+});
 
 void chrome.storage.local.setAccessLevel({ accessLevel: "TRUSTED_CONTEXTS" });
 chrome.runtime.onStartup.addListener(() => void connect());
@@ -57,6 +72,8 @@ async function storedConfig(): Promise<StoredBridgeConfig | null> {
 async function connect(): Promise<void> {
   const generation = ++connectGeneration;
   clearConnection();
+  formSnapshot = null;
+  observeTabHint = false;
   const config = await storedConfig();
   if (generation !== connectGeneration) return;
   if (config === null) {
@@ -102,8 +119,13 @@ async function handleFrame(
   }
   if (frame.type === "device.accepted") {
     reconnectAttempt = 0;
+    observeTabHint = frame.observe_tab_hint === true;
     await setStatus("online", "已连接，等待网页读取请求");
     startHeartbeat(current);
+    return;
+  }
+  if (frame.type === "heartbeat.accepted") {
+    observeTabHint = frame.observe_tab_hint === true;
     return;
   }
   if (frame.type === "command.cancel" && typeof frame.command_id === "string") {
@@ -162,12 +184,12 @@ async function executeCommand(
     }
     await setStatus("online", `${frame.command} 已完成`);
   } catch (error) {
-    const reason = error instanceof Error && error.message === "restricted_page"
-      ? "restricted_page"
-      : error instanceof Error && error.message === "invalid_command_args"
-        ? "invalid_command_args"
-        : "browser_command_failed";
-    sendResult(current, frame.command_id, "failed", reason, {});
+    const allowed = new Set(["restricted_page", "invalid_command_args", "form_snapshot_missing",
+      "form_snapshot_expired", "form_snapshot_changed", "control_not_found", "form_not_found",
+      "control_not_editable", "option_not_found", "unsupported_field", "set_value_failed", "form_too_large"]);
+    const reason = error instanceof Error && allowed.has(error.message) ? error.message : "browser_command_failed";
+    sendResult(current, frame.command_id, "failed", reason,
+      error instanceof FormOperationError ? { filled: error.filled, reread_required: true } : {});
   }
 }
 
@@ -193,7 +215,7 @@ function parseTabOpenArgs(argsJson: string): { url: string } {
   return { url: candidate.toString() };
 }
 
-function parseFormFillArgs(argsJson: string): Array<{ ref: string; value: string }> {
+function parseFormFillArgs(argsJson: string): { snapshotId: string; fields: Array<{ ref: string; value: string }> } {
   let parsed: Record<string, unknown>;
   try {
     parsed = JSON.parse(argsJson) as Record<string, unknown>;
@@ -202,10 +224,10 @@ function parseFormFillArgs(argsJson: string): Array<{ ref: string; value: string
   }
   const fields = parseFormFillFields(parsed.fields);
   if (fields === null) throw new Error("invalid_command_args");
-  return fields;
+  return { snapshotId: parseSnapshotId(parsed.snapshot_id), fields };
 }
 
-function parseFormSubmitArgs(argsJson: string): { formRef: string } {
+function parseFormSubmitArgs(argsJson: string): { snapshotId: string; formRef: string } {
   let parsed: Record<string, unknown>;
   try {
     parsed = JSON.parse(argsJson) as Record<string, unknown>;
@@ -213,7 +235,7 @@ function parseFormSubmitArgs(argsJson: string): { formRef: string } {
     throw new Error("invalid_command_args");
   }
   if (!isValidFormRef(parsed.form_ref)) throw new Error("invalid_command_args");
-  return { formRef: parsed.form_ref };
+  return { snapshotId: parseSnapshotId(parsed.snapshot_id), formRef: parsed.form_ref };
 }
 
 async function openTab(request: { url: string }): Promise<Record<string, unknown>> {
@@ -221,160 +243,76 @@ async function openTab(request: { url: string }): Promise<Record<string, unknown
   return { tab_id: tab.id ?? null, url: request.url };
 }
 
-/**
- * 页面端控件枚举必须自包含（chrome.scripting 序列化注入函数，不能引用外层闭包）。
- * 枚举顺序即 ref 顺序：fill/submit 依据同一枚举重放定位，页面结构变化会导致
- * mismatch，由执行结果反映而不是静默错位。
- */
-const ENUMERATE_CONTROLS_SOURCE = () => {
-  const eligible = (element: Element): element is HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement => {
-    if (
-      !(element instanceof HTMLInputElement) &&
-      !(element instanceof HTMLTextAreaElement) &&
-      !(element instanceof HTMLSelectElement)
-    ) return false;
-    const type = element instanceof HTMLInputElement ? element.type.toLowerCase() : "";
-    if (["hidden", "submit", "button", "image", "reset", "file"].includes(type)) return false;
-    const style = window.getComputedStyle(element);
-    return style.display !== "none" && style.visibility !== "hidden";
-  };
-  const formIndexes = new Map<HTMLFormElement, number>();
-  Array.from(document.querySelectorAll("form")).forEach((form, index) => {
-    formIndexes.set(form as HTMLFormElement, index);
-  });
-  const described: Array<Record<string, unknown>> = [];
-  Array.from(document.querySelectorAll("input, textarea, select")).forEach((element) => {
-    if (!eligible(element)) return;
-    const form = element.form;
-    const label =
-      element instanceof HTMLSelectElement
-        ? ""
-        : element.labels && element.labels.length > 0
-          ? (element.labels[0] as HTMLLabelElement).innerText
-          : "";
-    described.push({
-      tag: element.tagName.toLowerCase(),
-      type: element instanceof HTMLInputElement ? element.type.toLowerCase() : element.tagName.toLowerCase(),
-      label,
-      placeholder: "placeholder" in element ? String(element.placeholder ?? "") : "",
-      name: element.name ?? "",
-      value: element.value ?? "",
-      required: element.required,
-      formIndex: form !== null && formIndexes.has(form) ? formIndexes.get(form)! : -1,
-    });
-  });
-  return described;
-};
-
-async function readFormFields(): Promise<Record<string, unknown>> {
-  const tab = await activeTab();
-  const [injection] = await chrome.scripting.executeScript({
-    target: { tabId: tab.id! },
-    func: ENUMERATE_CONTROLS_SOURCE,
-  });
-  if (injection?.result === undefined) throw new Error("page_read_failed");
-  const { fields, truncated, origin } = buildFormFieldDescriptors(injection.result, tab.url ?? "");
-  return {
-    page_url: tab.url ?? "",
-    origin: origin || (tab.url ?? ""),
-    title: tab.title ?? "",
-    field_count: fields.length,
-    truncated,
-    fields,
-  };
+function parseSnapshotId(value: unknown): string {
+  if (typeof value !== "string" || !/^[a-f0-9]{32}$/.test(value)) throw new Error("invalid_command_args");
+  return value;
 }
 
-async function fillFormFields(plan: Array<{ ref: string; value: string }>): Promise<Record<string, unknown>> {
+export async function readFormFields(): Promise<Record<string, unknown>> {
+  formSnapshot = null;
   const tab = await activeTab();
+  const snapshotId = crypto.randomUUID().replaceAll("-", "");
   const [injection] = await chrome.scripting.executeScript({
-    target: { tabId: tab.id! },
-    func: (entries: Array<{ ref: string; value: string }>) => {
-      const eligible = (element: Element): element is HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement => {
-        if (
-          !(element instanceof HTMLInputElement) &&
-          !(element instanceof HTMLTextAreaElement) &&
-          !(element instanceof HTMLSelectElement)
-        ) return false;
-        const type = element instanceof HTMLInputElement ? element.type.toLowerCase() : "";
-        if (["hidden", "submit", "button", "image", "reset", "file"].includes(type)) return false;
-        const style = window.getComputedStyle(element);
-        return style.display !== "none" && style.visibility !== "hidden";
-      };
-      const controls: Array<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement> = [];
-      Array.from(document.querySelectorAll("input, textarea, select")).forEach((element) => {
-        if (eligible(element)) controls.push(element);
-      });
-      // 重新按文档顺序编号，与 form.read 的 ref 契约一致。
-      let filled = 0;
-      const skipped: Array<{ ref: string; reason: string }> = [];
-      for (const entry of entries) {
-        const index = Number(entry.ref.slice(1));
-        const element = controls[index];
-        if (element === undefined) {
-          skipped.push({ ref: entry.ref, reason: "control_not_found" });
-          continue;
-        }
-        if (element instanceof HTMLInputElement && element.type.toLowerCase() === "password") {
-          skipped.push({ ref: entry.ref, reason: "password_field" });
-          continue;
-        }
-        try {
-          if (element instanceof HTMLSelectElement) {
-            const option = Array.from(element.options).find((candidate) => candidate.value === entry.value);
-            if (option === undefined) {
-              skipped.push({ ref: entry.ref, reason: "option_not_found" });
-              continue;
-            }
-            element.value = option.value;
-          } else {
-            // 走原型 setter + input/change 事件，兼容 React/Vue 受控组件。
-            const prototype = element instanceof HTMLTextAreaElement
-              ? HTMLTextAreaElement.prototype
-              : HTMLInputElement.prototype;
-            const setter = Object.getOwnPropertyDescriptor(prototype, "value")?.set;
-            if (setter) setter.call(element, entry.value);
-            else element.value = entry.value;
-            element.dispatchEvent(new Event("input", { bubbles: true }));
-            element.dispatchEvent(new Event("change", { bubbles: true }));
-          }
-          filled += 1;
-        } catch {
-          skipped.push({ ref: entry.ref, reason: "set_value_failed" });
-        }
-      }
-      return { filled, total: entries.length, skipped, pageUrl: location.href };
-    },
-    args: [plan],
+    target: { tabId: tab.id! }, world: "ISOLATED", func: formPageOperation,
+    args: [{ operation: "read", snapshotId }],
   });
-  if (injection?.result === undefined) throw new Error("page_read_failed");
-  const outcome = sanitizeFormFillOutcome(injection.result, tab.url ?? "");
-  if (outcome === null) throw new Error("page_read_failed");
+  const raw = injection?.result;
+  if (!raw || raw.ok !== true) throw new Error(String(raw?.reason ?? "page_read_failed"));
+  if (raw.pageUrl !== tab.url) throw new Error("form_snapshot_changed");
+  const { fields, truncated, origin } = buildFormFieldDescriptors(raw.controls, tab.url ?? "");
+  const result: Record<string, unknown> = {
+    snapshot_id: snapshotId, page_url: (tab.url ?? "").slice(0, 1024), origin,
+    title: (tab.title ?? "").slice(0, 120), field_count: fields.length, truncated, fields,
+  };
+  // Hub terminal receipts are capped at 4096 bytes, including multi-byte labels.
+  while (fields.length && new TextEncoder().encode(JSON.stringify(result)).length > 3800) {
+    fields.pop(); result.field_count = fields.length; result.truncated = true;
+  }
+  if (new TextEncoder().encode(JSON.stringify(result)).length > 3800) throw new Error("form_too_large");
+  formSnapshot = { id: snapshotId, tabId: tab.id!, url: tab.url!, expires: Date.now() + 5 * 60_000,
+    refs: new Set(fields.map(field => field.ref)),
+    forms: new Set(fields.flatMap(field => field.formRef ? [field.formRef] : [])) };
+  return result;
+}
+
+async function runFormOperation(request: {
+  operation: "fill" | "submit"; snapshotId: string;
+  fields?: Array<{ ref: string; value: string }>; formRef?: string;
+}): Promise<Record<string, unknown>> {
+  const snapshot = formSnapshot;
+  if (!snapshot || snapshot.id !== request.snapshotId) throw new Error("form_snapshot_missing");
+  if (snapshot.expires <= Date.now()) { formSnapshot = null; throw new Error("form_snapshot_expired"); }
+  const tab = await activeTab();
+  if (tab.id !== snapshot.tabId || tab.url !== snapshot.url) {
+    formSnapshot = null; throw new Error("form_snapshot_changed");
+  }
+  if (request.fields?.some(field => !snapshot.refs.has(field.ref))) throw new Error("control_not_found");
+  if (request.formRef && !snapshot.forms.has(request.formRef)) throw new Error("form_not_found");
+  if (request.operation === "submit") formSnapshot = null;
+  const [injection] = await chrome.scripting.executeScript({
+    target: { tabId: snapshot.tabId }, world: "ISOLATED", func: formPageOperation, args: [request],
+  });
+  const result = injection?.result;
+  if (!result || result.ok !== true) {
+    formSnapshot = null;
+    throw new FormOperationError(String(result?.reason ?? "page_read_failed"), Number(result?.filled ?? 0));
+  }
+  if (request.operation === "submit") return { submitted: true, page_url: snapshot.url };
+  const outcome = sanitizeFormFillOutcome(result, snapshot.url);
+  if (!outcome) throw new Error("page_read_failed");
   return { ...outcome };
 }
 
-async function submitForm(request: { formRef: string }): Promise<Record<string, unknown>> {
-  const tab = await activeTab();
-  const [injection] = await chrome.scripting.executeScript({
-    target: { tabId: tab.id! },
-    func: (formRef: string) => {
-      const forms = Array.from(document.querySelectorAll("form"));
-      const index = Number(formRef.slice(4));
-      const form = forms[index];
-      if (!(form instanceof HTMLFormElement)) {
-        return { submitted: false, pageUrl: location.href };
-      }
-      form.requestSubmit();
-      return { submitted: true, pageUrl: location.href };
-    },
-    args: [request.formRef],
-  });
-  if (injection?.result === undefined) throw new Error("page_read_failed");
-  const result = injection.result as { submitted?: unknown; pageUrl?: unknown };
-  if (result.submitted !== true) throw new Error("form_not_found");
-  return {
-    submitted: true,
-    page_url: typeof result.pageUrl === "string" ? result.pageUrl : tab.url ?? "",
-  };
+class FormOperationError extends Error {
+  constructor(reason: string, readonly filled: number) { super(reason); }
+}
+
+export async function fillFormFields(request: { snapshotId: string; fields: Array<{ ref: string; value: string }> }): Promise<Record<string, unknown>> {
+  return runFormOperation({ operation: "fill", ...request });
+}
+
+export async function submitForm(request: { snapshotId: string; formRef: string }): Promise<Record<string, unknown>> {
+  return runFormOperation({ operation: "submit", ...request });
 }
 
 async function activeTab(): Promise<chrome.tabs.Tab> {
@@ -441,10 +379,29 @@ function sendResult(
 function startHeartbeat(current: WebSocket): void {
   stopHeartbeat();
   heartbeatTimer = setInterval(() => {
-    if (current.readyState === WebSocket.OPEN) {
-      current.send(JSON.stringify({ type: "device.heartbeat", capabilities: BROWSER_CAPABILITIES }));
-    }
+    if (current.readyState === WebSocket.OPEN) void sendHeartbeat(current);
   }, 20_000);
+}
+
+async function sendHeartbeat(current: WebSocket): Promise<void> {
+  const frame: Record<string, unknown> = {
+    type: "device.heartbeat",
+    capabilities: BROWSER_CAPABILITIES,
+  };
+  if (observeTabHint) {
+    const hint = await currentTabHint();
+    if (hint) frame.tab_hint = hint;
+  }
+  current.send(JSON.stringify(frame));
+}
+
+async function currentTabHint(): Promise<TabHint | null> {
+  try {
+    const [tab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
+    return buildTabHint(tab?.url, tab?.title);
+  } catch {
+    return null;
+  }
 }
 
 function stopHeartbeat(): void {

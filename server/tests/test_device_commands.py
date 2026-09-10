@@ -189,10 +189,7 @@ def test_signed_command_websocket_ack_result_cancel_and_idempotency(
             },
         )
         assert unauthorized_capability.json()["status"] == "failed"
-        assert (
-            unauthorized_capability.json()["reason_code"]
-            == "capability_not_authorized"
-        )
+        assert unauthorized_capability.json()["reason_code"] == "capability_not_authorized"
 
         listed = client.get(
             "/api/v1/admin/device-commands",
@@ -490,9 +487,7 @@ async def test_pet_message_streams_signed_audio_before_completion(
         del user_id, text, privacy_level
         return ({"message_id": str(uuid7())}, "桌宠聊天已连通")
 
-    async def handle_audio(
-        text: str, privacy_level: PrivacyLevel, emit: Any
-    ) -> bool:
+    async def handle_audio(text: str, privacy_level: PrivacyLevel, emit: Any) -> bool:
         assert text == "桌宠聊天已连通"
         assert privacy_level is PrivacyLevel.L1
         await emit(
@@ -607,9 +602,7 @@ async def test_gateway_wait_for_terminal_is_woken_by_result(tmp_path: Path) -> N
     await store.mark_sent(issued.command.id)
     gateway = DeviceCommandGateway(registry, store)
 
-    waiter = asyncio.create_task(
-        gateway.wait_for_terminal(issued.command.id, timeout_seconds=1)
-    )
+    waiter = asyncio.create_task(gateway.wait_for_terminal(issued.command.id, timeout_seconds=1))
     await asyncio.sleep(0)
     await gateway.complete(
         paired.device.id,
@@ -622,3 +615,111 @@ async def test_gateway_wait_for_terminal_is_woken_by_result(tmp_path: Path) -> N
     result = await waiter
     assert result.status == "succeeded"
     await database.close()
+
+
+@pytest.mark.parametrize("snapshot_supported", [False, True])
+async def test_form_commands_require_snapshot_protocol(
+    tmp_path: Path,
+    snapshot_supported: bool,
+) -> None:
+    database = create_database(f"sqlite+aiosqlite:///{tmp_path / 'snapshot-protocol.db'}")
+    try:
+        async with database.engine.begin() as connection:
+            await connection.run_sync(Base.metadata.create_all)
+        await AuthService(database).setup(display_name="Owner", password="correct horse battery")
+        registry = DeviceRegistry(database)
+        capabilities = ("browser.form.read", "browser.form.fill", "browser.form.submit")
+        pairing = await registry.create_pairing_code(
+            owner_user_id=None, granted_capabilities=capabilities
+        )
+        paired = await registry.pair(
+            pairing_code=pairing.code,
+            name="Browser",
+            alias=None,
+            client_type="browser",
+            capabilities=capabilities
+            + (("browser.form.snapshot_v1",) if snapshot_supported else ()),
+        )
+        gateway = DeviceCommandGateway(registry, DeviceCommandStore(database))
+        for command in capabilities:
+            result = await gateway.issue(
+                device_id=paired.device.id,
+                command=command,
+                args={"snapshot_id": "a" * 32},
+                idempotency_key=command,
+                ttl_seconds=10,
+            )
+            assert result.reason_code == (
+                "device_offline" if snapshot_supported else "browser_snapshot_upgrade_required"
+            )
+    finally:
+        await database.close()
+
+
+def test_heartbeat_tab_hint_stored_only_when_enabled(tmp_path: Path) -> None:
+    database = create_database(f"sqlite+aiosqlite:///{tmp_path / 'tab-hints.db'}")
+    registry = DeviceRegistry(database)
+    store = DeviceCommandStore(database)
+
+    async def setup() -> tuple[str, UUID]:
+        async with database.engine.begin() as connection:
+            await connection.run_sync(Base.metadata.create_all)
+        await AuthService(database).setup(
+            display_name="Owner", password="correct horse battery staple"
+        )
+        pairing = await registry.create_pairing_code(
+            owner_user_id=None,
+            granted_capabilities=("browser.current_tab.read",),
+        )
+        paired = await registry.pair(
+            pairing_code=pairing.code,
+            name="Aria Bridge",
+            alias=None,
+            client_type="browser",
+            capabilities=("browser.current_tab.read",),
+        )
+        return paired.access_token, paired.device.id
+
+    access_token, device_id = asyncio.run(setup())
+    app = FastAPI()
+    _, websocket_router, gateway = create_device_command_routers(
+        registry, store, admin_token="admin-token"
+    )
+    app.include_router(websocket_router)
+    hint_frame = {
+        "type": "device.heartbeat",
+        "capabilities": ["browser.current_tab.read"],
+        "tab_hint": {"origin": "https://example.com", "title": "项目计划"},
+    }
+
+    with TestClient(app) as client:
+        with client.websocket_connect("/ws/devices") as websocket:
+            websocket.send_json(
+                {
+                    "type": "device.authenticate",
+                    "access_token": access_token,
+                    "capabilities": ["browser.current_tab.read"],
+                }
+            )
+            accepted = websocket.receive_json()
+            assert accepted["type"] == "device.accepted"
+            assert accepted["observe_tab_hint"] is False
+
+            # 浏览感知未开启：指纹被忽略，回执声明不上报
+            websocket.send_json(hint_frame)
+            reply = websocket.receive_json()
+            assert reply["type"] == "heartbeat.accepted"
+            assert reply["observe_tab_hint"] is False
+            assert gateway.tab_hint_for(device_id) is None
+
+            gateway.set_tab_hint_enabled(True)
+            websocket.send_json(hint_frame)
+            reply = websocket.receive_json()
+            assert reply["observe_tab_hint"] is True
+            hint = gateway.tab_hint_for(device_id)
+            assert hint is not None
+            assert hint.origin == "https://example.com"
+            assert hint.title == "项目计划"
+
+        # 掉线即清空，不给下一次连接留下过期指纹
+        assert gateway.tab_hint_for(device_id) is None

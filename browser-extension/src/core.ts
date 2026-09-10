@@ -5,6 +5,7 @@ export const BROWSER_CAPABILITIES = [
   "browser.form.read",
   "browser.form.fill",
   "browser.form.submit",
+  "browser.form.snapshot_v1", // Protocol feature marker; never an executable action.
 ] as const;
 export const MAX_VISIBLE_TEXT_CHARS = 100_000;
 // WEB-01 表单工作流边界：控件数量、单值长度与展示截断都从紧。
@@ -61,8 +62,8 @@ function boundedText(value: unknown, limit: number): string {
 }
 
 /**
- * 把页面注入脚本返回的原始控件列表规范化为带稳定 ref 的描述符。
- * 控件按文档顺序枚举，ref 即顺序号 f0..fN；密码框值一律掩码，
+ * 把页面注入脚本返回的原始控件列表规范化为快照内 ref 描述符。
+ * 控件按文档顺序枚举，ref 为 f0..fN，必须与 snapshot_id 一起使用；密码框值一律掩码，
  * 其余值也只截取片段用于展示，绝不回传完整表单内容。
  */
 export function buildFormFieldDescriptors(
@@ -237,6 +238,26 @@ export function isExecuteCommand(frame: SignedFrame): frame is ExecuteCommandFra
     typeof frame.idempotency_key === "string" &&
     typeof frame.expires_at === "string"
   );
+}
+
+export interface TabHint {
+  origin: string;
+  title: string;
+}
+
+/**
+ * P3 心跳轻量指纹：只暴露 origin 与标题；受限页面（chrome:// 等）返回 null，
+ * 永不携带路径、查询串或正文。仅当 Hub 在 accepted 帧里声明 observe_tab_hint 时才发送。
+ */
+export function buildTabHint(url: string | undefined, title: string | undefined): TabHint | null {
+  let parsed: URL;
+  try {
+    parsed = new URL(url ?? "");
+  } catch {
+    return null;
+  }
+  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return null;
+  return { origin: parsed.origin, title: (title ?? "").slice(0, 500) };
 }
 
 export function sanitizeBrowserDocument(input: {

@@ -20,6 +20,8 @@ from app.tools.browser_form import (
 )
 from app.tools.contracts import ToolContext
 
+SNAPSHOT_ID = "a" * 32
+
 DEVICE_ID = UUID("00000000-0000-0000-0000-00000000bef1")
 
 
@@ -48,6 +50,7 @@ class FakeCommand:
         self.id = uuid4()
         self.status = status
         self.reason_code = reason_code
+        self.result_meta: dict[str, Any] | None = None
 
 
 class FakeGateway:
@@ -111,13 +114,13 @@ async def test_all_tools_require_master_switch() -> None:
         ),
         (
             BrowserFormFillTool(FakeResolver(), gateway, lambda: _config(enabled=False)),
-            {"fields": [{"ref": "f0", "value": "x"}]},
+            {"snapshot_id": SNAPSHOT_ID, "fields": [{"ref": "f0", "value": "x"}]},
             "browser.form.fill",
             "browser_workflow_not_allowed",
         ),
         (
             BrowserFormSubmitTool(FakeResolver(), gateway, lambda: _config(enabled=False)),
-            {"form_ref": "form0"},
+            {"snapshot_id": SNAPSHOT_ID, "form_ref": "form0"},
             "browser.form.submit",
             "browser_workflow_not_allowed",
         ),
@@ -153,6 +156,7 @@ async def test_form_read_and_fill_dispatch_with_capability_and_bounded_args() ->
     result = await fill.execute(
         _args(
             fill.arguments_model,
+            snapshot_id=SNAPSHOT_ID,
             fields=[{"ref": "f0", "value": "aria"}, {"ref": "f3", "value": "你好"}],
         ),
         _context(),
@@ -160,7 +164,8 @@ async def test_form_read_and_fill_dispatch_with_capability_and_bounded_args() ->
     assert result.ok
     assert gateway.issued[-1]["command"] == "browser.form.fill"
     assert gateway.issued[-1]["args"] == {
-        "fields": [{"ref": "f0", "value": "aria"}, {"ref": "f3", "value": "你好"}]
+        "snapshot_id": SNAPSHOT_ID,
+        "fields": [{"ref": "f0", "value": "aria"}, {"ref": "f3", "value": "你好"}],
     }
 
 
@@ -169,16 +174,21 @@ async def test_fill_rejects_malformed_field_plan() -> None:
     tool = BrowserFormFillTool(FakeResolver(), gateway, lambda: _config())
     for fields in ([], [{"ref": "field-1", "value": "x"}], [{"ref": "f0", "value": ""}]):
         with pytest.raises(ValidationError):
-            _args(tool.arguments_model, fields=fields)
+            _args(tool.arguments_model, snapshot_id=SNAPSHOT_ID, fields=fields)
     assert gateway.issued == []
 
 
 async def test_submit_is_a_device_receipt_only_after_dispatch() -> None:
     gateway = FakeGateway(FakeCommand("succeeded"))
     tool = BrowserFormSubmitTool(FakeResolver(), gateway, lambda: _config())
-    result = await tool.execute(_args(tool.arguments_model, form_ref="form2"), _context())
+    result = await tool.execute(
+        _args(tool.arguments_model, snapshot_id=SNAPSHOT_ID, form_ref="form2"), _context()
+    )
     assert result.ok
-    assert gateway.issued[-1] == {"command": "browser.form.submit", "args": {"form_ref": "form2"}}
+    assert gateway.issued[-1] == {
+        "command": "browser.form.submit",
+        "args": {"snapshot_id": SNAPSHOT_ID, "form_ref": "form2"},
+    }
 
 
 async def test_failure_receipt_and_guards_surface_reasons() -> None:
@@ -202,9 +212,7 @@ async def test_failure_receipt_and_guards_surface_reasons() -> None:
     missing_key = BrowserFormReadTool(
         FakeResolver(), FakeGateway(FakeCommand("succeeded")), lambda: _config()
     )
-    rejected = await missing_key.execute(
-        _args(BrowserFormReadArgs), _context(idempotency_key=None)
-    )
+    rejected = await missing_key.execute(_args(BrowserFormReadArgs), _context(idempotency_key=None))
     assert not rejected.ok and rejected.reason_code == "action_idempotency_required"
 
 
@@ -279,3 +287,55 @@ def test_browser_workflow_capabilities_required_for_mounting() -> None:
     ):
         for privacy in (PrivacyLevel.L0, PrivacyLevel.L1, PrivacyLevel.L2):
             assert _device_tool_ready(name, config, privacy, LLMRoute.DIALOGUE) is False
+
+
+def test_form_snapshot_required_and_bounded() -> None:
+    from app.tools.browser_form import BrowserFormFillArgs, BrowserFormSubmitArgs
+
+    for model, params in (
+        (BrowserFormFillArgs, {"fields": [{"ref": "f0", "value": "x"}]}),
+        (BrowserFormSubmitArgs, {"form_ref": "form0"}),
+    ):
+        for invalid in (None, "", "guess", "a" * 33):
+            with pytest.raises(ValidationError):
+                model.model_validate({**params, "snapshot_id": invalid})
+        with pytest.raises(ValidationError):
+            model.model_validate(params)
+        assert (
+            model.model_validate({**params, "snapshot_id": SNAPSHOT_ID}).snapshot_id == SNAPSHOT_ID
+        )
+
+
+@pytest.mark.parametrize(
+    "reason",
+    [
+        "form_snapshot_missing",
+        "form_snapshot_changed",
+        "form_snapshot_expired",
+        "control_not_found",
+    ],
+)
+async def test_snapshot_failure_propagates(reason: str) -> None:
+    gateway = FakeGateway(FakeCommand("failed", reason))
+    tool = BrowserFormSubmitTool(FakeResolver(), gateway, lambda: _config())
+    result = await tool.execute(
+        _args(tool.arguments_model, snapshot_id=SNAPSHOT_ID, form_ref="form0"), _context()
+    )
+    assert not result.ok and result.reason_code == reason
+
+
+async def test_read_result_exposes_bounded_snapshot_contract() -> None:
+    terminal = FakeCommand("succeeded")
+    terminal.result_meta = {
+        "snapshot_id": SNAPSHOT_ID,
+        "fields": [{"ref": "f0", "value": ""}],
+        "truncated": False,
+        "unrelated_internal": "must-not-expose",
+    }
+    tool = BrowserFormReadTool(FakeResolver(), FakeGateway(terminal), lambda: _config())
+    result = await tool.execute(_args(BrowserFormReadArgs), _context())
+    assert result.data["result"] == {
+        "snapshot_id": SNAPSHOT_ID,
+        "fields": [{"ref": "f0", "value": ""}],
+        "truncated": False,
+    }

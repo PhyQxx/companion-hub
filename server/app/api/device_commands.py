@@ -1,13 +1,15 @@
 from __future__ import annotations
 
 import asyncio
+import base64
+import binascii
 import hashlib
 import hmac
 import json
 from collections.abc import Awaitable, Callable
 from contextlib import suppress
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Annotated, Any, Literal
 from uuid import UUID
 
@@ -37,14 +39,20 @@ from app.devices import (
     EphemeralDeviceAssetError,
     EphemeralDeviceAssetStore,
 )
+from app.ids import uuid7
 from app.satellite import (
     SATELLITE_CAPABILITY,
     InvalidSatelliteTransition,
+    SatelliteAudioChunkFrame,
+    SatelliteAudioEndFrame,
+    SatelliteAudioStartFrame,
+    SatelliteCancelFrame,
     SatelliteEvent,
     SatelliteHelloFrame,
     SatelliteRegistry,
     SatelliteState,
     SatelliteStateFrame,
+    SatelliteTakeoverFrame,
     SatelliteWakeFrame,
     device_reported_event,
 )
@@ -60,9 +68,17 @@ class DeviceAuthenticateFrame(StrictModel):
     capabilities: list[NamespacedName] = Field(default_factory=list, max_length=64)
 
 
+class DeviceTabHintFrame(StrictModel):
+    """心跳轻量指纹（42 号方案 P3）：只有 origin 与标题，永不携带路径、查询串或正文。"""
+
+    origin: Annotated[str, Field(min_length=1, max_length=2_048)]
+    title: Annotated[str, Field(max_length=500)] = ""
+
+
 class DeviceHeartbeatFrame(StrictModel):
     type: Literal["device.heartbeat"]
     capabilities: list[NamespacedName] = Field(default_factory=list, max_length=64)
+    tab_hint: DeviceTabHintFrame | None = None
 
 
 class PetMessageFrame(StrictModel):
@@ -140,6 +156,28 @@ PetMessageHandler = Callable[
 ]
 PetAudioEmitter = Callable[[str, dict[str, JsonValue]], Awaitable[None]]
 PetAudioHandler = Callable[[str, PrivacyLevel, PetAudioEmitter], Awaitable[bool]]
+SatelliteUtteranceHandler = Callable[
+    [UUID, UUID, bytes, PrivacyLevel, PetAudioEmitter], Awaitable[bool]
+]
+SatelliteTakeoverHandler = Callable[[UUID, UUID, UUID], Awaitable[None]]
+
+SATELLITE_AUDIO_MAX_BYTES = 4 * 1024 * 1024
+SATELLITE_AUDIO_MIN_BYTES = 4_800
+
+
+@dataclass(slots=True)
+class SatelliteAudioUpload:
+    utterance_id: UUID
+    privacy_level: PrivacyLevel
+    data: bytearray = field(default_factory=bytearray)
+    next_index: int = 0
+
+
+@dataclass(frozen=True, slots=True)
+class DeviceTabHint:
+    origin: str
+    title: str
+    updated_at: datetime
 
 
 class DeviceCommandGateway:
@@ -161,14 +199,39 @@ class DeviceCommandGateway:
         self._pet_audio_handler: PetAudioHandler | None = None
         self._pet_message_tasks: dict[tuple[UUID, UUID], asyncio.Task[None]] = {}
         self._pet_message_requests: set[tuple[UUID, UUID]] = set()
+        self._satellite_utterance_handler: SatelliteUtteranceHandler | None = None
+        self._satellite_takeover_handler: SatelliteTakeoverHandler | None = None
+        self._satellite_audio: dict[UUID, SatelliteAudioUpload] = {}
+        self._satellite_tasks: dict[UUID, asyncio.Task[None]] = {}
+        self._satellite_follow_up_tasks: dict[UUID, asyncio.Task[None]] = {}
         # SAT-01 卫星会话与唤醒仲裁（内存态，掉线即注销）
         self.satellites = SatelliteRegistry()
+        # 42 号方案 P3 浏览感知指纹：仅当循环开启时设备才上报，掉线即清空
+        self.tab_hint_enabled = False
+        self._tab_hints: dict[UUID, DeviceTabHint] = {}
+
+    def set_tab_hint_enabled(self, enabled: bool) -> None:
+        self.tab_hint_enabled = enabled
+
+    def update_tab_hint(self, device_id: UUID, *, origin: str, title: str) -> None:
+        self._tab_hints[device_id] = DeviceTabHint(
+            origin=origin, title=title, updated_at=datetime.now(UTC)
+        )
+
+    def tab_hint_for(self, device_id: UUID) -> DeviceTabHint | None:
+        return self._tab_hints.get(device_id)
 
     def set_pet_message_handler(self, handler: PetMessageHandler) -> None:
         self._pet_message_handler = handler
 
     def set_pet_audio_handler(self, handler: PetAudioHandler) -> None:
         self._pet_audio_handler = handler
+
+    def set_satellite_utterance_handler(self, handler: SatelliteUtteranceHandler) -> None:
+        self._satellite_utterance_handler = handler
+
+    def set_satellite_takeover_handler(self, handler: SatelliteTakeoverHandler) -> None:
+        self._satellite_takeover_handler = handler
 
     def connection_for(self, device_id: UUID) -> DeviceCommandConnection | None:
         return self._connections.get(device_id)
@@ -177,6 +240,7 @@ class DeviceCommandGateway:
         previous = self._connections.get(connection.principal.device_id)
         if previous is not None and previous is not connection:
             self._cancel_pet_messages(connection.principal.device_id)
+            self._cancel_satellite(connection.principal.device_id)
         self._connections[connection.principal.device_id] = connection
         if previous is not None and previous is not connection:
             with suppress(WebSocketDisconnect, RuntimeError):
@@ -187,6 +251,8 @@ class DeviceCommandGateway:
         if current is connection:
             self._connections.pop(connection.principal.device_id, None)
             self._cancel_pet_messages(connection.principal.device_id)
+            self._cancel_satellite(connection.principal.device_id)
+            self._tab_hints.pop(connection.principal.device_id, None)
             self.satellites.unregister(connection.principal.device_id)
 
     def _cancel_pet_messages(self, device_id: UUID) -> None:
@@ -197,6 +263,19 @@ class DeviceCommandGateway:
         self._pet_message_requests = {
             key for key in self._pet_message_requests if key[0] != device_id
         }
+
+    def _cancel_satellite(self, device_id: UUID) -> None:
+        self._satellite_audio.pop(device_id, None)
+        task = self._satellite_tasks.pop(device_id, None)
+        if task is not None:
+            task.cancel()
+        self._cancel_follow_up_timeout(device_id)
+        self.satellites.unregister(device_id)
+
+    def _cancel_follow_up_timeout(self, device_id: UUID) -> None:
+        task = self._satellite_follow_up_tasks.pop(device_id, None)
+        if task is not None:
+            task.cancel()
 
     async def satellite_hello(
         self,
@@ -217,12 +296,16 @@ class DeviceCommandGateway:
             device_id=connection.principal.device_id,
             owner_user_id=connection.principal.owner_user_id,
             room_id=frame.room_id,
+            max_privacy_level=PrivacyLevel(frame.max_privacy_level),
+            continuous_timeout_seconds=frame.continuous_timeout_seconds,
         )
         await connection.send_signed(
             {
                 "proto_version": 1,
                 "type": "satellite.ready",
                 "room_id": session.room_id,
+                "max_privacy_level": session.max_privacy_level.value,
+                "continuous_timeout_seconds": session.continuous_timeout_seconds,
                 "state": session.state.value,
                 "sent_at": datetime.now(UTC).isoformat(),
             }
@@ -243,6 +326,10 @@ class DeviceCommandGateway:
                 }
             )
             return
+        session = self.satellites.get(connection.principal.device_id)
+        if session is not None and session.room_id != frame.room_id:
+            await self._send_satellite_error(connection, "room_mismatch")
+            return
         decision = self.satellites.arbitrate_wake(
             device_id=connection.principal.device_id,
             owner_user_id=connection.principal.owner_user_id,
@@ -258,11 +345,23 @@ class DeviceCommandGateway:
                 }
             )
         else:
+            active_device_id = next(
+                (
+                    session.device_id
+                    for session in self.satellites.sessions.values()
+                    if session.owner_user_id == connection.principal.owner_user_id
+                    and session.state is not SatelliteState.IDLE
+                ),
+                None,
+            )
             await connection.send_signed(
                 {
                     "proto_version": 1,
                     "type": "satellite.wake.suppressed",
                     "reason_code": decision.reason_code,
+                    "active_device_id": (
+                        str(active_device_id) if active_device_id is not None else None
+                    ),
                     "sent_at": datetime.now(UTC).isoformat(),
                 }
             )
@@ -325,6 +424,415 @@ class DeviceCommandGateway:
                 "proto_version": 1,
                 "type": "satellite.state.accepted",
                 "state": state.value,
+                "sent_at": datetime.now(UTC).isoformat(),
+            }
+        )
+
+    async def satellite_audio_start(
+        self,
+        connection: DeviceCommandConnection,
+        frame: SatelliteAudioStartFrame,
+    ) -> None:
+        device_id = connection.principal.device_id
+        session = self.satellites.get(device_id)
+        if SATELLITE_CAPABILITY not in connection.capabilities:
+            await self._send_satellite_error(connection, "capability_not_authorized")
+            return
+        if session is None:
+            await self._send_satellite_error(connection, "not_registered")
+            return
+        privacy_level = PrivacyLevel(frame.privacy_level)
+        if _privacy_rank(privacy_level) > _privacy_rank(session.max_privacy_level):
+            await self._send_satellite_error(connection, "privacy_level_not_allowed")
+            return
+        if session.state in {SatelliteState.PROCESSING, SatelliteState.SPEAKING} and frame.barge_in:
+            task = self._satellite_tasks.pop(device_id, None)
+            if task is not None:
+                task.cancel()
+            state = self.satellites.apply_event(device_id, SatelliteEvent.INTERRUPT)
+            await connection.send_signed(
+                {
+                    "proto_version": 1,
+                    "type": "satellite.interrupted",
+                    "state": state.value,
+                    "reason_code": "barge_in",
+                    "sent_at": datetime.now(UTC).isoformat(),
+                }
+            )
+        if session.state is not SatelliteState.LISTENING:
+            await self._send_satellite_error(connection, "not_listening")
+            return
+        if device_id in self._satellite_audio or device_id in self._satellite_tasks:
+            await self._send_satellite_error(connection, "utterance_in_progress")
+            return
+        self._cancel_follow_up_timeout(device_id)
+        session.follow_up_until = None
+        self._satellite_audio[device_id] = SatelliteAudioUpload(
+            utterance_id=frame.utterance_id,
+            privacy_level=privacy_level,
+        )
+        await connection.send_signed(
+            {
+                "proto_version": 1,
+                "type": "satellite.audio.accepted",
+                "utterance_id": str(frame.utterance_id),
+                "sent_at": datetime.now(UTC).isoformat(),
+            }
+        )
+
+    async def satellite_audio_chunk(
+        self,
+        connection: DeviceCommandConnection,
+        frame: SatelliteAudioChunkFrame,
+    ) -> None:
+        device_id = connection.principal.device_id
+        if SATELLITE_CAPABILITY not in connection.capabilities:
+            self._cancel_satellite(device_id)
+            await self._send_satellite_error(connection, "capability_not_authorized")
+            return
+        upload = self._satellite_audio.get(device_id)
+        if upload is None or upload.utterance_id != frame.utterance_id:
+            await self._send_satellite_error(connection, "unknown_utterance")
+            return
+        if frame.index != upload.next_index:
+            self._satellite_audio.pop(device_id, None)
+            self.satellites.apply_event(device_id, SatelliteEvent.ERROR)
+            await self._send_satellite_error(connection, "chunk_out_of_order")
+            return
+        try:
+            chunk = base64.b64decode(frame.data_b64, validate=True)
+        except (binascii.Error, ValueError):
+            self._satellite_audio.pop(device_id, None)
+            self.satellites.apply_event(device_id, SatelliteEvent.ERROR)
+            await self._send_satellite_error(connection, "invalid_audio_base64")
+            return
+        if not chunk or len(upload.data) + len(chunk) > SATELLITE_AUDIO_MAX_BYTES:
+            self._satellite_audio.pop(device_id, None)
+            self.satellites.apply_event(device_id, SatelliteEvent.ERROR)
+            await self._send_satellite_error(connection, "audio_too_large")
+            return
+        upload.data.extend(chunk)
+        upload.next_index += 1
+
+    async def satellite_audio_end(
+        self,
+        connection: DeviceCommandConnection,
+        frame: SatelliteAudioEndFrame,
+    ) -> None:
+        device_id = connection.principal.device_id
+        if SATELLITE_CAPABILITY not in connection.capabilities:
+            self._cancel_satellite(device_id)
+            await self._send_satellite_error(connection, "capability_not_authorized")
+            return
+        upload = self._satellite_audio.pop(device_id, None)
+        if upload is None or upload.utterance_id != frame.utterance_id:
+            await self._send_satellite_error(connection, "unknown_utterance")
+            return
+        data = bytes(upload.data)
+        if (
+            upload.next_index != frame.chunks
+            or len(data) != frame.bytes
+            or not hmac.compare_digest(hashlib.sha256(data).hexdigest(), frame.sha256)
+        ):
+            self.satellites.apply_event(device_id, SatelliteEvent.ERROR)
+            await self._send_satellite_error(connection, "audio_integrity_failed")
+            return
+        if len(data) < SATELLITE_AUDIO_MIN_BYTES:
+            self.satellites.apply_event(device_id, SatelliteEvent.ERROR)
+            await self._send_satellite_error(connection, "utterance_too_short")
+            return
+        if self._satellite_utterance_handler is None:
+            self.satellites.apply_event(device_id, SatelliteEvent.ERROR)
+            await self._send_satellite_error(connection, "voice_pipeline_unavailable")
+            return
+        state = self.satellites.apply_event(device_id, SatelliteEvent.UTTERANCE_END)
+        await connection.send_signed(
+            {
+                "proto_version": 1,
+                "type": "satellite.state.set",
+                "state": state.value,
+                "utterance_id": str(frame.utterance_id),
+                "sent_at": datetime.now(UTC).isoformat(),
+            }
+        )
+        task = asyncio.create_task(
+            self._run_satellite_utterance(connection, upload, data),
+            name=f"satellite-utterance-{frame.utterance_id}",
+        )
+        self._satellite_tasks[device_id] = task
+        task.add_done_callback(
+            lambda finished: self._finish_satellite_utterance(device_id, finished)
+        )
+
+    async def satellite_cancel(
+        self,
+        connection: DeviceCommandConnection,
+        frame: SatelliteCancelFrame,
+    ) -> None:
+        device_id = connection.principal.device_id
+        session = self.satellites.get(device_id)
+        if SATELLITE_CAPABILITY not in connection.capabilities:
+            await self._send_satellite_error(connection, "capability_not_authorized")
+            return
+        if session is None:
+            await self._send_satellite_error(connection, "not_registered")
+            return
+        upload = self._satellite_audio.get(device_id)
+        if (
+            frame.utterance_id is not None
+            and upload is not None
+            and upload.utterance_id != frame.utterance_id
+        ):
+            await self._send_satellite_error(connection, "unknown_utterance")
+            return
+        self._satellite_audio.pop(device_id, None)
+        task = self._satellite_tasks.pop(device_id, None)
+        if task is not None:
+            task.cancel()
+        self._cancel_follow_up_timeout(device_id)
+        state = self.satellites.apply_event(device_id, SatelliteEvent.CANCEL)
+        await connection.send_signed(
+            {
+                "proto_version": 1,
+                "type": "satellite.cancelled",
+                "utterance_id": str(frame.utterance_id) if frame.utterance_id else None,
+                "state": state.value,
+                "reason_code": frame.reason_code,
+                "sent_at": datetime.now(UTC).isoformat(),
+            }
+        )
+
+    def _finish_satellite_utterance(
+        self, device_id: UUID, task: asyncio.Task[None]
+    ) -> None:
+        if self._satellite_tasks.get(device_id) is task:
+            self._satellite_tasks.pop(device_id, None)
+
+    async def _run_satellite_utterance(
+        self,
+        connection: DeviceCommandConnection,
+        upload: SatelliteAudioUpload,
+        data: bytes,
+    ) -> None:
+        device_id = connection.principal.device_id
+        current_task = asyncio.current_task()
+        speaking = False
+
+        async def emit(frame_type: str, payload: dict[str, JsonValue]) -> None:
+            nonlocal speaking
+            if frame_type == "voice.sentence" and not speaking:
+                try:
+                    state = self.satellites.apply_event(device_id, SatelliteEvent.REPLY_READY)
+                except (LookupError, InvalidSatelliteTransition):
+                    return
+                speaking = True
+                await connection.send_signed(
+                    {
+                        "proto_version": 1,
+                        "type": "satellite.state.set",
+                        "state": state.value,
+                        "utterance_id": str(upload.utterance_id),
+                        "sent_at": datetime.now(UTC).isoformat(),
+                    }
+                )
+            await connection.send_signed(
+                {
+                    "proto_version": 1,
+                    "type": frame_type,
+                    "utterance_id": str(upload.utterance_id),
+                    **payload,
+                    "sent_at": datetime.now(UTC).isoformat(),
+                }
+            )
+
+        try:
+            handler = self._satellite_utterance_handler
+            assert handler is not None
+            completed = await handler(
+                connection.principal.owner_user_id,
+                device_id,
+                data,
+                upload.privacy_level,
+                emit,
+            )
+            # 打断/取消会先从任务表撤销旧回合；即使下游吞掉 CancelledError，
+            # 旧回合也不能再覆盖新一轮 listening/processing 状态。
+            if self._satellite_tasks.get(device_id) is not current_task:
+                return
+            session = self.satellites.get(device_id)
+            if completed and session is not None and session.continuous_timeout_seconds > 0:
+                state = self.satellites.apply_event(device_id, SatelliteEvent.FOLLOW_UP_READY)
+                session.follow_up_until = datetime.now(UTC) + timedelta(
+                    seconds=session.continuous_timeout_seconds
+                )
+                follow_up = True
+                self._schedule_follow_up_timeout(connection, session.follow_up_until)
+                await self._announce_follow_up_available(connection, session.follow_up_until)
+            else:
+                state = self.satellites.apply_event(device_id, SatelliteEvent.REPLY_DONE)
+                follow_up = False
+            await connection.send_signed(
+                {
+                    "proto_version": 1,
+                    "type": "satellite.state.set",
+                    "state": state.value,
+                    "follow_up": follow_up,
+                    "follow_up_until": (
+                        session.follow_up_until.isoformat()
+                        if follow_up and session is not None and session.follow_up_until
+                        else None
+                    ),
+                    "utterance_id": str(upload.utterance_id),
+                    "sent_at": datetime.now(UTC).isoformat(),
+                }
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            if self._satellite_tasks.get(device_id) is current_task:
+                with suppress(LookupError):
+                    self.satellites.apply_event(device_id, SatelliteEvent.ERROR)
+                await self._send_satellite_error(connection, "voice_pipeline_failed")
+
+    async def _announce_follow_up_available(
+        self, source: DeviceCommandConnection, expires_at: datetime
+    ) -> None:
+        source_session = self.satellites.get(source.principal.device_id)
+        if source_session is None:
+            return
+        targets = [
+            connection
+            for device_id, connection in self._connections.items()
+            if device_id != source.principal.device_id
+            and connection.principal.owner_user_id == source.principal.owner_user_id
+            and (session := self.satellites.get(device_id)) is not None
+            and session.state is SatelliteState.IDLE
+        ]
+        frame = {
+            "proto_version": 1,
+            "type": "satellite.session.available",
+            "from_device_id": str(source.principal.device_id),
+            "from_room_id": source_session.room_id,
+            "follow_up_until": expires_at.isoformat(),
+            "sent_at": datetime.now(UTC).isoformat(),
+        }
+        await asyncio.gather(
+            *(connection.send_signed(frame) for connection in targets),
+            return_exceptions=True,
+        )
+
+    def _schedule_follow_up_timeout(
+        self, connection: DeviceCommandConnection, expires_at: datetime
+    ) -> None:
+        device_id = connection.principal.device_id
+        self._cancel_follow_up_timeout(device_id)
+        task = asyncio.create_task(
+            self._expire_follow_up(connection, expires_at),
+            name=f"satellite-follow-up-{device_id}",
+        )
+        self._satellite_follow_up_tasks[device_id] = task
+        task.add_done_callback(
+            lambda finished: self._finish_follow_up_timeout(device_id, finished)
+        )
+
+    def _finish_follow_up_timeout(
+        self, device_id: UUID, task: asyncio.Task[None]
+    ) -> None:
+        if self._satellite_follow_up_tasks.get(device_id) is task:
+            self._satellite_follow_up_tasks.pop(device_id, None)
+
+    async def _expire_follow_up(
+        self, connection: DeviceCommandConnection, expires_at: datetime
+    ) -> None:
+        delay = max(0.0, (expires_at - datetime.now(UTC)).total_seconds())
+        await asyncio.sleep(delay)
+        device_id = connection.principal.device_id
+        session = self.satellites.get(device_id)
+        if session is None or session.follow_up_until != expires_at:
+            return
+        self.satellites.apply_event(device_id, SatelliteEvent.CANCEL)
+        await connection.send_signed(
+            {
+                "proto_version": 1,
+                "type": "satellite.session.expired",
+                "state": SatelliteState.IDLE.value,
+                "sent_at": datetime.now(UTC).isoformat(),
+            }
+        )
+
+    async def satellite_takeover(
+        self,
+        connection: DeviceCommandConnection,
+        frame: SatelliteTakeoverFrame,
+    ) -> None:
+        target_id = connection.principal.device_id
+        target = self.satellites.get(target_id)
+        source = self.satellites.get(frame.from_device_id)
+        if SATELLITE_CAPABILITY not in connection.capabilities:
+            await self._send_satellite_error(connection, "capability_not_authorized")
+            return
+        now = datetime.now(UTC)
+        if target is None or source is None:
+            await self._send_satellite_error(connection, "not_registered")
+            return
+        if source.owner_user_id != connection.principal.owner_user_id:
+            await self._send_satellite_error(connection, "takeover_not_allowed")
+            return
+        if (
+            target.state is not SatelliteState.IDLE
+            or source.state is not SatelliteState.LISTENING
+            or source.follow_up_until is None
+            or source.follow_up_until <= now
+        ):
+            await self._send_satellite_error(connection, "takeover_not_available")
+            return
+        expires_at = source.follow_up_until
+        if self._satellite_takeover_handler is not None:
+            try:
+                await self._satellite_takeover_handler(
+                    connection.principal.owner_user_id,
+                    source.device_id,
+                    target.device_id,
+                )
+            except Exception:
+                await self._send_satellite_error(connection, "takeover_context_failed")
+                return
+        self._cancel_follow_up_timeout(source.device_id)
+        self.satellites.apply_event(source.device_id, SatelliteEvent.CANCEL)
+        self.satellites.apply_event(target.device_id, SatelliteEvent.WAKE_ACCEPTED)
+        target.follow_up_until = expires_at
+        self._schedule_follow_up_timeout(connection, expires_at)
+        source_connection = self._connections.get(source.device_id)
+        if source_connection is not None:
+            await source_connection.send_signed(
+                {
+                    "proto_version": 1,
+                    "type": "satellite.session.transferred",
+                    "to_device_id": str(target.device_id),
+                    "state": SatelliteState.IDLE.value,
+                    "sent_at": now.isoformat(),
+                }
+            )
+        await connection.send_signed(
+            {
+                "proto_version": 1,
+                "type": "satellite.session.accepted",
+                "from_device_id": str(source.device_id),
+                "state": SatelliteState.LISTENING.value,
+                "follow_up_until": expires_at.isoformat(),
+                "sent_at": now.isoformat(),
+            }
+        )
+
+    @staticmethod
+    async def _send_satellite_error(
+        connection: DeviceCommandConnection, reason_code: str
+    ) -> None:
+        await connection.send_signed(
+            {
+                "proto_version": 1,
+                "type": "satellite.error",
+                "reason_code": reason_code,
                 "sent_at": datetime.now(UTC).isoformat(),
             }
         )
@@ -495,6 +1003,116 @@ class DeviceCommandGateway:
                 delivered += 1
         return delivered
 
+    async def broadcast_satellite(
+        self,
+        owner_user_id: UUID,
+        text: str,
+        *,
+        privacy_level: PrivacyLevel,
+        room_id: str | None = None,
+        emergency: bool = False,
+    ) -> int:
+        """普通播报选一个空闲房间端；紧急播报覆盖全部符合隐私级别的空闲端。"""
+        if self._pet_audio_handler is None:
+            return 0
+        candidates = []
+        for session in self.satellites.sessions.values():
+            connection = self._connections.get(session.device_id)
+            if (
+                connection is None
+                or session.owner_user_id != owner_user_id
+                or session.state is not SatelliteState.IDLE
+                or (room_id is not None and session.room_id != room_id)
+                or _privacy_rank(privacy_level) > _privacy_rank(session.max_privacy_level)
+            ):
+                continue
+            candidates.append((session.room_id, str(session.device_id), connection))
+        candidates.sort(key=lambda item: (item[0], item[1]))
+        if not emergency:
+            candidates = candidates[:1]
+        results = await asyncio.gather(
+            *(
+                self._broadcast_satellite_one(
+                    connection,
+                    text,
+                    privacy_level=privacy_level,
+                    emergency=emergency,
+                )
+                for _, _, connection in candidates
+            ),
+            return_exceptions=True,
+        )
+        return sum(result is True for result in results)
+
+    async def _broadcast_satellite_one(
+        self,
+        connection: DeviceCommandConnection,
+        text: str,
+        *,
+        privacy_level: PrivacyLevel,
+        emergency: bool,
+    ) -> bool:
+        device_id = connection.principal.device_id
+        try:
+            state = self.satellites.apply_event(device_id, SatelliteEvent.BROADCAST_READY)
+        except (LookupError, InvalidSatelliteTransition):
+            return False
+        broadcast_id = uuid7()
+
+        async def emit(frame_type: str, payload: dict[str, JsonValue]) -> None:
+            mapped_type = frame_type.replace("pet.audio.", "satellite.broadcast.audio.")
+            await connection.send_signed(
+                {
+                    "proto_version": 1,
+                    "type": mapped_type,
+                    "broadcast_id": str(broadcast_id),
+                    **payload,
+                    "sent_at": datetime.now(UTC).isoformat(),
+                }
+            )
+
+        try:
+            await connection.send_signed(
+                {
+                    "proto_version": 1,
+                    "type": "satellite.state.set",
+                    "state": state.value,
+                    "broadcast_id": str(broadcast_id),
+                    "sent_at": datetime.now(UTC).isoformat(),
+                }
+            )
+            await connection.send_signed(
+                {
+                    "proto_version": 1,
+                    "type": "satellite.broadcast",
+                    "broadcast_id": str(broadcast_id),
+                    "text": text,
+                    "privacy_level": privacy_level.value,
+                    "emergency": emergency,
+                    "sent_at": datetime.now(UTC).isoformat(),
+                }
+            )
+            handler = self._pet_audio_handler
+            assert handler is not None
+            delivered = await handler(text, privacy_level, emit)
+            return delivered
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            return False
+        finally:
+            with suppress(LookupError, InvalidSatelliteTransition):
+                state = self.satellites.apply_event(device_id, SatelliteEvent.REPLY_DONE)
+                await connection.send_signed(
+                    {
+                        "proto_version": 1,
+                        "type": "satellite.state.set",
+                        "state": state.value,
+                        "broadcast_id": str(broadcast_id),
+                        "sent_at": datetime.now(UTC).isoformat(),
+                    }
+                )
+
     async def issue(
         self,
         *,
@@ -517,6 +1135,16 @@ class DeviceCommandGateway:
         if command not in device.effective_capabilities:
             result = await self._store.mark_delivery_failed(
                 issued.command.id, reason_code="capability_not_authorized"
+            )
+            self._notify_terminal(result.id)
+            return result
+        # A newer Hub must not send snapshot-bound operations to an older extension
+        # that would silently ignore snapshot_id and still use positional refs.
+        if command in {"browser.form.read", "browser.form.fill", "browser.form.submit"} and (
+            "browser.form.snapshot_v1" not in device.capabilities
+        ):
+            result = await self._store.mark_delivery_failed(
+                issued.command.id, reason_code="browser_snapshot_upgrade_required"
             )
             self._notify_terminal(result.id)
             return result
@@ -749,6 +1377,7 @@ def create_device_command_routers(
                 "type": "device.accepted",
                 "device_id": str(principal.device_id),
                 "heartbeat_interval_seconds": 30,
+                "observe_tab_hint": gateway.tab_hint_enabled,
                 "sent_at": datetime.now(UTC).isoformat(),
             }
         )
@@ -857,10 +1486,21 @@ async def _handle_device_frame(
                 connection.principal, tuple(heartbeat_frame.capabilities)
             )
             connection.capabilities = device.effective_capabilities
+            if (
+                gateway.tab_hint_enabled
+                and heartbeat_frame.tab_hint is not None
+                and "browser.current_tab.read" in connection.capabilities
+            ):
+                gateway.update_tab_hint(
+                    connection.principal.device_id,
+                    origin=heartbeat_frame.tab_hint.origin,
+                    title=heartbeat_frame.tab_hint.title,
+                )
             await connection.send_signed(
                 {
                     "proto_version": 1,
                     "type": "heartbeat.accepted",
+                    "observe_tab_hint": gateway.tab_hint_enabled,
                     "sent_at": datetime.now(UTC).isoformat(),
                 }
             )
@@ -872,6 +1512,24 @@ async def _handle_device_frame(
             await gateway.satellite_wake(connection, SatelliteWakeFrame.model_validate(raw))
         elif frame_type == "satellite.state":
             await gateway.satellite_state(connection, SatelliteStateFrame.model_validate(raw))
+        elif frame_type == "satellite.audio.start":
+            await gateway.satellite_audio_start(
+                connection, SatelliteAudioStartFrame.model_validate(raw)
+            )
+        elif frame_type == "satellite.audio.chunk":
+            await gateway.satellite_audio_chunk(
+                connection, SatelliteAudioChunkFrame.model_validate(raw)
+            )
+        elif frame_type == "satellite.audio.end":
+            await gateway.satellite_audio_end(
+                connection, SatelliteAudioEndFrame.model_validate(raw)
+            )
+        elif frame_type == "satellite.cancel":
+            await gateway.satellite_cancel(connection, SatelliteCancelFrame.model_validate(raw))
+        elif frame_type == "satellite.takeover":
+            await gateway.satellite_takeover(
+                connection, SatelliteTakeoverFrame.model_validate(raw)
+            )
         elif frame_type == "command.ack":
             ack_frame = CommandAckFrame.model_validate(raw)
             result = await gateway.acknowledge(connection.principal.device_id, ack_frame.command_id)
@@ -930,6 +1588,10 @@ def verify_device_signature(access_token: str, payload: dict[str, Any]) -> bool:
     return isinstance(signature, str) and hmac.compare_digest(
         signature, sign_device_frame(access_token, payload)
     )
+
+
+def _privacy_rank(level: PrivacyLevel) -> int:
+    return {PrivacyLevel.L0: 0, PrivacyLevel.L1: 1, PrivacyLevel.L2: 2}[level]
 
 
 def _receipt_frame(command: CommandSnapshot) -> dict[str, Any]:

@@ -4,6 +4,7 @@ import {
   MAX_FORM_FIELDS,
   MAX_VISIBLE_TEXT_CHARS,
   buildFormFieldDescriptors,
+  buildTabHint,
   canonicalFrame,
   isValidFormRef,
   normalizeHubUrl,
@@ -130,5 +131,17 @@ describe("browser bridge core", () => {
     });
     expect(sanitizeFormFillOutcome({ filled: -1, total: 1 }, "https://e.com")).toBeNull();
     expect(sanitizeFormFillOutcome("nope", "https://e.com")).toBeNull();
+  });
+
+  it("builds heartbeat tab hints from origin only, never paths", () => {
+    expect(buildTabHint("https://example.com/private/path?token=secret", "项目计划")).toEqual({
+      origin: "https://example.com",
+      title: "项目计划",
+    });
+    expect(buildTabHint("https://example.com", undefined)?.title).toBe("");
+    expect(buildTabHint("https://example.com", "标".repeat(600))?.title.length).toBe(500);
+    expect(buildTabHint("chrome://settings", "设置")).toBeNull();
+    expect(buildTabHint(undefined, "无地址")).toBeNull();
+    expect(buildTabHint("not a url", "无地址")).toBeNull();
   });
 });
