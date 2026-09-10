@@ -196,6 +196,27 @@ class RecordingWebSocket:
         self._closed.set()
 
 
+async def test_satellite_conversation_moves_only_on_explicit_takeover() -> None:
+    manager = VoiceWebSocketManager(
+        cast(ChatService, object()),
+        voice_source=StaticVoiceSource(None, None),
+    )
+    owner = uuid7()
+    source = uuid7()
+    target = uuid7()
+    unrelated = uuid7()
+    conversation = uuid7()
+    unrelated_conversation = uuid7()
+    manager._satellite_conversations[(owner, source)] = conversation
+    manager._satellite_conversations[(owner, unrelated)] = unrelated_conversation
+
+    await manager.transfer_satellite_conversation(owner, source, target)
+
+    assert (owner, source) not in manager._satellite_conversations
+    assert manager._satellite_conversations[(owner, target)] == conversation
+    assert manager._satellite_conversations[(owner, unrelated)] == unrelated_conversation
+
+
 async def test_voice_generation_keepalive_emits_during_slow_first_token(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

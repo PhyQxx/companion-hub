@@ -7,14 +7,14 @@
 
 SAT-02 就近响应核心：同一 owner 任一时刻只有一个卫星处于唤醒会话中；
 仲裁窗口内的后续唤醒一律压制，保证多终端听到唤醒词时只有一个响应。
-音频上下行帧在真机（旧手机/树莓派）验证协议时再落地，先不实现。
+音频用带序号和摘要的签名 JSON 帧传输，保持设备通道只有一种鉴权边界。
 """
 
 from __future__ import annotations
 
 from datetime import datetime
 from enum import StrEnum
-from typing import Annotated
+from typing import Annotated, Literal
 from uuid import UUID
 
 from pydantic import Field
@@ -36,6 +36,9 @@ class SatelliteEvent(StrEnum):
     UTTERANCE_END = "utterance_end"
     REPLY_READY = "reply_ready"
     REPLY_DONE = "reply_done"
+    BROADCAST_READY = "broadcast_ready"
+    FOLLOW_UP_READY = "follow_up_ready"
+    INTERRUPT = "interrupt"
     CANCEL = "cancel"
     ERROR = "error"
 
@@ -50,6 +53,7 @@ class InvalidSatelliteTransition(ValueError):
 # (当前状态, 事件) → 目标状态；CANCEL/ERROR 任意状态回到 IDLE 单独处理
 _TRANSITIONS: dict[tuple[SatelliteState, SatelliteEvent], SatelliteState] = {
     (SatelliteState.IDLE, SatelliteEvent.WAKE_ACCEPTED): SatelliteState.LISTENING,
+    (SatelliteState.IDLE, SatelliteEvent.BROADCAST_READY): SatelliteState.SPEAKING,
     (SatelliteState.LISTENING, SatelliteEvent.UTTERANCE_END): SatelliteState.PROCESSING,
     (SatelliteState.LISTENING, SatelliteEvent.CANCEL): SatelliteState.IDLE,
     (SatelliteState.LISTENING, SatelliteEvent.ERROR): SatelliteState.IDLE,
@@ -57,7 +61,11 @@ _TRANSITIONS: dict[tuple[SatelliteState, SatelliteEvent], SatelliteState] = {
     (SatelliteState.PROCESSING, SatelliteEvent.CANCEL): SatelliteState.IDLE,
     (SatelliteState.PROCESSING, SatelliteEvent.ERROR): SatelliteState.IDLE,
     (SatelliteState.PROCESSING, SatelliteEvent.REPLY_DONE): SatelliteState.IDLE,
+    (SatelliteState.PROCESSING, SatelliteEvent.FOLLOW_UP_READY): SatelliteState.LISTENING,
     (SatelliteState.SPEAKING, SatelliteEvent.REPLY_DONE): SatelliteState.IDLE,
+    (SatelliteState.SPEAKING, SatelliteEvent.FOLLOW_UP_READY): SatelliteState.LISTENING,
+    (SatelliteState.PROCESSING, SatelliteEvent.INTERRUPT): SatelliteState.LISTENING,
+    (SatelliteState.SPEAKING, SatelliteEvent.INTERRUPT): SatelliteState.LISTENING,
     (SatelliteState.SPEAKING, SatelliteEvent.CANCEL): SatelliteState.IDLE,
     (SatelliteState.SPEAKING, SatelliteEvent.ERROR): SatelliteState.IDLE,
 }
@@ -89,6 +97,8 @@ class SatelliteHelloFrame(StrictModel):
     type: str = "satellite.hello"
     room_id: Annotated[str, Field(min_length=1, max_length=64)]
     firmware: Annotated[str, Field(min_length=1, max_length=80)] | None = None
+    max_privacy_level: Literal["L0", "L1", "L2"] = "L1"
+    continuous_timeout_seconds: Annotated[float, Field(ge=0, le=30)] = 8
 
 
 class SatelliteWakeFrame(StrictModel):
@@ -106,11 +116,55 @@ class SatelliteStateFrame(StrictModel):
     reason_code: Annotated[str, Field(min_length=1, max_length=64)] | None = None
 
 
+class SatelliteAudioStartFrame(StrictModel):
+    proto_version: Literal[1] = 1
+    type: Literal["satellite.audio.start"] = "satellite.audio.start"
+    utterance_id: UUID
+    format: Literal["pcm_s16le"] = "pcm_s16le"
+    sample_rate: Literal[16000] = 16000
+    channels: Literal[1] = 1
+    privacy_level: Literal["L0", "L1", "L2"] = "L1"
+    barge_in: bool = False
+
+
+class SatelliteAudioChunkFrame(StrictModel):
+    proto_version: Literal[1] = 1
+    type: Literal["satellite.audio.chunk"] = "satellite.audio.chunk"
+    utterance_id: UUID
+    index: Annotated[int, Field(ge=0, le=4095)]
+    data_b64: Annotated[str, Field(min_length=4, max_length=90_000)]
+
+
+class SatelliteAudioEndFrame(StrictModel):
+    proto_version: Literal[1] = 1
+    type: Literal["satellite.audio.end"] = "satellite.audio.end"
+    utterance_id: UUID
+    chunks: Annotated[int, Field(ge=1, le=4096)]
+    bytes: Annotated[int, Field(ge=1, le=4 * 1024 * 1024)]
+    sha256: Annotated[str, Field(pattern=r"^[0-9a-f]{64}$")]
+
+
+class SatelliteCancelFrame(StrictModel):
+    proto_version: Literal[1] = 1
+    type: Literal["satellite.cancel"] = "satellite.cancel"
+    utterance_id: UUID | None = None
+    reason_code: Annotated[str, Field(min_length=1, max_length=64)] = "device_cancelled"
+
+
+class SatelliteTakeoverFrame(StrictModel):
+    proto_version: Literal[1] = 1
+    type: Literal["satellite.takeover"] = "satellite.takeover"
+    from_device_id: UUID
+
+
 class SatelliteSessionView(StrictModel):
     device_id: UUID
     owner_user_id: UUID
     room_id: str
+    max_privacy_level: Literal["L0", "L1", "L2"]
+    continuous_timeout_seconds: float
     state: SatelliteState
     wake_count: int
     suppressed_count: int
     last_seen_at: datetime | None = None
+    follow_up_until: datetime | None = None

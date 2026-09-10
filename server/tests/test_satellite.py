@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import asyncio
+import base64
+import hashlib
 from datetime import UTC, datetime, timedelta
 from typing import Any, cast
 from uuid import UUID
@@ -13,11 +16,16 @@ from app.ids import uuid7
 from app.satellite import (
     SATELLITE_CAPABILITY,
     InvalidSatelliteTransition,
+    SatelliteAudioChunkFrame,
+    SatelliteAudioEndFrame,
+    SatelliteAudioStartFrame,
+    SatelliteCancelFrame,
     SatelliteEvent,
     SatelliteRegistry,
     SatelliteState,
     next_state,
 )
+from app.schemas import PrivacyLevel
 
 NOW = datetime(2026, 9, 2, 12, 0, tzinfo=UTC)
 
@@ -281,3 +289,379 @@ async def test_disconnect_unregisters_satellite() -> None:
     assert gateway.satellites.get(connection.principal.device_id) is not None
     gateway.disconnect(connection)
     assert gateway.satellites.get(connection.principal.device_id) is None
+
+
+async def test_satellite_audio_runs_voice_pipeline_and_returns_to_idle() -> None:
+    gateway = _gateway()
+    owner = uuid7()
+    websocket, connection = _connection(gateway, owner)
+    await gateway.connect(connection)
+    from app.satellite import SatelliteHelloFrame, SatelliteWakeFrame
+
+    await gateway.satellite_hello(
+        connection, SatelliteHelloFrame(room_id="书房", continuous_timeout_seconds=0)
+    )
+    await gateway.satellite_wake(
+        connection, SatelliteWakeFrame(room_id="书房", detected_at=datetime.now(UTC))
+    )
+    utterance_id = uuid7()
+    pcm = b"\x01\x00" * 2_500
+    calls: list[tuple[UUID, UUID, bytes, PrivacyLevel]] = []
+
+    async def handle(
+        user_id: UUID,
+        device_id: UUID,
+        data: bytes,
+        privacy: PrivacyLevel,
+        emit: Any,
+    ) -> bool:
+        calls.append((user_id, device_id, data, privacy))
+        await emit("voice.transcript", {"text": "你好", "is_final": True})
+        await emit("voice.sentence", {"index": 0, "text": "你好", "mime": "audio/mpeg"})
+        await emit("satellite.audio.chunk", {"index": 0, "data_b64": "AQI="})
+        await emit("reply.committed", {"content": "你好"})
+        return True
+
+    gateway.set_satellite_utterance_handler(handle)
+    await gateway.satellite_audio_start(
+        connection,
+        SatelliteAudioStartFrame(utterance_id=utterance_id, privacy_level="L1"),
+    )
+    await gateway.satellite_audio_chunk(
+        connection,
+        SatelliteAudioChunkFrame(
+            utterance_id=utterance_id,
+            index=0,
+            data_b64=base64.b64encode(pcm).decode("ascii"),
+        ),
+    )
+    await gateway.satellite_audio_end(
+        connection,
+        SatelliteAudioEndFrame(
+            utterance_id=utterance_id,
+            chunks=1,
+            bytes=len(pcm),
+            sha256=hashlib.sha256(pcm).hexdigest(),
+        ),
+    )
+    task = gateway._satellite_tasks[connection.principal.device_id]
+    await task
+
+    assert calls == [(owner, connection.principal.device_id, pcm, PrivacyLevel.L1)]
+    session = gateway.satellites.get(connection.principal.device_id)
+    assert session is not None and session.state is SatelliteState.IDLE
+    types = [frame["type"] for frame in websocket.frames]
+    assert "voice.transcript" in types
+    assert "satellite.audio.chunk" in types
+    states = [
+        frame["state"]
+        for frame in websocket.frames
+        if frame["type"] == "satellite.state.set"
+    ]
+    assert states == [
+        "listening",
+        "processing",
+        "speaking",
+        "idle",
+    ]
+
+
+async def test_satellite_audio_rejects_out_of_order_chunk_and_resets() -> None:
+    gateway = _gateway()
+    owner = uuid7()
+    websocket, connection = _connection(gateway, owner)
+    await gateway.connect(connection)
+    from app.satellite import SatelliteHelloFrame, SatelliteWakeFrame
+
+    await gateway.satellite_hello(connection, SatelliteHelloFrame(room_id="客厅"))
+    await gateway.satellite_wake(
+        connection, SatelliteWakeFrame(room_id="客厅", detected_at=datetime.now(UTC))
+    )
+    utterance_id = uuid7()
+    await gateway.satellite_audio_start(
+        connection, SatelliteAudioStartFrame(utterance_id=utterance_id)
+    )
+    await gateway.satellite_audio_chunk(
+        connection,
+        SatelliteAudioChunkFrame(utterance_id=utterance_id, index=1, data_b64="AQI="),
+    )
+
+    assert websocket.frames[-1]["reason_code"] == "chunk_out_of_order"
+    session = gateway.satellites.get(connection.principal.device_id)
+    assert session is not None and session.state is SatelliteState.IDLE
+
+
+async def test_satellite_cancel_discards_partial_audio() -> None:
+    gateway = _gateway()
+    owner = uuid7()
+    websocket, connection = _connection(gateway, owner)
+    await gateway.connect(connection)
+    from app.satellite import SatelliteHelloFrame, SatelliteWakeFrame
+
+    await gateway.satellite_hello(connection, SatelliteHelloFrame(room_id="客厅"))
+    await gateway.satellite_wake(
+        connection, SatelliteWakeFrame(room_id="客厅", detected_at=datetime.now(UTC))
+    )
+    utterance_id = uuid7()
+    await gateway.satellite_audio_start(
+        connection, SatelliteAudioStartFrame(utterance_id=utterance_id)
+    )
+    await gateway.satellite_cancel(
+        connection, SatelliteCancelFrame(utterance_id=utterance_id, reason_code="vad_cancelled")
+    )
+
+    assert connection.principal.device_id not in gateway._satellite_audio
+    session = gateway.satellites.get(connection.principal.device_id)
+    assert session is not None and session.state is SatelliteState.IDLE
+    assert websocket.frames[-1]["type"] == "satellite.cancelled"
+
+
+async def test_satellite_broadcast_routes_normal_and_emergency_by_room_and_privacy() -> None:
+    gateway = _gateway()
+    owner = uuid7()
+    living_ws, living = _connection(gateway, owner)
+    bedroom_ws, bedroom = _connection(gateway, owner)
+    await gateway.connect(living)
+    await gateway.connect(bedroom)
+    from app.satellite import SatelliteHelloFrame
+
+    await gateway.satellite_hello(
+        living, SatelliteHelloFrame(room_id="客厅", max_privacy_level="L1")
+    )
+    await gateway.satellite_hello(
+        bedroom, SatelliteHelloFrame(room_id="卧室", max_privacy_level="L2")
+    )
+
+    async def speak(_text: str, _privacy: PrivacyLevel, emit: Any) -> bool:
+        await emit("pet.audio.start", {"mime": "audio/mpeg", "sample_rate": 24000})
+        await emit("pet.audio.chunk", {"index": 0, "data_b64": "AQI="})
+        await emit("pet.audio.end", {"chunks": 1, "bytes": 2})
+        return True
+
+    gateway.set_pet_audio_handler(speak)
+    assert (
+        await gateway.broadcast_satellite(
+            owner, "卧室提醒", privacy_level=PrivacyLevel.L2, room_id="卧室"
+        )
+        == 1
+    )
+    assert any(frame["type"] == "satellite.broadcast" for frame in bedroom_ws.frames)
+    assert not any(frame["type"] == "satellite.broadcast" for frame in living_ws.frames)
+
+    assert (
+        await gateway.broadcast_satellite(
+            owner, "紧急提醒", privacy_level=PrivacyLevel.L1, emergency=True
+        )
+        == 2
+    )
+    assert sum(frame["type"] == "satellite.broadcast" for frame in living_ws.frames) == 1
+    assert sum(frame["type"] == "satellite.broadcast" for frame in bedroom_ws.frames) == 2
+    await asyncio.sleep(0)
+
+
+async def _submit_satellite_pcm(
+    gateway: DeviceCommandGateway,
+    connection: DeviceCommandConnection,
+    *,
+    barge_in: bool = False,
+) -> None:
+    utterance_id = uuid7()
+    pcm = b"\x02\x00" * 2_500
+    await gateway.satellite_audio_start(
+        connection,
+        SatelliteAudioStartFrame(utterance_id=utterance_id, barge_in=barge_in),
+    )
+    await gateway.satellite_audio_chunk(
+        connection,
+        SatelliteAudioChunkFrame(
+            utterance_id=utterance_id,
+            index=0,
+            data_b64=base64.b64encode(pcm).decode("ascii"),
+        ),
+    )
+    await gateway.satellite_audio_end(
+        connection,
+        SatelliteAudioEndFrame(
+            utterance_id=utterance_id,
+            chunks=1,
+            bytes=len(pcm),
+            sha256=hashlib.sha256(pcm).hexdigest(),
+        ),
+    )
+
+
+async def test_follow_up_accepts_second_utterance_without_wake() -> None:
+    gateway = _gateway()
+    owner = uuid7()
+    websocket, connection = _connection(gateway, owner)
+    await gateway.connect(connection)
+    from app.satellite import SatelliteHelloFrame, SatelliteWakeFrame
+
+    await gateway.satellite_hello(
+        connection, SatelliteHelloFrame(room_id="书房", continuous_timeout_seconds=30)
+    )
+    await gateway.satellite_wake(
+        connection, SatelliteWakeFrame(room_id="书房", detected_at=datetime.now(UTC))
+    )
+    turns = 0
+
+    async def handle(*args: Any) -> bool:
+        nonlocal turns
+        emit = args[-1]
+        turns += 1
+        await emit("voice.sentence", {"index": 0, "text": f"回复{turns}"})
+        await emit("reply.committed", {"content": f"回复{turns}"})
+        return True
+
+    gateway.set_satellite_utterance_handler(handle)
+    await _submit_satellite_pcm(gateway, connection)
+    await gateway._satellite_tasks[connection.principal.device_id]
+    first_session = gateway.satellites.get(connection.principal.device_id)
+    assert first_session is not None
+    assert first_session.state is SatelliteState.LISTENING
+    assert first_session.follow_up_until is not None
+
+    await _submit_satellite_pcm(gateway, connection)
+    await gateway._satellite_tasks[connection.principal.device_id]
+    assert turns == 2
+    assert not any(frame["type"] == "satellite.wake.suppressed" for frame in websocket.frames)
+    await gateway.satellite_cancel(connection, SatelliteCancelFrame(reason_code="test_done"))
+
+
+async def test_follow_up_timeout_returns_to_idle() -> None:
+    gateway = _gateway()
+    owner = uuid7()
+    websocket, connection = _connection(gateway, owner)
+    await gateway.connect(connection)
+    from app.satellite import SatelliteHelloFrame, SatelliteWakeFrame
+
+    await gateway.satellite_hello(
+        connection, SatelliteHelloFrame(room_id="书房", continuous_timeout_seconds=0.01)
+    )
+    await gateway.satellite_wake(
+        connection, SatelliteWakeFrame(room_id="书房", detected_at=datetime.now(UTC))
+    )
+
+    async def handle(*args: Any) -> bool:
+        emit = args[-1]
+        await emit("reply.committed", {"content": "完成"})
+        return True
+
+    gateway.set_satellite_utterance_handler(handle)
+    await _submit_satellite_pcm(gateway, connection)
+    await gateway._satellite_tasks[connection.principal.device_id]
+    await asyncio.sleep(0.03)
+
+    session = gateway.satellites.get(connection.principal.device_id)
+    assert session is not None and session.state is SatelliteState.IDLE
+    assert websocket.frames[-1]["type"] == "satellite.session.expired"
+
+
+async def test_barge_in_cancels_speaking_turn_and_starts_new_utterance() -> None:
+    gateway = _gateway()
+    owner = uuid7()
+    websocket, connection = _connection(gateway, owner)
+    await gateway.connect(connection)
+    from app.satellite import SatelliteHelloFrame, SatelliteWakeFrame
+
+    await gateway.satellite_hello(connection, SatelliteHelloFrame(room_id="客厅"))
+    await gateway.satellite_wake(
+        connection, SatelliteWakeFrame(room_id="客厅", detected_at=datetime.now(UTC))
+    )
+    speaking = asyncio.Event()
+
+    async def handle(*args: Any) -> bool:
+        emit = args[-1]
+        await emit("voice.sentence", {"index": 0, "text": "很长的回复"})
+        speaking.set()
+        await asyncio.Event().wait()
+        return True
+
+    gateway.set_satellite_utterance_handler(handle)
+    await _submit_satellite_pcm(gateway, connection)
+    await asyncio.wait_for(speaking.wait(), timeout=1)
+    await _submit_satellite_pcm(gateway, connection, barge_in=True)
+    await asyncio.sleep(0)
+
+    assert any(frame["type"] == "satellite.interrupted" for frame in websocket.frames)
+    assert any(
+        frame["type"] == "satellite.audio.accepted"
+        for frame in websocket.frames
+    )
+    current = gateway.satellites.get(connection.principal.device_id)
+    assert current is not None and current.state is SatelliteState.SPEAKING
+    await gateway.satellite_cancel(connection, SatelliteCancelFrame(reason_code="test_done"))
+
+
+async def test_follow_up_can_transfer_to_another_room_for_same_owner() -> None:
+    gateway = _gateway()
+    owner = uuid7()
+    source_ws, source = _connection(gateway, owner)
+    target_ws, target = _connection(gateway, owner)
+    await gateway.connect(source)
+    await gateway.connect(target)
+    from app.satellite import SatelliteHelloFrame, SatelliteTakeoverFrame, SatelliteWakeFrame
+
+    await gateway.satellite_hello(
+        source, SatelliteHelloFrame(room_id="客厅", continuous_timeout_seconds=30)
+    )
+    await gateway.satellite_hello(
+        target, SatelliteHelloFrame(room_id="卧室", continuous_timeout_seconds=30)
+    )
+    await gateway.satellite_wake(
+        source, SatelliteWakeFrame(room_id="客厅", detected_at=datetime.now(UTC))
+    )
+    transfers: list[tuple[UUID, UUID, UUID]] = []
+
+    async def transfer(user_id: UUID, from_device_id: UUID, to_device_id: UUID) -> None:
+        transfers.append((user_id, from_device_id, to_device_id))
+
+    gateway.set_satellite_takeover_handler(transfer)
+
+    async def handle(*args: Any) -> bool:
+        emit = args[-1]
+        await emit("reply.committed", {"content": "跟我去卧室"})
+        return True
+
+    gateway.set_satellite_utterance_handler(handle)
+    await _submit_satellite_pcm(gateway, source)
+    await gateway._satellite_tasks[source.principal.device_id]
+    available = target_ws.frames[-1]
+    assert available["type"] == "satellite.session.available"
+    assert available["from_device_id"] == str(source.principal.device_id)
+    await gateway.satellite_takeover(
+        target, SatelliteTakeoverFrame(from_device_id=source.principal.device_id)
+    )
+
+    source_session = gateway.satellites.get(source.principal.device_id)
+    target_session = gateway.satellites.get(target.principal.device_id)
+    assert source_session is not None and source_session.state is SatelliteState.IDLE
+    assert target_session is not None and target_session.state is SatelliteState.LISTENING
+    assert source_ws.frames[-1]["type"] == "satellite.session.transferred"
+    assert target_ws.frames[-1]["type"] == "satellite.session.accepted"
+    assert transfers == [(owner, source.principal.device_id, target.principal.device_id)]
+    await gateway.satellite_cancel(target, SatelliteCancelFrame(reason_code="test_done"))
+
+
+async def test_follow_up_takeover_rejects_different_owner() -> None:
+    gateway = _gateway()
+    source_owner = uuid7()
+    _, source = _connection(gateway, source_owner)
+    target_ws, target = _connection(gateway, uuid7())
+    await gateway.connect(source)
+    await gateway.connect(target)
+    from app.satellite import SatelliteHelloFrame, SatelliteTakeoverFrame
+
+    await gateway.satellite_hello(source, SatelliteHelloFrame(room_id="客厅"))
+    await gateway.satellite_hello(target, SatelliteHelloFrame(room_id="卧室"))
+    source_session = gateway.satellites.get(source.principal.device_id)
+    assert source_session is not None
+    source_session.state = SatelliteState.LISTENING
+    source_session.follow_up_until = datetime.now(UTC) + timedelta(seconds=30)
+
+    await gateway.satellite_takeover(
+        target, SatelliteTakeoverFrame(from_device_id=source.principal.device_id)
+    )
+
+    assert target_ws.frames[-1]["reason_code"] == "takeover_not_allowed"
+    assert source_session.state is SatelliteState.LISTENING

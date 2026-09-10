@@ -16,7 +16,8 @@ import time
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import suppress
 from dataclasses import dataclass, field
-from typing import Any
+from datetime import UTC, datetime, timedelta
+from typing import Any, cast
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, WebSocket, WebSocketDisconnect
@@ -92,6 +93,45 @@ class SubmittedTextRecognizer:
         return self._text
 
 
+class SatelliteVoiceSocket:
+    """把现有语音 WebSocket 输出封装成设备通道的签名 JSON 帧。"""
+
+    def __init__(self, emit: Callable[[str, dict[str, JsonValue]], Awaitable[None]]) -> None:
+        self._emit = emit
+        self._sentence_index = 0
+        self._chunk_index = 0
+        self.completed = False
+
+    async def send_text(self, value: str) -> None:
+        frame = json.loads(value)
+        if not isinstance(frame, dict):
+            return
+        frame_type = str(frame.pop("type", "voice.event"))
+        if frame_type == "voice.sentence":
+            raw_index = frame.get("index")
+            self._sentence_index = raw_index if isinstance(raw_index, int) else 0
+            self._chunk_index = 0
+        elif frame_type == "reply.committed":
+            self.completed = True
+        await self._emit(frame_type, frame)
+
+    async def send_bytes(self, value: bytes) -> None:
+        for offset in range(0, len(value), DEVICE_AUDIO_CHUNK_BYTES):
+            chunk = value[offset : offset + DEVICE_AUDIO_CHUNK_BYTES]
+            await self._emit(
+                "satellite.audio.chunk",
+                {
+                    "sentence_index": self._sentence_index,
+                    "index": self._chunk_index,
+                    "data_b64": base64.b64encode(chunk).decode("ascii"),
+                },
+            )
+            self._chunk_index += 1
+
+    async def close(self, **_: object) -> None:
+        return None
+
+
 @dataclass(slots=True)
 class VoiceSession:
     """一条语音连接的会话状态。"""
@@ -144,6 +184,14 @@ class VoiceWebSocketManager:
         self._avatar_tasks: set[asyncio.Task[int]] = set()
         self._latency_metrics = VoiceLatencyMetrics()
         self._sessions: dict[int, VoiceSession] = {}
+        self._satellite_conversations: dict[tuple[UUID, UUID], UUID] = {}
+        self._satellite_conversation_locks: dict[tuple[UUID, UUID], asyncio.Lock] = {}
+        self._satellite_broadcaster: Callable[..., Awaitable[int]] | None = None
+
+    def set_satellite_broadcaster(
+        self, broadcaster: Callable[..., Awaitable[int]]
+    ) -> None:
+        self._satellite_broadcaster = broadcaster
 
     def latency_report(self) -> dict[str, object]:
         return self._latency_metrics.snapshot()
@@ -315,6 +363,74 @@ class VoiceWebSocketManager:
         )
         return True
 
+    async def run_satellite_utterance(
+        self,
+        owner_user_id: UUID,
+        device_id: UUID,
+        pcm: bytes,
+        privacy_level: PrivacyLevel,
+        emit: Callable[[str, dict[str, JsonValue]], Awaitable[None]],
+    ) -> bool:
+        """复用浏览器语音回合处理卫星 PCM，并把输出回送为签名 JSON 帧。"""
+        key = (owner_user_id, device_id)
+        conversation_id = self._satellite_conversations.get(key)
+        if conversation_id is None:
+            lock = self._satellite_conversation_locks.setdefault(key, asyncio.Lock())
+            async with lock:
+                conversation_id = self._satellite_conversations.get(key)
+                if conversation_id is None:
+                    conversation = await self._service.create_conversation(
+                        user_id=owner_user_id,
+                        title="房间语音",
+                    )
+                    conversation_id = conversation.id
+                    self._satellite_conversations[key] = conversation_id
+            self._satellite_conversation_locks.pop(key, None)
+
+        recognizer, tts_chain = await self._voice_source.resolve()
+        if recognizer is None:
+            await emit("voice.asr_unavailable", {"reason": "not_configured"})
+            return False
+        if privacy_level is PrivacyLevel.L2 and not recognizer.runs_local:
+            await emit("voice.asr_unavailable", {"reason": "local_asr_required"})
+            return False
+
+        socket = SatelliteVoiceSocket(emit)
+        session = VoiceSession(
+            websocket=cast(WebSocket, socket),
+            principal=ChatPrincipal(
+                session_id=uuid7(),
+                user_id=owner_user_id,
+                display_name="Satellite",
+                expires_at=datetime.now(UTC) + timedelta(hours=12),
+            ),
+            device_id=device_id,
+            conversation_id=conversation_id,
+            privacy_level=privacy_level,
+            wake_word=None,
+        )
+        session.turn_task = asyncio.current_task()
+        session_key = id(session)
+        self._sessions[session_key] = session
+        try:
+            await self._run_utterance(session, pcm, recognizer, tts_chain)
+        finally:
+            self._sessions.pop(session_key, None)
+        return socket.completed
+
+    async def transfer_satellite_conversation(
+        self,
+        owner_user_id: UUID,
+        from_device_id: UUID,
+        to_device_id: UUID,
+    ) -> None:
+        """仅在网关完成同 owner 接管校验后，把连续上下文迁到新房间。"""
+        source_key = (owner_user_id, from_device_id)
+        target_key = (owner_user_id, to_device_id)
+        conversation_id = self._satellite_conversations.pop(source_key, None)
+        if conversation_id is not None:
+            self._satellite_conversations[target_key] = conversation_id
+
     async def _still_holds_audio(self, device_id: UUID) -> bool:
         assert self._turns is not None
         holder = await self._turns.current_audio_holder()
@@ -357,7 +473,17 @@ class VoiceWebSocketManager:
             *(self._send_proactive(session, text, privacy_level) for session in sessions),
             return_exceptions=True,
         )
-        return sum(result is True for result in results)
+        delivered = sum(result is True for result in results)
+        if self._satellite_broadcaster is not None:
+            try:
+                delivered += await self._satellite_broadcaster(
+                    user_id,
+                    text,
+                    privacy_level=privacy_level,
+                )
+            except Exception:
+                logger.warning("satellite proactive broadcast failed", exc_info=True)
+        return delivered
 
     async def _send_proactive(
         self,

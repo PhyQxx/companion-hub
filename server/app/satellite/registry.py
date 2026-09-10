@@ -10,6 +10,8 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from uuid import UUID
 
+from app.schemas import PrivacyLevel
+
 from .models import (
     InvalidSatelliteTransition,
     SatelliteEvent,
@@ -26,21 +28,27 @@ class SatelliteSession:
     device_id: UUID
     owner_user_id: UUID
     room_id: str
+    max_privacy_level: PrivacyLevel = PrivacyLevel.L1
+    continuous_timeout_seconds: float = 8
     state: SatelliteState = SatelliteState.IDLE
     wake_count: int = 0
     suppressed_count: int = 0
     last_seen_at: datetime | None = None
     last_wake_awarded_at: datetime | None = None
+    follow_up_until: datetime | None = None
 
     def view(self) -> SatelliteSessionView:
         return SatelliteSessionView(
             device_id=self.device_id,
             owner_user_id=self.owner_user_id,
             room_id=self.room_id,
+            max_privacy_level=self.max_privacy_level.value,
+            continuous_timeout_seconds=self.continuous_timeout_seconds,
             state=self.state,
             wake_count=self.wake_count,
             suppressed_count=self.suppressed_count,
             last_seen_at=self.last_seen_at,
+            follow_up_until=self.follow_up_until,
         )
 
 
@@ -58,18 +66,33 @@ class SatelliteRegistry:
     last_awake_per_owner: dict[UUID, datetime] = field(default_factory=dict)
     wake_window_seconds: float = DEFAULT_WAKE_WINDOW_SECONDS
 
-    def register(self, *, device_id: UUID, owner_user_id: UUID, room_id: str) -> SatelliteSession:
+    def register(
+        self,
+        *,
+        device_id: UUID,
+        owner_user_id: UUID,
+        room_id: str,
+        max_privacy_level: PrivacyLevel = PrivacyLevel.L1,
+        continuous_timeout_seconds: float = 8,
+    ) -> SatelliteSession:
         # 重连视为全新会话，从 idle 开始；不清零计数便于观测
         session = self.sessions.get(device_id)
         if session is None:
             session = SatelliteSession(
-                device_id=device_id, owner_user_id=owner_user_id, room_id=room_id
+                device_id=device_id,
+                owner_user_id=owner_user_id,
+                room_id=room_id,
+                max_privacy_level=max_privacy_level,
+                continuous_timeout_seconds=continuous_timeout_seconds,
             )
             self.sessions[device_id] = session
         else:
             session.owner_user_id = owner_user_id
             session.room_id = room_id
+            session.max_privacy_level = max_privacy_level
+            session.continuous_timeout_seconds = continuous_timeout_seconds
             session.state = SatelliteState.IDLE
+            session.follow_up_until = None
         session.last_seen_at = datetime.now(UTC)
         return session
 
@@ -92,6 +115,8 @@ class SatelliteRegistry:
             raise LookupError("satellite not registered")
         target = next_state(session.state, event)
         session.state = target
+        if target is not SatelliteState.LISTENING:
+            session.follow_up_until = None
         session.last_seen_at = datetime.now(UTC)
         return target
 
@@ -117,6 +142,7 @@ class SatelliteRegistry:
         3. 否则本卫星胜出，进入 listening 并刷新窗口。
         """
         moment = now or datetime.now(UTC)
+        self.expire_follow_ups(moment)
         session = self.sessions.get(device_id)
         if session is None:
             return WakeDecision(False, "not_registered", SatelliteState.IDLE)
@@ -138,3 +164,15 @@ class SatelliteRegistry:
         session.last_wake_awarded_at = moment
         self.last_awake_per_owner[owner_user_id] = moment
         return WakeDecision(True, "wake_accepted", target)
+
+    def expire_follow_ups(self, now: datetime | None = None) -> list[UUID]:
+        moment = now or datetime.now(UTC)
+        expired: list[UUID] = []
+        for session in self.sessions.values():
+            if session.follow_up_until is None or session.follow_up_until > moment:
+                continue
+            session.state = SatelliteState.IDLE
+            session.follow_up_until = None
+            session.last_seen_at = moment
+            expired.append(session.device_id)
+        return expired
