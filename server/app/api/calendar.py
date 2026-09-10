@@ -13,6 +13,7 @@ from pydantic import Field
 
 from app.auth import AuthService, ChatPrincipal
 from app.calendar import (
+    CalendarCreateTool,
     CalendarEventView,
     CalendarParticipant,
     CalendarPreview,
@@ -45,9 +46,50 @@ class CalendarPatchPayload(StrictModel):
     reminder_lead_minutes: Annotated[int, Field(ge=0, le=1440)] | None = None
 
 
-def create_calendar_router(service: CalendarService, auth_service: AuthService) -> APIRouter:
+class CalendarDraftConfirmation(StrictModel):
+    digest: Annotated[str, Field(pattern=r"^[a-f0-9]{64}$")]
+
+
+def create_calendar_router(
+    service: CalendarService,
+    auth_service: AuthService,
+    create_tool: CalendarCreateTool | None = None,
+) -> APIRouter:
     guard = ChatSessionGuard(auth_service)
     router = APIRouter(prefix="/api/v1/calendar", tags=["calendar"])
+
+    if create_tool is not None:
+
+        @router.get("/drafts")
+        async def list_drafts(
+            principal: Annotated[ChatPrincipal, Depends(guard)],
+        ) -> list[dict[str, object]]:
+            return create_tool.list_drafts(principal.user_id)
+
+        @router.post("/drafts/{draft_id}/confirm")
+        async def confirm_draft(
+            draft_id: UUID,
+            body: CalendarDraftConfirmation,
+            principal: Annotated[ChatPrincipal, Depends(guard)],
+        ) -> dict[str, object]:
+            try:
+                return await create_tool.confirm(principal.user_id, draft_id, body.digest)
+            except LookupError as error:
+                raise HTTPException(404, str(error)) from error
+            except ValueError as error:
+                raise HTTPException(409, str(error)) from error
+
+        @router.post("/drafts/{draft_id}/cancel")
+        async def cancel_draft(
+            draft_id: UUID,
+            principal: Annotated[ChatPrincipal, Depends(guard)],
+        ) -> dict[str, object]:
+            try:
+                return create_tool.cancel(principal.user_id, draft_id)
+            except LookupError as error:
+                raise HTTPException(404, str(error)) from error
+            except ValueError as error:
+                raise HTTPException(409, str(error)) from error
 
     @router.post("/events/preview", response_model=CalendarPreview)
     async def preview_event(

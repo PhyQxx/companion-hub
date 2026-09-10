@@ -189,20 +189,25 @@ async def test_save_tool_requires_preview_confirmation_first(
     assert await _service(database).find_by_name(context.user_id or uuid7(), "上班准备") is None
 
 
-async def test_save_tool_saves_after_confirmation_and_idempotent_per_turn(
+async def test_save_tool_rejects_model_confirmation_and_ui_confirm_is_idempotent(
     database: Database, context: ToolContext
 ) -> None:
     tool = WorkflowSaveTool(_service(database))
     payload = {"name": "上班准备", "steps": [s.model_dump(mode="json") for s in _steps()]}
-    first = await tool.execute(
+    direct = await tool.execute(
         tool.arguments_model.model_validate({**payload, "confirmed": True}), context
     )
-    assert first.ok and first.data["saved"] is True
-    second = await tool.execute(
-        tool.arguments_model.model_validate({**payload, "confirmed": True}), context
+    assert not direct.ok and direct.reason_code == "user_confirmation_required"
+    prepared = await tool.execute(tool.arguments_model.model_validate(payload), context)
+    assert context.user_id is not None
+    draft = tool.list_drafts(context.user_id)[0]
+    first = await tool.confirm(
+        context.user_id, UUID(str(prepared.data["draft_id"])), str(draft["digest"])
     )
-    assert second.ok and second.data["duplicate"] is True
-    assert first.data["workflow"]["id"] == second.data["workflow"]["id"]
+    second = await tool.confirm(
+        context.user_id, UUID(str(prepared.data["draft_id"])), str(draft["digest"])
+    )
+    assert first["result"] == second["result"]
 
 
 async def test_save_tool_gates_privacy_and_invalid_steps(
@@ -315,3 +320,50 @@ async def test_workflows_api_full_flow(database: Database) -> None:
         assert missing.status_code == 404
         gone_run = await client.post(f"/api/v1/workflows/{workflow_id}/run", headers=headers)
         assert gone_run.status_code == 404
+
+
+async def test_workflow_draft_api_confirms_exact_preview_or_cancels(database: Database) -> None:
+    auth = AuthService(database)
+    owner = await auth.setup(display_name="Flow draft", password="correct horse")
+    service = _service(database)
+    tool = WorkflowSaveTool(service)
+    context = ToolContext(
+        privacy_level="L1", user_id=owner.principal.user_id, turn_id=uuid7()
+    )
+    payload = {
+        "name": "卡片确认流程",
+        "steps": [{"action_id": "desktop.app.open", "arguments": {"app": "Safari"}}],
+    }
+    prepared = await tool.execute(tool.arguments_model.model_validate(payload), context)
+    draft = tool.list_drafts(owner.principal.user_id)[0]
+    app = FastAPI()
+    app.include_router(create_workflows_router(service, auth, tool))
+    headers = {"Authorization": f"Bearer {owner.access_token}"}
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        listed = await client.get("/api/v1/workflows/drafts", headers=headers)
+        confirmed = await client.post(
+            f"/api/v1/workflows/drafts/{prepared.data['draft_id']}/confirm",
+            headers=headers,
+            json={"digest": draft["digest"]},
+        )
+        second_context = context.model_copy(update={"turn_id": uuid7()})
+        second = await tool.execute(
+            tool.arguments_model.model_validate({**payload, "name": "可取消流程"}),
+            second_context,
+        )
+        cancelled = await client.post(
+            f"/api/v1/workflows/drafts/{second.data['draft_id']}/cancel", headers=headers
+        )
+        refused = await client.post(
+            f"/api/v1/workflows/drafts/{second.data['draft_id']}/confirm",
+            headers=headers,
+            json={"digest": tool.list_drafts(owner.principal.user_id)[-1]["digest"]},
+        )
+
+    assert listed.json()[0]["preview"]["steps"][0]["risk"] == "A1"
+    assert confirmed.status_code == 200 and confirmed.json()["status"] == "completed"
+    assert cancelled.json()["status"] == "cancelled"
+    assert refused.status_code == 409
+    assert await service.find_by_name(owner.principal.user_id, "卡片确认流程") is not None
+    assert await service.find_by_name(owner.principal.user_id, "可取消流程") is None

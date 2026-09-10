@@ -10,11 +10,12 @@ from httpx import ASGITransport, AsyncClient
 
 from app.api import create_calendar_router
 from app.auth import AuthService
-from app.calendar import CalendarParticipant, CalendarService, CalendarStore
+from app.calendar import CalendarCreateTool, CalendarParticipant, CalendarService, CalendarStore
 from app.db import AppUserRecord, Base, Database, create_database
 from app.ids import uuid7
 from app.tasks.models import TaskStatus
 from app.tasks.store import TaskStore
+from app.tools.contracts import ToolContext
 
 NOW = datetime(2026, 9, 2, 2, 0, tzinfo=UTC)  # Asia/Shanghai 当天 10:00
 
@@ -260,3 +261,51 @@ async def test_calendar_api_full_flow(database: Database) -> None:
     assert cancelled.json()["status"] == "cancelled"
     assert cancelled.json()["reminder_task_id"] is None
     assert missing.status_code == 404
+
+
+async def test_calendar_draft_api_binds_user_content_and_confirmation(database: Database) -> None:
+    auth = AuthService(database)
+    owner = await auth.setup(display_name="Calendar draft", password="correct horse")
+    service = _service(database, clock=lambda: datetime.now(UTC))
+    tool = CalendarCreateTool(service, timezone_name="Asia/Shanghai")
+    context = ToolContext(
+        privacy_level="L1", user_id=owner.principal.user_id, turn_id=uuid7()
+    )
+    payload = {
+        "title": "确认后创建",
+        "starts_at": (datetime.now(UTC) + timedelta(days=2)).isoformat(),
+        "ends_at": (datetime.now(UTC) + timedelta(days=2, hours=1)).isoformat(),
+    }
+    prepared = await tool.execute(tool.arguments_model.model_validate(payload), context)
+    draft_id = prepared.data["draft_id"]
+    draft = tool.list_drafts(owner.principal.user_id)[0]
+    app = FastAPI()
+    app.include_router(create_calendar_router(service, auth, tool))
+    headers = {"Authorization": f"Bearer {owner.access_token}"}
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        assert (await client.get("/api/v1/calendar/drafts")).status_code == 401
+        listed = await client.get("/api/v1/calendar/drafts", headers=headers)
+        changed = await client.post(
+            f"/api/v1/calendar/drafts/{draft_id}/confirm",
+            headers=headers,
+            json={"digest": "0" * 64},
+        )
+        confirmed = await client.post(
+            f"/api/v1/calendar/drafts/{draft_id}/confirm",
+            headers=headers,
+            json={"digest": draft["digest"]},
+        )
+        replay = await client.post(
+            f"/api/v1/calendar/drafts/{draft_id}/confirm",
+            headers=headers,
+            json={"digest": draft["digest"]},
+        )
+
+    assert listed.json()[0]["preview"]["title"] == "确认后创建"
+    assert changed.status_code == 409
+    assert confirmed.status_code == 200 and confirmed.json()["status"] == "completed"
+    assert replay.json()["result"] == confirmed.json()["result"]
+    assert len(await service.list_events(owner.principal.user_id)) == 1
+    with pytest.raises(LookupError):
+        await tool.confirm(uuid7(), UUID(str(draft_id)), str(draft["digest"]))

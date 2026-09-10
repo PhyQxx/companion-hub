@@ -1,21 +1,21 @@
-"""FLOW-01 聊天端流程工具：两阶段保存与运行。
+"""FLOW-01 聊天端流程工具：UI 确认保存与运行。
 
 红线（docs/39 J5「保存前展示全部动作与权限」）：workflow_save 首次调用
 只做编译校验并返回每一步的动作标签、风险等级、确认策略与参数，模型把
-预览完整复述给用户，用户明确同意后带 confirmed=true 才落库；同 turn
+预览完整展示给用户，用户在聊天卡片点击确认后才落库；同 turn
 幂等。workflow_run 展开为待确认计划，A2 步骤必须经计划确认流执行。
 两者仅 L1 挂载（L0 不写个人数据、L2 内容不入库，执行层兜底拒绝）。
 """
 
 from __future__ import annotations
 
-from collections import OrderedDict
 from time import perf_counter
 from typing import Annotated, cast
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from app.confirmation import PendingMutationStore
 from app.llm import ToolDefinition
 from app.schemas.common import PrivacyLevel
 from app.tools.contracts import ToolContext, ToolResult
@@ -47,9 +47,8 @@ class WorkflowRunArgs(BaseModel):
 class WorkflowSaveTool:
     name = "workflow_save"
     description = (
-        "把一组已注册动作保存为可复用流程（1-10 步）。首次调用不要传 confirmed："
-        "只做编译校验并返回每一步的动作名称、风险等级、确认策略与参数，把这些"
-        "完整复述给用户；用户明确同意后再带 confirmed=true 保存。只允许引用"
+        "准备可复用流程预览（1-10 步），返回每一步的动作名称、风险等级、确认策略与参数。"
+        "用户必须在聊天卡片点击确认保存；confirmed=true 也不会写入。只允许引用"
         "动作目录（/api/v1/cognition/actions/catalog）里已注册的动作。"
     )
     arguments_model: type[BaseModel] = WorkflowSaveArgs
@@ -58,7 +57,7 @@ class WorkflowSaveTool:
 
     def __init__(self, service: WorkflowService) -> None:
         self._service = service
-        self._saved_by_turn: OrderedDict[UUID, str] = OrderedDict()
+        self._drafts = PendingMutationStore()
 
     def definition(self) -> ToolDefinition:
         return ToolDefinition(
@@ -75,6 +74,8 @@ class WorkflowSaveTool:
             return self._failure("private_session_unsupported", started)
         if context.turn_id is None or context.user_id is None:
             return self._failure("idempotency_key_missing", started)
+        if args.confirmed:
+            return self._failure("user_confirmation_required", started)
         try:
             preview = await self._service.preview(
                 name=args.name,
@@ -83,55 +84,65 @@ class WorkflowSaveTool:
             )
         except ValueError as error:
             return self._invalid(str(error), started)
-        if not args.confirmed:
-            return ToolResult(
-                ok=True,
-                tool_name=self.name,
-                data={
-                    "saved": False,
-                    "confirmation_required": True,
-                    "preview": preview.model_dump(mode="json"),
-                },
-                latency_ms=(perf_counter() - started) * 1_000,
-            )
-        saved_turn = self._saved_by_turn.get(context.turn_id)
-        if saved_turn is not None:
-            existing = await self._service.find_by_name(context.user_id, saved_turn)
-            if existing is not None:
-                return ToolResult(
-                    ok=True,
-                    tool_name=self.name,
-                    data={
-                        "saved": True,
-                        "duplicate": True,
-                        "workflow": _workflow_payload(existing),
-                    },
-                    latency_ms=(perf_counter() - started) * 1_000,
-                )
         existing = await self._service.find_by_name(context.user_id, args.name)
         if existing is not None:
             return self._invalid(f"同名流程已存在：{existing.name}", started)
         try:
-            view = await self._service.save_workflow(
+            content = {
+                "name": args.name,
+                "description": args.description,
+                "steps": [step.model_dump(mode="json") for step in args.steps],
+            }
+            draft = self._drafts.prepare(
                 user_id=context.user_id,
-                name=args.name,
-                description=args.description,
-                steps=list(args.steps),
+                turn_id=context.turn_id,
+                kind="workflow_save",
+                content=content,
+                preview=preview.model_dump(mode="json"),
             )
-        except ValueError as error:
-            return self._invalid(str(error), started)
-        self._remember(context.turn_id, view.name)
+        except OverflowError:
+            return self._failure("confirmation_preview_capacity", started)
         return ToolResult(
             ok=True,
             tool_name=self.name,
-            data={"saved": True, "workflow": _workflow_payload(view)},
+            data={
+                "saved": False,
+                "confirmation_required": draft.status == "pending",
+                "draft_id": str(draft.id),
+                "status": draft.status,
+                "preview": draft.preview,
+                "expires_at": draft.expires_at.isoformat(),
+            },
             latency_ms=(perf_counter() - started) * 1_000,
         )
 
-    def _remember(self, turn_id: UUID, name: str) -> None:
-        self._saved_by_turn[turn_id] = name
-        while len(self._saved_by_turn) > 128:
-            self._saved_by_turn.popitem(last=False)
+    def list_drafts(self, user_id: UUID) -> list[dict[str, object]]:
+        return self._drafts.list(user_id)
+
+    def cancel(self, user_id: UUID, draft_id: UUID) -> dict[str, object]:
+        return self._drafts.cancel(user_id, draft_id)
+
+    async def confirm(
+        self, user_id: UUID, draft_id: UUID, digest: str
+    ) -> dict[str, object]:
+        draft = self._drafts.claim(user_id, draft_id, digest)
+        if draft.status == "completed":
+            return draft.view()
+        content = draft.content
+        try:
+            view = await self._service.save_workflow(
+                user_id=user_id,
+                name=cast(str, content["name"]),
+                description=cast(str | None, content["description"]),
+                steps=[
+                    WorkflowStep.model_validate(step)
+                    for step in cast(list[object], content["steps"])
+                ],
+            )
+        except BaseException:
+            self._drafts.mark_unknown(draft)
+            raise
+        return self._drafts.complete(draft, {"workflow": _workflow_payload(view)})
 
     def _invalid(self, detail: str, started: float) -> ToolResult:
         return ToolResult(

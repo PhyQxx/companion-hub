@@ -1,13 +1,7 @@
-"""CAL-01 聊天端建日程工具：先预览（时间规范化 + 冲突检查），确认后落库。
-
-两段式契约对应验收「写入前展示」：第一次调用不携带 confirmed，只返回
-预览与冲突；模型把预览复述给用户，用户明确同意后再带 confirmed=true
-创建。时间冲突是服务端硬闸门——即使 confirmed=true 也拒绝落库。
-"""
+"""CAL-01 日程工具：只准备预览，鉴权 UI 确认后才能落库。"""
 
 from __future__ import annotations
 
-from collections import OrderedDict
 from datetime import datetime
 from time import perf_counter
 from typing import Annotated, cast
@@ -15,6 +9,7 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from app.confirmation import PendingMutationStore
 from app.llm import ToolDefinition
 from app.schemas.common import PrivacyLevel
 from app.tasks.tools import localize
@@ -42,10 +37,9 @@ class CalendarCreateArgs(BaseModel):
 class CalendarCreateTool:
     name = "calendar_create"
     description = (
-        "为用户创建日历日程（默认会前 10 分钟提醒）。首次调用不要传 confirmed 或传 false："
-        "只做时间规范化与冲突检查，把返回的预览（时间、地点、参与人、提前提醒量）复述给"
-        "用户；用户明确同意后再带 confirmed=true 创建。返回冲突时必须告知用户冲突日程并"
-        "建议改期，不要直接创建。starts_at/ends_at 使用用户所在时区本地时间，ISO 格式。"
+        "准备日历日程预览（默认会前 10 分钟提醒）。用户必须在聊天卡片核对时间、地点、"
+        "参与人和提醒后点击确认创建；confirmed=true 也不会写入。返回冲突时告知用户并"
+        "建议改期。starts_at/ends_at 使用用户所在时区本地时间，ISO 格式。"
     )
     arguments_model: type[BaseModel] = CalendarCreateArgs
     runs_local = True
@@ -54,7 +48,7 @@ class CalendarCreateTool:
     def __init__(self, service: CalendarService, *, timezone_name: str = "Asia/Shanghai") -> None:
         self._service = service
         self._timezone = timezone_name
-        self._created_by_turn: OrderedDict[UUID, CalendarEventView] = OrderedDict()
+        self._drafts = PendingMutationStore()
 
     def definition(self) -> ToolDefinition:
         return ToolDefinition(
@@ -71,14 +65,8 @@ class CalendarCreateTool:
             return self._failure("private_session_unsupported", started)
         if context.turn_id is None or context.user_id is None:
             return self._failure("idempotency_key_missing", started)
-        existing = self._created_by_turn.get(context.turn_id)
-        if existing is not None:
-            return ToolResult(
-                ok=True,
-                tool_name=self.name,
-                data={"created": False, "duplicate": True, **_event_payload(existing)},
-                latency_ms=(perf_counter() - started) * 1_000,
-            )
+        if args.confirmed:
+            return self._failure("user_confirmation_required", started)
         starts_at = localize(args.starts_at, self._timezone)
         ends_at = localize(args.ends_at, self._timezone)
         participants = [CalendarParticipant(name=name) for name in args.participants]
@@ -111,58 +99,73 @@ class CalendarCreateTool:
                 },
                 latency_ms=(perf_counter() - started) * 1_000,
             )
-        if not args.confirmed:
-            return ToolResult(
-                ok=True,
-                tool_name=self.name,
-                data={
-                    "created": False,
-                    "confirmation_required": True,
-                    "preview": {
-                        "title": preview.title,
-                        "starts_at": preview.starts_at.isoformat(),
-                        "ends_at": preview.ends_at.isoformat(),
-                        "location": preview.location,
-                        "participants": [item.name for item in preview.participants],
-                        "calendar_id": preview.calendar_id,
-                        "reminder_lead_minutes": preview.reminder_lead_minutes,
-                    },
-                },
-                latency_ms=(perf_counter() - started) * 1_000,
-            )
+        preview_data = {
+            "title": preview.title,
+            "starts_at": preview.starts_at.isoformat(),
+            "ends_at": preview.ends_at.isoformat(),
+            "location": preview.location,
+            "participants": [item.name for item in preview.participants],
+            "calendar_id": preview.calendar_id,
+            "reminder_lead_minutes": preview.reminder_lead_minutes,
+        }
         try:
-            view = await self._service.create_event(
-                context.user_id,
-                title=args.title,
-                starts_at=starts_at,
-                ends_at=ends_at,
-                location=args.location,
-                participants=participants,
-                reminder_lead_minutes=args.reminder_lead_minutes,
+            draft = self._drafts.prepare(
+                user_id=context.user_id,
+                turn_id=context.turn_id,
+                kind="calendar_create",
+                content=preview_data,
+                preview=preview_data,
             )
-        except ValueError as error:
-            return ToolResult(
-                ok=False,
-                tool_name=self.name,
-                reason_code="invalid_time_window",
-                data={"created": False, "reason_detail": str(error)},
-                latency_ms=(perf_counter() - started) * 1_000,
-            )
-        self._remember(context.turn_id, view)
+        except OverflowError:
+            return self._failure("confirmation_preview_capacity", started)
         return ToolResult(
             ok=True,
             tool_name=self.name,
-            data={"created": True, **_event_payload(view)},
+            data={
+                "created": False,
+                "confirmation_required": draft.status == "pending",
+                "draft_id": str(draft.id),
+                "status": draft.status,
+                "preview": draft.preview,
+                "expires_at": draft.expires_at.isoformat(),
+            },
             latency_ms=(perf_counter() - started) * 1_000,
         )
 
     def _cast(self, arguments: BaseModel) -> CalendarCreateArgs:
         return cast(CalendarCreateArgs, arguments)
 
-    def _remember(self, turn_id: UUID, view: CalendarEventView) -> None:
-        self._created_by_turn[turn_id] = view
-        while len(self._created_by_turn) > 128:
-            self._created_by_turn.popitem(last=False)
+    def list_drafts(self, user_id: UUID) -> list[dict[str, object]]:
+        return self._drafts.list(user_id)
+
+    def cancel(self, user_id: UUID, draft_id: UUID) -> dict[str, object]:
+        return self._drafts.cancel(user_id, draft_id)
+
+    async def confirm(
+        self, user_id: UUID, draft_id: UUID, digest: str
+    ) -> dict[str, object]:
+        draft = self._drafts.claim(user_id, draft_id, digest)
+        if draft.status == "completed":
+            return draft.view()
+        content = draft.content
+        try:
+            view = await self._service.create_event(
+                user_id,
+                title=str(content["title"]),
+                starts_at=datetime.fromisoformat(str(content["starts_at"])),
+                ends_at=datetime.fromisoformat(str(content["ends_at"])),
+                calendar_id=str(content["calendar_id"]),
+                location=str(content["location"]) if content["location"] is not None else None,
+                participants=[
+                    CalendarParticipant(name=str(name))
+                    for name in cast(list[object], content["participants"])
+                ],
+                reminder_lead_minutes=int(cast(int, content["reminder_lead_minutes"])),
+            )
+        except BaseException:
+            self._drafts.mark_unknown(draft)
+            raise
+        return self._drafts.complete(draft, _event_payload(view))
 
     def _failure(self, reason: str, started: float) -> ToolResult:
         return ToolResult(

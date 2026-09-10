@@ -61,11 +61,7 @@ async def _mail_store(
 
 
 def _enabled_block() -> str:
-    return (
-        "    enabled: true\n"
-        f"    address: {ADDRESS}\n"
-        f"    secret_value: {SECRET}\n"
-    )
+    return f"    enabled: true\n    address: {ADDRESS}\n    secret_value: {SECRET}\n"
 
 
 @pytest.fixture
@@ -100,18 +96,14 @@ def test_resolve_mail_account_secret_ref(monkeypatch: pytest.MonkeyPatch) -> Non
 
     monkeypatch.setenv("ARIA_TEST_MAIL_SECRET", SECRET)
     via_env = resolve_mail_account(
-        MailConfig(
-            enabled=True, address=ADDRESS, secret_ref="env:ARIA_TEST_MAIL_SECRET"
-        )
+        MailConfig(enabled=True, address=ADDRESS, secret_ref="env:ARIA_TEST_MAIL_SECRET")
     )
     assert via_env is not None
 
     monkeypatch.delenv("ARIA_TEST_MAIL_SECRET")
     assert (
         resolve_mail_account(
-            MailConfig(
-                enabled=True, address=ADDRESS, secret_ref="env:ARIA_TEST_MAIL_SECRET"
-            )
+            MailConfig(enabled=True, address=ADDRESS, secret_ref="env:ARIA_TEST_MAIL_SECRET")
         )
         is None
     )
@@ -247,8 +239,13 @@ async def test_send_tool_requires_confirmation(
         ),
         context,
     )
-    assert confirmed.data["sent"] is True
-    assert confirmed.data["message_id"] == "mid-1"
+    assert confirmed.ok is False
+    assert confirmed.reason_code == "user_confirmation_required"
+    assert sends == []
+    assert context.user_id is not None
+    draft = send_tool.list_drafts(context.user_id)[0]
+    receipt = await send_tool.confirm(context.user_id, UUID(str(draft["id"])), str(draft["digest"]))
+    assert receipt["status"] == "sent"
     assert len(sends) == 1
 
     duplicate = await send_tool.execute(
@@ -262,14 +259,15 @@ async def test_send_tool_requires_confirmation(
         ),
         context,
     )
-    assert duplicate.data["duplicate"] is True
-    assert duplicate.data["message_id"] == "mid-1"
+    assert duplicate.ok is False
+    repeated = await send_tool.confirm(
+        context.user_id, UUID(str(draft["id"])), str(draft["digest"])
+    )
+    assert repeated == receipt
     assert len(sends) == 1
 
 
-async def test_send_tool_rejects_bad_address_and_l2(
-    tmp_path: Path, context: ToolContext
-) -> None:
+async def test_send_tool_rejects_bad_address_and_l2(tmp_path: Path, context: ToolContext) -> None:
     store = await _mail_store_enabled(tmp_path)
     send_tool = MailSendTool(MailClient(store))
 
@@ -351,3 +349,180 @@ async def test_hub_config_accepts_mail_section(tmp_path: Path) -> None:
     config: HubConfig = store.current.config
     assert config.integrations.mail.enabled is True
     assert config.integrations.mail.address == ADDRESS
+
+
+async def test_mail_confirmation_boundaries(
+    tmp_path: Path,
+    context: ToolContext,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from datetime import UTC, datetime, timedelta
+    from uuid import uuid4
+
+    now = datetime(2026, 9, 8, tzinfo=UTC)
+    client = MailClient(await _mail_store_enabled(tmp_path))
+    tool = MailSendTool(client, clock=lambda: now)
+    sends: list[dict[str, Any]] = []
+
+    async def send(**kwargs: Any) -> dict[str, object]:
+        sends.append(kwargs)
+        return {"message_id": "test"}
+
+    monkeypatch.setattr(client, "send", send)
+    args = MailSendTool.arguments_model.model_validate(
+        {"to": ["friend@example.com"], "subject": "Original", "body": "Full body"}
+    )
+    direct = await tool.execute(args.model_copy(update={"confirmed": True}), context)
+    assert direct.reason_code == "user_confirmation_required"
+    assert sends == []
+    assert context.user_id is not None
+    for level in (PrivacyLevel.L0, PrivacyLevel.L2):
+        assert not (
+            await tool.execute(args, context.model_copy(update={"privacy_level": level}))
+        ).ok
+    preview = await tool.execute(args, context)
+    replay = await tool.execute(args, context)
+    assert replay.data["draft_id"] == preview.data["draft_id"]
+    draft = tool.list_drafts(context.user_id)[0]
+    draft_id = UUID(str(draft["id"]))
+    digest = str(draft["digest"])
+    assert tool.list_drafts(uuid4()) == []
+    with pytest.raises(LookupError):
+        await tool.confirm(uuid4(), draft_id, digest)
+    with pytest.raises(ValueError, match="changed"):
+        await tool.confirm(context.user_id, draft_id, "0" * 64)
+    # 修改预览内容使旧确认失效。
+    await tool.execute(args.model_copy(update={"body": "Changed body"}), context)
+    with pytest.raises(ValueError, match="not_pending"):
+        await tool.confirm(context.user_id, draft_id, digest)
+    newer = tool.list_drafts(context.user_id)[-1]
+    newer_id = UUID(str(newer["id"]))
+    # 重启后的实例不认识旧预览，不会凭旧确认重发。
+    with pytest.raises(LookupError):
+        await MailSendTool(client).confirm(context.user_id, newer_id, str(newer["digest"]))
+    now += timedelta(minutes=16)
+    with pytest.raises(ValueError, match="expired"):
+        await tool.confirm(context.user_id, newer_id, str(newer["digest"]))
+    assert sends == []
+
+
+async def test_mail_concurrent_confirmation_and_unknown_outcome(
+    tmp_path: Path,
+    context: ToolContext,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import asyncio
+
+    client = MailClient(await _mail_store_enabled(tmp_path))
+    tool = MailSendTool(client)
+    entered, release = asyncio.Event(), asyncio.Event()
+    sends = 0
+
+    async def send(**kwargs: Any) -> dict[str, object]:
+        nonlocal sends
+        sends += 1
+        entered.set()
+        await release.wait()
+        raise MailError("mail_connection_failed")
+
+    monkeypatch.setattr(client, "send", send)
+    await tool.execute(
+        MailSendTool.arguments_model.model_validate(
+            {"to": ["friend@example.com"], "subject": "s", "body": "b"}
+        ),
+        context,
+    )
+    assert context.user_id is not None
+    draft = tool.list_drafts(context.user_id)[0]
+    draft_id, digest = UUID(str(draft["id"])), str(draft["digest"])
+    first = asyncio.create_task(tool.confirm(context.user_id, draft_id, digest))
+    await entered.wait()
+    with pytest.raises(ValueError, match="not_pending"):
+        await tool.confirm(context.user_id, draft_id, digest)
+    release.set()
+    with pytest.raises(MailError):
+        await first
+    with pytest.raises(ValueError, match="not_pending"):
+        await tool.confirm(context.user_id, draft_id, digest)
+    assert tool.list_drafts(context.user_id)[0]["status"] == "unknown_outcome"
+    assert sends == 1
+
+
+async def test_mail_confirmation_api(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from fastapi import FastAPI
+    from httpx import ASGITransport, AsyncClient
+
+    from app.api.mail import create_mail_router
+    from app.auth import AuthService
+    from app.db import Base, create_database
+    from app.ids import uuid7
+
+    database = create_database(f"sqlite+aiosqlite:///{tmp_path / 'mail.db'}")
+    try:
+        async with database.engine.begin() as connection:
+            await connection.run_sync(Base.metadata.create_all)
+        auth = AuthService(database)
+        owner = await auth.setup(display_name="Mail user", password="correct horse")
+        client = MailClient(await _mail_store_enabled(tmp_path))
+        tool = MailSendTool(client)
+        sent: list[dict[str, Any]] = []
+
+        async def send(**kwargs: Any) -> dict[str, object]:
+            sent.append(kwargs)
+            return {"message_id": "api-test"}
+
+        monkeypatch.setattr(client, "send", send)
+        await tool.execute(
+            MailSendTool.arguments_model.model_validate(
+                {"to": ["friend@example.com"], "subject": "s", "body": "Exact body"}
+            ),
+            ToolContext(
+                privacy_level=PrivacyLevel.L1, user_id=owner.principal.user_id, turn_id=uuid7()
+            ),
+        )
+        app = FastAPI()
+        app.include_router(create_mail_router(tool, auth))
+        headers = {"Authorization": f"Bearer {owner.access_token}"}
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as http:
+            assert (await http.get("/api/v1/mail/drafts")).status_code == 401
+            drafts = (await http.get("/api/v1/mail/drafts", headers=headers)).json()
+            draft = drafts[0]
+            url = f"/api/v1/mail/drafts/{draft['id']}/confirm"
+            assert (await http.post(url, json={"digest": draft["digest"]})).status_code == 401
+            assert (
+                await http.post(
+                    url, headers=headers, json={"digest": draft["digest"], "body": "tampered"}
+                )
+            ).status_code == 422
+            assert (
+                await http.post(url, headers=headers, json={"digest": "0" * 64})
+            ).status_code == 409
+            assert sent == []
+            for _ in range(2):
+                response = await http.post(url, headers=headers, json={"digest": draft["digest"]})
+                assert response.status_code == 200
+                assert response.json()["status"] == "sent"
+            assert len(sent) == 1
+            assert sent[0]["body"] == "Exact body"
+            cancelled_preview = await tool.execute(
+                MailSendTool.arguments_model.model_validate(
+                    {"to": ["friend@example.com"], "subject": "Cancel me", "body": "b"}
+                ),
+                ToolContext(
+                    privacy_level=PrivacyLevel.L1, user_id=owner.principal.user_id, turn_id=uuid7()
+                ),
+            )
+            cancelled_id = cancelled_preview.data["draft_id"]
+            cancelled_draft = tool.list_drafts(owner.principal.user_id)[-1]
+            cancel_url = f"/api/v1/mail/drafts/{cancelled_id}/cancel"
+            assert (await http.post(cancel_url, headers=headers)).json()["status"] == "cancelled"
+            assert (
+                await http.post(
+                    f"/api/v1/mail/drafts/{cancelled_id}/confirm",
+                    headers=headers,
+                    json={"digest": cancelled_draft["digest"]},
+                )
+            ).status_code == 409
+            assert len(sent) == 1
+    finally:
+        await database.close()
