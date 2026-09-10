@@ -11,7 +11,7 @@ from typing import Annotated, Literal
 from uuid import UUID
 
 from pydantic import Field, JsonValue
-from sqlalchemy import select
+from sqlalchemy import or_, select
 
 from app.db import ActionPlanRecord, ActionStepRecord, AppUserRecord, Database
 from app.ids import uuid7
@@ -128,7 +128,14 @@ class PlanExecutionEvent(StrictModel):
     reason_code: str | None = None
 
 
+class PlanChangedEvent(StrictModel):
+    plan_id: UUID
+    user_id: UUID
+    status: str
+
+
 ExecutionListener = Callable[[PlanExecutionEvent], Awaitable[None]]
+ChangeListener = Callable[[PlanChangedEvent], Awaitable[None]]
 
 
 class ActionPlanService:
@@ -148,6 +155,7 @@ class ActionPlanService:
         self._preauthorized = preauthorized_action_ids
         self._runner = runner
         self._execution_listener: ExecutionListener | None = None
+        self._change_listener: ChangeListener | None = None
 
     def set_runner(
         self,
@@ -158,6 +166,60 @@ class ActionPlanService:
     def set_execution_listener(self, listener: ExecutionListener) -> None:
         """PC-02：订阅执行进度事件；监听器异常绝不影响执行本身。"""
         self._execution_listener = listener
+
+    def set_change_listener(self, listener: ChangeListener) -> None:
+        self._change_listener = listener
+
+    async def _changed(self, view: ActionPlanView) -> None:
+        if self._change_listener is not None:
+            try:
+                await self._change_listener(
+                    PlanChangedEvent(
+                        plan_id=view.id,
+                        user_id=view.user_id,
+                        status=view.status,
+                    )
+                )
+            except Exception:
+                logger.exception("plan change listener failed")
+
+    async def list_plans(
+        self,
+        *,
+        user_id: UUID,
+        active_only: bool = False,
+        before_id: UUID | None = None,
+        limit: int = 100,
+    ) -> list[ActionPlanView]:
+        if not 1 <= limit <= 100:
+            raise ValueError("limit must be 1..100")
+        query = select(ActionPlanRecord).where(ActionPlanRecord.user_id == user_id)
+        if active_only:
+            query = query.where(
+                or_(
+                    ActionPlanRecord.status == ActionPlanStatus.EXECUTING.value,
+                    (ActionPlanRecord.status.in_(["awaiting_confirmation", "ready"]))
+                    & (ActionPlanRecord.expires_at > datetime.now(UTC)),
+                )
+            )
+        if before_id is not None:
+            query = query.where(ActionPlanRecord.id < before_id)
+        async with self._database.sessions() as session:
+            plans = list(
+                await session.scalars(query.order_by(ActionPlanRecord.id.desc()).limit(limit))
+            )
+            if not plans:
+                return []
+            steps = list(
+                await session.scalars(
+                    select(ActionStepRecord)
+                    .where(ActionStepRecord.plan_id.in_([plan.id for plan in plans]))
+                    .order_by(ActionStepRecord.position)
+                )
+            )
+        return [
+            _plan_view(plan, [step for step in steps if step.plan_id == plan.id]) for plan in plans
+        ]
 
     async def create_plan(
         self,
@@ -189,7 +251,11 @@ class ActionPlanService:
             existing = await session.scalar(
                 select(ActionPlanRecord).where(
                     ActionPlanRecord.user_id == user_id,
-                    ActionPlanRecord.idempotency_key == resolved_key,
+                    ActionPlanRecord.idempotency_key.in_(
+                        [resolved_key, resolved_key.replace("scene-arrival:", "scene:", 1)]
+                        if resolved_key.startswith("scene-arrival:")
+                        else [resolved_key]
+                    ),
                 )
             )
         if existing is not None:
@@ -268,7 +334,9 @@ class ActionPlanService:
                 raise LookupError("active user not found")
             session.add(plan)
             session.add_all(step_records)
-        return _plan_view(plan, step_records)
+        view = _plan_view(plan, step_records)
+        await self._changed(view)
+        return view
 
     async def get_plan(self, *, user_id: UUID, plan_id: UUID) -> ActionPlanView:
         async with self._database.sessions() as session:
@@ -301,6 +369,8 @@ class ActionPlanService:
                     .with_for_update()
                 )
             )
+            if plan.status != ActionPlanStatus.AWAITING_CONFIRMATION.value:
+                raise ValueError("only awaiting action plans can be confirmed")
             if _as_utc(plan.expires_at) <= now:
                 plan.status = ActionPlanStatus.EXPIRED.value
                 plan.updated_at = now
@@ -312,8 +382,6 @@ class ActionPlanService:
                         step.status = ActionStepStatus.EXPIRED.value
                         step.completed_at = now
                 expired = True
-            elif plan.status != ActionPlanStatus.AWAITING_CONFIRMATION.value:
-                raise ValueError("only awaiting action plans can be confirmed")
             else:
                 for step in steps:
                     if step.status == ActionStepStatus.AWAITING_CONFIRMATION.value:
@@ -321,9 +389,11 @@ class ActionPlanService:
                 plan.status = ActionPlanStatus.READY.value
                 plan.confirmed_at = now
                 plan.updated_at = now
+        view = _plan_view(plan, steps)
+        await self._changed(view)
         if expired:
             raise ValueError("action plan expired")
-        return _plan_view(plan, steps)
+        return view
 
     async def cancel_plan(
         self,
@@ -333,8 +403,7 @@ class ActionPlanService:
         reason: str = "user_cancelled",
     ) -> ActionPlanView:
         now = datetime.now(UTC)
-        # PC-02：执行中取消在置位协作标记后提前提交返回（不能在事务内重读）。
-        executing_cancel = False
+        # Hold one plan lock through validation and mutation: no execute/cancel gap.
         async with self._database.sessions.begin() as session:
             plan = await session.scalar(
                 select(ActionPlanRecord).where(ActionPlanRecord.id == plan_id).with_for_update()
@@ -342,45 +411,28 @@ class ActionPlanService:
             if plan is None or plan.user_id != user_id:
                 raise LookupError("action plan not found")
             if plan.status == ActionPlanStatus.EXECUTING.value:
-                # 执行中停止：只置位协作标记，由执行循环在下一个步骤边界收敛
-                # （在途步骤按自身超时结束，迟到结果不会推进后续步骤）。
                 plan.cancel_requested = True
-                plan.cancel_reason = reason[:160]
-                plan.updated_at = now
-                executing_cancel = True
-            elif plan.status not in {
-                ActionPlanStatus.AWAITING_CONFIRMATION.value,
-                ActionPlanStatus.READY.value,
-            }:
-                raise ValueError("action plan can no longer be cancelled before execution")
-        if executing_cancel:
-            return await self.get_plan(user_id=user_id, plan_id=plan_id)
-        async with self._database.sessions.begin() as session:
-            plan = await session.scalar(
-                select(ActionPlanRecord).where(ActionPlanRecord.id == plan_id).with_for_update()
-            )
-            if plan is None or plan.user_id != user_id:
-                raise LookupError("action plan not found")
-            steps = list(
-                await session.scalars(
-                    select(ActionStepRecord)
-                    .where(ActionStepRecord.plan_id == plan_id)
-                    .order_by(ActionStepRecord.position)
-                    .with_for_update()
+            elif plan.status in {"awaiting_confirmation", "ready"}:
+                plan.status = ActionPlanStatus.CANCELLED.value
+                plan.cancelled_at = now
+                steps = list(
+                    await session.scalars(
+                        select(ActionStepRecord)
+                        .where(ActionStepRecord.plan_id == plan_id)
+                        .with_for_update()
+                    )
                 )
-            )
-            plan.status = ActionPlanStatus.CANCELLED.value
-            plan.cancelled_at = now
+                for step in steps:
+                    if step.status in {"awaiting_confirmation", "ready"}:
+                        step.status = ActionStepStatus.CANCELLED.value
+                        step.completed_at = now
+            else:
+                raise ValueError("action plan can no longer be cancelled before execution")
             plan.cancel_reason = reason[:160]
             plan.updated_at = now
-            for step in steps:
-                if step.status in {
-                    ActionStepStatus.AWAITING_CONFIRMATION.value,
-                    ActionStepStatus.READY.value,
-                }:
-                    step.status = ActionStepStatus.CANCELLED.value
-                    step.completed_at = now
-        return _plan_view(plan, steps)
+        view = await self.get_plan(user_id=user_id, plan_id=plan_id)
+        await self._changed(view)
+        return view
 
     async def execute_plan(self, *, user_id: UUID, plan_id: UUID) -> ActionPlanView:
         if self._runner is None:
@@ -608,11 +660,15 @@ class ActionPlanService:
         plan_id: UUID,
     ) -> ActionStepView | None:
         async with self._database.sessions.begin() as session:
-            plan = await session.get(ActionPlanRecord, plan_id)
+            plan = await session.scalar(
+                select(ActionPlanRecord).where(ActionPlanRecord.id == plan_id).with_for_update()
+            )
             if plan is None or plan.user_id != user_id:
                 raise LookupError("action plan not found")
             if plan.status != ActionPlanStatus.EXECUTING.value:
                 raise ValueError("action plan is not executing")
+            if plan.cancel_requested:
+                return None
             step = await session.scalar(
                 select(ActionStepRecord)
                 .where(
@@ -851,6 +907,9 @@ def _plan_view(
     plan: ActionPlanRecord,
     steps: list[ActionStepRecord],
 ) -> ActionPlanView:
+    expired = plan.status in {"awaiting_confirmation", "ready"} and _as_utc(
+        plan.expires_at
+    ) <= datetime.now(UTC)
     return ActionPlanView(
         id=plan.id,
         user_id=plan.user_id,
@@ -858,18 +917,23 @@ def _plan_view(
         plan_kind=plan.plan_kind,
         source_plan_id=plan.source_plan_id,
         undo_plan_id=plan.undo_plan_id,
-        status=plan.status,
+        status="expired" if expired else plan.status,
         idempotency_key=plan.idempotency_key,
-        expires_at=plan.expires_at,
+        expires_at=_as_utc(plan.expires_at),
         confirmed_at=plan.confirmed_at,
         cancelled_at=plan.cancelled_at,
         completed_at=plan.completed_at,
         cancel_reason=plan.cancel_reason,
         cancel_requested=plan.cancel_requested,
         reason_code=plan.reason_code,
-        created_at=plan.created_at,
-        updated_at=plan.updated_at,
-        steps=[_step_view(step) for step in steps],
+        created_at=_as_utc(plan.created_at),
+        updated_at=_as_utc(plan.updated_at),
+        steps=[
+            _step_view(step).model_copy(update={"status": "expired"})
+            if expired and step.status in {"awaiting_confirmation", "ready"}
+            else _step_view(step)
+            for step in steps
+        ],
     )
 
 

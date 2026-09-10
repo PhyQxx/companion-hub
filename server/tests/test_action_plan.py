@@ -248,9 +248,7 @@ async def test_action_plan_api_create_confirm_and_require_authentication(
             f"/api/v1/cognition/action-plans/{created.json()['id']}/undo",
             headers=headers,
         )
-        unauthorized = await client.get(
-            f"/api/v1/cognition/action-plans/{created.json()['id']}"
-        )
+        unauthorized = await client.get(f"/api/v1/cognition/action-plans/{created.json()['id']}")
 
     assert created.status_code == 201
     assert created.json()["status"] == "awaiting_confirmation"
@@ -651,9 +649,7 @@ async def test_tool_action_runner_verifies_extended_home_actions(
             attributes: dict[str, object] = {}
             if action == "set_brightness":
                 attributes["brightness"] = round(
-                    float(cast(int | float, (service_data or {})["brightness_pct"]))
-                    * 255
-                    / 100
+                    float(cast(int | float, (service_data or {})["brightness_pct"])) * 255 / 100
                 )
             elif action == "volume_set":
                 state = "playing"
@@ -791,3 +787,90 @@ async def test_desktop_notification_uses_device_receipt_and_step_idempotency(
             "ttl_seconds": 8,
         }
     ]
+
+
+async def test_plan_list_api_recovers_isolated_pending_and_expired(database: Database) -> None:
+    auth = AuthService(database)
+    owner = await auth.setup(display_name="Inbox owner", password="correct horse battery")
+    registry = build_builtin_action_registry()
+    service = ActionPlanService(database, registry)
+
+    async def runner(step: ActionStepView, owner_id: UUID) -> ToolResult:
+        return ToolResult(ok=True, tool_name=step.tool_name, latency_ms=0)
+
+    service.set_runner(runner)
+    ids = []
+    for index in range(3):
+        plan = await service.create_plan(
+            user_id=owner.principal.user_id,
+            title=f"Plan {index}",
+            invocations=[
+                ActionInvocation(action_id="home.light.turn_on", arguments={"target": "灯"})
+            ],
+        )
+        ids.append(plan.id)
+    outsider = uuid7()
+    async with database.sessions.begin() as session:
+        session.add(AppUserRecord(id=outsider, display_name="Other", status="active"))
+        await session.execute(
+            update(ActionPlanRecord)
+            .where(ActionPlanRecord.id == ids[0])
+            .values(expires_at=datetime.now(UTC) - timedelta(seconds=1))
+        )
+    other = await service.create_plan(
+        user_id=outsider,
+        invocations=[
+            ActionInvocation(action_id="home.light.turn_on", arguments={"target": "Private"})
+        ],
+    )
+    app = FastAPI()
+    app.include_router(
+        create_cognition_router(
+            CognitiveStore(database), auth, action_registry=registry, action_plan_service=service
+        )
+    )
+    headers = {"Authorization": f"Bearer {owner.access_token}"}
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        assert (await client.get("/api/v1/cognition/action-plans")).status_code == 401
+        page = (
+            await client.get(
+                "/api/v1/cognition/action-plans?active_only=true&limit=1", headers=headers
+            )
+        ).json()
+        assert len(page) == 1 and page[0]["id"] == str(ids[2])
+        next_page = (
+            await client.get(
+                f"/api/v1/cognition/action-plans?active_only=true&before_id={ids[2]}",
+                headers=headers,
+            )
+        ).json()
+        assert [p["id"] for p in next_page] == [str(ids[1])]
+        recent = (await client.get("/api/v1/cognition/action-plans", headers=headers)).json()
+        assert len(recent) == 3 and recent[-1]["status"] == "expired"
+        for action in ("", "/confirm", "/cancel", "/execute"):
+            method = client.post if action else client.get
+            assert (
+                await method(f"/api/v1/cognition/action-plans/{other.id}{action}", headers=headers)
+            ).status_code == 404
+
+
+async def test_plan_change_listener_failure_does_not_lose_plan(
+    database: Database, user_id: UUID
+) -> None:
+    from app.cognition.action_plan import PlanChangedEvent
+
+    service = ActionPlanService(database, build_builtin_action_registry())
+
+    async def unavailable(event: PlanChangedEvent) -> None:
+        raise RuntimeError("disconnected")
+
+    service.set_change_listener(unavailable)
+    plan = await service.create_plan(
+        user_id=user_id,
+        invocations=[ActionInvocation(action_id="home.light.turn_on", arguments={"target": "灯"})],
+    )
+    assert (await service.list_plans(user_id=user_id, active_only=True))[0].id == plan.id
+    ready = await service.confirm_plan(user_id=user_id, plan_id=plan.id)
+    assert ready.status == "ready"
+    cancelled = await service.cancel_plan(user_id=user_id, plan_id=plan.id)
+    assert cancelled.status == "cancelled"

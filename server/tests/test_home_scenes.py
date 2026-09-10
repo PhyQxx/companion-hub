@@ -98,9 +98,7 @@ def test_in_window_supports_overnight_ranges() -> None:
 # ---------------------------------------------------------------------------
 
 
-async def test_scene_crud_name_uniqueness_and_toggle(
-    database: Database, user_id: UUID
-) -> None:
+async def test_scene_crud_name_uniqueness_and_toggle(database: Database, user_id: UUID) -> None:
     service = _service(database)
     scene = await service.create_scene(
         user_id=user_id, name="回家模式", trigger="user_arrived_home", steps=_steps()
@@ -122,9 +120,7 @@ async def test_scene_crud_name_uniqueness_and_toggle(
         await service.get_scene(user_id, scene.id)
 
 
-async def test_perception_trigger_expands_into_plan(
-    database: Database, user_id: UUID
-) -> None:
+async def test_perception_trigger_expands_into_plan(database: Database, user_id: UUID) -> None:
     service = _service(database)
     await service.create_scene(
         user_id=user_id, name="回家模式", trigger="user_arrived_home", steps=_steps()
@@ -300,3 +296,130 @@ async def test_home_scenes_api_full_flow(database: Database) -> None:
 def test_step_model_rejects_extra_fields() -> None:
     with pytest.raises(ValidationError):
         HomeSceneStep.model_validate({"action_id": "home.light.turn_on", "extra": 1})
+
+
+async def test_scene_notification_replay_recovery_and_departure(
+    database: Database, user_id: UUID
+) -> None:
+    from app.cognition.action_plan import PlanChangedEvent
+
+    registry = build_builtin_action_registry()
+    plans = ActionPlanService(database, registry)
+    events: list[PlanChangedEvent] = []
+
+    async def changed(event: PlanChangedEvent) -> None:
+        events.append(event)
+
+    plans.set_change_listener(changed)
+    scenes = HomeSceneService(HomeSceneStore(database), plans, registry)
+    scene = await scenes.create_scene(
+        user_id=user_id, name="到家通知", trigger="user_arrived_home", steps=_steps()
+    )
+    event_id = uuid4()
+    first = await scenes.handle_semantic_event(user_id, event_id, "user_arrived_home")
+    replay = await scenes.handle_semantic_event(user_id, event_id, "user_arrived_home")
+    assert first[0].plan_id == replay[0].plan_id
+    assert len(events) == 1
+    assert set(events[0].model_dump()) == {"plan_id", "user_id", "status"}
+    assert events[0].user_id == user_id
+    # API recovery relies on DB, not delivery success or the previous service instance.
+    recovered_plans = ActionPlanService(database, registry)
+    recovered = await recovered_plans.list_plans(user_id=user_id, active_only=True)
+    assert [p.id for p in recovered] == [first[0].plan_id]
+    assert await recovered_plans.list_plans(user_id=uuid4(), active_only=True) == []
+    # An explicitly run plan should not be cancelled by an unrelated departure.
+    manual = await scenes.run_manual(user_id, scene.id)
+    assert manual is not None
+    await scenes.delete_scene(user_id, scene.id)
+    restarted = HomeSceneService(HomeSceneStore(database), recovered_plans, registry)
+    await restarted.handle_semantic_event(user_id, uuid4(), "user_left_home")
+    cancelled = await recovered_plans.get_plan(user_id=user_id, plan_id=first[0].plan_id)
+    assert cancelled.status == "cancelled" and cancelled.cancel_reason == "user_left_home"
+    assert (
+        await recovered_plans.get_plan(user_id=user_id, plan_id=manual.plan_id)
+    ).status == "awaiting_confirmation"
+
+
+async def test_departure_stops_executing_scene_after_inflight_step(
+    database: Database, user_id: UUID
+) -> None:
+    import asyncio
+
+    from app.cognition.action_plan import ActionStepView
+    from app.tools import ToolResult
+
+    entered, release = asyncio.Event(), asyncio.Event()
+    calls: list[int] = []
+
+    async def runner(step: ActionStepView, owner: UUID) -> ToolResult:
+        assert owner == user_id
+        calls.append(step.position)
+        entered.set()
+        await release.wait()
+        return ToolResult(ok=True, tool_name=step.tool_name, latency_ms=0)
+
+    registry = build_builtin_action_registry()
+    plans = ActionPlanService(database, registry, runner=runner)
+    service = HomeSceneService(HomeSceneStore(database), plans, registry)
+    await service.create_scene(
+        user_id=user_id, name="执行中离家", trigger="user_arrived_home", steps=_steps()
+    )
+    triggered = await service.handle_semantic_event(user_id, uuid4(), "user_arrived_home")
+    plan_id = triggered[0].plan_id
+    with pytest.raises(ValueError):
+        await plans.execute_plan(user_id=user_id, plan_id=plan_id)
+    assert calls == []
+    await plans.confirm_plan(user_id=user_id, plan_id=plan_id)
+    running = asyncio.create_task(plans.execute_plan(user_id=user_id, plan_id=plan_id))
+    await entered.wait()
+    await service.handle_semantic_event(user_id, uuid4(), "user_left_home")
+    assert (await plans.get_plan(user_id=user_id, plan_id=plan_id)).cancel_requested
+    release.set()
+    result = await running
+    assert result.status == "cancelled"
+    assert calls == [1]
+    assert result.steps[1].status == "cancelled"
+
+
+async def test_legacy_arrival_replay_does_not_create_second_plan(
+    database: Database, user_id: UUID
+) -> None:
+    from app.cognition.action_plan import ActionInvocation
+
+    registry = build_builtin_action_registry()
+    plans = ActionPlanService(database, registry)
+    service = HomeSceneService(HomeSceneStore(database), plans, registry)
+    scene = await service.create_scene(
+        user_id=user_id, name="旧版到家", trigger="user_arrived_home", steps=_steps()
+    )
+    event_id = uuid4()
+    old = await plans.create_plan(
+        user_id=user_id,
+        title=f"场景：{scene.name}",
+        invocations=[
+            ActionInvocation(action_id=s.action_id, arguments=s.arguments) for s in scene.steps
+        ],
+        idempotency_key=f"scene:{scene.id}:{event_id}",
+    )
+    replay = await service.handle_semantic_event(user_id, event_id, "user_arrived_home")
+    assert replay[0].plan_id == old.id
+    assert len(await plans.list_plans(user_id=user_id)) == 1
+
+
+async def test_delayed_departure_preserves_newer_arrival(database: Database, user_id: UUID) -> None:
+    from datetime import timedelta
+
+    registry = build_builtin_action_registry()
+    plans = ActionPlanService(database, registry)
+    service = HomeSceneService(HomeSceneStore(database), plans, registry)
+    await service.create_scene(
+        user_id=user_id, name="迟到离家事件", trigger="user_arrived_home", steps=_steps()
+    )
+    triggered = await service.handle_semantic_event(user_id, uuid4(), "user_arrived_home")
+    plan = await plans.get_plan(user_id=user_id, plan_id=triggered[0].plan_id)
+    await service.on_departure(user_id, plan.created_at - timedelta(seconds=1))
+    assert (
+        await plans.get_plan(user_id=user_id, plan_id=plan.id)
+    ).status == "awaiting_confirmation"
+    await service.on_departure(user_id, plan.created_at + timedelta(seconds=1))
+    assert (await plans.get_plan(user_id=user_id, plan_id=plan.id)).status == "cancelled"

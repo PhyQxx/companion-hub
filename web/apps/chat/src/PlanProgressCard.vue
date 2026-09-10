@@ -5,9 +5,10 @@ import type { ActionPlanProgress } from "@aria/shared";
 const props = defineProps<{
   plan: ActionPlanProgress;
   stopping: boolean;
+  starting?: boolean;
 }>();
 
-const emit = defineEmits<{ stop: []; dismiss: [] }>();
+const emit = defineEmits<{ stop: []; dismiss: []; confirm: [] }>();
 
 const STATUS_LABELS: Record<string, string> = {
   awaiting_confirmation: "待确认",
@@ -36,7 +37,8 @@ function label(map: Record<string, string>, key: string): string {
   return map[key] ?? key;
 }
 
-const finished = computed(() => props.plan.status !== "executing");
+const pending = computed(() => ["awaiting_confirmation", "ready"].includes(props.plan.status));
+const finished = computed(() => !pending.value && props.plan.status !== "executing");
 const completedCount = computed(
   () => props.plan.steps.filter((step) => step.status === "completed").length,
 );
@@ -55,18 +57,25 @@ const progressPercent = computed(() =>
         <span class="plan-status" :data-status="plan.status">{{ label(STATUS_LABELS, plan.status) }}</span>
         <span v-if="plan.cancel_requested && !finished" class="plan-stopping">正在停止…</span>
       </div>
+      <template v-if="pending">
+        <button class="plan-confirm" :disabled="starting || stopping" @click="emit('confirm')">
+          {{ starting ? "正在处理…" : plan.status === 'ready' ? '执行计划' : '确认并执行' }}
+        </button>
+        <button class="plan-stop" :disabled="stopping || starting" @click="emit('stop')">取消</button>
+      </template>
       <button
-        v-if="plan.status === 'executing' && !plan.cancel_requested"
+        v-else-if="plan.status === 'executing' && !plan.cancel_requested"
         class="plan-stop"
         :disabled="stopping"
         @click="emit('stop')"
       >
         {{ stopping ? "停止中…" : "■ 停止" }}
       </button>
-      <button v-else class="plan-dismiss" aria-label="关闭" @click="emit('dismiss')">✕</button>
+      <button v-else-if="finished" class="plan-dismiss" aria-label="关闭" @click="emit('dismiss')">✕</button>
     </header>
 
-    <div class="plan-progress">
+    <p v-if="pending" class="plan-hint">请核对以下动作和参数。有效期至 {{ new Date(plan.expires_at).toLocaleTimeString() }}；确认后才会执行。</p>
+    <div v-if="!pending" class="plan-progress">
       <div class="plan-bar"><i :style="{ width: `${progressPercent}%` }" /></div>
       <small>{{ completedCount }}/{{ plan.steps.length }} 步完成</small>
     </div>
@@ -78,9 +87,11 @@ const progressPercent = computed(() =>
         <span class="step-risk">{{ label(RISK_LABELS, step.risk) }}</span>
         <span class="step-verification">{{ label(VERIFICATION_LABELS, step.verification_status) }}</span>
         <span class="step-status">{{ label(STATUS_LABELS, step.status) }}</span>
+        <pre v-if="pending" class="step-arguments">{{ JSON.stringify(step.arguments, null, 2) }}</pre>
       </li>
     </ol>
 
+    <small v-if="plan.cancel_reason" class="plan-reason">{{ plan.cancel_reason === 'user_left_home' ? '已离家：计划已取消或正在停止后续步骤。' : plan.cancel_reason }}</small>
     <small v-if="plan.reason_code" class="plan-reason">原因：{{ plan.reason_code }}</small>
   </section>
 </template>
@@ -95,10 +106,10 @@ const progressPercent = computed(() =>
   display: grid;
   gap: 10px;
 }
-.plan-head { display: flex; align-items: center; gap: 10px; }
-.plan-title { display: flex; align-items: center; gap: 8px; flex: 1; min-width: 0; }
+.plan-head { flex-wrap: wrap; display: flex; align-items: center; gap: 10px; }
+.plan-title { display: flex; align-items: center; gap: 8px; flex: 1; min-width: 180px; }
 .plan-title strong { font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.plan-status { font-size: 11px; padding: 1px 8px; border-radius: 999px; background: #eef2ff; color: #4453c9; }
+.plan-status { white-space: nowrap; font-size: 11px; padding: 1px 8px; border-radius: 999px; background: #eef2ff; color: #4453c9; }
 .plan-status[data-status="completed"] { background: #e8f5e9; color: #2e7d32; }
 .plan-status[data-status="failed"], .plan-status[data-status="cancelled"] { background: #fdecea; color: #c0392b; }
 .plan-status[data-status="executing"] { background: #fff7e0; color: #b7791f; }
@@ -124,5 +135,9 @@ const progressPercent = computed(() =>
 .step-pos { color: var(--muted); }
 .step-name { font-family: ui-monospace, monospace; font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .step-risk, .step-verification, .step-status { color: var(--muted); font-size: 11px; }
+.step-arguments { grid-column: 1 / -1; white-space: pre-wrap; overflow-wrap: anywhere; margin: 4px 0; }
+.plan-hint { font-size: 12px; color: var(--muted); margin: 0; }
+.plan-confirm { min-height: 44px; padding: 8px 12px; border-radius: 8px; cursor: pointer; }
+.plan-stop { min-height: 44px; }
 .plan-reason { color: var(--muted); font-size: 11px; }
 </style>

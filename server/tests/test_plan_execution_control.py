@@ -206,9 +206,7 @@ async def test_execution_events_carry_progress_and_evidence_status(
     assert events[-1].completed == 2
 
 
-async def test_listener_failure_never_breaks_execution(
-    database: Database, user_id: UUID
-) -> None:
+async def test_listener_failure_never_breaks_execution(database: Database, user_id: UUID) -> None:
     runner = BlockingRunner(block=False)
     service = _service(database, runner)
     plan_id = await _ready_two_step_plan(database, user_id, service)
@@ -264,3 +262,20 @@ async def test_cognition_api_cancel_accepts_executing_plan(
         assert body["cancel_requested"] is True
         assert body["status"] == ActionPlanStatus.EXECUTING.value
         assert body["cancel_reason"] == "changed my mind"
+
+
+async def test_cancel_at_execution_start_prevents_first_step(
+    database: Database, user_id: UUID
+) -> None:
+    runner = BlockingRunner(block=False)
+    service = _service(database, runner)
+    plan_id = await _ready_two_step_plan(database, user_id, service)
+
+    async def listener(event: PlanExecutionEvent) -> None:
+        if event.phase == "execution.started":
+            await service.cancel_plan(user_id=user_id, plan_id=event.plan_id)
+
+    service.set_execution_listener(listener)
+    result = await service.execute_plan(user_id=user_id, plan_id=plan_id)
+    assert result.status == "cancelled"
+    assert runner.calls == []

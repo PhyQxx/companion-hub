@@ -8,6 +8,9 @@ scene:{id}:{event_id}——同一次感知事件绝不重复建计划。
 
 from __future__ import annotations
 
+import asyncio
+import logging
+from collections import defaultdict
 from collections.abc import Callable
 from datetime import UTC, datetime
 from uuid import UUID
@@ -38,6 +41,7 @@ class HomeSceneService:
         self._plans = plans
         self._registry = registry
         self._clock = clock or (lambda: datetime.now(UTC))
+        self._event_locks: dict[UUID, asyncio.Lock] = defaultdict(asyncio.Lock)
 
     async def create_scene(
         self,
@@ -82,10 +86,25 @@ class HomeSceneService:
         return await self._store.set_enabled(user_id, scene_id, enabled=enabled)
 
     async def handle_semantic_event(
-        self, user_id: UUID, event_id: UUID, kind: str
+        self, user_id: UUID, event_id: UUID, kind: str, *, cancel_arrivals: bool = True
     ) -> list[HomeSceneTriggered]:
-        """Perception 观察口：匹配启用场景并展开为计划（异常由调用方兜底）。"""
+        """Serialize arrival/leave handling per owner; no parallel expansion after cancellation."""
+        async with self._event_locks[user_id]:
+            return await self._handle_semantic_event(
+                user_id, event_id, kind, cancel_arrivals=cancel_arrivals
+            )
+
+    async def _handle_semantic_event(
+        self,
+        user_id: UUID,
+        event_id: UUID,
+        kind: str,
+        *,
+        cancel_arrivals: bool,
+    ) -> list[HomeSceneTriggered]:
         now = self._clock()
+        if kind.strip() == "user_left_home" and cancel_arrivals:
+            await self._cancel_arrival_plans(user_id)
         if kind.strip() == MANUAL_TRIGGER:
             # manual 场景只响应用户显式运行，感知事件永不触发
             return []
@@ -95,11 +114,46 @@ class HomeSceneService:
             if not in_window(now, scene.window_start, scene.window_end):
                 continue
             plan = await self._expand(
-                user_id, scene, idempotency_key=f"scene:{scene.id}:{event_id}"
+                user_id,
+                scene,
+                idempotency_key=(
+                    f"scene-arrival:{scene.id}:{event_id}"
+                    if kind.strip() == "user_arrived_home"
+                    else f"scene:{scene.id}:{event_id}"
+                ),
             )
             if plan is not None:
                 triggered.append(plan)
         return triggered
+
+    async def on_departure(self, user_id: UUID, occurred_at: datetime) -> None:
+        async with self._event_locks[user_id]:
+            await self._cancel_arrival_plans(user_id, before=occurred_at)
+
+    async def _cancel_arrival_plans(self, user_id: UUID, *, before: datetime | None = None) -> None:
+        plans = self._plans() if callable(self._plans) else self._plans
+        # Legacy keys remain supported; arrival prefixes survive scene deletion/restart.
+        scenes = await self._store.list_scenes(user_id)
+        arrival_ids = {str(scene.id) for scene in scenes if scene.trigger == "user_arrived_home"}
+        cursor: UUID | None = None
+        while True:
+            page = await plans.list_plans(user_id=user_id, active_only=True, before_id=cursor)
+            for plan in page:
+                parts = plan.idempotency_key.split(":")
+                arrival = parts[0] == "scene-arrival" or (
+                    len(parts) == 3 and parts[0] == "scene" and parts[1] in arrival_ids
+                )
+                if arrival and (before is None or plan.created_at <= before):
+                    try:
+                        await plans.cancel_plan(
+                            user_id=user_id, plan_id=plan.id, reason="user_left_home"
+                        )
+                    except ValueError:
+                        # A concurrently completed plan no longer needs cancellation.
+                        logging.getLogger(__name__).debug("arrival plan already terminal")
+            if len(page) < 100:
+                break
+            cursor = page[-1].id
 
     async def run_manual(self, user_id: UUID, scene_id: UUID) -> HomeSceneTriggered | None:
         """用户显式运行场景；忽略时段条件（手动即明确意图），幂等键独立。"""
