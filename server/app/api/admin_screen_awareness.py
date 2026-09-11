@@ -126,14 +126,19 @@ def create_admin_screen_awareness_router(
             )
         if owner is None:
             return ScreenObservationsResponse(items=[], total=0, limit=limit, offset=offset)
-        filters = {
-            "source_types": (TimelineSourceType.DEVICE,),
-            "event_types": ("screen.observed",),
-            "privacy_levels": (PrivacyLevel.L0, PrivacyLevel.L1),
-        }
-        total = await timeline.count_events(user_id=UUID(str(owner)), **filters)
+        total = await timeline.count_events(
+            user_id=UUID(str(owner)),
+            source_types=(TimelineSourceType.DEVICE,),
+            event_types=("screen.observed",),
+            privacy_levels=(PrivacyLevel.L0, PrivacyLevel.L1),
+        )
         result = await timeline.search(
-            user_id=UUID(str(owner)), **filters, limit=limit, offset=offset
+            user_id=UUID(str(owner)),
+            source_types=(TimelineSourceType.DEVICE,),
+            event_types=("screen.observed",),
+            privacy_levels=(PrivacyLevel.L0, PrivacyLevel.L1),
+            limit=limit,
+            offset=offset,
         )
         items = []
         for event in result.events:

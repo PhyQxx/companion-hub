@@ -37,6 +37,9 @@ class ToolActionRunner:
                     )
                 )
             privacy_level = PrivacyLevel(str(declared_privacy))
+        elif step.tool_name == "mcp_tool_call":
+            # MCP-D：外部 MCP 服务不接收 L2 内容，动作定义已限 L1
+            privacy_level = PrivacyLevel.L1
         execution = await self._executor.execute(
             ToolCall(
                 id=f"action-step-{step.id}",
@@ -55,6 +58,18 @@ class ToolActionRunner:
         if not execution.result.ok:
             return ActionRunResult(execution=execution.result)
         if step.verification_policy == "receipt":
+            if step.verifier_id == "mcp.call_receipt":
+                # MCP-D：调用回执即证据（server/tool/ok），远端正文不进验证记录
+                evidence = {
+                    key: value
+                    for key, value in execution.result.data.items()
+                    if key in {"server_id", "tool_name", "ok"}
+                }
+                return ActionRunResult(
+                    execution=execution.result,
+                    verification_status=ActionVerificationStatus.VERIFIED,
+                    verification_result=evidence,
+                )
             if step.verifier_id != "device.command_receipt":
                 return ActionRunResult(
                     execution=execution.result,

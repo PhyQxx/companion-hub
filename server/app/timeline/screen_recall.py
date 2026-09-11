@@ -3,6 +3,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 from datetime import datetime, timedelta
+from typing import TypeVar
 from uuid import UUID
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -11,6 +12,8 @@ from app.schemas.common import PrivacyLevel
 from .models import TemporalRange, TimelineEvent, TimelineSourceType
 from .recall import TemporalQueryParser
 from .store import TimelineStore
+
+SegmentT = TypeVar("SegmentT")
 
 SCREEN_EVENT_TYPE = "screen.observed"
 MAX_SCREEN_EVENTS = 500
@@ -222,9 +225,9 @@ def _display(event: TimelineEvent) -> int:
 
 
 def _compact_segments(
-    segments: tuple[ScreenActivitySegment, ...], limit: int
-) -> tuple[ScreenActivitySegment, ...]:
-    """保留时间分布，避免长时间窗只剩开头或结尾。"""
+    segments: tuple[SegmentT, ...], limit: int
+) -> tuple[SegmentT, ...]:
+    """保留时间分布，避免长时间窗只剩开头或结尾（屏幕/浏览分段通用）。"""
     if len(segments) <= limit:
         return segments
     if limit <= 1:

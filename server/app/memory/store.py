@@ -14,7 +14,7 @@ from datetime import UTC, datetime
 from typing import cast
 from uuid import UUID
 
-from sqlalchemy import bindparam, delete, func, or_, select, text, update
+from sqlalchemy import Select, bindparam, delete, func, or_, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db import (
@@ -58,7 +58,7 @@ def _list_filter(
     type: MemoryType | None,
     status: MemoryStatus | None,
     min_importance: float | None,
-):
+) -> Select[tuple[MemoryRecord]]:
     query = select(MemoryRecord)
     if user_id is not None:
         query = query.where(MemoryRecord.user_id == user_id)

@@ -161,9 +161,10 @@ def _device_tool_ready(
         "browser_form_read",
         "browser_form_fill",
         "browser_form_submit",
+        "mcp_tool_call",
     }:
-        # PC-01/WEB-01 桌面与浏览器动作：只经 Action Registry 计划—确认—执行
-        # 链路触发，不作为聊天工具直接暴露给模型（docs/39 J5「提交前展示并确认」）。
+        # PC-01/WEB-01/MCP-D 桌面、浏览器与外部 MCP 动作：只经 Action Registry
+        # 计划—确认—执行链路触发，不作为聊天工具直接暴露给模型（docs/39 J5、docs/43 §5）。
         return False
     if name in {
         "reminder_create",

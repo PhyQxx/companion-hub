@@ -243,18 +243,28 @@ def create_admin_memory_router(store: MemoryStore, *, admin_token: str | None) -
         limit: Annotated[int, Query(ge=1, le=200)] = 50,
         offset: Annotated[int, Query(ge=0)] = 0,
     ) -> MemoryListResponse:
-        filters = {
-            "user_id": user_id,
-            "subject_kind": subject,
-            "subject_key": subject_key,
-            "fact_key": fact_key,
-            "origin_kind": origin_kind,
-            "type": type,
-            "status": memory_status,
-            "min_importance": min_importance,
-        }
-        total = await store.count_memories(**filters)
-        entries = await store.list_memories(**filters, limit=limit, offset=offset)
+        total = await store.count_memories(
+            user_id=user_id,
+            subject_kind=subject,
+            subject_key=subject_key,
+            fact_key=fact_key,
+            origin_kind=origin_kind,
+            type=type,
+            status=memory_status,
+            min_importance=min_importance,
+        )
+        entries = await store.list_memories(
+            user_id=user_id,
+            subject_kind=subject,
+            subject_key=subject_key,
+            fact_key=fact_key,
+            origin_kind=origin_kind,
+            type=type,
+            status=memory_status,
+            min_importance=min_importance,
+            limit=limit,
+            offset=offset,
+        )
         return MemoryListResponse(
             items=[_view(entry) for entry in entries],
             total=total,

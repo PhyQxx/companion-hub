@@ -39,6 +39,23 @@ class McpManager:
         self._locks: dict[str, asyncio.Lock] = {}
         self._stop = asyncio.Event()
         self._task: asyncio.Task[None] | None = None
+        # 目录刷新成功后的回调（MCP-D 用它把写工具同步进动作注册表）
+        self._catalog_listener: Any | None = None
+
+    def set_catalog_listener(self, listener: Any) -> None:
+        self._catalog_listener = listener
+
+    def _notify_catalog_changed(self) -> None:
+        if self._catalog_listener is None:
+            return
+        try:
+            self._catalog_listener()
+        except Exception:
+            logger.warning("MCP catalog listener failed", exc_info=True)
+
+    def server_config(self, server_id: str) -> McpServerConfig:
+        """公开读取某 Server 的运行配置（动作注册表读取超时等参数）。"""
+        return self._server_config(server_id)
 
     @property
     def states(self) -> tuple[McpServerState, ...]:
@@ -151,6 +168,8 @@ class McpManager:
                 logger.warning("MCP catalog refresh failed server_id=%s", server_id, exc_info=True)
             finally:
                 state.refreshing = False
+        if state.available:
+            self._notify_catalog_changed()
         return state
 
     @staticmethod
@@ -193,13 +212,27 @@ class McpManager:
         )
 
     async def call(self, internal_name: str, arguments: dict[str, Any]) -> McpCallResult:
+        """只读调用路径：写工具在此被硬拦截，只能走 call_write（行动计划）。"""
+        descriptor = self._descriptor(internal_name)
+        if not descriptor.read_only:
+            raise McpManagerError("mcp_write_requires_action_plan")
+        return await self._invoke(descriptor, arguments)
+
+    async def call_write(self, internal_name: str, arguments: dict[str, Any]) -> McpCallResult:
+        """写调用路径：仅供确认后的行动计划执行（MCP-D），聊天层不得触达。"""
+        return await self._invoke(self._descriptor(internal_name), arguments)
+
+    def _descriptor(self, internal_name: str) -> McpToolDescriptor:
         descriptor = next(
             (item for item in self.catalog() if item.internal_name == internal_name), None
         )
         if descriptor is None:
             raise McpManagerError("mcp_tool_unavailable")
-        if not descriptor.read_only:
-            raise McpManagerError("mcp_write_requires_action_plan")
+        return descriptor
+
+    async def _invoke(
+        self, descriptor: McpToolDescriptor, arguments: dict[str, Any]
+    ) -> McpCallResult:
         config = self._server_config(descriptor.server_id)
         try:
             async with self._client_factory(config) as client:
@@ -208,7 +241,7 @@ class McpManager:
             return McpCallResult(
                 ok=False,
                 server_id=descriptor.server_id,
-                tool_name=internal_name,
+                tool_name=descriptor.internal_name,
                 data=None,
                 text="",
                 reason_code=self._reason_for(error),
@@ -219,7 +252,7 @@ class McpManager:
         return McpCallResult(
             ok=not payload.is_error,
             server_id=descriptor.server_id,
-            tool_name=internal_name,
+            tool_name=descriptor.internal_name,
             data=data,
             text=text,
             reason_code="mcp_remote_tool_error" if payload.is_error else None,

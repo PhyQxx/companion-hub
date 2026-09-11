@@ -126,14 +126,20 @@ def create_admin_browser_awareness_router(
             )
         if owner is None:
             return BrowserObservationsResponse(items=[], total=0, limit=limit, offset=offset)
-        filters = {
-            "source_types": (TimelineSourceType.DEVICE,),
-            "event_types": ("browser.observed",),
-            "privacy_levels": (PrivacyLevel.L0, PrivacyLevel.L1),
-        }
-        total = await timeline.count_events(user_id=UUID(str(owner)), **filters)
-        result = await timeline.search(user_id=UUID(str(owner)), **filters,
-                                       limit=limit, offset=offset)
+        total = await timeline.count_events(
+            user_id=UUID(str(owner)),
+            source_types=(TimelineSourceType.DEVICE,),
+            event_types=("browser.observed",),
+            privacy_levels=(PrivacyLevel.L0, PrivacyLevel.L1),
+        )
+        result = await timeline.search(
+            user_id=UUID(str(owner)),
+            source_types=(TimelineSourceType.DEVICE,),
+            event_types=("browser.observed",),
+            privacy_levels=(PrivacyLevel.L0, PrivacyLevel.L1),
+            limit=limit,
+            offset=offset,
+        )
         items = [
             BrowserObservationItem(
                 id=event.id,

@@ -1,7 +1,7 @@
 # MCP 整体架构与接入实施方案
 
 > 日期：2026-09-08  
-> 状态：已定稿，MCP-C0 已实现（2026-09-08）  
+> 状态：已定稿；MCP-C0（2026-09-08）、C1（2026-09-10）、D（2026-09-11）已实现  
 > 范围：Companion Hub 作为 MCP Client 接入外部工具；Aria MCP Server 暂不启动
 
 ## 1. 架构结论
@@ -107,6 +107,17 @@ MCP-C1 尚未连接真实凭据。试点已选定 **Context7**：
 2026-09-09 首次真实联调：已协商到 `2026-07-28` 协议，识别服务端 `Context7`，发现的两项白名单工具均声明 `readOnlyHint=true`。匿名限额路径下，`resolve-library-id` 与 `query-docs` 各一次真实调用成功；用户提供的凭据被 Context7 拒绝，远端明确要求 API Key 以 `ctx7sk` 开头。在换入有效凭据并完成鉴权调用/审计前，C1 不标记完成。
 
 GitHub MCP 列为第二试点候选，原因是它对本项目有价值，但涉及账号授权、私有仓库内容和更大工具集，不适合承担第一次连通验证。
+
+## 10. MCP-D 实施记录（2026-09-11）
+
+写工具接入 Action Plan（计划—确认—执行），交付与边界：
+
+- **动态动作同步**：`integrations/mcp/actions.py` 在目录刷新成功后（`McpManager.set_catalog_listener`）把白名单中的**写工具**（`allow_write_tools=true` 且远端未声明只读）覆盖式同步进 Action Registry：固定 **A2 每次确认**、不可逆、无补偿、`max_privacy_level=L1`、超时取 `call_timeout_seconds`；目录消失的动作即从注册表移除。只读工具不入注册表。
+- **不可信 Schema 保守建模**：远端 `inputSchema` 只接受对象 + string/number/integer/boolean 标量 + 字符串 enum（≤16 属性、字符串 ≤2000、数值 ±1e9 钳制），含 anyOf/$ref/array 等结构一律跳过并记录原因；生成形状固定为 `{"arguments": {...}}` 嵌套，动作编译产物（绑定 `tool` + 动态 `arguments`）在执行器层可整体复验。
+- **唯一写入口**：`mcp_tool_call` 工具（`runs_local=False`、`max L1`）只注册进计划执行器，聊天挂载恒关（`_device_tool_ready` 永拒）；`McpManager.call` 保持写工具硬拦截，新增 `call_write` 仅供确认后的 Runner 调用，参数体积 16KB 上限。
+- **执行上下文与验证**：Runner 对 `mcp_tool_call` 步骤固定 L1 上下文（外部服务不接收 L2），验证策略 RECEIPT + `mcp.call_receipt`——回执证据只含 server/tool/ok，远端正文不进验证记录。
+- **验收**（`test_mcp_integration.py` 新增 7 项）：保守建模接受/拒绝矩阵、同步只注册写工具且 A2 策略/编译形状正确、重复同步幂等 + 目录清空移除、目录回调触发、工具经 `call_write` 路由且超大参数拒绝、`call` 拦截写而 `call_write` 放行、Runner 以 L1 上下文执行并产出 VERIFIED 回执。非 soak 全量 832 通过，mypy 259 文件零错误。
+- **待真机**：接入一个真实的含写工具 MCP Server 后做确认/幂等/未知结果/审计真机验收；C2（按意图检索 + 每轮动态加载读工具）另行启动。
 
 ## 9. 官方依据
 

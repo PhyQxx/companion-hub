@@ -120,6 +120,7 @@ from app.home_scene import (
     HomeSceneStore,
 )
 from app.integrations.mcp import McpManager
+from app.integrations.mcp.actions import sync_mcp_actions
 from app.jobs import AssetStore, JobEngine
 from app.llm.provider import EnvSecretProvider
 from app.mail import MailSendTool, create_mail_tools
@@ -178,6 +179,7 @@ from app.tools.desktop_actions import (
     DesktopSetVolumeTool,
 )
 from app.tools.location import resolve_location
+from app.tools.mcp_actions import McpToolCallTool
 from app.tools.screen import CapabilityScreenAnalyzer, CaptureScreenTool
 from app.tools.sensors import ReadSensorsTool
 from app.voice import ConfigVoiceSource
@@ -1034,6 +1036,11 @@ def create_app(
             )
         )
         app.state.mcp_manager = mcp_manager
+        if mcp_manager is not None:
+            # MCP-D：目录刷新后把白名单写工具同步进动作注册表（A2 每次确认）
+            mcp_manager.set_catalog_listener(
+                lambda: sync_mcp_actions(action_registry, mcp_manager)
+            )
         if persona_store is not None:
             app.include_router(
                 create_admin_persona_router(
@@ -1241,6 +1248,9 @@ def create_app(
                                 ),
                             ]
                         )
+                    if mcp_manager is not None:
+                        # MCP-D：唯一写调用入口，注册到计划执行器；聊天挂载恒关
+                        device_tools.append(McpToolCallTool(mcp_manager))
                     if runtime_config is not None:
 
                         def browser_workflow_config() -> BrowserWorkflowConfig:

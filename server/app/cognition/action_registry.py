@@ -108,6 +108,26 @@ class ActionRegistry:
     ) -> None:
         if definition.action_id in self._actions:
             raise ValueError(f"duplicate action: {definition.action_id}")
+        self._validate_and_store(definition, arguments_model)
+
+    def upsert(
+        self,
+        definition: ActionDefinition,
+        arguments_model: type[BaseModel],
+    ) -> None:
+        """MCP 动态动作专用：目录刷新后同 ID 覆盖（远端 Schema 可能演进）。"""
+        self._actions.pop(definition.action_id, None)
+        self._validate_and_store(definition, arguments_model)
+
+    def remove(self, action_id: str) -> bool:
+        """撤销动态注册的动作；内置动作被移除视为配置错误，拒绝执行。"""
+        return self._actions.pop(action_id, None) is not None
+
+    def _validate_and_store(
+        self,
+        definition: ActionDefinition,
+        arguments_model: type[BaseModel],
+    ) -> None:
         dynamic_fields = set(arguments_model.model_fields)
         collisions = dynamic_fields.intersection(definition.bound_arguments)
         if collisions:

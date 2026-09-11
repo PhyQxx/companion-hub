@@ -135,19 +135,16 @@ def create_admin_timeline_router(
             if payload.privacy_level == PrivacyLevel.L2
             else (PrivacyLevel.L0, PrivacyLevel.L1)
         )
-        filters = {
-            "start_at": payload.start_at,
-            "end_at": payload.end_at,
-            "actors": payload.actors or None,
-            "source_types": payload.source_types or None,
-            "event_types": payload.event_types or None,
-            "conversation_id": payload.conversation_id,
-            "privacy_levels": levels,
-        }
         result = await store.search(
             user_id=payload.user_id,
             query=payload.query,
-            **filters,
+            start_at=payload.start_at,
+            end_at=payload.end_at,
+            actors=payload.actors or None,
+            source_types=payload.source_types or None,
+            event_types=payload.event_types or None,
+            conversation_id=payload.conversation_id,
+            privacy_levels=levels,
             limit=payload.limit,
             offset=payload.offset,
         )
@@ -155,7 +152,16 @@ def create_admin_timeline_router(
         if payload.query.strip():
             total = result.candidate_count
         else:
-            total = await store.count_events(user_id=payload.user_id, **filters)
+            total = await store.count_events(
+                user_id=payload.user_id,
+                start_at=payload.start_at,
+                end_at=payload.end_at,
+                actors=payload.actors or None,
+                source_types=payload.source_types or None,
+                event_types=payload.event_types or None,
+                conversation_id=payload.conversation_id,
+                privacy_levels=levels,
+            )
         return TimelineQueryResult(
             candidate_count=result.candidate_count,
             total=total,

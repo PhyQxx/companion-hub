@@ -445,7 +445,7 @@ def _event_filter(
     event_types: Sequence[str] | None,
     conversation_id: UUID | None,
     privacy_levels: Sequence[PrivacyLevel],
-) -> Select:
+) -> Select[tuple[TimelineEventRecord]]:
     statement = select(TimelineEventRecord).where(
         TimelineEventRecord.user_id == user_id,
         TimelineEventRecord.privacy_level.in_([level.value for level in privacy_levels]),
