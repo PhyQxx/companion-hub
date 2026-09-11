@@ -25,7 +25,7 @@
 
 ### 0.0 核查后优先修复（2026-09-08）
 
-以下为文档与实际代码对照发现的开发缺口，不应仅标记为“待真机验收”。FIX-01、FIX-02、FIX-03、FIX-01B、SAT-01～03、MEET-01 Hub 侧链路、QA-01 以及设备工具 Token 优化 A/B 和浏览观察 v1（含 2026-09-10 的 P3）已完成；PWA Batch B 依用户决定暂跳，Batch C 保留真实推送/双端验收。当前是单用户使用，`ID-01` 多人身份于 2026-09-08 按用户决定暂缓。用户随后要求启动 MCP；通用 MCP-C0 已完成，下一步是选定一个真实只读 MCP Server 做 C1 认证、发现、调用、裁剪和审计全链验证（当前等待有效 Context7 Key）。
+以下为文档与实际代码对照发现的开发缺口。FIX-01～03/01B、SAT-01～03、MEET-01 Hub 侧链路、QA-01、OPT-41、浏览观察 v1 全量、MCP C0/C1/C2/D、PWA Batch B/C 与 WEB-01 均已实现并于 2026-09-11 前完成部署验收（服务器部署 + 真机/真实数据全过）。当前是单用户使用，`ID-01` 多人身份于 2026-09-08 按用户决定暂缓。0.0 清单已全部关闭，剩余待办见当前功能主线与 0.2 之后的能力队列。
 
 - [x] **FIX-01 邮件服务端确认闭环（2026-09-08）。** `mail_send` 仅创建服务端预览，模型传 `confirmed=true` 显式拒绝。鉴权 API `/api/v1/mail/drafts` 列表/确认/取消与 Chat 完整邮件卡片已接入；确认只接受预览 ID + 内容摘要，发送服务器保存的完整收件人/抄送/主题/正文。预览绑定用户、15 分钟有效，同回合修改撤销旧预览；并发发送先认领，成功重放回执，超时/取消进入 `unknown_outcome` 禁重试。内存预览限 256 条，重启失效；当前采用单进程临时确认，不提供跨 worker 共享或持久化草稿。回归覆盖未确认/直接 true/篡改/跨用户/过期/取消/重复与并发发送/结果未知；隔离浏览器预览、确认、取消通过，未发送真实邮件。真实模型与邮箱端到端仍待验收。
 - [x] **FIX-01B 日历/流程保存确认一致性（2026-09-08）。** `calendar_create` 与 `workflow_save` 现在只创建服务端临时预览，模型传 `confirmed=true` 明确拒绝。Chat 展示日程完整时间/地点/参与人/提醒，以及流程各步参数/风险/确认策略/可撤销性；用户点击后由鉴权 API 携预览 ID + 内容摘要创建或保存。预览绑定用户和回合、15 分钟有效，同回合修改废弃旧预览；确认先认领，成功重放结果，取消/过期/摘要篡改/跨用户均拒绝。单进程内存预览限 256 条，重启失效；底层用户管理 API 保持原契约。真实模型体验仍待验收。
@@ -46,8 +46,9 @@
 - [x] **macOS 系统内容选择器。** `capture_screen(target=interactive)` 的系统框选/取消、视觉回答、结构化错误码、临时授权与原图销毁已经完成代码、隔离 E2E 和用户确认的真机验收。
 - [ ] **硬件到位后恢复：ESP32 + LD2410 第一硬件闭环。** Hub 侧 MQTT → L3 `EphemeralSignal` → 5 秒稳定窗 → L1 `presence.changed` → Perception → Proactive Pipeline 已接通，ESPHome 固件样例与单设备 topic ACL 已落地；因暂时没有硬件，剩余刷写真机与 7 天验收不阻塞软件主线。
 - [x] **手机 PWA Batch A：可安装移动壳。** 现有 Chat 已增加 manifest、多尺寸/可遮罩图标、Service Worker 与离线降级页；窄屏改为顶部导航 + 会话/形象双抽屉，补齐刘海屏安全区、44px 触摸目标和输入法友好字号。安装后模式的访问令牌只进入 `sessionStorage`，不写长期 `localStorage`。
-- [ ] **手机 PWA Batch B：真机聊天闭环（用户于 2026-09-08 选择暂跳）。** 前后台恢复逻辑已完成：回到前台会补拉当前会话并重连/同步 WebSocket，进入后台会释放语音会话，离线时停止发送并在网络恢复后自动同步。移动浏览器会在可信用户手势内预先解锁 `AudioContext`。剩余是在 iOS Safari 和 Android Chrome 完成添加到主屏、登录、文字/streaming、麦克风/定位权限、TTS 播放与异常降级真机验收。
-- [ ] **手机 PWA Batch C：通知与会话漫游。** 会话游标补拉、消息去重、Web Push 和多端音频/麦克风租约代码均已接通。2026-09-08 补齐推送恢复安全边界：已有订阅在登录恢复时重新登记到当前用户，服务端订阅表丢失可自愈；VAPID 公钥轮换会撤销旧订阅并用新 key 重建；恢复登记失败会撤销本地旧订阅，退出登录也同步退订，避免旧账号通知继续到达；Docker Compose 已透传 `ARIA_VAPID_PRIVATE_KEY`。2026-09-11：真实 VAPID 密钥已生成并部署到本地 Hub 运行配置（`integrations.push` 开启，公钥 + 私钥 secret_value 热生效），同时补上 push 私钥的 Admin GET 脱敏与掩码还原（掩码常量加长到满足 vapid 私钥 min_length=32 的校验，回归覆盖脱敏往返）。剩余：手机安装 PWA 后锁屏推送与双端同时语音的真机验收；L2 文本不进入系统通知。
+- [x] **手机 PWA Batch B：真机聊天闭环（2026-09-11 验收通过）。** 前后台恢复逻辑：回到前台补拉当前会话并重连/同步 WebSocket，进入后台释放语音会话，离线停止发送并在网络恢复后自动同步；移动浏览器在可信用户手势内预先解锁 `AudioContext`。真机验收：添加到主屏、登录、文字/streaming、麦克风/定位权限、TTS 播放与异常降级全部通过。
+- [x] **手机 PWA Batch C：通知与会话漫游（2026-09-11 验收通过）。** 会话游标补拉、消息去重、Web Push 和多端音频/麦克风租约代码均已接通。2026-09-08 补齐推送恢复安全边界：已有订阅在登录恢复时重新登记到当前用户，服务端订阅表丢失可自愈；VAPID 公钥轮换会撤销旧订阅并用新 key 重建；恢复登记失败会撤销本地旧订阅，退出登录也同步退订，避免旧账号通知继续到达；Docker Compose 已透传 `ARIA_VAPID_PRIVATE_KEY`。2026-09-11：真实 VAPID 密钥已生成并部署到本地 Hub 运行配置（`integrations.push` 开启，公钥 + 私钥 secret_value 热生效），同时补上 push 私钥的 Admin GET 脱敏与掩码还原（掩码常量加长到满足 vapid 私钥 min_length=32 的校验，回归覆盖脱敏往返）。剩余：手机安装 PWA 后锁屏推送与双端同时语音的真机验收；L2 文本不进入系统通知。
+2026-09-11 真机验收：手机安装 PWA、锁屏推送到达、双端同时语音互斥全部通过；L2 文本不进入系统通知的红线保持。
 - [ ] **并行门槛：Tauri 透明桌宠真机收口。** 待验收 macOS 热插拔、60fps、常驻内存 <300MB 和长时间运行。
 - [ ] **并行门槛：M2 语音延迟与识别质量。** 重置统计窗口后完成 20 个完整回合 + 20 个打断样本，新低延迟模型端点继续暂缓。
 
@@ -92,7 +93,7 @@
 #### J5 受控电脑操作代理
 
 - [x] `PC-01` 白名单桌面动作（代码闭环，待真机验收）：配置中心新增 `tools.desktop_actions`（默认全关；应用名/URL 主机 casefold 精确白名单去重，scheme 强制 `[a-z][a-z0-9+.-]*` 模式，音量/剪贴板独立开关）。四个受控工具 `desktop_open_app`/`desktop_open_url`/`desktop_set_volume`/`desktop_clipboard_write` 经既有设备命令网关下发，Hub 侧先做白名单硬校验再解析设备，L2 由工具声明 `max_privacy_level=L1` 经 EgressGuard 执行层拦截；**不挂载为聊天工具**（`_device_tool_ready` 恒 False），只能经 Action Registry 计划—确认—执行触发：打开应用/URL/设音量为 A1 预授权候选，剪贴板为 A2 每次确认，全部以设备 `succeeded` 终态回执为验证。Desktop 客户端新增 4 个能力声明（锁屏/隐私暂停时不声明）与 Rust 命令——应用名只允许 `[A-Za-z0-9 ._-]` 字符集、URL 只放行 http/https 且禁参数注入、osascript/pbcopy 数组传参无 shell。聚焦窗口与文件移动/重命名未开放（后续批次），删除/覆盖/对外发送维持禁止。
-- [ ] `WEB-01` 浏览器工作流（FIX-02 已修复，Chrome 全链真机验收未完成）：`tools.browser_workflow.enabled` 默认关闭；四个命令覆盖打开页面、读取表单、填写和提交。读取返回 snapshot_id 与快照内字段 ref；填写/提交必须绑定同一次读取，校验页面与原 DOM 实例后才操作。密码值不回传，密码框不写；原型 setter + input/change 支持受控输入，填写不主动调用提交，页面事件逻辑仍会执行。协议、过期与重读要求见 FIX-02 和扩展 README。四工具经设备命令网关下发，不挂载聊天，只能经 Action Registry 计划—确认—执行：read 为 A0，open/fill 为 A1 预授权候选，submit 为 A2 每次确认，执行前须展示目标、字段与证据。
+- [x] `WEB-01` 浏览器工作流（2026-09-11 Chrome 全链真机验收通过）：`tools.browser_workflow.enabled` 默认关闭；四个命令覆盖打开页面、读取表单、填写和提交。读取返回 snapshot_id 与快照内字段 ref；填写/提交必须绑定同一次读取，校验页面与原 DOM 实例后才操作。密码值不回传，密码框不写；原型 setter + input/change 支持受控输入，填写不主动调用提交，页面事件逻辑仍会执行。协议、过期与重读要求见 FIX-02 和扩展 README。四工具经设备命令网关下发，不挂载聊天，只能经 Action Registry 计划—确认—执行：read 为 A0，open/fill 为 A1 预授权候选，submit 为 A2 每次确认，执行前须展示目标、字段与证据。
 - [x] `FLOW-01` 可复用流程（代码闭环，待真机验收）：`workflow` 表（`0034_workflows` 迁移，用户内名称唯一）保存已注册动作的有序模板（1-10 步，`ActionInvocation` 形状）。保存与运行都经 ActionRegistry **重新编译**——动作被移除、参数 Schema 漂移或 A3 禁止时显式失败（注册表异常归一为 ValueError）。`preview` 返回每步动作标签、风险、确认策略、可逆性与参数；聊天工具 `workflow_save` 只准备服务端预览，用户在 Chat 卡片点击并由鉴权 API 校验预览 ID 与摘要后保存，模型不能确认。`workflow_run` 把模板展开为待确认 ActionPlan。用户 API `/api/v1/workflows` 保持列表/preview/创建/详情/删除/运行契约；聊天工具仅 L1 挂载。
 - [x] `PC-02` 执行可视化（代码闭环，待真机验收）：执行中停止——`cancel_plan` 新增 EXECUTING 分支，置位 `action_plan.cancel_requested`（`0035_plan_cancel` 迁移，计划保持 executing）后由执行循环在步骤边界协作收敛：不再启动新步骤、在途步骤按自身超时结束并如实记录终态（成功保留/失败记 failed/任务级取消记 unknown_outcome）、剩余步骤记 cancelled 而非 skipped；**迟到结果不会推进后续步骤**。用户取消意图优先：带取消请求的计划在失败路径也收敛为 cancelled 而非 failed。执行事件流——`PlanExecutionEvent`（phase=execution.started/step.started/step.finished/execution.finished，含步骤序号/动作/状态/验证证据状态/completed/total，绝不含步骤参数）经可注入 listener 发出，监听器异常不中断执行；main 接线到 Chat WebSocket `broadcast_to_user`（新增，推给该用户全部在线聊天连接），取消端点支持可选 reason 透传。视图新增 `cancel_requested` 供 UI 停止按钮状态。
 
@@ -175,6 +176,8 @@
 - [x] 验收后按 `docs/05` 的实施顺序接真实数据：health/activity/usage/quality/conflicts/pairing/diagnostics + logs/privacy/system 三个聚合 dashboard（含实时日志独立 Tab）已全部接入真实数据；Trace、隐私审计、备份恢复和成本能力按 M3B 计划推进。
 
 ## 3. 最近完成
+
+- [x] 2026-09-11 `批次部署验收收尾`：服务器部署（alembic 至 0037_meetings、前端重建、扩展同步更新）+ 真机/真实数据验收全过：管理端分页、浏览观察（服务器侧记录 + 聊天召回）、MCP Context7（含新配置 UI 添加 Server、密钥脱敏）、PWA Batch B/C（锁屏推送、双端语音）、WEB-01 表单全链。本批 837 项测试基线、mypy 261 文件零错误；0.0 缺口清单全部关闭。
 
 - [x] 2026-09-10 `BROWSE-42 P3 + 管理端全列表分页`：心跳指纹降轮询成本（协议向后兼容、设备端只在 Hub 声明时上报）、命令台账与观察/记忆/时间线/任务全部改为服务端真分页（统一 `{items,total,limit,offset}`，列表与计数同条件）、restricted_page 等设备端隐私拒绝改为静默跳过；非 soak 全量 **826 通过**，Ruff、Admin typecheck/production build 通过，真机验证观察记录/分页/台账过滤生效。
 - [x] 语音连接断开后的输入框恢复：Chat 在语音 socket 断开回调里清掉当前会话的 streaming 状态并提示「语音连接已断开，请重新发送」，避免断线后回合卡在忙碌态、输入框无法继续发送。
