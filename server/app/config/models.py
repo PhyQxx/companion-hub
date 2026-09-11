@@ -307,6 +307,8 @@ class HomeAssistantProactiveRuleConfig(StrictModel):
     rule_id: TokenName
     kind: Literal[
         "water_leak",
+        "smoke_detected",
+        "door_open_too_long",
         "temperature_high",
         "temperature_low",
         "humidity_high",
@@ -316,6 +318,8 @@ class HomeAssistantProactiveRuleConfig(StrictModel):
         "device_offline",
     ]
     enabled: bool = False
+    # SAFE-01 分级：notice 普通提醒 / warning 需要关注 / critical 触发全通道广播
+    severity: Literal["notice", "warning", "critical"] = "warning"
     threshold: Annotated[float, Field(ge=-100, le=10_000)] | None = None
     duration_seconds: Annotated[int, Field(ge=0, le=86_400)] = 300
     cooldown_minutes: Annotated[int, Field(ge=1, le=10_080)] = 240
@@ -332,7 +336,30 @@ class HomeAssistantProactiveRuleConfig(StrictModel):
         }
         if self.kind in threshold_kinds and self.threshold is None:
             raise ValueError("home assistant proactive threshold is required")
+        if self.kind == "smoke_detected" and self.severity != "critical":
+            raise ValueError("smoke_detected rule must be critical severity")
+        if self.kind == "water_leak" and self.severity != "critical":
+            # 存量规则没有 severity 字段（默认 warning）：水浸静默升为 critical，
+            # 保持"危急豁免免打扰"的既有语义不回退
+            object.__setattr__(self, "severity", "critical")
         return self
+
+
+class SafetyConfig(StrictModel):
+    """SAFE-01/02 家庭守护（docs/44）：分级告警与三级升级链的公共参数。
+
+    S1 只消费 enabled（关掉时规则回归普通提醒）；确认窗口/升级参数供
+    S2 告警状态机使用，先占位保持配置稳定。
+    """
+
+    enabled: bool = False
+    escalation_enabled: bool = True
+    confirm_window_seconds: Annotated[int, Field(ge=30, le=3_600)] = 300
+    push_retry_minutes: Annotated[int, Field(ge=1, le=60)] = 3
+    inactivity_hours: Annotated[float, Field(ge=1, le=72)] = 12.0
+    inactivity_active_range: Annotated[str, Field(pattern=r"^\d{2}:\d{2}-\d{2}:\d{2}$")] = (
+        "09:00-22:00"
+    )
 
 
 def _default_home_assistant_proactive_rules() -> list[HomeAssistantProactiveRuleConfig]:
@@ -341,6 +368,7 @@ def _default_home_assistant_proactive_rules() -> list[HomeAssistantProactiveRule
             rule_id="device_offline",
             kind="device_offline",
             enabled=True,
+            severity="notice",
             duration_seconds=120,
             cooldown_minutes=240,
         )
@@ -663,6 +691,7 @@ class HubConfig(StrictModel):
     proactive_output: ProactiveOutputConfig = Field(default_factory=ProactiveOutputConfig)
     screen_awareness: ScreenAwarenessConfig = Field(default_factory=ScreenAwarenessConfig)
     browser_awareness: BrowserAwarenessConfig = Field(default_factory=BrowserAwarenessConfig)
+    safety: SafetyConfig = Field(default_factory=SafetyConfig)
     mcp: McpConfig = Field(default_factory=McpConfig)
 
     @model_validator(mode="before")

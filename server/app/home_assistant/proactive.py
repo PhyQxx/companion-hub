@@ -6,6 +6,7 @@ import logging
 from collections.abc import Awaitable, Callable
 from contextlib import suppress
 from datetime import UTC, datetime, time, timedelta
+from typing import ClassVar
 from uuid import UUID
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -139,7 +140,12 @@ class HomeAssistantProactiveEngine:
         if reason is not None:
             await self._log(policy, rule, now, passed=False, reason=reason)
             return
+        safety_enabled = self._config_store.current.config.safety.enabled
         message = rule.message or self._render_message(policy, rule, state)
+        if safety_enabled:
+            message = self._enrich_message(message, policy, rule, now)
+        broadcast = safety_enabled and rule.severity == "critical"
+        confidence = self._confidence(rule) if safety_enabled else 1
         cognitive_decision: CognitiveDecision | None = None
         if self._perception_pipeline is not None:
             user_id = await self._active_user_id()
@@ -156,12 +162,12 @@ class HomeAssistantProactiveEngine:
                     summary=f"{policy.display_name} 触发 {rule.kind}",
                     occurred_at=now,
                     privacy_level=PrivacyLevel(policy.privacy_level),
-                    confidence=1,
+                    confidence=confidence,
                     evidence_ids=[
                         f"ha:{policy.entity_id}:"
                         f"{_state_changed_at(state, fallback=now).isoformat()}"
                     ],
-                    attributes={"message": message},
+                    attributes={"message": message, "severity": rule.severity},
                     expires_at=now + timedelta(minutes=5),
                 )
             )
@@ -218,6 +224,7 @@ class HomeAssistantProactiveEngine:
                 rule_id=rule.rule_id,
                 trigger_kind=rule.kind,
                 privacy_level=PrivacyLevel(policy.privacy_level),
+                broadcast=broadcast,
             )
         else:
             result = await self._deliver(
@@ -228,6 +235,7 @@ class HomeAssistantProactiveEngine:
                 privacy_level=PrivacyLevel(policy.privacy_level),
                 cognitive_decision=cognitive_decision,
                 target_user_id=cognitive_decision.user_id,
+                broadcast=broadcast,
             )
         if result is None:
             await self._log(policy, rule, now, passed=False, reason="no_active_conversation")
@@ -327,7 +335,7 @@ class HomeAssistantProactiveEngine:
         config = self._config_store.current.config.integrations.home_assistant
         timezone = await self._user_timezone()
         local_now = now.astimezone(timezone)
-        critical = rule.kind == "water_leak"
+        critical = rule.severity == "critical"
         if self._in_quiet_hours(
             local_now.timetz().replace(tzinfo=None),
             config.proactive_quiet_hours_start,
@@ -417,7 +425,9 @@ class HomeAssistantProactiveEngine:
             return state is None or value in {"unavailable", "unknown", "offline"}
         if rule.kind == "water_leak":
             return value in {"on", "wet", "true", "1", "detected"}
-        if rule.kind == "light_on_too_long":
+        if rule.kind == "smoke_detected":
+            return value in {"on", "true", "1", "detected"}
+        if rule.kind in {"light_on_too_long", "door_open_too_long"}:
             return value == "on"
         try:
             numeric = float(value)
@@ -444,6 +454,8 @@ class HomeAssistantProactiveEngine:
         threshold_text = f"{threshold:g}" if threshold is not None else ""
         templates = {
             "water_leak": f"检测到{name}触发了水浸告警，请尽快检查附近是否漏水。",
+            "smoke_detected": f"检测到{name}触发了烟雾告警，请立即确认现场情况，必要时撤离并报警。",
+            "door_open_too_long": f"{name}已经持续开启较长时间，请确认是否忘记关门关窗。",
             "temperature_high": (
                 f"{name}当前为 {value}°C，已高于 {threshold_text}°C，建议通风或调低空调温度。"
             ),
@@ -463,6 +475,38 @@ class HomeAssistantProactiveEngine:
             "device_offline": f"{name}当前不可用，建议检查设备供电和 Home Assistant 连接。",
         }
         return templates[rule.kind]
+
+    _SEVERITY_LABELS: ClassVar[dict[str, str]] = {
+        "notice": "提醒",
+        "warning": "告警",
+        "critical": "危急",
+    }
+
+    @classmethod
+    def _confidence(cls, rule: HomeAssistantProactiveRuleConfig) -> float:
+        """确定性置信度：持续窗确认过的信号 0.85，瞬时触发的 0.6。"""
+        return 0.85 if rule.duration_seconds > 0 else 0.6
+
+    @classmethod
+    def _enrich_message(
+        cls,
+        message: str,
+        policy: HomeAssistantEntityConfig,
+        rule: HomeAssistantProactiveRuleConfig,
+        fired_at: datetime,
+    ) -> str:
+        """SAFE-01：告警必须包含分级、来源、时间、置信度（建议在模板正文里）。"""
+        if rule.severity == "notice":
+            return message
+        label = cls._SEVERITY_LABELS[rule.severity]
+        duration_text = (
+            f"持续{rule.duration_seconds // 60}分钟" if rule.duration_seconds >= 60 else "瞬时触发"
+        )
+        evidence = (
+            f"（来源：{policy.display_name} {policy.entity_id}；{duration_text}；"
+            f"置信度{cls._confidence(rule):.2f}；{fired_at.strftime('%H:%M')}）"
+        )
+        return f"【{label}】{message}{evidence}"
 
     @staticmethod
     def _in_quiet_hours(current: time, start_text: str, end_text: str) -> bool:

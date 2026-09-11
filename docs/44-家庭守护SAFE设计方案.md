@@ -1,6 +1,6 @@
 # 44 - 家庭守护 SAFE-01/02 设计方案
 
-> 状态：v1 设计定稿，待实现（2026-09-11）
+> 状态：v1 设计定稿；S1 已实现（2026-09-11），S2～S4 待实施
 > 相关：[39-个人管家能力路线图](./39-个人管家能力路线图.md)、[36-Home Assistant集成设计](./36-Home%20Assistant集成设计.md)、[31-记忆时间线与历史回溯设计](./31-记忆时间线与历史回溯设计.md)
 
 ## 1. 功能定位
@@ -107,6 +107,16 @@ class SafetyConfig(StrictModel):
 3. L3 发送前必向用户本人广播"正在升级"，用户可随时一句话中止。
 4. 久未活动检测只依赖在场/交互信号，不做摄像头/音频分析。
 5. 所有告警事件进 Timeline，用户可像其他记录一样删除（删除闭环沿用）。
+
+## 7. 实施记录
+
+### S1（2026-09-11 已实现）
+
+- 配置：`SafetyConfig`（升级链参数占位，S1 只消费 enabled）；规则新增 `severity`（notice/warning/critical，缺省 warning 兼容存量），新种类 `smoke_detected`（强制 critical）/ `door_open_too_long`；存量水浸规则静默升为 critical 保持免打扰豁免语义。
+- 引擎：两类新规则匹配与模板；`_enrich_message` 让 warning+ 告警携带分级标签 + 来源实体/持续时长/置信度/时间（notice 不富化）；`_confidence` 确定性取值（持续窗 0.85 / 瞬时 0.6）；severity 进入 SemanticEvent 属性；静默期豁免从硬编码 water_leak 改为跟随 severity。
+- 投递：`ProactiveDeliveryService.deliver(broadcast=True)` 忽略 first_available 短路全通道投递；critical + safety.enabled 时启用。
+- Admin：HA 规则行新增 severity 下拉与新种类（supportedRules 按实体域/名称推荐 smoke/door 规则）。
+- 回归：规则校验/匹配/富化/置信度/_fire 全链（broadcast 与文案断言）+ 投递广播共 5 项新增；全量 841 通过。
 
 ## 6. 工作量
 

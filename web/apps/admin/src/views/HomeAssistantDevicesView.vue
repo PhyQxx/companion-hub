@@ -14,6 +14,8 @@ type Action =
   | "volume_set";
 type RuleKind =
   | "water_leak"
+  | "smoke_detected"
+  | "door_open_too_long"
   | "temperature_high"
   | "temperature_low"
   | "humidity_high"
@@ -21,11 +23,13 @@ type RuleKind =
   | "pm25_high"
   | "light_on_too_long"
   | "device_offline";
+type Severity = "notice" | "warning" | "critical";
 
 interface ProactiveRule {
   rule_id: string;
   kind: RuleKind;
   enabled: boolean;
+  severity: Severity;
   threshold: number | null;
   duration_seconds: number;
   cooldown_minutes: number;
@@ -244,6 +248,8 @@ const actionLabels: Record<Action, string> = {
 };
 const ruleLabels: Record<RuleKind, string> = {
   water_leak: "水浸告警",
+  smoke_detected: "烟雾告警",
+  door_open_too_long: "门窗久开",
   temperature_high: "温度过高",
   temperature_low: "温度过低",
   humidity_high: "湿度过高",
@@ -282,6 +288,7 @@ function normalizeConfig(config: HaConfig): HaConfig {
               rule_id: "device_offline",
               kind: "device_offline" as const,
               enabled: true,
+              severity: "notice" as const,
               threshold: null,
               duration_seconds: 120,
               cooldown_minutes: 240,
@@ -445,10 +452,19 @@ function supportedRules(entity: HaEntityPolicy): RuleKind[] {
   const values: RuleKind[] = ["device_offline"];
   if (entity.entity_id.startsWith("light.") || entity.entity_id.startsWith("switch.")) values.unshift("light_on_too_long");
   if (key.includes("water") || key.includes("submersion") || key.includes("水浸") || key.includes("漏水")) values.unshift("water_leak");
+  if (key.includes("smoke") || key.includes("烟雾") || key.includes("烟感")) values.unshift("smoke_detected");
+  if (entity.entity_id.startsWith("binary_sensor.") && (key.includes("door") || key.includes("window") || key.includes("门") || key.includes("窗"))) values.unshift("door_open_too_long");
   if (key.includes("temperature") || key.includes("温度")) values.unshift("temperature_high", "temperature_low");
   if (key.includes("humidity") || key.includes("湿度")) values.unshift("humidity_high", "humidity_low");
   if (key.includes("pm2") || key.includes("pm25")) values.unshift("pm25_high");
   return [...new Set(values)];
+}
+
+function defaultSeverity(kind: RuleKind): Severity {
+  if (kind === "smoke_detected") return "critical";
+  if (kind === "water_leak") return "critical";
+  if (kind === "device_offline") return "notice";
+  return "warning";
 }
 
 function defaultThreshold(kind: RuleKind): number | null {
@@ -463,17 +479,21 @@ function addRule(entity: HaEntityPolicy) {
     rule_id: `${kind}_${entity.proactive_rules.length + 1}`,
     kind,
     enabled: false,
+    severity: defaultSeverity(kind),
     threshold: defaultThreshold(kind),
-    duration_seconds: kind === "water_leak" ? 0 : kind === "light_on_too_long" ? 1800 : 300,
-    cooldown_minutes: kind === "water_leak" ? 60 : 240,
+    duration_seconds: kind === "water_leak" || kind === "smoke_detected" ? 0 : kind === "light_on_too_long" || kind === "door_open_too_long" ? 1800 : 300,
+    cooldown_minutes: kind === "water_leak" || kind === "smoke_detected" ? 60 : 240,
     message: null,
   });
 }
 
 function onRuleKindChange(rule: ProactiveRule) {
   rule.threshold = defaultThreshold(rule.kind);
-  if (rule.kind === "water_leak") rule.duration_seconds = 0;
-  if (rule.kind === "light_on_too_long") rule.duration_seconds = 1800;
+  rule.severity = defaultSeverity(rule.kind);
+  rule.duration_seconds =
+    rule.kind === "water_leak" || rule.kind === "smoke_detected" ? 0
+      : rule.kind === "light_on_too_long" || rule.kind === "door_open_too_long" ? 1800
+        : 300;
 }
 
 function addSelected() {
@@ -495,6 +515,7 @@ function addSelected() {
         rule_id: "device_offline",
         kind: "device_offline",
         enabled: true,
+        severity: "notice",
         threshold: null,
         duration_seconds: 120,
         cooldown_minutes: 240,
@@ -559,6 +580,7 @@ function autoAuthorize() {
         rule_id: "device_offline",
         kind: "device_offline",
         enabled: true,
+        severity: "notice",
         threshold: null,
         duration_seconds: 120,
         cooldown_minutes: 240,
@@ -684,6 +706,7 @@ onMounted(load);
             <div v-for="(rule, ruleIndex) in entity.proactive_rules" :key="rule.rule_id" class="rule-row">
               <el-switch v-model="rule.enabled" />
               <el-select v-model="rule.kind" @change="onRuleKindChange(rule)"><el-option v-for="kind in supportedRules(entity)" :key="kind" :label="ruleLabels[kind]" :value="kind" /></el-select>
+              <el-select v-model="rule.severity" class="severity-select"><el-option label="提醒" value="notice" /><el-option label="告警" value="warning" /><el-option label="危急" value="critical" /></el-select>
               <label v-if="rule.threshold !== null"><span>阈值</span><el-input-number v-model="rule.threshold" :step="0.5" /></label>
               <label><span>持续</span><el-input-number v-model="rule.duration_seconds" :min="0" :max="86400" /><small>秒</small></label>
               <label><span>冷却</span><el-input-number v-model="rule.cooldown_minutes" :min="1" :max="10080" /><small>分钟</small></label>
@@ -701,5 +724,5 @@ onMounted(load);
 </template>
 
 <style scoped>
-.ha-workspace{padding:20px 24px 28px;display:grid;gap:16px;align-content:start}.panel{background:#fff;border:1px solid var(--line);border-radius:14px;padding:18px}.hero,.panel-head,.entity-head,.rules-head,.actions{display:flex;align-items:center;justify-content:space-between;gap:14px}.hero{background:linear-gradient(135deg,#fff,#f1f5ff)}h2,p{margin:0}.hero h2,.panel h2{font-size:16px}.hero p,.panel-head p{margin-top:7px;color:var(--muted);font-size:12px}.eyebrow{margin-bottom:7px;color:var(--accent);font-size:11px;font-weight:700}.actions{justify-content:flex-end}.form-grid{display:grid;grid-template-columns:repeat(4,minmax(160px,1fr));gap:14px}.form-grid.three{grid-template-columns:repeat(3,minmax(180px,1fr))}.form-grid label,.rule-row label{display:grid;gap:6px;color:var(--muted);font-size:11px}.form-grid small,.rule-row small,.rules-head small{color:var(--muted);font-size:10px}.wide{grid-column:1/-1}.secret-row{display:flex;gap:8px}.xiaoai-config{display:grid;gap:16px;background:linear-gradient(135deg,#fff,#f7f2ff)}.config-note{color:var(--muted);font-size:11px}.discovery{display:grid;gap:14px}.filter-bar{display:flex;gap:10px;flex-wrap:wrap;align-items:center}.pager{display:flex;justify-content:flex-end}.auth-badge{display:inline-block;margin-left:6px;padding:1px 6px;border-radius:4px;background:#e8f5e9;color:#2e7d32;font-size:10px;font-weight:600}.device-model{display:grid;gap:2px}.device-model small{color:var(--muted);font-size:10px}.muted{color:var(--muted);font-size:12px}.load-more{display:flex;justify-content:center;margin-top:14px}.entity-card{display:grid;gap:16px;margin-top:14px;padding:16px;border:1px solid #e5e9f2;border-radius:12px;background:#fbfcff}.entity-head>div:first-child{display:grid;gap:5px}.entity-head code{color:var(--muted);font-size:10px}.rules{display:grid;gap:10px;padding-top:14px;border-top:1px dashed #dfe4ee}.rules-head>div{display:grid;gap:4px}.rule-row{display:grid;grid-template-columns:auto minmax(150px,1fr) repeat(3,minmax(105px,auto)) minmax(200px,1.4fr) auto;gap:10px;align-items:end;padding:11px;border:1px solid #e7ebf3;border-radius:9px;background:#fff}@media(max-width:1100px){.form-grid,.form-grid.three{grid-template-columns:repeat(2,minmax(160px,1fr))}.rule-row{grid-template-columns:repeat(2,minmax(0,1fr))}}@media(max-width:700px){.hero,.panel-head,.entity-head{align-items:flex-start;flex-direction:column}.form-grid,.form-grid.three,.rule-row{grid-template-columns:1fr}.wide{grid-column:auto}.filter-bar{flex-direction:column;align-items:stretch}}
+.ha-workspace{padding:20px 24px 28px;display:grid;gap:16px;align-content:start}.panel{background:#fff;border:1px solid var(--line);border-radius:14px;padding:18px}.hero,.panel-head,.entity-head,.rules-head,.actions{display:flex;align-items:center;justify-content:space-between;gap:14px}.hero{background:linear-gradient(135deg,#fff,#f1f5ff)}h2,p{margin:0}.hero h2,.panel h2{font-size:16px}.hero p,.panel-head p{margin-top:7px;color:var(--muted);font-size:12px}.eyebrow{margin-bottom:7px;color:var(--accent);font-size:11px;font-weight:700}.actions{justify-content:flex-end}.form-grid{display:grid;grid-template-columns:repeat(4,minmax(160px,1fr));gap:14px}.form-grid.three{grid-template-columns:repeat(3,minmax(180px,1fr))}.form-grid label,.rule-row label{display:grid;gap:6px;color:var(--muted);font-size:11px}.form-grid small,.rule-row small,.rules-head small{color:var(--muted);font-size:10px}.wide{grid-column:1/-1}.secret-row{display:flex;gap:8px}.xiaoai-config{display:grid;gap:16px;background:linear-gradient(135deg,#fff,#f7f2ff)}.config-note{color:var(--muted);font-size:11px}.discovery{display:grid;gap:14px}.filter-bar{display:flex;gap:10px;flex-wrap:wrap;align-items:center}.pager{display:flex;justify-content:flex-end}.auth-badge{display:inline-block;margin-left:6px;padding:1px 6px;border-radius:4px;background:#e8f5e9;color:#2e7d32;font-size:10px;font-weight:600}.device-model{display:grid;gap:2px}.device-model small{color:var(--muted);font-size:10px}.muted{color:var(--muted);font-size:12px}.load-more{display:flex;justify-content:center;margin-top:14px}.entity-card{display:grid;gap:16px;margin-top:14px;padding:16px;border:1px solid #e5e9f2;border-radius:12px;background:#fbfcff}.entity-head>div:first-child{display:grid;gap:5px}.entity-head code{color:var(--muted);font-size:10px}.rules{display:grid;gap:10px;padding-top:14px;border-top:1px dashed #dfe4ee}.rules-head>div{display:grid;gap:4px}.rule-row{display:grid;grid-template-columns:auto minmax(150px,1fr) minmax(96px,auto) repeat(3,minmax(105px,auto)) minmax(200px,1.4fr) auto;gap:10px;align-items:end;padding:11px;border:1px solid #e7ebf3;border-radius:9px;background:#fff}.severity-select{width:100%}@media(max-width:1100px){.form-grid,.form-grid.three{grid-template-columns:repeat(2,minmax(160px,1fr))}.rule-row{grid-template-columns:repeat(2,minmax(0,1fr))}}@media(max-width:700px){.hero,.panel-head,.entity-head{align-items:flex-start;flex-direction:column}.form-grid,.form-grid.three,.rule-row{grid-template-columns:1fr}.wide{grid-column:auto}.filter-bar{flex-direction:column;align-items:stretch}}
 </style>

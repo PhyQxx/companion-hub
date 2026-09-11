@@ -94,7 +94,9 @@ class ProactiveDeliveryService:
         privacy_level: PrivacyLevel,
         cognitive_decision: CognitiveDecision | None = None,
         target_user_id: UUID | None = None,
+        broadcast: bool = False,
     ) -> ProactiveDeliveryResult | None:
+        """broadcast=True 时忽略 first_available 短路，所有可用通道都投递（SAFE critical）。"""
         snapshot = (
             await self._config_store.refresh()
             if isinstance(self._config_store, DatabaseConfigStore)
@@ -156,7 +158,7 @@ class ProactiveDeliveryService:
                 from uuid import UUID as _UUID
 
                 conversation_id = _UUID(str(receipt.metadata["conversation_id"]))
-            if attempt.delivered and config.delivery_mode == "first_available":
+            if attempt.delivered and config.delivery_mode == "first_available" and not broadcast:
                 break
         await self._record_attempts(
             user_id,

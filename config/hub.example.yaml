@@ -229,6 +229,16 @@ browser_awareness:
   max_text_chars: 8000
   blocked_hosts: []
 
+# 家庭守护（SAFE-01/02，docs/44）。S1：开启后 HA 告警按 severity 分级富化，
+# critical 规则（漏水/烟雾等）全通道广播；升级链参数供 S2 告警状态机使用。
+safety:
+  enabled: false
+  escalation_enabled: true
+  confirm_window_seconds: 300
+  push_retry_minutes: 3
+  inactivity_hours: 12.0
+  inactivity_active_range: "09:00-22:00"
+
 # 外部 MCP Server 默认不连接。一期只允许 Streamable HTTP；工具先进入
 # Hub 本地目录，不会因发现成功就全量注入聊天提示词。
 mcp:

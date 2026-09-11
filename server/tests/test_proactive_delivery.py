@@ -249,3 +249,35 @@ def test_desktop_notifications_reject_l2_content_policy() -> None:
         ProactiveOutputConfig.model_validate(
             {"desktop_notification": {"enabled": True, "max_privacy_level": "L2"}}
         )
+
+
+async def test_broadcast_overrides_first_available_and_hits_all_channels() -> None:
+    """SAFE critical：broadcast=True 时不再首达短路，所有可用通道都投递。"""
+    config = ProactiveOutputConfig.model_validate(
+        {
+            "enabled": True,
+            "delivery_mode": "first_available",
+            "web_chat": {"enabled": True, "priority": 100},
+            "desktop_notification": {"enabled": True, "priority": 80},
+            "voice": {"enabled": True, "priority": 60},
+        }
+    )
+    delivery, chat, _, gateway, voice, database = await service(config)
+    try:
+        result = await delivery.deliver(
+            "【危急】烟雾告警",
+            entity_id="binary_sensor.smoke",
+            rule_id="smoke_detected",
+            trigger_kind="smoke_detected",
+            privacy_level=PrivacyLevel.L1,
+            target_user_id=uuid7(),
+            broadcast=True,
+        )
+        assert result is not None
+        channels = {attempt.channel for attempt in result.attempts if attempt.delivered}
+        assert channels == {"web_chat", "desktop_notification", "voice"}
+        assert len(chat.calls) == 1
+        assert len(gateway.commands) == 1
+        assert voice.messages == ["【危急】烟雾告警"]
+    finally:
+        await database.close()

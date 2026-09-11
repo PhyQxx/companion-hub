@@ -15,6 +15,7 @@ from app.config import (
     HomeAssistantEntityConfig,
     HomeAssistantProactiveRuleConfig,
 )
+from app.db import AppUserRecord, Base, create_database
 from app.home_assistant import (
     DeviceDirectory,
     HomeAssistantBridge,
@@ -35,6 +36,7 @@ from app.home_assistant import (
     SearchDevicesTool,
 )
 from app.home_assistant.manager import home_assistant_service_for_action
+from app.ids import uuid7
 from app.schemas import PrivacyLevel
 from app.tools import ToolContext
 from app.tools.intent import select_device_tools
@@ -780,3 +782,143 @@ def test_home_tool_is_selected_only_with_live_capability_and_intent() -> None:
         "确认",
         ["home_assistant:climate.bedroom:set_temperature"],
     ) == ("home_control",)
+
+
+def test_safety_rule_kinds_matching_and_severity_validation() -> None:
+    smoke_state = HomeAssistantState(
+        entity_id="binary_sensor.smoke", state="on", attributes={},
+        last_changed=None, last_updated=None,
+    )
+    door_state = HomeAssistantState(
+        entity_id="binary_sensor.door", state="on", attributes={},
+        last_changed=None, last_updated=None,
+    )
+    smoke = HomeAssistantProactiveRuleConfig(
+        rule_id="smoke", kind="smoke_detected", enabled=True,
+        severity="critical", duration_seconds=0,
+    )
+    door = HomeAssistantProactiveRuleConfig(
+        rule_id="door", kind="door_open_too_long", enabled=True,
+        severity="warning", duration_seconds=1800,
+    )
+    assert HomeAssistantProactiveEngine._matches(smoke, smoke_state)
+    assert HomeAssistantProactiveEngine._matches(door, door_state)
+    assert not HomeAssistantProactiveEngine._matches(door, HomeAssistantState(
+        entity_id="binary_sensor.door", state="off", attributes={},
+        last_changed=None, last_updated=None,
+    ))
+    # 烟雾规则必须 critical；旧配置缺省 severity 兼容为 warning
+    with pytest.raises(ValidationError, match="critical"):
+        HomeAssistantProactiveRuleConfig(
+            rule_id="bad", kind="smoke_detected", enabled=True, severity="warning",
+        )
+    # 存量漏水规则缺省 severity 时静默升为 critical（免打扰豁免语义不回退）
+    legacy = HomeAssistantProactiveRuleConfig.model_validate({
+        "rule_id": "leak", "kind": "water_leak", "enabled": True, "threshold": None,
+    })
+    assert legacy.severity == "critical"
+    assert HomeAssistantProactiveEngine._render_message(
+        _entity("binary_sensor.smoke", name="厨房烟感"), smoke, smoke_state,
+    ).startswith("检测到厨房烟感触发了烟雾告警")
+
+
+def test_safety_message_enrichment_includes_evidence_and_confidence() -> None:
+    from datetime import UTC, datetime
+
+    policy = _entity("binary_sensor.kitchen_leak", name="厨房水浸")
+    rule = HomeAssistantProactiveRuleConfig(
+        rule_id="leak", kind="water_leak", enabled=True,
+        severity="critical", duration_seconds=0,
+    )
+    fired_at = datetime(2026, 9, 11, 20, 15, tzinfo=UTC)
+    enriched = HomeAssistantProactiveEngine._enrich_message(
+        "检测到厨房水浸触发了水浸告警，请尽快检查附近是否漏水。",
+        policy, rule, fired_at,
+    )
+    assert enriched.startswith("【危急】")
+    assert "厨房水浸" in enriched and "binary_sensor.kitchen_leak" in enriched
+    assert "置信度0.60" in enriched and "瞬时触发" in enriched and "20:15" in enriched
+
+    notice = HomeAssistantProactiveEngine._enrich_message(
+        "设备离线", policy,
+        HomeAssistantProactiveRuleConfig(
+            rule_id="off", kind="device_offline", enabled=True,
+            severity="notice", duration_seconds=120,
+        ),
+        fired_at,
+    )
+    assert notice == "设备离线"
+
+    sustained = HomeAssistantProactiveEngine._confidence(
+        HomeAssistantProactiveRuleConfig(
+            rule_id="hot", kind="temperature_high", enabled=True,
+            threshold=30, duration_seconds=300,
+        )
+    )
+    assert sustained == 0.85
+
+
+async def test_fire_enriches_message_and_broadcasts_on_critical() -> None:
+    """SAFE-S1 全链：safety 开启时 critical 规则富化告警并要求全通道广播。"""
+    database = create_database("sqlite+aiosqlite:///:memory:")
+    async with database.engine.begin() as connection:
+        await connection.run_sync(Base.metadata.create_all)
+    try:
+        async with database.sessions.begin() as session:
+            session.add(AppUserRecord(id=uuid7(), display_name="Owner", status="active"))
+
+        deliveries: list[dict[str, object]] = []
+
+        async def deliver(text: str, **kwargs: object) -> object:
+            deliveries.append({"text": text, **kwargs})
+            return SimpleNamespace(user_id=uuid7(), conversation_id=None)
+
+        safety = SimpleNamespace(enabled=True)
+        smoke_rule = HomeAssistantProactiveRuleConfig(
+            rule_id="smoke", kind="smoke_detected", enabled=True,
+            severity="critical", duration_seconds=0, cooldown_minutes=30,
+        )
+        policy = _entity("binary_sensor.smoke", name="厨房烟感").model_copy(
+            update={"proactive_rules": [smoke_rule]}
+        )
+        ha_config = _config(policy)
+        store = SimpleNamespace(
+            current=SimpleNamespace(
+                config=SimpleNamespace(
+                    integrations=SimpleNamespace(home_assistant=ha_config),
+                    safety=safety,
+                )
+            )
+        )
+        engine = HomeAssistantProactiveEngine(
+            database,
+            cast(Any, store),
+            lambda entity_id: HomeAssistantState(
+                entity_id=entity_id, state="on", attributes={},
+                last_changed=None, last_updated=None,
+            ),
+            cast(Any, deliver),
+        )
+        smoke_state = HomeAssistantState(
+            entity_id="binary_sensor.smoke", state="on", attributes={},
+            last_changed=None, last_updated=None,
+        )
+
+        await engine._fire(policy, smoke_rule, smoke_state)
+
+        assert len(deliveries) == 1
+        fired = deliveries[0]
+        assert fired["broadcast"] is True
+        assert str(fired["text"]).startswith("【危急】")
+        assert "厨房烟感" in str(fired["text"]) and "binary_sensor.smoke" in str(fired["text"])
+        assert "置信度0.60" in str(fired["text"])
+
+        # safety 关闭时回归旧行为：不富化、不广播（换 rule_id 绕开冷却闸门）
+        deliveries.clear()
+        safety.enabled = False
+        smoke_rule_off = smoke_rule.model_copy(update={"rule_id": "smoke_off"})
+        await engine._fire(policy, smoke_rule_off, smoke_state)
+        assert deliveries[0]["broadcast"] is False
+        assert not str(deliveries[0]["text"]).startswith("【危急】")
+    finally:
+        await database.close()
