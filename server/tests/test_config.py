@@ -173,3 +173,55 @@ def test_example_config_selects_latest_free_glm_models_by_capability() -> None:
     assert config.capability_models.vision == "zhipu_vision_free"
     assert config.capability_models.image_generation == "zhipu_image_free"
     assert config.capability_models.video_generation == "zhipu_video_free"
+
+
+def test_redacted_config_masks_push_secret_and_still_validates() -> None:
+    from app.api.admin_config import _SECRET_MASK, _redact_config, _restore_secret_masks
+    from app.config.models import HubConfig
+
+    base = HubConfig.model_validate(
+        {
+            "schema_version": 1,
+            "models": {
+                "cloud": {
+                    "provider": "openai_compatible",
+                    "model": "m",
+                    "base_url": "https://x.example/v1",
+                    "runs_local": False,
+                    "max_privacy_level": "L1",
+                    "max_context_tokens": 8192,
+                    "input_cost_per_million": 0,
+                    "output_cost_per_million": 0,
+                },
+                "local": {
+                    "provider": "openai_compatible",
+                    "model": "lm",
+                    "base_url": "http://127.0.0.1:1/v1",
+                    "runs_local": True,
+                    "max_privacy_level": "L2",
+                    "max_context_tokens": 8192,
+                    "input_cost_per_million": 0,
+                    "output_cost_per_million": 0,
+                },
+            },
+            "routes": {
+                "dialogue": {"primary": "cloud"},
+                "utility": {"primary": "cloud"},
+                "private": {"primary": "local"},
+            },
+            "integrations": {
+                "push": {
+                    "enabled": True,
+                    "vapid_public_key": "B" * 87,
+                    "vapid_private_key_secret_value": "H" * 43,
+                }
+            },
+        }
+    )
+
+    redacted = _redact_config(base)
+    assert redacted.integrations.push.vapid_private_key_secret_value == _SECRET_MASK
+    assert redacted.integrations.push.vapid_public_key == "B" * 87
+
+    restored = _restore_secret_masks(redacted, base)
+    assert restored.integrations.push.vapid_private_key_secret_value == "H" * 43

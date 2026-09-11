@@ -32,7 +32,8 @@ _BEARER = HTTPBearer(auto_error=False)
 AdminCredentials = Annotated[HTTPAuthorizationCredentials | None, Depends(_BEARER)]
 
 logger = logging.getLogger(__name__)
-_SECRET_MASK = "__ARIA_SECRET_CONFIGURED__"
+# 掩码必须能通过所有被脱敏字段的长度校验（vapid 私钥 min_length=32）
+_SECRET_MASK = "__ARIA_SECRET_CONFIGURED__DO_NOT_EDIT__"
 
 _runtime_admin_token: str | None = None
 
@@ -343,6 +344,9 @@ def _redact_config(config: HubConfig) -> HubConfig:
         xiaoai["xiaomi_pass_token_secret_value"] = _SECRET_MASK
     if xiaoai.get("gateway_token_secret_value"):
         xiaoai["gateway_token_secret_value"] = _SECRET_MASK
+    push = data["integrations"]["push"]
+    if push.get("vapid_private_key_secret_value"):
+        push["vapid_private_key_secret_value"] = _SECRET_MASK
     return HubConfig.model_validate(data)
 
 
@@ -356,6 +360,12 @@ def _restore_secret_masks(config: HubConfig, current: HubConfig) -> HubConfig:
         incoming["xiaomi_pass_token_secret_value"] = existing.xiaomi_pass_token_secret_value
     if incoming.get("gateway_token_secret_value") == _SECRET_MASK:
         incoming["gateway_token_secret_value"] = existing.gateway_token_secret_value
+    incoming_push = data["integrations"]["push"]
+    existing_push = current.integrations.push
+    if incoming_push.get("vapid_private_key_secret_value") == _SECRET_MASK:
+        incoming_push["vapid_private_key_secret_value"] = (
+            existing_push.vapid_private_key_secret_value
+        )
     return HubConfig.model_validate(data)
 
 
