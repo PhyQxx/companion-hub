@@ -347,6 +347,9 @@ def _redact_config(config: HubConfig) -> HubConfig:
     push = data["integrations"]["push"]
     if push.get("vapid_private_key_secret_value"):
         push["vapid_private_key_secret_value"] = _SECRET_MASK
+    for server in data["mcp"]["servers"]:
+        if server.get("secret_value"):
+            server["secret_value"] = _SECRET_MASK
     return HubConfig.model_validate(data)
 
 
@@ -366,6 +369,11 @@ def _restore_secret_masks(config: HubConfig, current: HubConfig) -> HubConfig:
         incoming_push["vapid_private_key_secret_value"] = (
             existing_push.vapid_private_key_secret_value
         )
+    existing_mcp = {server.server_id: server for server in current.mcp.servers}
+    for server in data["mcp"]["servers"]:
+        if server.get("secret_value") == _SECRET_MASK:
+            previous = existing_mcp.get(server.get("server_id"))
+            server["secret_value"] = previous.secret_value if previous else None
     return HubConfig.model_validate(data)
 
 

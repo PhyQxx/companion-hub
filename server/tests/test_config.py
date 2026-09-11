@@ -216,12 +216,26 @@ def test_redacted_config_masks_push_secret_and_still_validates() -> None:
                     "vapid_private_key_secret_value": "H" * 43,
                 }
             },
+            "mcp": {
+                "enabled": True,
+                "servers": [
+                    {
+                        "server_id": "context7",
+                        "endpoint": "https://mcp.context7.com/mcp",
+                        "secret_value": "K" * 40,
+                        "allowed_tools": ["query-docs"],
+                    }
+                ],
+            },
         }
     )
 
     redacted = _redact_config(base)
     assert redacted.integrations.push.vapid_private_key_secret_value == _SECRET_MASK
     assert redacted.integrations.push.vapid_public_key == "B" * 87
+    assert redacted.mcp.servers[0].secret_value == _SECRET_MASK
+    assert str(redacted.mcp.servers[0].endpoint) == "https://mcp.context7.com/mcp"
 
     restored = _restore_secret_masks(redacted, base)
     assert restored.integrations.push.vapid_private_key_secret_value == "H" * 43
+    assert restored.mcp.servers[0].secret_value == "K" * 40
