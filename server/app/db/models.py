@@ -1663,3 +1663,52 @@ class MeetingActionClaimRecord(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now()
     )
+
+
+class SafetyAlertRecord(Base):
+    """SAFE-02 告警状态机：critical 规则的 L1→L2 升级与 ack 终态。
+
+    L3（预授权联系人邮件）在 S3 接入前不落 level；evidence 只存确定性
+    字段（来源实体/持续/置信度），不含 L2 内容。
+    """
+
+    __tablename__ = "safety_alert"
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('escalating','acknowledged','expired')",
+            name="ck_safety_alert_status",
+        ),
+        CheckConstraint("severity IN ('critical')", name="ck_safety_alert_severity"),
+        CheckConstraint("level IN (1, 2)", name="ck_safety_alert_level"),
+        Index("ix_safety_alert_user_status_created", "user_id", "status", "created_at"),
+        Index(
+            "ix_safety_alert_active_dedupe",
+            "user_id",
+            "entity_id",
+            "rule_id",
+            "status",
+        ),
+    )
+
+    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True)
+    user_id: Mapped[UUID] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("app_user.id", ondelete="CASCADE"), nullable=False
+    )
+    rule_id: Mapped[str] = mapped_column(String(160), nullable=False)
+    entity_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    severity: Mapped[str] = mapped_column(String(12), nullable=False, default="critical")
+    message: Mapped[str] = mapped_column(String(2_000), nullable=False)
+    evidence: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False, default=dict)
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="escalating")
+    level: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    l1_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    l2_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    acked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    ack_source: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now()
+    )

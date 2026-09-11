@@ -1,0 +1,283 @@
+from __future__ import annotations
+
+import asyncio
+from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
+from typing import Any, cast
+
+from app.config.models import SafetyConfig
+from app.db import AppUserRecord, Base, Database, create_database
+from app.home_assistant import HomeAssistantProactiveEngine
+from app.home_assistant.models import HomeAssistantState
+from app.ids import uuid7
+from app.safety import SafetyAlertService
+from app.timeline.models import TimelineSourceType
+from app.timeline.store import TimelineStore
+
+
+class FakeTime:
+    """可控时钟：sleep 直接推进时间，窗口判定完全确定性。"""
+
+    def __init__(self) -> None:
+        self.now = datetime(2026, 9, 11, 12, 0, tzinfo=UTC)
+
+    def clock(self) -> datetime:
+        return self.now
+
+    async def sleep(self, seconds: float) -> None:
+        self.now += timedelta(seconds=seconds)
+
+
+async def _database(tmp_path: Any) -> Database:
+    # 状态机后台任务与测试协程并发开连接，:memory: 每连接独立库会互相看不到表，
+    # 用文件库保证并发会话共享 schema
+    database = create_database(f"sqlite+aiosqlite:///{tmp_path}/safety.db")
+    async with database.engine.begin() as connection:
+        await connection.run_sync(Base.metadata.create_all)
+    return database
+
+
+def _config_store(*, window: int = 60, retry: int = 3) -> Any:
+    safety = SafetyConfig(enabled=True, confirm_window_seconds=window, push_retry_minutes=retry)
+    return SimpleNamespace(
+        current=SimpleNamespace(config=SimpleNamespace(safety=safety))
+    )
+
+
+def _make_service(
+    database: Database,
+    fake_time: FakeTime,
+    config_store: Any | None = None,
+    timeline: TimelineStore | None = None,
+) -> tuple[SafetyAlertService, list[dict[str, Any]]]:
+    deliveries: list[dict[str, Any]] = []
+
+    async def deliver(text: str, **kwargs: Any) -> Any:
+        deliveries.append({"text": text, **kwargs})
+        return SimpleNamespace(user_id=kwargs.get("target_user_id"), conversation_id=None)
+
+    service = SafetyAlertService(
+        database,
+        config_store or _config_store(),
+        cast(Any, deliver),
+        timeline=timeline,
+        clock=fake_time.clock,
+        sleeper=fake_time.sleep,
+    )
+    return service, deliveries
+
+
+async def test_alert_lifecycle_l1_l2_repeat_ack(tmp_path: Any) -> None:
+    database = await _database(tmp_path)
+    user_id = uuid7()
+    async with database.sessions.begin() as session:
+        session.add(AppUserRecord(id=user_id, display_name="Owner", status="active"))
+    timeline = TimelineStore(database)
+    fake_time = FakeTime()
+    service, deliveries = _make_service(database, fake_time, timeline=timeline)
+    try:
+        alert = await service.handle(
+            user_id=user_id,
+            rule_id="smoke",
+            entity_id="binary_sensor.smoke",
+            message="【危急】厨房烟感触发了烟雾告警…",
+            evidence={"entity": "binary_sensor.smoke", "confidence": 0.6},
+        )
+        assert alert is not None and alert.status == "escalating" and alert.level == 1
+        assert len(deliveries) == 1
+        assert deliveries[0]["broadcast"] is True
+        assert deliveries[0]["trigger_kind"] == "safety.alert"
+
+        # 确认窗口（60s）过后升级 L2，再等重试间隔（3min）重复提醒
+        await service._tasks[alert.id]
+        assert len(deliveries) == 3
+        assert deliveries[1]["text"].startswith("【仍需确认】")
+        assert deliveries[2]["text"].startswith("【再次提醒】")
+        fresh = await service._store.get(alert.id)
+        assert fresh is not None and fresh.level == 2 and fresh.l2_at is not None
+
+        # 到期收尾为 expired（升级链在首次 await 时已跑完，任务自动出表）
+        expired = await service._store.get(alert.id)
+        assert expired is not None and expired.status == "expired"
+
+        events = await timeline.search(
+            user_id=user_id,
+            source_types=(TimelineSourceType.SYSTEM,),
+            event_types=("safety.alert_raised", "safety.alert_escalated"),
+        )
+        kinds = [event.event_type for event in events.events]
+        assert "safety.alert_raised" in kinds and "safety.alert_escalated" in kinds
+    finally:
+        await service.stop()
+        await database.close()
+
+
+async def test_ack_terminates_escalation_and_chat_intent_matches(tmp_path: Any) -> None:
+    database = await _database(tmp_path)
+    user_id = uuid7()
+    async with database.sessions.begin() as session:
+        session.add(AppUserRecord(id=user_id, display_name="Owner", status="active"))
+    fake_time = FakeTime()
+    service, deliveries = _make_service(database, fake_time)
+    try:
+        alert = await service.handle(
+            user_id=user_id,
+            rule_id="leak",
+            entity_id="binary_sensor.leak",
+            message="【危急】厨房水浸…",
+            evidence={},
+        )
+        assert alert is not None
+
+        assert await service.handle_user_text("今天天气怎么样", user_id=user_id) == 0
+        assert await service.handle_user_text("知道了。", user_id=user_id) == 1
+        acked = await service._store.get(alert.id)
+        assert acked is not None and acked.status == "acknowledged"
+        assert acked.ack_source == "chat"
+
+        # 确认后不再升级投递
+        await asyncio.sleep(0)
+        assert len(deliveries) == 1
+    finally:
+        await service.stop()
+        await database.close()
+
+
+async def test_handle_dedupes_active_alert(tmp_path: Any) -> None:
+    database = await _database(tmp_path)
+    user_id = uuid7()
+    async with database.sessions.begin() as session:
+        session.add(AppUserRecord(id=user_id, display_name="Owner", status="active"))
+    fake_time = FakeTime()
+    service, deliveries = _make_service(database, fake_time)
+    try:
+        first = await service.handle(
+            user_id=user_id, rule_id="smoke", entity_id="binary_sensor.smoke",
+            message="m", evidence={},
+        )
+        second = await service.handle(
+            user_id=user_id, rule_id="smoke", entity_id="binary_sensor.smoke",
+            message="m", evidence={},
+        )
+        assert first is not None and second is not None and first.id == second.id
+        assert len(deliveries) == 1
+    finally:
+        await service.stop()
+        await database.close()
+
+
+async def test_resume_picks_up_escalating_alerts_after_restart(tmp_path: Any) -> None:
+    database = await _database(tmp_path)
+    user_id = uuid7()
+    async with database.sessions.begin() as session:
+        session.add(AppUserRecord(id=user_id, display_name="Owner", status="active"))
+    fake_time = FakeTime()
+    first, _ = _make_service(database, fake_time)
+    alert = await first.handle(
+        user_id=user_id, rule_id="smoke", entity_id="binary_sensor.smoke",
+        message="m", evidence={},
+    )
+    await first.stop()
+    assert alert is not None
+
+    # “重启”：新服务实例 + 时间已过确认窗口 → resume 后直接补 L2
+    fake_time.now += timedelta(minutes=10)
+    second, deliveries2 = _make_service(database, fake_time)
+    try:
+        resumed = await second.resume()
+        assert resumed == 1
+        task = second._tasks.get(alert.id)
+        if task is not None:
+            await task
+        assert any(d["text"].startswith("【仍需确认】") for d in deliveries2)
+    finally:
+        await second.stop()
+        await database.close()
+
+
+async def test_engine_routes_critical_to_state_machine(tmp_path: Any) -> None:
+    from app.config import (
+        HomeAssistantConfig,
+        HomeAssistantEntityConfig,
+    )
+
+    database = await _database(tmp_path)
+    user_id = uuid7()
+    async with database.sessions.begin() as session:
+        session.add(AppUserRecord(id=user_id, display_name="Owner", status="active"))
+    fake_time = FakeTime()
+    safety, safety_deliveries = _make_service(database, fake_time)
+
+    engine_deliveries: list[dict[str, Any]] = []
+
+    async def engine_deliver(text: str, **kwargs: Any) -> Any:
+        engine_deliveries.append({"text": text, **kwargs})
+        return SimpleNamespace(user_id=user_id, conversation_id=None)
+
+    def _entity(entity_id: str, name: str) -> HomeAssistantEntityConfig:
+        return HomeAssistantEntityConfig.model_validate(
+            {
+                "entity_id": entity_id,
+                "display_name": name,
+                "aliases": [],
+                "read_allowed": True,
+                "history_allowed": False,
+                "history_max_hours": 24,
+                "allowed_actions": [],
+                "confirmation_required_actions": [],
+                "privacy_level": "L1",
+                "allowed_attributes": ["friendly_name"],
+                "proactive_rules": [
+                    {
+                        "rule_id": "smoke",
+                        "kind": "smoke_detected",
+                        "enabled": True,
+                        "severity": "critical",
+                        "duration_seconds": 0,
+                        "cooldown_minutes": 30,
+                    }
+                ],
+            }
+        )
+
+    smoke_state = HomeAssistantState(
+        entity_id="binary_sensor.smoke", state="on", attributes={},
+        last_changed=None, last_updated=None,
+    )
+    store = SimpleNamespace(
+        current=SimpleNamespace(
+            config=SimpleNamespace(
+                integrations=SimpleNamespace(
+                    home_assistant=HomeAssistantConfig.model_validate(
+                        {
+                            "enabled": True,
+                            "base_url": "https://ha.example.test:8123",
+                            "secret_ref": "env:ARIA_HA_TOKEN",
+                            "entities": [_entity("binary_sensor.smoke", "厨房烟感").model_dump()],
+                        }
+                    )
+                ),
+                safety=SafetyConfig(enabled=True),
+            )
+        )
+    )
+    policy = store.current.config.integrations.home_assistant.entities[0]
+    rule = policy.proactive_rules[0]
+    engine = HomeAssistantProactiveEngine(
+        database,
+        cast(Any, store),
+        lambda entity_id: smoke_state,
+        cast(Any, engine_deliver),
+        safety=safety,
+    )
+    try:
+        await engine._fire(policy, rule, smoke_state)
+        # 引擎不再直投，告警进入状态机（L1 由状态机广播）
+        assert engine_deliveries == []
+        assert len(safety_deliveries) == 1
+        assert safety_deliveries[0]["text"].startswith("【危急】")
+        assert safety_deliveries[0]["broadcast"] is True
+    finally:
+        await engine.stop()
+        await safety.stop()
+        await database.close()

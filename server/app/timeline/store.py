@@ -198,6 +198,45 @@ class TimelineStore:
         )
         return await self._insert(record)
 
+    async def index_custom(
+        self,
+        *,
+        user_id: UUID,
+        source_id: str,
+        source_type: TimelineSourceType,
+        actor: TimelineActor,
+        event_type: str,
+        title: str,
+        summary: str,
+        privacy_level: PrivacyLevel,
+        occurred_at: datetime,
+        metadata: dict[str, Any] | None = None,
+        importance: float = 0.4,
+    ) -> TimelineEvent | None:
+        """通用系统事件索引（SAFE 告警等新事件类型的接入点，避免每类一个方法）。"""
+        privacy = PrivacyLevel(privacy_level)
+        if privacy is PrivacyLevel.L3:
+            return None
+        text = summary.strip()
+        if not text:
+            return None
+        record = TimelineEventRecord(
+            user_id=user_id,
+            occurred_at=_utc(occurred_at),
+            source_type=source_type.value,
+            source_id=source_id[:255],
+            actor=actor.value,
+            event_type=event_type,
+            title=title[:320],
+            summary=_index_summary(text),
+            privacy_level=privacy.value,
+            importance=importance,
+            entities=[],
+            keywords=_keywords(text)[:8],
+            metadata_json=metadata or {},
+        )
+        return await self._insert(record)
+
     async def get(self, timeline_id: int, *, user_id: UUID | None = None) -> TimelineEvent:
         async with self._database.sessions() as session:
             record = await session.get(TimelineEventRecord, timeline_id)

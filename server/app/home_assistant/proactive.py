@@ -6,7 +6,7 @@ import logging
 from collections.abc import Awaitable, Callable
 from contextlib import suppress
 from datetime import UTC, datetime, time, timedelta
-from typing import ClassVar
+from typing import Any, ClassVar
 from uuid import UUID
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -45,6 +45,7 @@ class HomeAssistantProactiveEngine:
         deliver: Deliver,
         cognitive_cycle: CognitiveCycle | None = None,
         perception_pipeline: PerceptionPipeline | None = None,
+        safety: Any | None = None,
     ) -> None:
         self._database = database
         self._config_store = config_store
@@ -52,6 +53,8 @@ class HomeAssistantProactiveEngine:
         self._deliver = deliver
         self._cognitive_cycle = cognitive_cycle
         self._perception_pipeline = perception_pipeline
+        # SAFE-02 SafetyAlertService：critical 规则交由告警状态机升级/确认
+        self._safety = safety
         self._tasks: dict[tuple[str, str], asyncio.Task[None]] = {}
 
     async def stop(self) -> None:
@@ -217,6 +220,38 @@ class HomeAssistantProactiveEngine:
                 )
                 return
             message = cognitive_decision.message or message
+        if safety_enabled and rule.severity == "critical" and self._safety is not None:
+            # SAFE-02：critical 交告警状态机（L1 广播 + 升级窗口 + ack 终态）
+            safety_user = (
+                cognitive_decision.user_id
+                if cognitive_decision is not None
+                else await self._active_user_id()
+            )
+            if safety_user is None:
+                await self._log(policy, rule, now, passed=False, reason="no_active_user")
+                return
+            alert = await self._safety.handle(
+                user_id=safety_user,
+                rule_id=rule.rule_id,
+                entity_id=policy.entity_id,
+                message=message,
+                evidence={
+                    "entity": policy.entity_id,
+                    "display_name": policy.display_name,
+                    "duration_seconds": rule.duration_seconds,
+                    "confidence": self._confidence(rule),
+                    "state_changed_at": _state_changed_at(state, fallback=now).isoformat(),
+                },
+            )
+            await self._log(
+                policy,
+                rule,
+                now,
+                passed=alert is not None,
+                user_id=safety_user,
+                message=message,
+            )
+            return
         if cognitive_decision is None:
             result = await self._deliver(
                 message,

@@ -143,6 +143,7 @@ from app.persona import PersonaStore
 from app.pnkx import PnkxCreateTool, PnkxLifeClient, PnkxReadTool, pnkx_runs_local
 from app.push import PushSubscriptionStore, WebPushAdapter
 from app.runtime import TurnCoordinator
+from app.safety import SafetyAlertService
 from app.schemas.common import PrivacyLevel
 from app.screen_awareness import (
     ScreenAwarenessAnalyzer,
@@ -265,6 +266,7 @@ def create_app(
     screen_awareness_loop: ScreenAwarenessLoop | None = None
     browser_awareness_loop: BrowserAwarenessLoop | None = None
     mcp_manager = McpManager(runtime_config) if runtime_config is not None else None
+    safety_alert_service: SafetyAlertService | None = None
     proactive_delivery: ProactiveDeliveryService | None = None
     mqtt_presence_bridge: MqttPresenceBridge | None = None
     task_scheduler: TaskScheduler | None = None
@@ -682,6 +684,8 @@ def create_app(
             browser_awareness_loop.start()
         if mcp_manager is not None:
             mcp_manager.start()
+        if safety_alert_service is not None:
+            await safety_alert_service.resume()
         if task_scheduler is not None:
             task_scheduler.start()
         if goal_reminder_scheduler is not None:
@@ -715,6 +719,8 @@ def create_app(
                 await browser_awareness_loop.stop()
             if mcp_manager is not None:
                 await mcp_manager.stop()
+            if safety_alert_service is not None:
+                await safety_alert_service.stop()
             if home_assistant_proactive is not None:
                 await home_assistant_proactive.stop()
             if mqtt_client is not None:
@@ -1471,6 +1477,15 @@ def create_app(
                     ),
                 )
                 app.state.proactive_delivery_service = proactive_delivery
+                # SAFE-02：告警状态机（critical 升级链 + 聊天确认意图 + Timeline）
+                safety_alert_service = SafetyAlertService(
+                    runtime_database,
+                    runtime_config,
+                    proactive_delivery.deliver,
+                    timeline=timeline_store,
+                )
+                app.state.safety_alert_service = safety_alert_service
+                runtime_chat_service.set_safety(safety_alert_service)
                 if task_scheduler is not None:
                     task_scheduler.set_deliverer(deliver_task_reminder)
                 if goal_reminder_scheduler is not None:
@@ -1556,6 +1571,7 @@ def create_app(
                     proactive_delivery.deliver,
                     cognitive_cycle=cognitive_cycle,
                     perception_pipeline=perception_pipeline,
+                    safety=safety_alert_service,
                 )
                 home_assistant_manager.set_state_change_handler(
                     home_assistant_proactive.on_state_change

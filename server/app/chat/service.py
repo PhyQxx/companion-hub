@@ -328,6 +328,7 @@ class ChatService:
         device_tool: ToolHandler | None = None,
         device_tools: Iterable[ToolHandler] = (),
         mcp_tools: McpChatToolProvider | None = None,
+        safety: Any | None = None,
         cognitive_cycle: CognitiveCycle | None = None,
         avatar_store: Any | None = None,
         goal_tracker: Any | None = None,
@@ -355,6 +356,9 @@ class ChatService:
             handlers.append(device_tool)
         self._device_tools = ToolRegistry(handlers)
         self._mcp_tools = mcp_tools
+        # SAFE-02 SafetyAlertService：聊天确认意图入口（可选依赖，无则跳过）。
+        # main.py 中投递服务晚于 ChatService 构造，装配后经 set_safety 注入。
+        self._safety = safety
         self._memory_consistency_guard = MemoryConsistencyGuard()
         self._memory_retriever = MemoryRetriever(memory_store) if memory_store else None
         self._memory_ingester = (
@@ -365,6 +369,10 @@ class ChatService:
         self._recent_devices: dict[UUID, list[RecentDeviceReference]] = {}
         secrets = EnvSecretProvider()
         self._router_builder = router_builder or (lambda config: build_router(config, secrets))
+
+    def set_safety(self, safety: Any | None) -> None:
+        """SAFE-02：投递服务晚于 ChatService 构造，装配后注入告警服务。"""
+        self._safety = safety
 
     async def create_conversation(
         self,
@@ -572,6 +580,14 @@ class ChatService:
     ) -> PendingTurn:
         if privacy_level is PrivacyLevel.L3:
             raise ValueError("L3 durable chat is not allowed")
+        if self._safety is not None:
+            try:
+                # SAFE-02：聊天确认意图（"知道了/已处理"）确认活跃安全告警
+                acked = await self._safety.handle_user_text(text, user_id=user_id)
+                if acked:
+                    logger.info("safety alerts acknowledged via chat: %d", acked)
+            except Exception:
+                logger.warning("safety ack handling failed", exc_info=True)
         now = datetime.now(UTC)
         turn_id = uuid7()
         generation_id = uuid7()

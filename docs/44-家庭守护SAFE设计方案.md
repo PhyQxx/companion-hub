@@ -1,6 +1,6 @@
 # 44 - 家庭守护 SAFE-01/02 设计方案
 
-> 状态：v1 设计定稿；S1 已实现（2026-09-11），S2～S4 待实施
+> 状态：v1 设计定稿；S1/S2 已实现（2026-09-11），S3～S4 待实施
 > 相关：[39-个人管家能力路线图](./39-个人管家能力路线图.md)、[36-Home Assistant集成设计](./36-Home%20Assistant集成设计.md)、[31-记忆时间线与历史回溯设计](./31-记忆时间线与历史回溯设计.md)
 
 ## 1. 功能定位
@@ -109,6 +109,15 @@ class SafetyConfig(StrictModel):
 5. 所有告警事件进 Timeline，用户可像其他记录一样删除（删除闭环沿用）。
 
 ## 7. 实施记录
+
+### S2（2026-09-11 已实现）
+
+- 持久化：`safety_alert` 表（`0038_safety_alerts` 迁移，ORM + 索引/约束）与 `app/safety/` 包（store + service）；同实体同规则活跃告警去重。
+- 状态机：L1 广播投递（trigger_kind=safety.alert，broadcast）→ 确认窗口（`confirm_window_seconds`）后升级 L2（【仍需确认】+ level=2 + l2_at）→ 推送重试间隔后再次提醒（【再次提醒】）→ 生命周期 2h 到期收尾 expired；`TimelineStore.index_custom` 通用系统事件索引，落 safety.alert_raised / escalated / acked 三类。
+- 确认：`acknowledge(alert_id, source)` 服务端入口 + 聊天意图（"知道了/收到/已处理"精确匹配且存在活跃告警时全部确认，普通对话零影响）；确认即取消升级任务并记 ack_source。
+- 恢复：`resume()` 启动时扫描 escalating 告警按已过窗口补齐升级/到期；`stop()` 停机收尾；SQLite 朴素时间统一 UTC 归一后与时钟比较。
+- 接线：HA 引擎 `_fire` 在认知闸门后将 critical 交状态机（引擎不再直投）；ChatService 经 `set_safety` 注入（投递服务晚于其构造）；main.py lifespan resume/stop。L3 联系人升级为 S3 预留位。
+- 回归：`test_safety.py` 5 项（L1→L2→重提醒→expired 全链可控时钟、ack/聊天意图、去重、重启恢复、引擎路由）+ 引擎路由测试；全量 **846 通过**、mypy 264 文件零错误。L3 联系人升级、久未活动（S4）、Admin/聊天告警卡片留待后续批次。
 
 ### S1（2026-09-11 已实现）
 
