@@ -1,7 +1,7 @@
 # MCP 整体架构与接入实施方案
 
 > 日期：2026-09-08  
-> 状态：已定稿；MCP-C0（2026-09-08）、C1（2026-09-10）、D（2026-09-11）已实现  
+> 状态：已定稿；MCP-C0（2026-09-08）、C1（2026-09-10）、C2/D（2026-09-11）已实现  
 > 范围：Companion Hub 作为 MCP Client 接入外部工具；Aria MCP Server 暂不启动
 
 ## 1. 架构结论
@@ -117,7 +117,16 @@ GitHub MCP 列为第二试点候选，原因是它对本项目有价值，但涉
 - **唯一写入口**：`mcp_tool_call` 工具（`runs_local=False`、`max L1`）只注册进计划执行器，聊天挂载恒关（`_device_tool_ready` 永拒）；`McpManager.call` 保持写工具硬拦截，新增 `call_write` 仅供确认后的 Runner 调用，参数体积 16KB 上限。
 - **执行上下文与验证**：Runner 对 `mcp_tool_call` 步骤固定 L1 上下文（外部服务不接收 L2），验证策略 RECEIPT + `mcp.call_receipt`——回执证据只含 server/tool/ok，远端正文不进验证记录。
 - **验收**（`test_mcp_integration.py` 新增 7 项）：保守建模接受/拒绝矩阵、同步只注册写工具且 A2 策略/编译形状正确、重复同步幂等 + 目录清空移除、目录回调触发、工具经 `call_write` 路由且超大参数拒绝、`call` 拦截写而 `call_write` 放行、Runner 以 L1 上下文执行并产出 VERIFIED 回执。非 soak 全量 832 通过，mypy 259 文件零错误。
-- **待真机**：接入一个真实的含写工具 MCP Server 后做确认/幂等/未知结果/审计真机验收；C2（按意图检索 + 每轮动态加载读工具）另行启动。
+- **待真机**：接入一个真实的含写工具 MCP Server 后做确认/幂等/未知结果/审计真机验收。
+
+## 11. MCP-C2 实施记录（2026-09-11）
+
+按意图检索 + 每轮动态加载只读工具，交付与红线：
+
+- **选择器**：`integrations/mcp/chat_tools.py` 的 `McpChatToolProvider.select(text, config, privacy_level)`——每轮用词法相关性（拉丁 token + 中文 2-gram，与工具名分段/标题求重叠率，阈值 0.12）从目录挑**只读**工具，最多 `config.mcp.max_tools_per_turn` 个；无关文本零挂载（验收：工具总数增长不推高普通对话 Token），L2/L3 回合一律不挂，MCP 总开关关闭不挂。
+- **不可信文本不进提示词**：远端 description 只用于本地打分（且 C2 选择器实际只用名称分段与标题）；给模型的工具描述是 Hub 生成的稳定文案（server/tool 名 + 参数名清单），参数 Schema 经 `modeling.py` 保守重建（共享构建器：C2 扁平形状直接作参数模型，D 再包 `{"arguments": ...}`）。
+- **挂载与执行**：ChatService 新增 `mcp_tools` 依赖——本轮选中的 handler 定义追加进 `CompletionRequest.tools`，执行走独立临时 `ToolRegistry`（设备工具 → MCP → query 工具的解析顺序），handler `runs_local=False` + `max L1` 由 EgressGuard 兜底；选择失败只记 warning 不影响回合。
+- **验收**（`test_mcp_integration.py` 新增 4 项）：相关/无关/L2/关停四态选择、每轮上限与复杂 Schema 跳过、handler 经 `manager.call` 执行（只读路径）、ChatService 级注入（相关回合 tools 含 `mcp.*`、无关回合不含）。实机：真实 Context7 目录下 "用 context7 查 fastapi 文档" 选中两工具、无关与 L2 零挂载、`resolve-library-id` 真实调用返回库 ID。全量 836 通过，mypy 261 文件零错误。
 
 ## 9. 官方依据
 

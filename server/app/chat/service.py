@@ -23,6 +23,7 @@ from app.db import (
     MessageRecord,
 )
 from app.ids import uuid7
+from app.integrations.mcp.chat_tools import McpChatToolProvider, McpReadToolHandler
 from app.llm import CompletionRequest, CompletionResult, LLMMessage, LLMRoute, ToolCall
 from app.llm.factory import build_router
 from app.llm.provider import EnvSecretProvider
@@ -290,6 +291,7 @@ class PendingTurn:
     browser_activity_recall: BrowserActivityRecallResult | None = None
     runtime_capabilities: tuple[RuntimeActionCapability, ...] = ()
     tool_names: tuple[str, ...] = ()
+    mcp_handlers: tuple[McpReadToolHandler, ...] = ()
     # 连接级临时位置(L2 原始信号): 仅随轮次存活于内存, 不写入任何持久化记录。
     client_location: ClientLocation | None = None
     cognitive_decision: CognitiveDecision | None = None
@@ -325,6 +327,7 @@ class ChatService:
         capability_provider: RuntimeCapabilityProvider | None = None,
         device_tool: ToolHandler | None = None,
         device_tools: Iterable[ToolHandler] = (),
+        mcp_tools: McpChatToolProvider | None = None,
         cognitive_cycle: CognitiveCycle | None = None,
         avatar_store: Any | None = None,
         goal_tracker: Any | None = None,
@@ -351,6 +354,7 @@ class ChatService:
         if device_tool is not None:
             handlers.append(device_tool)
         self._device_tools = ToolRegistry(handlers)
+        self._mcp_tools = mcp_tools
         self._memory_consistency_guard = MemoryConsistencyGuard()
         self._memory_retriever = MemoryRetriever(memory_store) if memory_store else None
         self._memory_ingester = (
@@ -771,6 +775,18 @@ class ChatService:
         }
         tool_definitions = [definition_builders[name]() for name in query_tool_names]
         tool_definitions.extend(self._device_tools.definitions(device_tool_names))
+        # MCP-C2：按本轮文本相关性挂载只读 MCP 工具（有界，L2 不挂）
+        mcp_handlers: tuple[McpReadToolHandler, ...] = ()
+        if self._mcp_tools is not None:
+            try:
+                mcp_handlers = self._mcp_tools.select(
+                    text, config=snapshot.config, privacy_level=privacy_level
+                )
+            except Exception:
+                logger.warning("mcp tool selection failed for turn %s", turn_id, exc_info=True)
+        if mcp_handlers:
+            tool_names = (*tool_names, *(handler.name for handler in mcp_handlers))
+            tool_definitions.extend(handler.definition() for handler in mcp_handlers)
         request = CompletionRequest(
             trace_id=turn_id,
             messages=[
@@ -815,6 +831,7 @@ class ChatService:
             browser_activity_recall=browser_activity_recall,
             runtime_capabilities=runtime_capabilities,
             tool_names=tool_names,
+            mcp_handlers=mcp_handlers,
             client_location=client_location,
             cognitive_decision=cognitive_decision,
         )
@@ -1020,6 +1037,33 @@ class ChatService:
                         ok=False,
                         tool_name=call.function.name,
                         reason_code="device_tool_unavailable",
+                        latency_ms=0,
+                    ),
+                )
+        mcp_handler = next(
+            (item for item in pending.mcp_handlers if item.name == call.function.name), None
+        )
+        if mcp_handler is not None:
+            # 本轮选中的只读 MCP 工具：独立注册表执行，L1 上限由 Egress 兜底
+            try:
+                execution = await ToolExecutor(ToolRegistry([mcp_handler])).execute(
+                    call,
+                    context,
+                )
+                return execution
+            except Exception:
+                logger.warning(
+                    "mcp tool runtime failed turn_id=%s tool=%s",
+                    pending.turn_id,
+                    call.function.name,
+                    exc_info=True,
+                )
+                return ToolExecution(
+                    call_id=call.id,
+                    result=ToolResult(
+                        ok=False,
+                        tool_name=call.function.name,
+                        reason_code="mcp_tool_unavailable",
                         latency_ms=0,
                     ),
                 )

@@ -121,6 +121,7 @@ from app.home_scene import (
 )
 from app.integrations.mcp import McpManager
 from app.integrations.mcp.actions import sync_mcp_actions
+from app.integrations.mcp.chat_tools import McpChatToolProvider
 from app.jobs import AssetStore, JobEngine
 from app.llm.provider import EnvSecretProvider
 from app.mail import MailSendTool, create_mail_tools
@@ -1301,6 +1302,9 @@ def create_app(
                 history_recall_service=history_recall,
                 capability_provider=capability_provider,
                 device_tools=device_tools,
+                mcp_tools=(
+                    McpChatToolProvider(mcp_manager) if mcp_manager is not None else None
+                ),
                 cognitive_cycle=cognitive_cycle,
                 avatar_store=avatar_store,
                 goal_tracker=goal_tracker,

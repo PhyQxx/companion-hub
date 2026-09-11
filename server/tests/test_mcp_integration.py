@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from types import SimpleNamespace, TracebackType
 from typing import Any, Self, cast
+from uuid import uuid4
 
 import pytest
 from fastapi import FastAPI
@@ -542,3 +543,244 @@ async def test_plan_runner_executes_mcp_step_with_l1_context_and_receipt() -> No
         "tool_name": "mcp.books.create",
         "ok": True,
     }
+
+
+def _context7_catalog_factory() -> FakeFactory:
+    """目录含两个只读工具（query-docs 带 schema）+ 一个写工具。"""
+    return FakeFactory(
+        [
+            FakeClient(
+                {
+                    None: (
+                        [
+                            McpRemoteTool(
+                                name="resolve-library-id",
+                                title="Resolve Context7 Library ID",
+                                description="remote free text must not reach the model",
+                                input_schema={
+                                    "type": "object",
+                                    "properties": {
+                                        "libraryName": {"type": "string"},
+                                        "query": {"type": "string"},
+                                    },
+                                    "required": ["libraryName", "query"],
+                                },
+                                read_only_hint=True,
+                                destructive_hint=False,
+                                idempotent_hint=True,
+                            ),
+                            McpRemoteTool(
+                                name="query-docs",
+                                title="Query Documentation",
+                                description="remote free text 2",
+                                input_schema={
+                                    "type": "object",
+                                    "properties": {
+                                        "libraryId": {"type": "string"},
+                                        "query": {"type": "string"},
+                                    },
+                                    "required": ["libraryId", "query"],
+                                },
+                                read_only_hint=True,
+                                destructive_hint=False,
+                                idempotent_hint=True,
+                            ),
+                            McpRemoteTool(
+                                name="create-book",
+                                title="Create Book",
+                                description="write tool",
+                                input_schema={
+                                    "type": "object",
+                                    "properties": {"title": {"type": "string"}},
+                                    "required": ["title"],
+                                },
+                                read_only_hint=False,
+                                destructive_hint=False,
+                                idempotent_hint=False,
+                            ),
+                        ],
+                        None,
+                    )
+                },
+                payload=McpCallPayload(False, {"answer": 42}, "文档片段"),
+            )
+        ]
+    )
+
+
+async def _context7_manager(allow_write: bool = True) -> McpManager:
+    config = make_config(
+        allow_write=allow_write,
+        allowed_tools=["resolve-library-id", "query-docs", "create-book"],
+    )
+    manager = McpManager(make_store(config), client_factory=_context7_catalog_factory())
+    await manager.refresh_all()
+    return manager
+
+
+async def test_chat_tool_provider_selects_relevant_read_tools_only() -> None:
+    from app.integrations.mcp.chat_tools import McpChatToolProvider
+
+    manager = await _context7_manager()
+    provider = McpChatToolProvider(manager)
+    config = make_config(
+        allow_write=True, allowed_tools=["resolve-library-id", "query-docs", "create-book"]
+    )
+
+    selected = provider.select(
+        "用 books query docs 查 vue 文档", config=config, privacy_level="L1"
+    )
+    names = [handler.name for handler in selected]
+    assert names == ["mcp.books.query-docs", "mcp.books.resolve-library-id"]
+    definition = selected[0].definition()
+    assert definition.description.startswith("外部只读工具")
+    assert "remote free text" not in definition.description
+    assert set(definition.parameters["properties"]) == {"libraryId", "query"}
+
+    # 无关文本零挂载：工具目录增长不推高普通对话 Token
+    assert provider.select("今天晚饭吃什么", config=config, privacy_level="L1") == ()
+    # L2 回合禁止外发
+    assert provider.select("books query docs 查文档", config=config, privacy_level="L2") == ()
+    # 总开关关闭
+    disabled = make_config(enabled=False)
+    assert provider.select("books query docs 查文档", config=disabled, privacy_level="L1") == ()
+    await manager.stop()
+
+
+async def test_chat_tool_provider_bounds_per_turn_and_skips_bad_schema() -> None:
+    from app.integrations.mcp.chat_tools import McpChatToolProvider
+
+    config = make_config(
+        allow_write=False, allowed_tools=["resolve-library-id", "query-docs", "create-book"]
+    )
+    config = config.model_copy(
+        update={"mcp": config.mcp.model_copy(update={"max_tools_per_turn": 1})}
+    )
+    manager = await _context7_manager(allow_write=False)
+    provider = McpChatToolProvider(manager)
+
+    selected = provider.select("books query docs 文档", config=config, privacy_level="L1")
+    assert len(selected) == 1
+
+    # 复杂 schema 的只读工具不被挂载
+    broken = McpRemoteTool(
+        name="broken",
+        title="Broken",
+        description="",
+        input_schema={"type": "object", "anyOf": []},
+        read_only_hint=True,
+        destructive_hint=False,
+        idempotent_hint=True,
+    )
+    manager._states["books"].tools["mcp.books.broken"] = SimpleNamespace(
+        internal_name="mcp.books.broken",
+        server_id="books",
+        remote_name="broken",
+        title="Broken",
+        description="",
+        input_schema={"type": "object", "anyOf": []},
+        read_only=True,
+        destructive=False,
+        idempotent=True,
+    )
+    del broken
+    assert provider.select("books broken 查询", config=config, privacy_level="L1") == ()
+    await manager.stop()
+
+
+async def test_read_tool_handler_executes_via_manager_call() -> None:
+    from app.integrations.mcp.chat_tools import McpChatToolProvider
+    from app.tools.contracts import ToolContext
+
+    manager = await _context7_manager(allow_write=False)
+    provider = McpChatToolProvider(manager)
+    config = make_config(allow_write=False)
+    handler = provider.select(
+        "books query docs 文档", config=config, privacy_level="L1"
+    )[0]
+
+    arguments = handler.arguments_model.model_validate(
+        {"libraryId": "/websites/vuejs", "query": "reactivity"}
+    )
+    result = await handler.execute(arguments, ToolContext(privacy_level="L1"))
+    assert result.ok is True
+    assert result.data["server_id"] == "books"
+    assert result.data["text"] == "文档片段"
+    await manager.stop()
+
+
+async def test_chat_service_mounts_mcp_tools_only_for_relevant_turns(tmp_path):
+    from test_chat import FakeRouter, config_yaml
+
+    from app.chat import ChatService
+    from app.config import DatabaseConfigStore
+    from app.db import AppUserRecord, Base, create_database
+    from app.integrations.mcp.chat_tools import McpChatToolProvider
+    from app.memory import MemoryStore
+    from app.schemas import PrivacyLevel
+
+    requests: list[Any] = []
+    database = create_database("sqlite+aiosqlite:///:memory:")
+    async with database.engine.begin() as connection:
+        await connection.run_sync(Base.metadata.create_all)
+    owner_id = uuid4()
+    async with database.sessions.begin() as session:
+        session.add(AppUserRecord(id=owner_id, display_name="MCP", status="active"))
+    config_path = tmp_path / "hub.yaml"
+    config_path.write_text(
+        config_yaml()
+        + """
+mcp:
+  enabled: true
+  servers:
+    - server_id: books
+      enabled: true
+      endpoint: https://mcp.example.test/mcp
+      allowed_tools: [query-docs]
+""",
+        encoding="utf-8",
+    )
+    config_store = DatabaseConfigStore(database, config_path)
+    await config_store.load()
+    manager = McpManager(
+        config_store, client_factory=FakeFactory(
+            [
+                FakeClient(
+                    {None: ([McpRemoteTool(
+                        name="query-docs",
+                        title="Query Documentation",
+                        description="d",
+                        input_schema={
+                            "type": "object",
+                            "properties": {"q": {"type": "string"}},
+                            "required": ["q"],
+                        },
+                        read_only_hint=True, destructive_hint=False, idempotent_hint=True,
+                    )], None)},
+                    payload=McpCallPayload(False, {"a": 1}, "ok"),
+                )
+            ]
+        )
+    )
+    await manager.refresh_all()
+    service = ChatService(
+        database,
+        config_store,
+        router_builder=lambda config: FakeRouter(config.models["cloud"].model, requests),
+        memory_store=MemoryStore(database),
+        mcp_tools=McpChatToolProvider(manager),
+    )
+    conversation = await service.create_conversation(user_id=owner_id, title="mcp")
+
+    await service.send_message(
+        conversation.id, user_id=owner_id, text="books 文档怎么写", privacy_level=PrivacyLevel.L1
+    )
+    mounted = [tool.name for tool in requests[-1].tools]
+    assert "mcp.books.query-docs" in mounted
+
+    await service.send_message(
+        conversation.id, user_id=owner_id, text="讲个睡前故事", privacy_level=PrivacyLevel.L1
+    )
+    mounted = [tool.name for tool in requests[-1].tools]
+    assert all(not name.startswith("mcp.") for name in mounted)
+    await manager.stop()
