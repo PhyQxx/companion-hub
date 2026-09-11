@@ -32,3 +32,6 @@ server/assets/
 # ESPHome local credentials and build cache
 integrations/esp32_ld2410/secrets.yaml
 integrations/esp32_ld2410/.esphome/
+
+# 本地 MCP 调试 Server 的运行时状态（server/scripts/local_mcp_stub.py）
+server/scripts/local_mcp_stub_notes.jsonl

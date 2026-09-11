@@ -117,7 +117,7 @@ GitHub MCP 列为第二试点候选，原因是它对本项目有价值，但涉
 - **唯一写入口**：`mcp_tool_call` 工具（`runs_local=False`、`max L1`）只注册进计划执行器，聊天挂载恒关（`_device_tool_ready` 永拒）；`McpManager.call` 保持写工具硬拦截，新增 `call_write` 仅供确认后的 Runner 调用，参数体积 16KB 上限。
 - **执行上下文与验证**：Runner 对 `mcp_tool_call` 步骤固定 L1 上下文（外部服务不接收 L2），验证策略 RECEIPT + `mcp.call_receipt`——回执证据只含 server/tool/ok，远端正文不进验证记录。
 - **验收**（`test_mcp_integration.py` 新增 7 项）：保守建模接受/拒绝矩阵、同步只注册写工具且 A2 策略/编译形状正确、重复同步幂等 + 目录清空移除、目录回调触发、工具经 `call_write` 路由且超大参数拒绝、`call` 拦截写而 `call_write` 放行、Runner 以 L1 上下文执行并产出 VERIFIED 回执。非 soak 全量 832 通过，mypy 259 文件零错误。
-- **待真机**：接入一个真实的含写工具 MCP Server 后做确认/幂等/未知结果/审计真机验收。
+- **真实链验收（2026-09-11，本地真实 Server）**：`server/scripts/local_mcp_stub.py` 提供官方 SDK 实现的回环 MCP Server（Bearer 鉴权、`notes_get` 只读 + `notes_create` 写、状态落盘）。全链验收通过：连接协商（`2026-07-28`）→ 目录 2 工具 → 动作同步只注册写工具（A2/always）→ 计划创建（awaiting_confirmation）→ 用户确认（ready）→ 执行（completed + `mcp.call_receipt` VERIFIED，证据仅 server/tool/ok）→ 写入真实落盘（note n0002）→ 跨进程 `notes_get` 回读一致 → action_step 审计台账 verified/verified_at 齐全。接入外部写 Server 时按同链路复核一次即可。
 
 ## 11. MCP-C2 实施记录（2026-09-11）
 
