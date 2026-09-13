@@ -359,6 +359,8 @@ class ChatService:
         # SAFE-02 SafetyAlertService：聊天确认意图入口（可选依赖，无则跳过）。
         # main.py 中投递服务晚于 ChatService 构造，装配后经 set_safety 注入。
         self._safety = safety
+        # SAFE-01：聊天/语音回合即活动信号（装配后注入）
+        self._activity_tracker = None
         self._memory_consistency_guard = MemoryConsistencyGuard()
         self._memory_retriever = MemoryRetriever(memory_store) if memory_store else None
         self._memory_ingester = (
@@ -373,6 +375,10 @@ class ChatService:
     def set_safety(self, safety: Any | None) -> None:
         """SAFE-02：投递服务晚于 ChatService 构造，装配后注入告警服务。"""
         self._safety = safety
+
+    def set_activity_tracker(self, tracker: Any | None) -> None:
+        """SAFE-01：聊天回合即活动信号，装配后注入追踪器。"""
+        self._activity_tracker = tracker
 
     async def create_conversation(
         self,
@@ -588,6 +594,9 @@ class ChatService:
                     logger.info("safety alerts acknowledged via chat: %d", acked)
             except Exception:
                 logger.warning("safety ack handling failed", exc_info=True)
+        if self._activity_tracker is not None:
+            # SAFE-01：聊天回合刷新最后活动时间
+            self._activity_tracker.record(user_id)
         now = datetime.now(UTC)
         turn_id = uuid7()
         generation_id = uuid7()

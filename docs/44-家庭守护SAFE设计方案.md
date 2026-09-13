@@ -1,6 +1,6 @@
 # 44 - 家庭守护 SAFE-01/02 设计方案
 
-> 状态：v1 设计定稿；S1～S3 已实现（2026-09-13），S4 待实施
+> 状态：v1 全量已实现（S1～S4，2026-09-14）
 > 相关：[39-个人管家能力路线图](./39-个人管家能力路线图.md)、[36-Home Assistant集成设计](./36-Home%20Assistant集成设计.md)、[31-记忆时间线与历史回溯设计](./31-记忆时间线与历史回溯设计.md)
 
 ## 1. 功能定位
@@ -109,6 +109,14 @@ class SafetyConfig(StrictModel):
 5. 所有告警事件进 Timeline，用户可像其他记录一样删除（删除闭环沿用）。
 
 ## 7. 实施记录
+
+### S4（2026-09-14 已实现）
+
+- 活动信号：`ActivityTracker`（外部信号显式上报，预留语音/感知源）+ 桌面设备心跳（`device_client.last_seen_at` 最大值）+ 聊天回合（`ChatService.set_activity_tracker` 注入，`start_turn` 刷新）。
+- 调度：`SafetyActivityScheduler`（5 分钟 tick，lifespan 启停）——超 `inactivity_hours` 且在北京时区 `inactivity_active_range` 窗口内（支持跨夜）→ `user.inactive` 语义事件过认知闸门（IGNORE/RECORD 不打扰）→ 确定性模板提醒（含最后活动时间）；6 小时提醒冷却防连续追问。
+- 边界：只依赖在场/交互信号，不做摄像头/音频分析；生效时段外零打扰。
+- 回归：窗口内提醒+冷却+活动重置、设备心跳优先于 tracker、窗外静默+回窗恢复共 2 项；全量 **851 通过**、mypy 266 文件零错误。
+- 已知边界：语音回合活动信号待语音链路接入 tracker（当前仅聊天与设备心跳）。
 
 ### S3（2026-09-13 已实现）
 

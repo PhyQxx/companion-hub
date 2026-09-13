@@ -144,7 +144,7 @@ from app.persona import PersonaStore
 from app.pnkx import PnkxCreateTool, PnkxLifeClient, PnkxReadTool, pnkx_runs_local
 from app.push import PushSubscriptionStore, WebPushAdapter
 from app.runtime import TurnCoordinator
-from app.safety import SafetyAlertService
+from app.safety import ActivityTracker, SafetyActivityScheduler, SafetyAlertService
 from app.schemas.common import PrivacyLevel
 from app.screen_awareness import (
     ScreenAwarenessAnalyzer,
@@ -268,6 +268,8 @@ def create_app(
     browser_awareness_loop: BrowserAwarenessLoop | None = None
     mcp_manager = McpManager(runtime_config) if runtime_config is not None else None
     safety_alert_service: SafetyAlertService | None = None
+    activity_tracker = ActivityTracker()
+    activity_scheduler: SafetyActivityScheduler | None = None
     proactive_delivery: ProactiveDeliveryService | None = None
     mqtt_presence_bridge: MqttPresenceBridge | None = None
     task_scheduler: TaskScheduler | None = None
@@ -687,6 +689,8 @@ def create_app(
             mcp_manager.start()
         if safety_alert_service is not None:
             await safety_alert_service.resume()
+        if activity_scheduler is not None:
+            await activity_scheduler.start()
         if task_scheduler is not None:
             task_scheduler.start()
         if goal_reminder_scheduler is not None:
@@ -722,6 +726,8 @@ def create_app(
                 await mcp_manager.stop()
             if safety_alert_service is not None:
                 await safety_alert_service.stop()
+            if activity_scheduler is not None:
+                await activity_scheduler.stop()
             if home_assistant_proactive is not None:
                 await home_assistant_proactive.stop()
             if mqtt_client is not None:
@@ -1488,11 +1494,22 @@ def create_app(
                 )
                 app.state.safety_alert_service = safety_alert_service
                 runtime_chat_service.set_safety(safety_alert_service)
+                runtime_chat_service.set_activity_tracker(activity_tracker)
                 app.include_router(
                     create_admin_safety_router(
                         safety_alert_service, admin_token=runtime_admin_token
                     )
                 )
+                # SAFE-01：久未活动调度器（外部信号可经 activity_tracker.record 注入）
+                activity_scheduler = SafetyActivityScheduler(
+                    runtime_database,
+                    runtime_config,
+                    proactive_delivery.deliver,
+                    activity_tracker,
+                    cognitive_cycle=cognitive_cycle,
+                )
+                app.state.safety_activity_scheduler = activity_scheduler
+                app.state.safety_activity_tracker = activity_tracker
                 if task_scheduler is not None:
                     task_scheduler.set_deliverer(deliver_task_reminder)
                 if goal_reminder_scheduler is not None:

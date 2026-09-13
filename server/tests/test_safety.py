@@ -431,3 +431,125 @@ async def test_l3_mail_failure_records_ledger_and_revoke(tmp_path: Any) -> None:
     finally:
         await service.stop()
         await database.close()
+
+
+async def test_activity_inactivity_reminds_within_window_and_respects_cooldown(
+    tmp_path: Any,
+) -> None:
+    from app.safety import ActivityTracker, SafetyActivityScheduler
+
+    database = await _database(tmp_path)
+    user_id = uuid7()
+    async with database.sessions.begin() as session:
+        session.add(AppUserRecord(
+            id=user_id, display_name="Owner", status="active", timezone="Asia/Shanghai",
+        ))
+
+    class FakeTime2:
+        def __init__(self) -> None:
+            self.now = datetime(2026, 9, 13, 13, 0, tzinfo=UTC)  # 北京 21:00，窗口内
+        def clock(self):
+            return self.now
+        async def sleep(self, seconds: float) -> None:
+            self.now += timedelta(seconds=seconds)
+
+    fake_time = FakeTime2()
+    deliveries: list[dict[str, Any]] = []
+
+    async def deliver(text: str, **kwargs: Any) -> Any:
+        deliveries.append({"text": text, **kwargs})
+        return SimpleNamespace(user_id=user_id, conversation_id=None)
+
+    config = SimpleNamespace(current=SimpleNamespace(config=SimpleNamespace(
+        safety=SafetyConfig(enabled=True, inactivity_hours=12.0),
+    )))
+    tracker = ActivityTracker()
+    # 最后活动 = 24h 前（超阈值）
+    tracker.record(user_id, fake_time.now - timedelta(hours=24))
+    scheduler = SafetyActivityScheduler(
+        database, config, cast(Any, deliver), tracker,
+        clock=fake_time.clock, sleeper=fake_time.sleep,
+    )
+    safety_config = config.current.config.safety
+    try:
+        await scheduler._tick(safety_config)
+        assert len(deliveries) == 1
+        assert "没有你的任何活动记录" in deliveries[0]["text"]
+        assert deliveries[0]["trigger_kind"] == "user.inactive"
+
+        # 冷却期内不重复打扰
+        await scheduler._tick(safety_config)
+        assert len(deliveries) == 1
+
+        # 活动刷新后重新计时：阈值未到不提醒
+        tracker.record(user_id, fake_time.now - timedelta(hours=1))
+        scheduler._last_reminded.clear()
+        await scheduler._tick(safety_config)
+        assert len(deliveries) == 1
+    finally:
+        await scheduler.stop()
+        await database.close()
+
+
+async def test_activity_silent_outside_window_or_when_device_recent(tmp_path: Any) -> None:
+    from app.safety import ActivityTracker, SafetyActivityScheduler
+
+    database = await _database(tmp_path)
+    user_id = uuid7()
+    async with database.sessions.begin() as session:
+        session.add(AppUserRecord(
+            id=user_id, display_name="Owner", status="active", timezone="Asia/Shanghai",
+        ))
+        # 桌面设备 1 小时前有心跳 → 设备信号刷新活动
+        from app.db import DeviceClientRecord
+        session.add(DeviceClientRecord(
+            id=uuid7(), owner_user_id=user_id, name="Mac", alias=None,
+            client_type="desktop", credential_hash="x" * 64,
+            capabilities=[], granted_capabilities=[],
+            paired_at=datetime(2026, 9, 1, 0, 0, tzinfo=UTC),
+            last_seen_at=datetime(2026, 9, 13, 12, 0, tzinfo=UTC),  # 北京 20:00，1h 前心跳
+        ))
+
+    class FakeTime3:
+        def __init__(self) -> None:
+            self.now = datetime(2026, 9, 13, 13, 0, tzinfo=UTC)  # 北京 21:00，窗口内
+        def clock(self):
+            return self.now
+        async def sleep(self, seconds: float) -> None:
+            self.now += timedelta(seconds=seconds)
+
+    fake_time = FakeTime3()
+    deliveries: list[dict[str, Any]] = []
+
+    async def deliver(text: str, **kwargs: Any) -> Any:
+        deliveries.append({"text": text, **kwargs})
+        return SimpleNamespace(user_id=user_id, conversation_id=None)
+
+    config = SimpleNamespace(current=SimpleNamespace(config=SimpleNamespace(
+        safety=SafetyConfig(enabled=True, inactivity_hours=12.0),
+    )))
+    tracker = ActivityTracker()
+    tracker.record(user_id, fake_time.now - timedelta(hours=30))
+    scheduler = SafetyActivityScheduler(
+        database, config, cast(Any, deliver), tracker,
+        clock=fake_time.clock, sleeper=fake_time.sleep,
+    )
+    safety_config = config.current.config.safety
+    try:
+        # 设备心跳（1h 前）比 tracker 记录新：以设备心跳为准，不提醒
+        await scheduler._tick(safety_config)
+        assert deliveries == []
+
+        # 生效时段外（北京 04:00）不提醒
+        tracker.record(user_id, fake_time.now - timedelta(hours=30))
+        fake_time.now = datetime(2026, 9, 13, 20, 0, tzinfo=UTC)  # 北京 04:00
+        await scheduler._tick(safety_config)
+        assert deliveries == []
+
+        # 回到窗口内且时间已过心跳 24h+：恢复提醒
+        fake_time.now = datetime(2026, 9, 14, 5, 0, tzinfo=UTC)  # 北京 13:00，窗口内
+        await scheduler._tick(safety_config)
+        assert len(deliveries) == 1
+    finally:
+        await scheduler.stop()
+        await database.close()
