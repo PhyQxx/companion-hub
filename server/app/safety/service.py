@@ -23,7 +23,7 @@ from app.schemas import PrivacyLevel
 from app.timeline.models import TimelineActor, TimelineSourceType
 from app.timeline.store import TimelineStore
 
-from .store import SafetyAlertStore
+from .store import SafetyAlertStore, SafetyAuthorizationStore, SafetyEscalationLedger
 
 logger = logging.getLogger("app.safety")
 
@@ -50,6 +50,7 @@ class SafetyAlertService:
         deliver: Deliver,
         *,
         timeline: TimelineStore | None = None,
+        mailer: Any | None = None,
         clock: Clock | None = None,
         sleeper: Sleeper | None = None,
     ) -> None:
@@ -57,9 +58,12 @@ class SafetyAlertService:
         self._config_store = config_store
         self._deliver = deliver
         self._timeline = timeline
+        self._mailer = mailer
         self._clock = clock or (lambda: datetime.now(UTC))
         self._sleep = sleeper or asyncio.sleep
         self._store = SafetyAlertStore(database)
+        self.authorizations = SafetyAuthorizationStore(database)
+        self.ledger = SafetyEscalationLedger(database)
         self._tasks: dict[UUID, asyncio.Task[None]] = {}
         self._stop = asyncio.Event()
 
@@ -130,7 +134,7 @@ class SafetyAlertService:
         if record is None or record.status != "acknowledged":
             return False
         self._cancel_task(alert_id)
-        await self._index(record, "safety.alert_acked")
+        await self._index(record, "safety.alert_acked", source_suffix="acked")
         return True
 
     async def handle_user_text(self, text: str, *, user_id: UUID) -> int:
@@ -170,6 +174,8 @@ class SafetyAlertService:
             await self._advance_after(alert_id, target_level=2, level_at="l1_at")
             # L2 重提醒：推送重试间隔
             await self._advance_after(alert_id, target_level=2, level_at="l2_at", repeat=True)
+            # L3：预授权联系人邮件升级（每个告警至多一次）
+            await self._escalate_contact(alert_id)
             # 生命周期到期收尾
             record = await self._store.get(alert_id)
             if record is not None and record.status == "escalating":
@@ -224,6 +230,86 @@ class SafetyAlertService:
             "safety.alert_escalated",
             occurred_at=self._clock(),
             extra={"level": target_level, "repeat": repeat},
+            source_suffix=f"esc-{target_level}-{repeat}",
+        )
+
+    # ------------------------------------------------------------------ #
+    # L3：预授权联系人升级（docs/44 §2：预授权 + 发送前告知用户 + 全程审计）
+    # ------------------------------------------------------------------ #
+
+    async def _escalate_contact(self, alert_id: UUID) -> None:
+        record = await self._store.get(alert_id)
+        if record is None or record.status != "escalating":
+            return
+        if await self.ledger.contacted(alert_id):
+            return
+        config = self._config_store.current.config.safety
+        if not config.escalation_enabled:
+            return
+        authorization = await self.authorizations.active_for_user(record.user_id)
+        if authorization is None or self._mailer is None:
+            # 停在 L2 并告知用户无法升级（一次）
+            try:
+                await self._deliver(
+                    "危急告警仍未确认，且未配置预授权紧急联系人（或邮件未启用），"
+                    "已停止在本地提醒。回复「知道了」可结束本次告警。",
+                    entity_id=f"safety:{record.entity_id}",
+                    rule_id=record.rule_id,
+                    trigger_kind="safety.alert",
+                    privacy_level=PrivacyLevel.L1,
+                    target_user_id=record.user_id,
+                    broadcast=True,
+                )
+            except Exception:
+                logger.exception("safety escalation-unavailable notice failed: %s", alert_id)
+            return
+        # 红线：发送前先告知用户本人（任意通道可当场 ack 中止）
+        try:
+            await self._deliver(
+                f"危急告警长时间未确认，正在通过邮件通知紧急联系人 "
+                f"{authorization.contact_name}（{authorization.destination}）。"
+                f"如已处理请回复「知道了」。",
+                entity_id=f"safety:{record.entity_id}",
+                rule_id=record.rule_id,
+                trigger_kind="safety.alert",
+                privacy_level=PrivacyLevel.L1,
+                target_user_id=record.user_id,
+                broadcast=True,
+            )
+        except Exception:
+            logger.exception("safety escalation pre-notice failed: %s", alert_id)
+        now = self._clock()
+        try:
+            await self._mailer.send(
+                to=[authorization.destination],
+                subject="【Aria 紧急告警】家中危急告警长时间未确认",
+                body=(
+                    f"{record.message}\n\n"
+                    f"告警时间：{now.isoformat(timespec='minutes')}\n"
+                    "该邮件由 Aria 家庭守护在预先授权后自动发送；"
+                    "如为误报请让主人回复「知道了」确认。"
+                ),
+            )
+            status, reason = "sent", None
+        except Exception as error:
+            status, reason = "failed", type(error).__name__
+        await self.ledger.record(
+            alert_id=alert_id,
+            user_id=record.user_id,
+            channel="email",
+            destination=authorization.destination,
+            status=status,
+            reason=reason,
+        )
+        await self._index(
+            record,
+            "safety.alert_escalated",
+            occurred_at=now,
+            extra={"level": 3, "channel": "email", "result": status},
+            source_suffix="esc-3-email",
+        )
+        logger.info(
+            "safety alert escalated to contact alert=%s status=%s", alert_id, status
         )
 
     # ------------------------------------------------------------------ #
@@ -258,13 +344,17 @@ class SafetyAlertService:
         *,
         occurred_at: datetime | None = None,
         extra: dict[str, object] | None = None,
+        source_suffix: str | None = None,
     ) -> None:
         if self._timeline is None:
             return
-        with contextlib.suppress(Exception):
+        # timeline 对 (source_type, source_id, event_type) 唯一：同一告警的
+        # 多次升级/确认必须带可区分后缀，否则唯一约束静默吞掉后续事件
+        source_id = str(record.id) + (f":{source_suffix}" if source_suffix else "")
+        try:
             await self._timeline.index_custom(
                 user_id=record.user_id,
-                source_id=str(record.id),
+                source_id=source_id,
                 source_type=TimelineSourceType.SYSTEM,
                 actor=TimelineActor.SYSTEM,
                 event_type=event_type,
@@ -281,3 +371,5 @@ class SafetyAlertService:
                     **(extra or {}),
                 },
             )
+        except Exception:
+            logger.exception("safety timeline index failed: %s %s", record.id, event_type)

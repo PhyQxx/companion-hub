@@ -7,7 +7,12 @@ from uuid import UUID
 
 from sqlalchemy import select
 
-from app.db import Database, SafetyAlertRecord
+from app.db import (
+    Database,
+    SafetyAlertEscalationRecord,
+    SafetyAlertRecord,
+    SafetyAuthorizationRecord,
+)
 from app.ids import uuid7
 
 
@@ -127,3 +132,93 @@ class SafetyAlertStore:
                 return record
             record.status = "expired"
             return record
+
+
+class SafetyAuthorizationStore:
+    def __init__(self, database: Database) -> None:
+        self._database = database
+
+    async def create(
+        self, *, user_id: UUID, contact_name: str, destination: str
+    ) -> SafetyAuthorizationRecord:
+        record = SafetyAuthorizationRecord(
+            id=uuid7(),
+            user_id=user_id,
+            contact_name=contact_name[:120],
+            channel="email",
+            destination=destination[:254],
+            status="active",
+        )
+        async with self._database.sessions.begin() as session:
+            session.add(record)
+        return record
+
+    async def list_for_user(
+        self, user_id: UUID, *, status: str | None = None
+    ) -> list[SafetyAuthorizationRecord]:
+        query = select(SafetyAuthorizationRecord).where(
+            SafetyAuthorizationRecord.user_id == user_id
+        )
+        if status is not None:
+            query = query.where(SafetyAuthorizationRecord.status == status)
+        async with self._database.sessions() as session:
+            found: list[SafetyAuthorizationRecord] = list(
+                await session.scalars(query.order_by(SafetyAuthorizationRecord.created_at))
+            )
+            return found
+
+    async def active_for_user(self, user_id: UUID) -> SafetyAuthorizationRecord | None:
+        records = await self.list_for_user(user_id, status="active")
+        return records[0] if records else None
+
+    async def revoke(
+        self, authorization_id: UUID, *, at: datetime
+    ) -> SafetyAuthorizationRecord | None:
+        async with self._database.sessions.begin() as session:
+            record = await session.get(SafetyAuthorizationRecord, authorization_id)
+            if record is None or record.status != "active":
+                return record
+            record.status = "revoked"
+            record.revoked_at = _aware(at)
+            return record
+
+
+class SafetyEscalationLedger:
+    def __init__(self, database: Database) -> None:
+        self._database = database
+
+    async def record(
+        self,
+        *,
+        alert_id: UUID,
+        user_id: UUID,
+        channel: str,
+        destination: str,
+        status: str,
+        reason: str | None = None,
+    ) -> SafetyAlertEscalationRecord:
+        record = SafetyAlertEscalationRecord(
+            id=uuid7(),
+            alert_id=alert_id,
+            user_id=user_id,
+            level=3,
+            channel=channel[:16],
+            destination=destination[:254],
+            status=status[:16],
+            reason=reason[:160] if reason else None,
+        )
+        async with self._database.sessions.begin() as session:
+            session.add(record)
+        return record
+
+    async def contacted(self, alert_id: UUID) -> bool:
+        async with self._database.sessions() as session:
+            found = await session.scalar(
+                select(SafetyAlertEscalationRecord.id)
+                .where(
+                    SafetyAlertEscalationRecord.alert_id == alert_id,
+                    SafetyAlertEscalationRecord.level == 3,
+                )
+                .limit(1)
+            )
+            return found is not None

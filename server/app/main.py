@@ -26,6 +26,7 @@ from app.api import (
     create_admin_mcp_router,
     create_admin_memory_router,
     create_admin_persona_router,
+    create_admin_safety_router,
     create_admin_screen_awareness_router,
     create_admin_security_router,
     create_admin_theme_router,
@@ -124,7 +125,7 @@ from app.integrations.mcp.actions import sync_mcp_actions
 from app.integrations.mcp.chat_tools import McpChatToolProvider
 from app.jobs import AssetStore, JobEngine
 from app.llm.provider import EnvSecretProvider
-from app.mail import MailSendTool, create_mail_tools
+from app.mail import MailClient, MailSendTool, create_mail_tools
 from app.meetings import LlmMeetingSummarizer, MeetingService, MeetingStore
 from app.memory import (
     LlmMemoryExtractor,
@@ -1483,9 +1484,15 @@ def create_app(
                     runtime_config,
                     proactive_delivery.deliver,
                     timeline=timeline_store,
+                    mailer=MailClient(runtime_config),
                 )
                 app.state.safety_alert_service = safety_alert_service
                 runtime_chat_service.set_safety(safety_alert_service)
+                app.include_router(
+                    create_admin_safety_router(
+                        safety_alert_service, admin_token=runtime_admin_token
+                    )
+                )
                 if task_scheduler is not None:
                     task_scheduler.set_deliverer(deliver_task_reminder)
                 if goal_reminder_scheduler is not None:

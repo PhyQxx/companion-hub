@@ -88,11 +88,13 @@ async def test_alert_lifecycle_l1_l2_repeat_ack(tmp_path: Any) -> None:
         assert deliveries[0]["broadcast"] is True
         assert deliveries[0]["trigger_kind"] == "safety.alert"
 
-        # 确认窗口（60s）过后升级 L2，再等重试间隔（3min）重复提醒
+        # 确认窗口（60s）过后升级 L2，再等重试间隔（3min）重复提醒，
+        # 最后因无预授权联系人停留在 L2 并提示无法升级（S3 行为）
         await service._tasks[alert.id]
-        assert len(deliveries) == 3
+        assert len(deliveries) == 4
         assert deliveries[1]["text"].startswith("【仍需确认】")
         assert deliveries[2]["text"].startswith("【再次提醒】")
+        assert "未配置预授权紧急联系人" in deliveries[3]["text"]
         fresh = await service._store.get(alert.id)
         assert fresh is not None and fresh.level == 2 and fresh.l2_at is not None
 
@@ -280,4 +282,152 @@ async def test_engine_routes_critical_to_state_machine(tmp_path: Any) -> None:
     finally:
         await engine.stop()
         await safety.stop()
+        await database.close()
+
+
+class FakeMailer:
+    def __init__(self, fail: bool = False) -> None:
+        self.fail = fail
+        self.sent: list[dict[str, Any]] = []
+
+    async def send(self, *, to: list[str], subject: str, body: str, **_: Any) -> dict[str, Any]:
+        if self.fail:
+            raise RuntimeError("smtp down")
+        self.sent.append({"to": to, "subject": subject, "body": body})
+        return {"message_id": "mid-1", "recipients": to}
+
+
+def _make_service_with_mailer(
+    database: Database, fake_time: FakeTime, mailer: FakeMailer | None
+) -> tuple[SafetyAlertService, list[dict[str, Any]]]:
+    deliveries: list[dict[str, Any]] = []
+
+    async def deliver(text: str, **kwargs: Any) -> Any:
+        deliveries.append({"text": text, **kwargs})
+        return SimpleNamespace(user_id=kwargs.get("target_user_id"), conversation_id=None)
+
+    service = SafetyAlertService(
+        database,
+        _config_store(),
+        cast(Any, deliver),
+        timeline=TimelineStore(database),
+        mailer=mailer,
+        clock=fake_time.clock,
+        sleeper=fake_time.sleep,
+    )
+    return service, deliveries
+
+
+async def test_l3_escalation_sends_email_with_pre_notice_and_ledger(tmp_path: Any) -> None:
+    database = await _database(tmp_path)
+    user_id = uuid7()
+    async with database.sessions.begin() as session:
+        session.add(AppUserRecord(id=user_id, display_name="Owner", status="active"))
+    fake_time = FakeTime()
+    mailer = FakeMailer()
+    service, deliveries = _make_service_with_mailer(database, fake_time, mailer)
+    try:
+        authorization = await service.authorizations.create(
+            user_id=user_id, contact_name="张三", destination="zhang@example.com",
+        )
+        assert authorization.status == "active"
+
+        alert = await service.handle(
+            user_id=user_id, rule_id="smoke", entity_id="binary_sensor.smoke",
+            message="【危急】烟雾告警…", evidence={},
+        )
+        assert alert is not None
+        task = service._tasks.get(alert.id)
+        if task is not None:
+            await task
+
+        # L1 → L2 → 重提醒 → 发送前告知 → 邮件
+        pre_notice = next(
+            (d for d in deliveries if "正在通过邮件通知紧急联系人" in str(d["text"])), None
+        )
+        assert pre_notice is not None and pre_notice["broadcast"] is True
+        assert len(mailer.sent) == 1
+        assert mailer.sent[0]["to"] == ["zhang@example.com"]
+        assert "烟雾告警" in mailer.sent[0]["body"]
+
+        # 台账 + Timeline 记录 L3
+        assert await service.ledger.contacted(alert.id) is True
+        timeline = TimelineStore(database)
+        events = await timeline.search(
+            user_id=user_id, event_types=("safety.alert_escalated",),
+        )
+        escalated = [e for e in events.events if (e.metadata or {}).get("level") == 3]
+        assert escalated and escalated[0].metadata["channel"] == "email"
+    finally:
+        await service.stop()
+        await database.close()
+
+
+async def test_l3_without_authorization_stays_l2_and_notifies_user(tmp_path: Any) -> None:
+    database = await _database(tmp_path)
+    user_id = uuid7()
+    async with database.sessions.begin() as session:
+        session.add(AppUserRecord(id=user_id, display_name="Owner", status="active"))
+    fake_time = FakeTime()
+    mailer = FakeMailer()
+    service, deliveries = _make_service_with_mailer(database, fake_time, mailer)
+    try:
+        alert = await service.handle(
+            user_id=user_id, rule_id="smoke", entity_id="binary_sensor.smoke",
+            message="【危急】烟雾告警…", evidence={},
+        )
+        assert alert is not None
+        task = service._tasks.get(alert.id)
+        if task is not None:
+            await task
+
+        assert mailer.sent == []
+        assert await service.ledger.contacted(alert.id) is False
+        notice = next(
+            (d for d in deliveries if "未配置预授权紧急联系人" in str(d["text"])), None
+        )
+        assert notice is not None
+    finally:
+        await service.stop()
+        await database.close()
+
+
+async def test_l3_mail_failure_records_ledger_and_revoke(tmp_path: Any) -> None:
+    database = await _database(tmp_path)
+    user_id = uuid7()
+    async with database.sessions.begin() as session:
+        session.add(AppUserRecord(id=user_id, display_name="Owner", status="active"))
+    fake_time = FakeTime()
+    mailer = FakeMailer(fail=True)
+    service, _ = _make_service_with_mailer(database, fake_time, mailer)
+    try:
+        await service.authorizations.create(
+            user_id=user_id, contact_name="李四", destination="li@example.com",
+        )
+        alert = await service.handle(
+            user_id=user_id, rule_id="smoke", entity_id="binary_sensor.smoke",
+            message="【危急】烟雾告警…", evidence={},
+        )
+        assert alert is not None
+        task = service._tasks.get(alert.id)
+        if task is not None:
+            await task
+
+        from sqlalchemy import select as sa_select
+
+        from app.db import SafetyAlertEscalationRecord
+        async with database.sessions() as session:
+            rows: list[SafetyAlertEscalationRecord] = list(
+                await session.scalars(sa_select(SafetyAlertEscalationRecord))
+            )
+        assert len(rows) == 1 and rows[0].status == "failed"
+
+        revoked = await service.authorizations.revoke(
+            (await service.authorizations.list_for_user(user_id))[0].id,
+            at=fake_time.clock(),
+        )
+        assert revoked is not None and revoked.status == "revoked"
+        assert await service.authorizations.active_for_user(user_id) is None
+    finally:
+        await service.stop()
         await database.close()

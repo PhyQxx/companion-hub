@@ -23,6 +23,7 @@ import PlaceholderView from "./PlaceholderView.vue";
 import PrivacyView from "./PrivacyView.vue";
 import ProactiveChannelsView from "./ProactiveChannelsView.vue";
 import QualityView from "./QualityView.vue";
+import SafetyAdminView from "./SafetyAdminView.vue";
 import ScreenAwarenessView from "./ScreenAwarenessView.vue";
 import SystemView from "./SystemView.vue";
 import TimelineView from "./TimelineView.vue";
@@ -51,6 +52,7 @@ const currentView = computed(() => {
   if (props.module === "devices" && activeTab.value === "channels") return ProactiveChannelsView;
   if (props.module === "devices" && activeTab.value === "home_assistant") return HomeAssistantDevicesView;
   if (props.module === "devices" && ["status", "observations"].includes(activeTab.value)) return ScreenAwarenessView;
+  if (props.module === "devices" && activeTab.value === "safety") return SafetyAdminView;
   if (props.module === "devices" && ["browser_status", "browser_observations"].includes(activeTab.value)) return BrowserAwarenessView;
   if (props.module === "devices" && activeTab.value === "diagnostics") return DiagnosticsView;
   if (props.module === "logs" && activeTab.value === "live") return LiveLogsView;

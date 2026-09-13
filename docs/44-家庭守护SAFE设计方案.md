@@ -1,6 +1,6 @@
 # 44 - 家庭守护 SAFE-01/02 设计方案
 
-> 状态：v1 设计定稿；S1/S2 已实现（2026-09-11），S3～S4 待实施
+> 状态：v1 设计定稿；S1～S3 已实现（2026-09-13），S4 待实施
 > 相关：[39-个人管家能力路线图](./39-个人管家能力路线图.md)、[36-Home Assistant集成设计](./36-Home%20Assistant集成设计.md)、[31-记忆时间线与历史回溯设计](./31-记忆时间线与历史回溯设计.md)
 
 ## 1. 功能定位
@@ -109,6 +109,15 @@ class SafetyConfig(StrictModel):
 5. 所有告警事件进 Timeline，用户可像其他记录一样删除（删除闭环沿用）。
 
 ## 7. 实施记录
+
+### S3（2026-09-13 已实现）
+
+- 持久化：`safety_authorization`（预授权，channel 限 email，可撤销）与 `safety_alert_escalation`（L3 台账）两表（`0039_safety_escalation` 迁移）。
+- 升级链：`_escalate_contact` 在 L2 重提醒后执行——无预授权/邮件未启用则停在 L2 并广播"无法升级"提示；有授权则**先广播告知用户**（可当场 ack 中止），再经 `MailClient.send` 发送仅含事件摘要的邮件；发送结果（sent/failed）写台账，`contacted()` 幂等挡重发；Timeline 补 level=3 escalated 事件。
+- 事件去重：Timeline `uq_timeline_source_event` 会吞掉同告警的第二次 escalated——`_index` 增加 `source_suffix`（esc-2/esc-2-repeat/esc-3-email/acked）。
+- Admin：`/api/v1/admin/safety`（status/alerts 分页+ack/authorizations CRUD+revoke）+ 「设备与感知 → 安全守护」页（开关两枚、活跃告警确认、告警分页台账、预授权管理与撤销确认）。
+- 回归：`test_safety.py` 新增 3 项（L3 全链含预告知/邮件/台账/Timeline、无授权停留 L2 且告知、发送失败写台账+撤销授权）；全量 **849 通过**、mypy 265 文件零错误。
+- 已知边界：授权创建目前走 Admin API（聊天确认交互留待后续）；v1 单授权人（active 列表首个生效）。
 
 ### S2（2026-09-11 已实现）
 
