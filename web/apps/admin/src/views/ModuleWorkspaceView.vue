@@ -22,6 +22,7 @@ import PersonasView from "./PersonasView.vue";
 import PlaceholderView from "./PlaceholderView.vue";
 import PrivacyView from "./PrivacyView.vue";
 import ProactiveChannelsView from "./ProactiveChannelsView.vue";
+import ProactiveTopicsView from "./ProactiveTopicsView.vue";
 import QualityView from "./QualityView.vue";
 import SafetyAdminView from "./SafetyAdminView.vue";
 import ScreenAwarenessView from "./ScreenAwarenessView.vue";
@@ -41,6 +42,7 @@ const currentView = computed(() => {
   if (props.module === "overview" && activeTab.value === "activity") return ActivityView;
   if (props.module === "models" && activeTab.value === "mcp") return McpIntegrationView;
   if (props.module === "models") return ModelsView;
+  if (props.module === "persona" && activeTab.value === "proactive") return ProactiveTopicsView;
   if (props.module === "persona") return PersonasView;
   if (props.module === "memory" && activeTab.value === "library") return MemoryView;
   if (props.module === "memory" && activeTab.value === "quality") return QualityView;

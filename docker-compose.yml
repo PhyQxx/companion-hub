@@ -45,6 +45,8 @@ services:
   hub:
     build:
       context: .
+    env_file:
+      - .env.docker
     environment:
       ARIA_DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-aria}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-aria}
       ARIA_ENABLE_DEV_ENDPOINTS: "true"

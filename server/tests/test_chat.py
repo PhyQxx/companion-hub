@@ -1224,6 +1224,46 @@ async def test_conversation_access_is_scoped_to_owning_user(
     assert await service.list_messages(conversation.id, user_id=owner.id) == []
 
 
+async def test_conversation_archive_preserves_messages_and_can_be_restored(
+    database: Database, store: DatabaseConfigStore
+) -> None:
+    service = ChatService(database, store, router_builder=lambda config: FailingRouter())
+    user = await create_user(database)
+    conversation = await service.create_conversation(user_id=user.id, title="保留")
+
+    with pytest.raises(LLMRouteExhausted):
+        await service.send_message(
+            conversation.id,
+            user_id=user.id,
+            text="归档后仍然存在",
+            privacy_level=PrivacyLevel.L1,
+        )
+    archived = await service.archive_conversation(conversation.id, user_id=user.id)
+
+    assert archived.status == "archived"
+    assert await service.list_conversations(user_id=user.id) == []
+    assert [item.id for item in await service.list_conversations(
+        user_id=user.id, status="archived"
+    )] == [conversation.id]
+    assert [item.content for item in await service.list_messages(
+        conversation.id, user_id=user.id
+    )] == ["归档后仍然存在"]
+    with pytest.raises(ValueError, match="conversation is archived"):
+        await service.send_message(
+            conversation.id,
+            user_id=user.id,
+            text="不能继续发送",
+            privacy_level=PrivacyLevel.L1,
+        )
+
+    restored = await service.restore_conversation(conversation.id, user_id=user.id)
+
+    assert restored.status == "active"
+    assert [item.id for item in await service.list_conversations(user_id=user.id)] == [
+        conversation.id
+    ]
+
+
 async def test_chat_api_auth_validation_and_stable_failure(
     database: Database, store: DatabaseConfigStore
 ) -> None:

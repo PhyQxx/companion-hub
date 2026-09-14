@@ -624,6 +624,17 @@ function describeDetail(detail: unknown, fallback: string): string {
 }
 
 /** 聊天侧 REST 客户端：身份、会话与消息（不含管理端点） */
+export interface SafetyAlertItem {
+  id: string;
+  rule_id: string;
+  entity_id: string;
+  message: string;
+  status: string;
+  level: number;
+  created_at: string;
+  expires_at: string;
+}
+
 export class ChatApi {
   constructor(private baseUrl = "") {}
 
@@ -710,8 +721,18 @@ export class ChatApi {
     }, token);
   }
 
-  listConversations(token: string) {
-    return this.request<Conversation[]>("/api/v1/chat/conversations", { method: "GET" }, token);
+  listSafetyAlerts(token: string) {
+    return this.request<SafetyAlertItem[]>("/api/v1/safety/alerts", { method: "GET" }, token);
+  }
+
+  ackSafetyAlert(token: string, alertId: string) {
+    return this.request<SafetyAlertItem>(`/api/v1/safety/alerts/${alertId}/ack`, {
+      method: "POST",
+    }, token);
+  }
+
+  listConversations(token: string, status: "active" | "archived" = "active") {
+    return this.request<Conversation[]>(`/api/v1/chat/conversations?status=${status}`, { method: "GET" }, token);
   }
 
   listActionPlans(token: string, activeOnly = false, beforeId?: string) {
@@ -758,6 +779,20 @@ export class ChatApi {
       `/api/v1/chat/conversations/${conversationId}`,
       { method: "DELETE" },
       token,
+    );
+  }
+
+  archiveConversation(token: string, conversationId: string) {
+    return this.request<Conversation>(
+      `/api/v1/chat/conversations/${conversationId}/archive`,
+      { method: "POST" }, token,
+    );
+  }
+
+  restoreConversation(token: string, conversationId: string) {
+    return this.request<Conversation>(
+      `/api/v1/chat/conversations/${conversationId}/restore`,
+      { method: "POST" }, token,
     );
   }
 

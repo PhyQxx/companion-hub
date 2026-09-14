@@ -92,13 +92,48 @@ def create_chat_router(service: ChatService, auth_service: AuthService) -> APIRo
     async def list_conversations(
         principal: Annotated[ChatPrincipal, Depends(chat_guard)],
         limit: Annotated[int, Query(ge=1, le=100)] = 50,
+        conversation_status: Annotated[
+            Literal["active", "archived"], Query(alias="status")
+        ] = "active",
     ) -> list[ConversationResponse]:
         return [
             _conversation_response(item)
             for item in await service.list_conversations(
-                user_id=principal.user_id, limit=limit
+                user_id=principal.user_id, limit=limit, status=conversation_status
             )
         ]
+
+    @router.post(
+        "/conversations/{conversation_id}/archive",
+        response_model=ConversationResponse,
+    )
+    async def archive_conversation(
+        conversation_id: UUID,
+        principal: Annotated[ChatPrincipal, Depends(chat_guard)],
+    ) -> ConversationResponse:
+        try:
+            result = await service.archive_conversation(
+                conversation_id, user_id=principal.user_id
+            )
+        except LookupError as error:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, detail=str(error)) from error
+        return _conversation_response(result)
+
+    @router.post(
+        "/conversations/{conversation_id}/restore",
+        response_model=ConversationResponse,
+    )
+    async def restore_conversation(
+        conversation_id: UUID,
+        principal: Annotated[ChatPrincipal, Depends(chat_guard)],
+    ) -> ConversationResponse:
+        try:
+            result = await service.restore_conversation(
+                conversation_id, user_id=principal.user_id
+            )
+        except LookupError as error:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, detail=str(error)) from error
+        return _conversation_response(result)
 
     @router.get(
         "/conversations/{conversation_id}/messages",

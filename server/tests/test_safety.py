@@ -553,3 +553,60 @@ async def test_activity_silent_outside_window_or_when_device_recent(tmp_path: An
     finally:
         await scheduler.stop()
         await database.close()
+
+
+async def test_chat_safety_api_lists_and_acks_alerts(tmp_path: Any) -> None:
+    from app.api import create_safety_router
+    from app.auth import AuthService
+    from fastapi import FastAPI
+    from httpx import ASGITransport, AsyncClient
+
+    database = await _database(tmp_path)
+    password = "correct horse battery staple"
+    auth = AuthService(database)
+    async with database.sessions.begin() as session:
+        session.add(AppUserRecord(
+            id=uuid7(), display_name="Owner", status="active", timezone="Asia/Shanghai",
+        ))
+    await auth.setup(display_name="Owner", password=password)
+    login = await auth.login(password=password)
+
+    fake_time = FakeTime()
+    service, _ = _make_service(database, fake_time)
+    alert = await service.handle(
+        user_id=login.principal.user_id, rule_id="smoke", entity_id="binary_sensor.smoke",
+        message="【危急】厨房烟感触发了烟雾告警…", evidence={},
+    )
+    assert alert is not None
+
+    app = FastAPI()
+    app.include_router(create_safety_router(service, auth))
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        unauthorized = await client.get("/api/v1/safety/alerts")
+        listed = await client.get(
+            "/api/v1/safety/alerts",
+            headers={"Authorization": f"Bearer {login.access_token}"},
+        )
+        acked = await client.post(
+            f"/api/v1/safety/alerts/{alert.id}/ack",
+            headers={"Authorization": f"Bearer {login.access_token}"},
+        )
+        replay = await client.post(
+            f"/api/v1/safety/alerts/{alert.id}/ack",
+            headers={"Authorization": f"Bearer {login.access_token}"},
+        )
+        after = await client.get(
+            "/api/v1/safety/alerts",
+            headers={"Authorization": f"Bearer {login.access_token}"},
+        )
+
+    assert unauthorized.status_code in {401, 422}
+    assert listed.status_code == 200
+    items = listed.json()["items"]
+    assert len(items) == 1 and items[0]["message"].startswith("【危急】")
+    assert acked.status_code == 200 and acked.json()["status"] == "acknowledged"
+    # 已确认的重复 ack 幂等返回 200 + acknowledged 状态
+    assert replay.status_code == 200 and replay.json()["status"] == "acknowledged"
+    assert after.json()["total"] == 0
+    await service.stop()
+    await database.close()

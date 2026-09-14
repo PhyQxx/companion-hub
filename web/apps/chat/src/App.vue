@@ -33,6 +33,7 @@ import {
 import ToolResultCard from "./ToolResultCard.vue";
 import PlanInbox from "./PlanInbox.vue";
 import MailDrafts from "./MailDrafts.vue";
+import SafetyAlerts from "./SafetyAlerts.vue";
 import ConfirmationDrafts from "./ConfirmationDrafts.vue";
 import Live2DStage from "./Live2DStage.vue";
 import MarkdownContent from "./MarkdownContent.vue";
@@ -79,6 +80,8 @@ const avatars = ref<AvatarChoice[]>([]);
 const avatarSwitchBusy = ref(false);
 
 const conversations = ref<Conversation[]>([]);
+const archivedConversations = ref<Conversation[]>([]);
+const showArchivedConversations = ref(false);
 const activeId = ref<string | null>(null);
 const messagesByConversation = reactive(new Map<string, ChatMessage[]>());
 const draft = ref("");
@@ -333,15 +336,22 @@ const avatarImageUrl = computed(() => {
   const assets = avatarMeta.value?.assets;
   return assets?.emotions?.[avatarEmotion.value] ?? assets?.thumbnail ?? null;
 });
+const activeConversationArchived = computed(() =>
+  archivedConversations.value.some((conversation) => conversation.id === activeId.value),
+);
 const canSend = computed(
   () =>
     socketReady.value &&
     !!activeId.value &&
+    !activeConversationArchived.value &&
     draft.value.trim().length > 0 &&
     !streaming.value &&
     !sendPending.value &&
     !voiceBusy.value &&
     !voiceRecording.value,
+);
+const visibleConversations = computed(() =>
+  showArchivedConversations.value ? archivedConversations.value : conversations.value,
 );
 
 function setStatus(text: string, error = false) {
@@ -848,6 +858,7 @@ async function logout() {
   displayName.value = "";
   authStorage.removeItem(TOKEN_KEY);
   conversations.value = [];
+  archivedConversations.value = [];
   activeId.value = null;
   messagesByConversation.clear();
   if (current) {
@@ -879,7 +890,10 @@ async function enterChat() {
 
 async function loadConversations() {
   try {
-    conversations.value = await api.listConversations(token.value);
+    [conversations.value, archivedConversations.value] = await Promise.all([
+      api.listConversations(token.value, "active"),
+      api.listConversations(token.value, "archived"),
+    ]);
     if (!activeId.value && conversations.value.length) {
       await openConversation(conversations.value[0]!.id);
     }
@@ -931,22 +945,66 @@ async function createConversation() {
   }
 }
 
+async function selectConversationGroup(archived: boolean) {
+  if (showArchivedConversations.value === archived) return;
+  await closeVoice();
+  showArchivedConversations.value = archived;
+  activeId.value = null;
+  const first = archived ? archivedConversations.value[0] : conversations.value[0];
+  if (first) await openConversation(first.id);
+}
+
 async function removeConversation(id: string) {
-  const conversation = conversations.value.find((item) => item.id === id);
+  const conversation = [...conversations.value, ...archivedConversations.value]
+    .find((item) => item.id === id);
   const label = conversation?.title ?? "该会话";
   if (!confirm(`删除「${label}」？消息与由它沉淀的记忆会被一并删除，不可恢复。`)) return;
   try {
     if (activeId.value === id) await closeVoice();
     await api.deleteConversation(token.value, id);
     conversations.value = conversations.value.filter((item) => item.id !== id);
+    archivedConversations.value = archivedConversations.value.filter((item) => item.id !== id);
     messagesByConversation.delete(id);
     if (activeId.value === id) {
       activeId.value = null;
-      if (conversations.value.length) await openConversation(conversations.value[0]!.id);
+      const first = visibleConversations.value[0];
+      if (first) await openConversation(first.id);
     }
     setStatus("会话已删除");
   } catch (error) {
     setStatus(error instanceof Error ? error.message : "删除失败", true);
+  }
+}
+
+async function archiveConversation(id: string) {
+  try {
+    if (activeId.value === id) await closeVoice();
+    const archived = await api.archiveConversation(token.value, id);
+    conversations.value = conversations.value.filter((item) => item.id !== id);
+    archivedConversations.value.unshift(archived);
+    if (activeId.value === id) {
+      activeId.value = null;
+      if (conversations.value.length) await openConversation(conversations.value[0]!.id);
+    }
+    setStatus("会话已归档，可在归档列表中恢复");
+  } catch (error) {
+    setStatus(error instanceof Error ? error.message : "归档失败", true);
+  }
+}
+
+async function restoreConversation(id: string) {
+  try {
+    const restored = await api.restoreConversation(token.value, id);
+    archivedConversations.value = archivedConversations.value.filter((item) => item.id !== id);
+    conversations.value.unshift(restored);
+    if (activeId.value === id) {
+      activeId.value = null;
+      const first = archivedConversations.value[0];
+      if (first) await openConversation(first.id);
+    }
+    setStatus("会话已恢复");
+  } catch (error) {
+    setStatus(error instanceof Error ? error.message : "恢复失败", true);
   }
 }
 
@@ -1254,13 +1312,18 @@ async function installPwa() {
     ></button>
     <aside class="conversation-sidebar" :class="{ 'mobile-open': mobileConversationsOpen }">
       <header class="conversation-heading">
-        <strong>会话</strong>
-        <small>{{ conversations.length }} 个</small>
+        <strong>{{ showArchivedConversations ? '已归档' : '会话' }}</strong>
+        <small>{{ visibleConversations.length }} 个</small>
       </header>
-      <button class="primary new-chat" type="button" @click="createConversation">新会话</button>
+      <div class="conversation-tabs">
+        <button type="button" :class="{ active: !showArchivedConversations }" @click="selectConversationGroup(false)">会话</button>
+        <button type="button" :class="{ active: showArchivedConversations }" @click="selectConversationGroup(true)">归档 {{ archivedConversations.length }}</button>
+      </div>
+      <button v-if="!showArchivedConversations" class="primary new-chat" type="button" @click="createConversation">新会话</button>
       <div class="conversation-list">
+        <p v-if="!visibleConversations.length" class="conversation-empty">{{ showArchivedConversations ? '还没有归档会话' : '还没有会话' }}</p>
         <div
-          v-for="conversation in conversations"
+          v-for="conversation in visibleConversations"
           :key="conversation.id"
           class="conversation-item"
           :class="{ active: conversation.id === activeId }"
@@ -1269,7 +1332,11 @@ async function installPwa() {
             {{ conversation.title || "新会话" }}
             <small>{{ conversation.last_seq }} 条消息</small>
           </button>
-          <button class="danger-text" type="button" title="删除会话" @click="removeConversation(conversation.id)">✕</button>
+          <div class="conversation-actions">
+            <button v-if="showArchivedConversations" type="button" title="恢复会话" @click="restoreConversation(conversation.id)">↥</button>
+            <button v-else type="button" title="归档会话" @click="archiveConversation(conversation.id)">↧</button>
+            <button class="danger-text" type="button" title="永久删除会话" @click="removeConversation(conversation.id)">✕</button>
+          </div>
         </div>
       </div>
       <div class="aside-footer">
@@ -1321,6 +1388,8 @@ async function installPwa() {
         </div>
       </div>
 
+      <SafetyAlerts v-if="token" :key="token" :token="token" />
+
       <MailDrafts v-if="token && privacy === 'L1'" :key="token" :token="token" />
 
       <ConfirmationDrafts v-if="token && privacy === 'L1'" :key="token" :token="token" />
@@ -1328,6 +1397,7 @@ async function installPwa() {
       <PlanInbox v-if="token && privacy === 'L1'" :key="token" :token="token" :refresh-key="planRefresh" />
 
       <footer class="composer">
+        <p v-if="activeConversationArchived" class="archived-notice">此会话已归档。恢复后可以继续发送消息。</p>
         <div class="composer-meta">
           <select v-model="privacy" :disabled="!!streaming || voiceRecording || voiceBusy" @change="onPrivacyChanged">
             <option value="L0">L0 · 可上云</option>
@@ -1376,7 +1446,7 @@ async function installPwa() {
             class="voice-button"
             :class="{ recording: voiceRecording }"
             type="button"
-            :disabled="!activeId || !!streaming || (voiceBusy && !voiceRecording)"
+            :disabled="!activeId || activeConversationArchived || !!streaming || (voiceBusy && !voiceRecording)"
             @click="toggleVoiceRecording"
           >
             {{ voiceRecording ? "结束并发送" : "🎙 开始说话" }}
@@ -1393,7 +1463,7 @@ async function installPwa() {
             v-model="draft"
             rows="2"
             placeholder="输入消息，Enter 发送"
-            :disabled="!socketReady"
+            :disabled="!socketReady || activeConversationArchived"
             @keydown.enter.exact.prevent="send"
           />
           <button v-if="!streaming" class="primary" type="button" :disabled="!canSend" @click="send">发送</button>
@@ -1471,12 +1541,18 @@ aside header strong { font-size:16px; }
 .avatar-switcher{display:grid;flex:none;gap:6px;color:var(--muted);font-size:10px}.avatar-switcher select{min-width:0;width:100%;padding:9px 10px;font-size:12px}
 @keyframes avatar-pulse { 50% { transform:scale(1.06); filter:brightness(1.12); } }
 .new-chat { width: 100%; }
+.conversation-tabs { display:grid; grid-template-columns:1fr 1fr; gap:6px; }
+.conversation-tabs button { padding:7px 8px; color:var(--muted); background:var(--panel2); }
+.conversation-tabs button.active { border-color:var(--accent); color:var(--accent); background:var(--accent-soft); }
 .conversation-list { flex: 1; min-width:0; min-height: 0; overflow-x:hidden; overflow-y: auto; display: grid; align-content: start; gap: 6px; }
+.conversation-empty { margin:10px 4px; color:var(--muted); font-size:12px; text-align:center; }
 .conversation-item { position: relative; display: flex; align-items: center; min-width:0; max-width:100%; }
 .conversation { flex: 1 1 auto; min-width:0; max-width:100%; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; text-align: left; border: 1px solid var(--line); background: var(--panel); padding: 8px 30px 8px 10px; border-radius: 8px; }
 .conversation-item.active .conversation { border-color: var(--accent); background: var(--accent-soft); color:var(--accent); font-weight:600; }
 .conversation small { display: block; overflow:hidden; text-overflow:ellipsis; color: var(--muted); margin-top: 3px; font-size: 11px; font-weight:400; }
-.conversation-item .danger-text { position: absolute; right: 4px; padding: 2px 6px; }
+.conversation-actions { position:absolute; right:4px; display:flex; align-items:center; }
+.conversation-actions button { padding:2px 5px; border:0; background:transparent; }
+.conversation-item .conversation { padding-right:56px; }
 .debug-link { color: var(--muted); font-size: 12px; text-decoration: none; }
 .aside-footer { display:flex; align-items:end; gap:8px; min-width:0; padding-top:10px; border-top:1px solid var(--line); }
 .theme-field { display:grid; flex:1; min-width:0; gap:5px; color:var(--muted); font-size:10px; }
@@ -1499,6 +1575,7 @@ main { grid-area:chat; display:grid; grid-template-rows:minmax(0,1fr) auto; min-
 .recall-badge { display:inline-block; margin-left:6px; font-size:10px; color:var(--muted); border:1px solid var(--line); border-radius:999px; padding:0 7px; opacity:.8; }
 
 .composer { border-top: 1px solid var(--line); padding: 12px 16px; display: grid; gap: 8px; background:var(--panel); }
+.archived-notice { margin:0; color:var(--muted); font-size:12px; }
 .composer-meta { display: flex; align-items: center; gap: 12px; }
 .tts-toggle { display:flex; align-items:center; gap:6px; color:var(--muted); font-size:12px; cursor:pointer; user-select:none; }
 .tts-toggle input { accent-color:var(--accent); cursor:pointer; }

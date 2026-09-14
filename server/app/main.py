@@ -39,6 +39,7 @@ from app.api import (
     create_chat_websocket_router,
     create_cognition_router,
     create_contacts_router,
+    create_safety_router,
     create_deletion_ledger_router,
     create_device_command_routers,
     create_device_routers,
@@ -1369,6 +1370,10 @@ def create_app(
                 app.state.meeting_service = meeting_service
             if contact_store is not None:
                 app.include_router(create_contacts_router(contact_store, auth_service))
+                if safety_alert_service is not None:
+                    app.include_router(
+                        create_safety_router(safety_alert_service, auth_service)
+                    )
                 app.state.contact_store = contact_store
             if home_scene_service is not None:
                 app.include_router(create_home_scenes_router(home_scene_service, auth_service))

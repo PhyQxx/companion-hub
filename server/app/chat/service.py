@@ -404,16 +404,53 @@ class ChatService:
             session.add(record)
         return self._conversation_view(record)
 
-    async def list_conversations(self, *, user_id: UUID, limit: int = 50) -> list[ConversationView]:
+    async def list_conversations(
+        self, *, user_id: UUID, limit: int = 50, status: str = "active"
+    ) -> list[ConversationView]:
+        if status not in {"active", "archived"}:
+            raise ValueError("unsupported conversation status")
         query = (
             select(ConversationRecord)
-            .where(ConversationRecord.user_id == user_id)
+            .where(
+                ConversationRecord.user_id == user_id,
+                ConversationRecord.status == status,
+            )
             .order_by(ConversationRecord.last_active_at.desc())
             .limit(limit)
         )
         async with self._database.sessions() as session:
             records = list(await session.scalars(query))
         return [self._conversation_view(record) for record in records]
+
+    async def archive_conversation(
+        self, conversation_id: UUID, *, user_id: UUID
+    ) -> ConversationView:
+        return await self._set_conversation_status(
+            conversation_id, user_id=user_id, status="archived"
+        )
+
+    async def restore_conversation(
+        self, conversation_id: UUID, *, user_id: UUID
+    ) -> ConversationView:
+        return await self._set_conversation_status(
+            conversation_id, user_id=user_id, status="active"
+        )
+
+    async def _set_conversation_status(
+        self, conversation_id: UUID, *, user_id: UUID, status: str
+    ) -> ConversationView:
+        async with self._database.sessions.begin() as session:
+            conversation = await session.scalar(
+                select(ConversationRecord)
+                .where(ConversationRecord.id == conversation_id)
+                .with_for_update()
+            )
+            if conversation is None or conversation.user_id != user_id:
+                raise LookupError("conversation not found")
+            conversation.status = status
+            await session.flush()
+            view = self._conversation_view(conversation)
+        return view
 
     async def list_messages(
         self, conversation_id: UUID, *, user_id: UUID, limit: int = 100

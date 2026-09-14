@@ -32,6 +32,7 @@ from .meetings import create_meetings_router
 from .model_capabilities import create_model_capability_router
 from .pnkx import create_pnkx_router
 from .push import create_push_router
+from .safety import create_safety_router
 from .reviews import create_reviews_router
 from .tasks import create_tasks_router
 from .theme import create_admin_theme_router, create_theme_router
@@ -77,6 +78,7 @@ __all__ = [
     "create_model_capability_router",
     "create_pnkx_router",
     "create_push_router",
+    "create_safety_router",
     "create_reviews_router",
     "create_tasks_router",
     "create_theme_router",

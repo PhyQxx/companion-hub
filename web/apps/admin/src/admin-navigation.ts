@@ -34,6 +34,7 @@ export const adminModules: AdminModule[] = [
     tabs: [
       { key: "profile", label: "基本设定", description: "身份、称呼、关系和档案基线。", state: "ready" },
       { key: "style", label: "表达风格", description: "语言风格、提示词和声音配置。", state: "ready" },
+      { key: "proactive", label: "主动发起话题", description: "允许根据屏幕和浏览内容主动发起话题。", state: "ready" },
       { key: "boundaries", label: "边界规则", description: "安全、伦理与互动边界。", state: "ready" },
       { key: "motion", label: "动作映射", description: "情绪、表情和 Live2D 动作映射。", state: "ready" },
       { key: "versions", label: "版本历史", description: "草稿、发布、比较和回滚。", state: "ready" },
