@@ -13,3 +13,8 @@ web/**/node_modules
 web/**/dist
 firmware
 *.pyc
+browser-extension/node_modules
+integrations/xiaoai_gateway/node_modules
+server/assets/avatar-uploads
+**/.zcode
+desktop
