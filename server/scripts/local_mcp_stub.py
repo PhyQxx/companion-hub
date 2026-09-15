@@ -1,4 +1,4 @@
-"""本地 MCP 调试 Server（MCP-D 验收用，docs/43 §3 允许的回环 HTTP 场景）。
+"""本地 MCP 调试 Server（MCP-D 验收用，docs/06 §3 允许的回环 HTTP 场景）。
 
 提供一对工具：
 - notes_get（只读）：读取指定 ID 的笔记；

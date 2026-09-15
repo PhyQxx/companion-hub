@@ -4,7 +4,7 @@
 设计要点：
 - 所有实现遵循同一协议（model / dimension / version / embed）；
 - 向量按 version 隔离，切换嵌入模型时新旧向量互不参与比较，
-  必须新增列双写回填后再切读（docs/02 §3.6）；
+  必须新增列双写回填后再切读（docs/00 §3.6）；
 - HashingEmbeddingProvider 是确定性本地实现：离线可用、测试可复现，
   是 utility 嵌入模型上线前的默认方案。
 """

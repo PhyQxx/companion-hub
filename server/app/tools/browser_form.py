@@ -1,6 +1,6 @@
 """WEB-01 浏览器工作流工具：打开页面、读取表单、填写、提交。
 
-红线（docs/39 J5「提交前显示目标、字段和证据」）：填写与提交分离——
+红线（docs/00 J5「提交前显示目标、字段和证据」）：填写与提交分离——
 `browser_form_fill` 只写值永不触发提交；`browser_form_submit` 在
 Action Registry 中为 A2 每次确认，只能经计划—确认—执行链路触发。
 四个工具都不挂载为聊天工具（`_device_tool_ready` 恒 False），由

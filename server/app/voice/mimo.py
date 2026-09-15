@@ -1,4 +1,4 @@
-"""小米 MiMo 语音适配器（docs/33）：ASR 与 TTS 均为云端 OpenAI 兼容接口。
+"""小米 MiMo 语音适配器（docs/04）：ASR 与 TTS 均为云端 OpenAI 兼容接口。
 
 - ASR（mimo-v2.5-asr）：仅收 wav/mp3 的 base64，服务端把 PCM16 包上 WAV
   头再上传；asr_options.language 支持 auto/zh/en。

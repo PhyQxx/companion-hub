@@ -1,5 +1,5 @@
 # ruff: noqa: RUF001
-"""句级切分：LLM 流式输出按强标点切句，首句立即送 TTS（docs/02 §3.2）。"""
+"""句级切分：LLM 流式输出按强标点切句，首句立即送 TTS（docs/00 §3.2）。"""
 
 from __future__ import annotations
 

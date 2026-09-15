@@ -33,7 +33,7 @@ class ToolResult(StrictModel):
     provider: TokenName | None = None
     latency_ms: float = Field(ge=0)
     cache_hit: bool = False
-    # 位置解析来源摘要(docs/35 §6.2):只记枚举,不记坐标或原始地址。
+    # 位置解析来源摘要(docs/05 地图/天气章节 §6.2):只记枚举,不记坐标或原始地址。
     location_source: Literal["explicit", "ephemeral", "default_city"] | None = None
 
 

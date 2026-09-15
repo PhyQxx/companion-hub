@@ -1,7 +1,7 @@
 # Aria 当前任务
 
-> 最后更新：2026-09-08
-> 详细设计入口：[00-文档索引与架构总览.md](./00-文档索引与架构总览.md)
+> 最后更新：2026-09-15
+> 详细设计入口：[00-产品与架构.md](./00-产品与架构.md)
 
 本文件只维护当前执行队列、未完成门槛和最新质量基线。历史交付细节留在对应阶段文档，不在这里重复。
 
@@ -10,16 +10,16 @@
 | 阶段 | 状态 | 当前结论 |
 |---|---|---|
 | M0～M1 可信文字核心 | 已完成 | 事件、隐私、身份、聊天、Persona、Memory、Timeline 与删除闭环已落地 |
-| P5 文字稳定性闸门 | 已完成，待归档证据索引 | 用户已确认 14 天观察完成；仓库报告保留外部日志索引回填项，见 `docs/32` |
+| P5 文字稳定性闸门 | 已完成，待归档证据索引 | 用户已确认 14 天观察完成；仓库报告保留外部日志索引回填项，见 `docs/history/P4-P5-Vue迁移与闸门`（P5 闸门章节） |
 | P6 Batch A～C 语音 | 主链完成 | 真浏览器 ASR/LLM/TTS/viseme/打断已打通；延迟继续优化 |
-| M3A 地图/天气第一批 | 已完成 | 查询、定位、卡片、Admin 自检、200 条台账与延迟报告已落地，见 `docs/35` |
+| M3A 地图/天气第一批 | 已完成 | 查询、定位、卡片、Admin 自检、200 条台账与延迟报告已落地，见 `docs/05`（地图/天气章节） |
 | M3A 多终端与感知 | 进行中 | Browser Bridge、macOS Desktop 活动窗口/交互选择器与隐私门禁已通过真机验收；主动输出已接入 Web、macOS 通知和在线语音 |
 | M3B 认知调度闭环 | v1 完成，Action v2 代码闭环 | 被动/主动认知闭环已落地；ACT-01～04 完成——动作目录 18 个（HA/桌面/浏览器/剪贴板），执行中可协作停止，模型自主 `act` 仍关闭 |
 | 形象与主题底座 | 已完成（v1） | 形象包/实例/Persona 绑定、主题同步、自定义立绘与 Live2D 安全导入均已落地 |
 | Admin 信息架构重整 | 已完成（v1） | 领域分组、URL 可恢复二级 Tab、真实数据页与浏览器验收已完成 |
 | P6 Batch D Live2D/桌宠 | 联动代码完成 | 透明窗口、拖拽、穿透、位置恢复、Hub 同源舞台及签名情绪/动作/口型同步已接通；M2 与真机性能仍是发布门槛 |
 | M4B 手机 PWA | 进行中 | 可安装壳、离线降级、移动布局、前后台恢复、移动音频解锁及游标分页补拉/去重底座已完成；待真机验收、通知与多端租约 |
-| 个人管家闭环 J1～J8 | **J1～J6 Hub 代码闭环，待真实验收**，J7/J8 未启动 | ACT-01～03 完成、ACT-04 动作目录已扩到 18 个（含桌面/浏览器/剪贴板）；J2 四项（TASK/GOAL/BRIEF/REVIEW）代码闭环；J3 Hub 侧卫星协议、音频链路、仲裁与播报路由代码闭环，设备端唤醒/VAD 和硬件全链待验收；J4 四项（CAL/TODO/MAIL/CONTACT）代码闭环（TODO/MAIL 已真机联调）；J5 四项（PC-01/WEB-01/FLOW-01/PC-02 含 Chat 进度面板）代码闭环；J6 COMMUTE/FOCUS/HOME/MEET 均已实现，会议真实录音客户端待接入；**全部待验收项集中在 [40-验收清单](./40-验收清单.md)** |
+| 个人管家闭环 J1～J8 | **J1～J6 Hub 代码闭环，待真实验收**，J7/J8 未启动 | ACT-01～03 完成、ACT-04 动作目录已扩到 18 个（含桌面/浏览器/剪贴板）；J2 四项（TASK/GOAL/BRIEF/REVIEW）代码闭环；J3 Hub 侧卫星协议、音频链路、仲裁与播报路由代码闭环，设备端唤醒/VAD 和硬件全链待验收；J4 四项（CAL/TODO/MAIL/CONTACT）代码闭环（TODO/MAIL 已真机联调）；J5 四项（PC-01/WEB-01/FLOW-01/PC-02 含 Chat 进度面板）代码闭环；J6 COMMUTE/FOCUS/HOME/MEET 均已实现，会议真实录音客户端待接入；**全部待验收项集中在 [00-产品与架构](./00-产品与架构.md) 的验收清单章节** |
 
 ## 2. 当前执行队列
 
@@ -56,11 +56,11 @@
 
 - [x] 恢复在制分支质量闸门：Ruff **163** 项、mypy **38** 项和 Admin TypeScript **4** 项已清零；非 soak 全量 pytest **532 通过 / 0 失败**（3 个既有全局 Admin token 状态污染失败已用 conftest autouse 重置 fixture 修复）；Chat/Admin/Shared typecheck 与 production build、Alembic 空库升级到 `0022` 单 head 和 `git diff --check` 全部通过。
 - [x] 收口当前实现批次：迁移链 `0019 → 0020 → 0021 → bb15882faef4 → 0022 → 0023` 已确认单 head，空库升级复验通过；`.design-qa/`、`.zcode/`、本地截图、`server/assets/` 运行时上传与授权 SDK/Core 已入 `.gitignore`，在制批次已分 9 个逻辑提交入库。
-- [x] P5 连续 14 天文字稳定性观察已由用户确认完成；外部每日记录的仓库证据索引仍需回填到 `docs/32`。M2 语音延迟优化作为并行性能专项推进。
+- [x] P5 连续 14 天文字稳定性观察已由用户确认完成；外部每日记录的仓库证据索引仍需回填到 `docs/history/P4-P5-Vue迁移与闸门` 的 P5 闸门章节。M2 语音延迟优化作为并行性能专项推进。
 
 ### 0.2 PWA 收口后的个人管家能力队列
 
-完整范围、风险边界、验收和预估见 [39-个人管家能力路线图.md](./39-个人管家能力路线图.md)。以下记录各能力的实际交付范围与剩余工作。J1～J6 已有实现；当前先处理 0.0 的核查缺口，再收口 PWA Batch B/C、多端租约真机验收，并保留 M2 与桌宠发布门槛。
+完整范围、风险边界、验收和预估见 [00-产品与架构.md](./00-产品与架构.md)。以下记录各能力的实际交付范围与剩余工作。J1～J6 已有实现；当前先处理 0.0 的核查缺口，再收口 PWA Batch B/C、多端租约真机验收，并保留 M2 与桌宠发布门槛。
 
 #### J1 安全行动引擎 v2
 
@@ -108,7 +108,7 @@
 
 - [ ] `IOS-01/AND-01`：PWA 稳定后评估 App Intents、快捷指令、锁屏/Live Activity、小组件和穿戴设备入口。
 - [ ] `ID-01` 多人身份（暂缓，2026-09-08 用户决定）：当前只有一位使用者，暂不引入家庭成员、声纹辅助、访客降级和多人记忆/播报隔离；出现第二位长期用户或共享设备的私密播报需求时再启动。
-- [x] `SAFE-01/SAFE-02` 家庭守护（2026-09-14 全量实现，待 HA 真机验收）：设计见 [44](./44-家庭守护SAFE设计方案.md)。S1 规则分级（severity 三级 + 烟雾/门窗久开新种类 + critical 全通道广播 + 告警证据富化）；S2 告警状态机（`safety_alert` 表 + L1→L2 升级窗口 + 聊天「知道了」确认 + 重启恢复 + Timeline 三类事件）；S3 预授权联系人邮件升级（授权可撤销 + 发送前告知 + 双台账 + Admin「安全守护」页）；S4 久未活动检测（聊天/设备心跳多信号 + 生效时段门控 + 认知闸门）。全量 851 测试、mypy 266 文件零错误。
+- [x] `SAFE-01/SAFE-02` 家庭守护（2026-09-14 全量实现，待 HA 真机验收）：设计见 [07-安全与管理后台](./07-安全与管理后台.md) 的家庭守护 SAFE 章节。S1 规则分级（severity 三级 + 烟雾/门窗久开新种类 + critical 全通道广播 + 告警证据富化）；S2 告警状态机（`safety_alert` 表 + L1→L2 升级窗口 + 聊天「知道了」确认 + 重启恢复 + Timeline 三类事件）；S3 预授权联系人邮件升级（授权可撤销 + 发送前告知 + 双台账 + Admin「安全守护」页）；S4 久未活动检测（聊天/设备心跳多信号 + 生效时段门控 + 认知闸门）。全量 851 测试、mypy 266 文件零错误。
 
 ### A. 多终端设备底座
 
@@ -161,7 +161,7 @@
 
 ### E. 并行门槛与优化
 
-- [x] P5：连续 14 天真实文字使用已由用户确认完成；`docs/32` 尚需补入外部每日记录索引与期末闸门结果。
+- [x] P5：连续 14 天真实文字使用已由用户确认完成；`docs/history/P4-P5-Vue迁移与闸门` 的 P5 闸门章节尚需补入外部每日记录索引与期末闸门结果。
 - [ ] M2：低延迟语音专用 LLM 端点评估按用户决定暂时忽略；ASR 已先用 VAD hangover 预取覆盖部分整段识别等待，下一步重置窗口完成 20 个完整回合 + 20 个打断判卷。
 - [ ] 本地语音质量：faster-whisper 已支持可配置 `initial_prompt` / `hotwords`，并默认偏置“小艾 / Aria / 只回答”；剩余为真人样本复验，需要时安装并验收 Silero 与 openWakeWord。
 - [x] P6 Batch D Web 最小壳：Live2D ZIP 安全导入、官方 Cubism Web Runtime 动态加载、聊天/Admin 真实模型渲染、viseme/说话/情绪/表情/动作控制与缺少运行时时安全降级均已接通。
@@ -173,10 +173,16 @@
 - [x] 二级 Tab 进入 URL query，可刷新恢复；已有总览、模型、Persona、记忆、时间线、删除台账、设备列表和命令台账复用真实页面。
 - [x] 尚无查询接口的 Tab 使用明确的“待接入真实数据”状态页，不展示伪造指标；Admin typecheck 与 production build 通过。
 - [x] 真实浏览器验收：登录后逐项检查一级模块、二级 Tab、旧 `/timeline` 跳转、刷新恢复和窄屏导航；发现的 P0/P1 交互问题当批修复。
-- [x] 验收后按 `docs/05` 的实施顺序接真实数据：health/activity/usage/quality/conflicts/pairing/diagnostics + logs/privacy/system 三个聚合 dashboard（含实时日志独立 Tab）已全部接入真实数据；Trace、隐私审计、备份恢复和成本能力按 M3B 计划推进。
+- [x] 验收后按 `docs/07` 的实施顺序接真实数据：health/activity/usage/quality/conflicts/pairing/diagnostics + logs/privacy/system 三个聚合 dashboard（含实时日志独立 Tab）已全部接入真实数据；Trace、隐私审计、备份恢复和成本能力按 M3B 计划推进。
 
 ## 3. 最近完成
 
+- [x] 2026-09-15 `文档库按功能重组`（46 → 8 个编号文档 + TASKS + 1 个历史归档）：Active 文档按功能合并为 `00-产品与架构`（01 需求+13 ADR、02 功能设计、03 开发规划、39 路线图+40 验收清单）、`01-平台运行时`（11 数据模型、09 状态机、14 I/O 契约、10 任务资产、16 配置中心）、`02-形象与人设`（07 形象+08 动态化+Live2D、06 主题、20 Persona）、`03-记忆与时间线`（30+31）、`04-语音`（33）、`05-工具与感知`（34+35、38+42）、`06-集成与认知`（36 HA、37 认知调度、43 MCP+41）、`07-安全与管理后台`（12+44 SAFE、05）；冻结阶段记录（原 04、15、17～19、21～25、26～29、32）合并为单一 `docs/history/历史阶段归档.md`。原文完整保留、标题逐级降级，各章节标注「原编号 NN」；`docs/00` 头部维护文档地图与旧→新映射；全仓 Markdown 链接与代码注释（voice/safety/tools/focus/workflows/memory/chat 等 28 个文件）的 `docs/NN` 引用已同步改写。
+
+- [x] 2026-09-15 `SenseAudio 声音管理 + TTS 提供方`（代码闭环，真实 Key 联调待验收）：配置中心新增 `voice.senseaudio` 共享连接（base_url/密钥双模式/tts_model/enabled，Admin GET 脱敏、掩码还原）与 TTS 链 `provider="senseaudio"` 条目（留空 base_url/密钥回退共享连接，音色默认 `male_0018_a`，两处都无密钥时校验拒绝）；`SenseAudioTtsSynthesizer` 走 t2a_v2 非流式合成，输出 mp3 24kHz 按 4 KiB 切片，`runs_local=False`——L2 私密内容禁止出站由故障转移链降级。Admin「模型与路由 → 声音管理」新模块：连接配置（保存即发布热生效、启用前必须有 Key）、音色目录（标注 Free 套餐可合成音色 `child_0001_a/b`、`male_0004_a`、`male_0018_a`）、试听合成（≤500 字/2MB，speed/vol/pitch 可调）、参考音频上传与音色克隆（MP3/AAC/WAV、≤50MB，label 白名单即生成 voice_id）、识别历史分页；上游 "no access to the specified voice" 映射为套餐引导（403）。模型工作区 TTS 链支持「+ SenseAudio」，音色下拉动态加载目录（克隆/生成 + Free 系统音色），新克隆音色重进页面即可选。设计细节见 `docs/04` §3.5。
+- [x] 2026-09-15 `能力边界与工具挂载一致性`：`inspect_webpage` 由 L2-only 放宽到 L1/L2 会话开放——页面文本会进入本轮对话上下文，因此 L1 要求本轮路由模型支持工具调用（L0 公开模式仍拒绝，错误码改为 `webpage_inspection_requires_l1`）。`render_reality_grounding` 接收本轮实际挂载的设备工具集合（挂载计算在 `ChatService` 中前移到能力块渲染之前）与私密路由就绪标志：设备在线但工具未挂载的能力移入「当前会话未开放」分组并禁止模型声称可用/承诺执行，浏览器读取在本地工具模型就绪时例外允许引导切换私密会话；HA 能力在线但 HA 工具全未挂载时整体标注不可执行。新增 `tools_for_capability` 能力→工具反查（不在 `DEVICE_TOOL_REQUIREMENTS` 的能力如桌面动作不参与标注）。
+- [x] 2026-09-15 `TemporalQueryParser 相对时长增强`：数量词支持中文数字（一~九十九，含"两"与"十X/X十"），单位新增"周"（"过去两周""最近三小时"可解析）；无明确时长的"最近"按最近 24 小时生成时间窗，修复"总结下最近的浏览记录"这类高频问法解析不出窗口、活动回顾链路静默失效的问题。
+- [x] 2026-09-15 `Persona 动作映射可视化编辑`：Admin 人格「动作映射」Tab 的情绪→表情映射由纯 JSON 文本域升级为卡片式可视化编辑（七个内置情绪 emoji/颜色卡片 + 自定义情绪自动识别），支持★设默认情绪、一键同名映射、可视化/JSON 双模式切换（JSON 无效时阻止切回可视化）。
 - [x] 2026-09-11 `批次部署验收收尾`：服务器部署（alembic 至 0037_meetings、前端重建、扩展同步更新）+ 真机/真实数据验收全过：管理端分页、浏览观察（服务器侧记录 + 聊天召回）、MCP Context7（含新配置 UI 添加 Server、密钥脱敏）、PWA Batch B/C（锁屏推送、双端语音）、WEB-01 表单全链。本批 837 项测试基线、mypy 261 文件零错误；0.0 缺口清单全部关闭。
 
 - [x] 2026-09-10 `BROWSE-42 P3 + 管理端全列表分页`：心跳指纹降轮询成本（协议向后兼容、设备端只在 Hub 声明时上报）、命令台账与观察/记忆/时间线/任务全部改为服务端真分页（统一 `{items,total,limit,offset}`，列表与计数同条件）、restricted_page 等设备端隐私拒绝改为静默跳过；非 soak 全量 **826 通过**，Ruff、Admin typecheck/production build 通过，真机验证观察记录/分页/台账过滤生效。
@@ -199,7 +205,7 @@
 - [x] PWA Batch C 移动通知底座（Web Push）：新增 `app/push` 包（订阅 Store 按 endpoint upsert/失效即删、`WebPushSender` VAPID 签名 + RFC8291 加密经 pywebpush 发送、`WebPushAdapter` 以 `web_push` 通道接入 `ProactiveDeliveryService`）；`0032_web_push` 迁移建 `push_subscription` 表并把回执 channel 约束扩展到 `web_push`；配置中心新增 `integrations.push`（VAPID 公钥明文 + 私钥 secret_value/secret_ref 双模式，未配齐密钥禁止启用）与 `proactive_output.web_push` 通道（默认优先级 70，L2 禁入由校验器硬拦）；用户 API `/api/v1/push/vapid-key|subscribe|unsubscribe`；Chat 输入区新增「🔔移动通知」开关（权限申请严格在用户手势内、状态恢复不触发询问），Service Worker 新增 `push` 展示与 `notificationclick` 点击回流（聚焦已打开窗口，前台后走既有补拉）；Admin 主动通道页新增 Web Push 通道卡。通知正文按事件 ID 打 tag 去重、截断 120 字，推送服务 404/410 自动清理订阅。
 - [x] 聊天端自然语言建提醒/建日程工具：`reminder_create` 支持 once/daily/weekdays/weekly/interval 周期及到家/离家触发；`calendar_create` 只做时间规范化、冲突检查并准备服务端预览，用户在 Chat 卡片点击确认后由鉴权 API 校验内容摘要并落库，模型 `confirmed=true` 被拒绝，时间冲突仍由服务端硬拦。挂载门禁仅 L1 开放；`tool.started` 标签与 main.py 按 service 就绪挂载已接通。
 - [x] 聊天 Markdown 渲染 + TTS 前文本清洗：Chat 气泡由纯文本改为 markdown-it 安全渲染（`html=false` 转义原始 HTML、链接强制 `noopener noreferrer`、流式期间保持 pre-wrap），新增 `MarkdownContent.vue`/`markdown.ts`；语音侧新增 `speech_text.py`（`MarkdownSpeechFilter` 跨句记住 fenced code 状态、`markdown_to_speech_text` 移除标题/链接/URL/行内代码/表格线/HTML 标签），接入流式分句、桌宠播报与完整语音回复三条路径，清洗后为空则安全跳过或返回 `tts_empty_text`。语音播报不再念出 Markdown 符号与代码块。
-- [x] 情景记忆按事件追加（修复屏幕观察重复入库冲突）：`MemoryIngester` 对 EPISODIC 候选直接追加，不再进入稳定事实的"相似但不同即冲突"裁决——相似文本描述的是不同时间的事件可以同时为真；上游事件管线继续按事件 ID、截图哈希与时间窗口去重。`docs/38` 同步更新，新增两条相似屏幕观察各自独立创建的回归。
+- [x] 情景记忆按事件追加（修复屏幕观察重复入库冲突）：`MemoryIngester` 对 EPISODIC 候选直接追加，不再进入稳定事实的"相似但不同即冲突"裁决——相似文本描述的是不同时间的事件可以同时为真；上游事件管线继续按事件 ID、截图哈希与时间窗口去重。`docs/05` 同步更新，新增两条相似屏幕观察各自独立创建的回归。
 - [x] Admin 三处修复：设备命令台账与 HA 实体列表加分页（20/50/100(/200) 档位、筛选变化重置页码、HA 表格跨页保留勾选）；修复模型工作区保存时 `structuredClone` 无法克隆 Vue 响应式 Proxy 导致的崩溃——改为递归重建普通对象。
 - [x] `TODO-01` 真机联调通过：livecheck 对 `https://admin.pnkx.top:8` 全链验收——分页拉取 109 条、镜像 109 条建立零错误（active 6 条含标题/优先级/分组正确）；本地新建经 `clientUuid=aria:{id}` 推送且远端绑定身份 `createBy` 正确；完成推送后远端 `status/finishTime` 落位；测试任务远端删除成功。livecheck 脚本同步增强为输出全量同步统计。生产 Hub 启用同步仍需部署侧配置 `ARIA_PNKX_BASE_URL/ARIA_PNKX_TOKEN`。
 - [x] 个人连接器 `TODO-01` 任务单一真源（对接 pnkx）：集成令牌鉴权（pnkx 侧 IntegrationTokenFilter + X-Integration-Token，Aria 侧双 env 门控）；TodoSyncService 拉取镜像/删检测/推完成/推新建（clientUuid 幂等 + 崩溃认领）；TodoSyncScheduler 300s 循环 + `/api/v1/todo/sync` 手动触发。pnkx 仓同步提交过滤器与配置（编译通过）。
@@ -231,14 +237,14 @@
 - [x] ESP32 + LD2410 Hub 侧代码闭环：修复 `MqttDeviceClient` 未设置 `on_signal` 导致遥测只进缓存、不进 Perception 的断链；新增 `MqttPresenceBridge`，启动 retained 值只建基线，状态翻转经 5 秒稳定窗派生 L1 `presence.changed`，再进入认知与主动多终端投递；原始 MQTT 信号改为 L3。补充 ESPHome 固件样例、独立设备凭据与单 topic Mosquitto ACL、Compose 启用开关、重连存活修复和端到端回归。剩余为真机刷写与 7 天验收。
 - [x] 屏幕事件专用聚合回顾：聊天识别“今天上午/过去 N 小时在电脑上做了什么”等意图，按时间窗只检索 `DEVICE/screen.observed`，合并连续相似观察并注入受控证据上下文；无记录时禁止用长期记忆猜测，审计记录 `recall.mode=screen_activity`。
 - [x] 屏幕感知主动链路修复与真机全链验证：注意力显著性、重复惩罚、会议提醒审议和主动降频均按设计工作；用户后续确认 Desktop 睡眠/唤醒连接可靠性收口已完成。
-- [x] 屏幕感知 v1（用户显式推翻原「暂缓持续后台屏幕监控」决策，授权模型改为纯配置开关）：新增 `ScreenAwarenessLoop`（默认 60s、15~600s 可配、每 tick 热读配置）周期截取配置的各显示器 → Pillow 感知哈希变化检测（不变跳过分析）→ GLM 视觉输出结构化 JSON（summary/notable/memory_worthy/topic）→ Timeline 全量沉淀（`index_screen_observation`，event_type=screen.observed）+ memory_worthy 升级长期记忆（screen-v1）+ notable 经 Perception 管线走主动话题（DND/安静时段/预算/反馈降频全复用）；Desktop 新增 `screen.monitor` 命令（不消费单次授权，TCC/锁屏/隐私暂停三闸门保留）与能力声明；原图即焚（consume-on-read）；连续失败 10 分钟冷却；Admin 新增「屏幕感知」工作区（状态+观察记录）；12 个新回归全绿。详见 `docs/38`。
+- [x] 屏幕感知 v1（用户显式推翻原「暂缓持续后台屏幕监控」决策，授权模型改为纯配置开关）：新增 `ScreenAwarenessLoop`（默认 60s、15~600s 可配、每 tick 热读配置）周期截取配置的各显示器 → Pillow 感知哈希变化检测（不变跳过分析）→ GLM 视觉输出结构化 JSON（summary/notable/memory_worthy/topic）→ Timeline 全量沉淀（`index_screen_observation`，event_type=screen.observed）+ memory_worthy 升级长期记忆（screen-v1）+ notable 经 Perception 管线走主动话题（DND/安静时段/预算/反馈降频全复用）；Desktop 新增 `screen.monitor` 命令（不消费单次授权，TCC/锁屏/隐私暂停三闸门保留）与能力声明；原图即焚（consume-on-read）；连续失败 10 分钟冷却；Admin 新增「屏幕感知」工作区（状态+观察记录）；12 个新回归全绿。详见 `docs/05`。
 - [x] 工具挂载改为能力就绪制、选择交给模型：`send_message` 不再用文本关键词预筛工具——设备工具按「在线能力满足（`DEVICE_TOOL_REQUIREMENTS`）+ 隐私/模型/视觉就绪」全量挂载，查询工具按配置开关挂载，何时调用由模型依据工具描述自行判断；关键词表仅保留给确定性 HA 读回退（`_deterministic_home_read_call`）与选择器单测。起因是真机验收中「圈选屏幕内容」未命中词表导致 `capture_screen` 缺席；已同步在上一提交补充词表作为确定性路径的覆盖。
 - [x] 修复撤销设备永久占用别名的缺陷：`device_client` 的 `(owner, alias)` 唯一约束改为部分唯一索引（仅约束 `revoked_at IS NULL` 的活跃行），撤销后别名自动释放、可用原别名重新配对，活跃设备之间仍强唯一；新增 `0023_device_alias_reuse` 迁移（batch 兼容 SQLite）并已应用到真实 PostgreSQL（现处 head），新增撤销重配与活跃冲突双向回归测试。
 - [x] macOS 系统内容选择器代码闭环：`CaptureScreenTool` 新增 `target=interactive` 并在工具描述中与可无人值守的 `active_window` 明确区分（仅在用户明确要求选择/分享时使用）；Hub 侧 interactive 命令 TTL 115s、终态等待 116s，幂等键纳入 target；Desktop Rust 端 `screencapture -i` 交互框选、100 秒轮询超时自动 kill、Esc 取消（无产物判定）与 `CaptureError{code,message}` 结构化错误码；TS 端解析 interactive 并把结构化错误码作为 command.result reason_code 透传，旧字符串错误按锁屏/权限归类。新增 4 个 Python 回归与 2 个 vitest 用例；Ruff、mypy、非 soak 全量 pytest、Desktop typecheck/build/test、`cargo check` 全部通过。
 - [x] 在制批次收口与质量闸门恢复：9 个逻辑提交（db 基座/TurnCoordinator/Jobs+AssetStore/Avatar/Theme/Live2D/HA 区域映射/Admin 实体接口/集成注册）入库；`.gitignore` 排除本地 QA 产物、agent 会话与 `server/assets/` 运行时上传；Ruff 163、mypy 38、Admin TS 4 清零；全量 pytest 532 通过且修复 3 个全局 Admin token 污染失败；TurnCoordinator `create_turn` 契约对齐真实 `ChatService.start_turn`；空库升级复验到 `0022`。
 - [x] Live2D Web 最小壳与形象导入：`AvatarAssetImporter` 支持静态图片净化和 Live2D ZIP 安全校验，发行包多 runtime 时优先 PRO 并忽略 `.cmo3`/`.can3` 等工程源文件；聊天端和 Admin 通过同源运行时加载真实模型，转发 TTS viseme、说话状态、回复情绪、显式表情和动作指令。官方 Cubism Core 不入库，由本机已授权运行时目录提供；Hiyori 真模型已在聊天三栏界面渲染并完成 1920/1024/720 px 视觉验收。
 - [x] 主题中心 v1：新增 `ui_theme`/`ui_preference` 与 `0022_ui_theme` 迁移，内置“纯净明亮”“静夜紫”和“跟随系统”选择；Admin 新增“外观与主题”工作区，账户偏好经 `/api/v1/admin/ui/*` 保存；聊天端经 `/api/v1/ui/preferences` 登录同步、本机回退、窗口聚焦刷新和同源 `BroadcastChannel` 即时切换；真实 PostgreSQL 已升级到 `0022`，浏览器验证 Admin 保存后 Chat 从浅色即时切到深色并可恢复。
-- [x] M3B 认知调度闭环 v1 文档补齐与 Action/Reflection 代码完善：新增 `docs/37-M3B认知调度闭环设计.md` 系统性阐述六层架构（Semantic Event、World State、Attention、Deliberation、Action、Reflection）数据契约、流程与安全边界；Action Engine 实现 A0～A3 分级执行与结果回读闭环，v1 仅开放 A0/A1，任何 `act` 均被阻断并记录 `blocked` 结果；Reflection Engine 实现确定性反馈分析，按 trigger_kind 聚合近 30 天反馈生成带证据、需确认的偏好候选；新增 `action_result` 与 `reflection_candidate` 表及 `0019` 迁移，扩展 API `/action-results` 与 `/reflection-candidates`，新增 8 个对应回归测试。
+- [x] M3B 认知调度闭环 v1 文档补齐与 Action/Reflection 代码完善：新增 `docs/06-集成与认知.md` 系统性阐述六层架构（Semantic Event、World State、Attention、Deliberation、Action、Reflection）数据契约、流程与安全边界；Action Engine 实现 A0～A3 分级执行与结果回读闭环，v1 仅开放 A0/A1，任何 `act` 均被阻断并记录 `blocked` 结果；Reflection Engine 实现确定性反馈分析，按 trigger_kind 聚合近 30 天反馈生成带证据、需确认的偏好候选；新增 `action_result` 与 `reflection_candidate` 表及 `0019` 迁移，扩展 API `/action-results` 与 `/reflection-candidates`，新增 8 个对应回归测试。
 - [x] 主动多终端输出 v1：Home Assistant/M3B 决策不再只进入 Web 调试台，可按后台热配置投递至 Web 私聊、macOS Desktop 系统通知和在线空闲语音会话；离线、锁屏、隐私暂停、能力未授权和云端 L2 TTS 均安全降级，每次实际尝试写入统一投递回执。真实 PostgreSQL 已从 `0014` 升级至 `0017`，Admin 主动测试接口返回成功；实测回执为 Web delivered、无空闲会话的 Voice failed，符合降级预期。
 - [x] Perception Pipeline 第一批：新增隐私安全的语义事件审计、全局主动门禁、稳定窗口和跨来源幂等合并；HA 人员/存在状态已能自动进入 M3B CognitiveCycle，主动 Web 投递绑定事件 owner。
 - [x] M3B 认知调度闭环 v1：有界 World State、确定性 Attention、结构化模型决策与安全回退、目标/承诺、反馈降频与反思候选、被动聊天和 Home Assistant 主动事件统一管线已落地；自主写动作保持关闭。
@@ -274,6 +280,8 @@
 - [x] 伴侣形象与角色系统 v1 骨架：`app/avatar/store.py` 实现 AvatarStore（形象包管理、实例创建/更新/删除、人格绑定与默认形象查询）；内置 `warm-daily`（静态）与 `light-core`（抽象）两个种子形象包；新增 `avatar_pack`/`avatar_instance`/`persona_avatar_binding` 表；Admin 后台路由 `/api/v1/admin/avatars` 支持包列表/实例列表/创建/更新/删除/绑定/查询默认形象；`ChatService` 在 `decision_meta` 中注入当前人格默认形象的 `avatar_instance_id` 与 `avatar_pack_id`；新增 11 个单元测试全部通过。
 
 ## 4. 最新质量基线
+
+- 2026-09-15 SenseAudio/能力边界/时间解析批次：新增 `tests/test_senseaudio_admin.py` **10 通过**（连接往返脱敏、启用强制 Key、未启用拦截、目录/试听/识别历史、上游错误映射、克隆上传格式与 label 白名单、套餐引导、Free 标注推导）；`test_voice_config` +4（共享连接回退、无密钥跳过、链构建、L2 拒绝与分片）、`test_chat_capabilities` +7（挂载一致性各分支）、`test_timeline` +1（中文数字/周/默认最近）、`test_browser_tool` +2、`test_chat` +2（L1 浏览器工具挂载与读取/L0 拒绝）——六个改动测试文件合计 **89 通过**。本批为文档同步触发，未重跑非 soak 全量与 mypy，全量基线仍以 2026-09-11 的 837 项记录为准；真实 SenseAudio Key 下的音色目录/试听/克隆联调待验收。
 
 - 2026-09-08 `MCP-C0`：新增官方 MCP Python SDK v2 依赖与独立适配边界，完成安全配置、分页目录、白名单、只读调用裁剪、连接管理、Admin API/UI 和 7 项 MCP 专项回归。MCP/配置/API 定向 **19 通过**；严格资源告警模式下非 soak 全量 **819 通过 / 2 跳过 / 6 条上游弃用提示**，Ruff、全量严格 mypy（343 source files）、Admin typecheck/production build 与 `git diff --check` 通过。尚未连接真实外部 MCP Server，C1 需选定试点。
 
@@ -356,7 +364,7 @@
 ## 5. 暂缓
 
 - M2 未达标前不发布 Live2D/桌宠；代码开发与真机准备可继续；
-- ~~持续后台屏幕监控~~：已由「屏幕感知 v1」取代（2026-08-27 用户显式决策，纯配置开关 + 设备端 TCC/锁屏/隐私暂停三闸门，见 `docs/38`）；
+- ~~持续后台屏幕监控~~：已由「屏幕感知 v1」取代（2026-08-27 用户显式决策，纯配置开关 + 设备端 TCC/锁屏/隐私暂停三闸门，见 `docs/05`）；
 - 摄像头和高风险健康推断；
 - 完整形象中心、多形象、主题增强、VRM 和静态图动态化；
 - Open-LLM-VTuber 深度 fork；

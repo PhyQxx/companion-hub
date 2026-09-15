@@ -1,4 +1,4 @@
-"""从配置中心快照构建语音提供方（docs/33 §3.3）。
+"""从配置中心快照构建语音提供方（docs/04 §3.3）。
 
 语音配置与模型路由一样进后台配置中心（保存即生效）；
 每条话语开始前重新解析一次，管理端改配置不需要重启服务。
@@ -22,6 +22,11 @@ from .faster_whisper import (
 )
 from .faster_whisper import FasterWhisperRecognizer
 from .mimo import MiMoAsrRecognizer, MiMoTtsSynthesizer
+from .senseaudio import (
+    SENSEAUDIO_TTS_DEFAULT_MODEL,
+    SENSEAUDIO_TTS_DEFAULT_VOICE,
+    SenseAudioTtsSynthesizer,
+)
 from .tts import EdgeTtsSynthesizer
 
 logger = logging.getLogger(__name__)
@@ -131,7 +136,27 @@ def build_voice_providers(
     for provider_config in config.voice.tts:
         if not provider_config.enabled:
             continue
-        if provider_config.provider == "mimo":
+        if provider_config.provider == "senseaudio":
+            # 条目自带配置优先，留空回退到共享连接（voice.senseaudio / 声音管理）。
+            shared = config.voice.senseaudio
+            api_key = _resolve_secret(
+                provider_config.secret_value, provider_config.secret_ref
+            ) or _resolve_secret(shared.secret_value, shared.secret_ref)
+            base_url = provider_config.base_url or shared.base_url
+            if api_key is None or base_url is None:
+                logger.warning(
+                    "voice tts provider skipped: senseaudio secret/base_url not resolved"
+                )
+                continue
+            providers.append(
+                SenseAudioTtsSynthesizer(
+                    api_key,
+                    base_url=str(base_url),
+                    model=provider_config.model or SENSEAUDIO_TTS_DEFAULT_MODEL,
+                    voice=provider_config.voice or SENSEAUDIO_TTS_DEFAULT_VOICE,
+                )
+            )
+        elif provider_config.provider == "mimo":
             api_key = _resolve_secret(
                 provider_config.secret_value, provider_config.secret_ref
             )

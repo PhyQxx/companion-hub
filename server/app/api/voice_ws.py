@@ -1,4 +1,4 @@
-"""P6 语音通道（docs/33 §3.1）：/ws/voice 双向音频流。
+"""P6 语音通道（docs/04 §3.1）：/ws/voice 双向音频流。
 
 上行：PCM16 音频二进制帧 + JSON 控制（hello / PTT 边界 / 打断）；
 下行：转写、句级 TTS 音频分片（mime 按实际提供方声明）、回合生命周期
@@ -1259,7 +1259,7 @@ class VoiceWebSocketManager:
         first_audio_at: float,
         asr_prefetched: bool,
     ) -> None:
-        """docs/03 M2.7 打点：ASR / 首 token / 首音频分段耗时（毫秒）。"""
+        """docs/00 M2.7 打点：ASR / 首 token / 首音频分段耗时（毫秒）。"""
 
         def ms(until: float) -> int | None:
             return int((until - started) * 1000) if until > 0 else None

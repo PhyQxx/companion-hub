@@ -304,7 +304,8 @@ capability_models:
   video_generation: zhipu_video_free
 
 # P6 语音管线（后台「模型与路由 → 语音」可视化管理，保存即生效）。
-# asr 为空表示语音识别未启用；tts 按顺序做故障转移（MiMo 为主、edge-tts 兜底）。
+# asr 为空表示语音识别未启用；tts 按顺序做故障转移
+# （MiMo 为主、SenseAudio 云端音色可选、edge-tts 兜底）。
 # MiMo 密钥建议直接在管理后台填 secret_value，无需写进本文件。
 voice:
   # 首句没有强标点时，累计到该长度就提前送 TTS；用于缩短首音频等待。
@@ -329,9 +330,20 @@ voice:
   #   initial_prompt: 这是一段与智能伴侣小艾（Aria）的普通话对话。
   #   hotwords: 小艾 Aria 只回答
   #   runs_local: true
+  # SenseAudio 共享连接（后台「模型与路由 → 声音管理」配置音色库/试听/克隆）。
+  # senseaudio TTS 条目留空 base_url/密钥时回退到这里；L2 私密内容禁止出站。
+  # senseaudio:
+  #   enabled: true
+  #   base_url: https://api.senseaudio.cn
+  #   secret_value: <在管理后台填写 SenseAudio API Key>
+  #   tts_model: sensenova-tts-2.0
   tts:
     - provider: edge_tts
       voice: zh-CN-XiaoxiaoNeural
+    # - provider: senseaudio
+    #   model: sensenova-tts-2.0
+    #   # 音色 ID 见「声音管理」音色库；male_0018_a 属 Free 套餐可合成音色。
+    #   voice: male_0018_a
 
 observability:
   log_level: INFO

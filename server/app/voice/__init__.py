@@ -1,4 +1,4 @@
-"""P6 语音化（docs/33）：语音管线核心组件与导出。"""
+"""P6 语音化（docs/04）：语音管线核心组件与导出。"""
 
 from app.voice.contracts import (
     LocalOnlySynthesizerError,

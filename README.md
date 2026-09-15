@@ -32,7 +32,7 @@ Aria 拥有真正的长期记忆系统。她会记住你提到的重要事情、
 电脑与浏览器扩展可注册为 Aria 的感知终端。你可以在 Web 对话中说"帮我看看电脑上的网页"，她会让对应设备执行受控命令并带回结果。Home Assistant、MQTT 遥测、M3B 认知调度闭环与主动多终端输出（Web/桌面通知/语音）已接入；屏幕与浏览感知支持周期分析并沉淀为时间线、记忆和主动话题。通用 MCP 客户端底座已接入官方 SDK v2，提供 Streamable HTTP、白名单工具目录、只读调用边界和 Admin 健康页；真实外部 Server 试点待配置。手机 PWA 已具备可安装壳、移动聊天布局、离线降级、前后台恢复和移动端音频解锁，iOS/Android 真机验收、通知与多端会话漫游正在推进；首个 ESP32 存在传感器在硬件到位后恢复。
 
 ### 管理后台
-内置 Admin 面板，可视化配置模型路由、语音参数、人格草稿、记忆检索、时间线、设备配对与授权、主题外观、屏幕感知和系统观测。配置保存即生效，无需重启。
+内置 Admin 面板，可视化配置模型路由、语音参数、SenseAudio 声音管理（音色库/试听/克隆）、人格草稿、记忆检索、时间线、设备配对与授权、主题外观、屏幕感知和系统观测。配置保存即生效，无需重启。
 
 ![管理后台](docs/visuals/aria-admin-overview-v1.png)
 
@@ -94,7 +94,7 @@ curl http://localhost:8000/healthz
 
 - **后端**：FastAPI / Starlette / Pydantic / SQLAlchemy / Alembic
 - **前端**：Vue 3 / Vite / Element Plus
-- **语音**：MiMo ASR / TTS、edge-tts 兜底、faster-whisper 本地 ASR
+- **语音**：MiMo ASR / TTS、SenseAudio 云端音色（系统/克隆）、edge-tts 兜底、faster-whisper 本地 ASR
 - **记忆**：pgvector 混合检索
 - **部署**：Docker Compose、Tauri Desktop、Chrome Extension
 
@@ -102,11 +102,20 @@ curl http://localhost:8000/healthz
 
 ## 文档
 
-项目设计、架构决策与阶段验收记录统一存放于 `docs/` 目录：
+项目设计按功能组织为 8 份编号文档，进度与历史归档单独维护：
 
-- [文档索引与架构总览](docs/00-文档索引与架构总览.md)
-- [当前任务与进度](docs/TASKS.md)
-- [隐私边界与陪伴伦理](docs/12-安全边界同意与陪伴伦理.md)
+| 文档 | 内容 |
+|---|---|
+| [docs/00-产品与架构](docs/00-产品与架构.md) | 需求与 ADR、功能设计、开发规划、管家路线图与验收清单 |
+| [docs/01-平台运行时](docs/01-平台运行时.md) | 数据模型与 API、运行状态机、I/O 契约、任务资产、模型路由与配置中心 |
+| [docs/02-形象与人设](docs/02-形象与人设.md) | 形象与角色系统、主题与视觉、结构化回复与 Persona |
+| [docs/03-记忆与时间线](docs/03-记忆与时间线.md) | 多主体持久化记忆、时间线与历史回溯 |
+| [docs/04-语音](docs/04-语音.md) | 语音化设计（ASR/TTS/打断/延迟/声音管理） |
+| [docs/05-工具与感知](docs/05-工具与感知.md) | 工具使用与主动感知、地图天气、屏幕与浏览感知 |
+| [docs/06-集成与认知](docs/06-集成与认知.md) | Home Assistant、认知调度闭环、MCP |
+| [docs/07-安全与管理后台](docs/07-安全与管理后台.md) | 安全边界、家庭守护 SAFE、管理后台与可观测性 |
+| [docs/TASKS.md](docs/TASKS.md) | 当前任务与进度（唯一进度真源） |
+| [docs/history/历史阶段归档](docs/history/历史阶段归档.md) | 已冻结的阶段记录与视觉原型 |
 
 ---
 
