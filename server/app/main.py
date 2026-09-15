@@ -1476,7 +1476,9 @@ def create_app(
                     create_push_router(push_subscription_store, runtime_config, auth_service)
                 )
                 app.state.push_subscription_store = push_subscription_store
-            if home_assistant_manager is not None:
+            if runtime_config is not None:
+                # 主动投递栈只依赖配置/数据库/通道组件，不依赖 Home Assistant；
+                # 误挂在 HA 条件下会在 HA 缺席时让提醒/简报/回顾/安全告警全部静默失效。
                 proactive_delivery = ProactiveDeliveryService(
                     runtime_database,
                     runtime_config,
@@ -1600,6 +1602,7 @@ def create_app(
 
                     daily_review_scheduler.set_deliverer(deliver_daily_review)
 
+            if home_assistant_manager is not None:
                 home_assistant_proactive = HomeAssistantProactiveEngine(
                     runtime_database,
                     runtime_config,
