@@ -28,7 +28,7 @@ class CapabilityModelRoutes(StrictModel):
 
 
 class VoiceAsrConfig(StrictModel):
-    """语音识别提供方（docs/33）：MiMo 云端或 faster-whisper 本地转写。"""
+    """语音识别提供方（docs/04）：MiMo 云端或 faster-whisper 本地转写。"""
 
     provider: Literal["mimo", "faster_whisper"] = "mimo"
     model: Annotated[str, Field(min_length=1, max_length=200)] = "mimo-v2.5-asr"
@@ -59,9 +59,13 @@ class VoiceAsrConfig(StrictModel):
 
 
 class VoiceTtsProviderConfig(StrictModel):
-    """语音合成提供方：mimo（PCM 直出）为主、edge_tts 免费兜底。"""
+    """语音合成提供方：mimo（PCM 直出）为主、senseaudio 云端音色、edge_tts 免费兜底。
 
-    provider: Literal["mimo", "edge_tts"]
+    senseaudio 条目的 base_url/密钥/model 可留空：留空时回退到
+    voice.senseaudio 共享连接（「声音管理」里配置），音色(voice) 仍按条目指定。
+    """
+
+    provider: Literal["mimo", "edge_tts", "senseaudio"]
     model: Annotated[str, Field(min_length=1, max_length=200)] = "mimo-v2.5-tts"
     base_url: AnyHttpUrl | None = None
     secret_ref: Annotated[str, Field(pattern=r"^env:[A-Z][A-Z0-9_]{2,127}$")] | None = None
@@ -80,12 +84,41 @@ class VoiceTtsProviderConfig(StrictModel):
         return self
 
 
+class SenseAudioConfig(StrictModel):
+    """SenseAudio 开放平台连接：音色目录、试听合成与识别历史（admin 声音管理）。
+
+    只服务管理端可视化代理；聊天语音管线仍走 asr/tts 提供方链。
+    """
+
+    base_url: AnyHttpUrl = AnyHttpUrl("https://api.senseaudio.cn")
+    secret_ref: Annotated[str, Field(pattern=r"^env:[A-Z][A-Z0-9_]{2,127}$")] | None = None
+    secret_value: Annotated[str, Field(max_length=1024)] | None = None
+    tts_model: Annotated[str, Field(min_length=1, max_length=100)] = "sensenova-tts-2.0"
+    enabled: bool = False
+
+
 class VoiceConfig(StrictModel):
-    """语音管线配置：ASR 单选 + 有序 TTS 故障转移链（docs/33）。"""
+    """语音管线配置：ASR 单选 + 有序 TTS 故障转移链（docs/04）。"""
 
     asr: VoiceAsrConfig | None = None
     tts: Annotated[list[VoiceTtsProviderConfig], Field(max_length=4)] = Field(default_factory=list)
     first_tts_chunk_chars: Annotated[int, Field(ge=8, le=60)] = 24
+    senseaudio: SenseAudioConfig = Field(default_factory=SenseAudioConfig)
+
+    @model_validator(mode="after")
+    def senseaudio_shared_requirements(self) -> VoiceConfig:
+        # senseaudio TTS 条目不自带密钥时，共享连接（声音管理）必须配过 Key。
+        for entry in self.tts:
+            if entry.provider != "senseaudio":
+                continue
+            if entry.secret_value is not None or entry.secret_ref is not None:
+                continue
+            shared = self.senseaudio
+            if shared.secret_value is None and shared.secret_ref is None:
+                raise ValueError(
+                    "senseaudio tts requires per-entry secret or voice.senseaudio secret"
+                )
+        return self
 
 
 class QueryToolConfig(StrictModel):
@@ -346,7 +379,7 @@ class HomeAssistantProactiveRuleConfig(StrictModel):
 
 
 class SafetyConfig(StrictModel):
-    """SAFE-01/02 家庭守护（docs/44）：分级告警与三级升级链的公共参数。
+    """SAFE-01/02 家庭守护（docs/07 SAFE 章节）：分级告警与三级升级链的公共参数。
 
     S1 只消费 enabled（关掉时规则回归普通提醒）；确认窗口/升级参数供
     S2 告警状态机使用，先占位保持配置稳定。

@@ -73,6 +73,7 @@ export const adminModules: AdminModule[] = [
       { key: "routing", label: "路由与能力", description: "对话、工具、私密路由和多模态能力槽位。", state: "ready" },
       { key: "tools", label: "工具服务", description: "地图、天气与外部查询能力。", state: "ready" },
       { key: "voice", label: "语音服务", description: "ASR、TTS 和语音降级链。", state: "ready" },
+      { key: "sound", label: "声音管理", description: "SenseAudio 音色库、试听合成与识别历史。", state: "ready" },
       { key: "home_assistant", label: "HA 连接", description: "Home Assistant 地址、令牌和运行参数。", state: "ready" },
       { key: "mcp", label: "MCP 工具", description: "外部 MCP Server 连接、协议与白名单工具目录。", state: "ready" },
     ],

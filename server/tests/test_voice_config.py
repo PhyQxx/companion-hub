@@ -6,7 +6,12 @@ from pathlib import Path
 
 import pytest
 
-from app.config.models import HubConfig, VoiceAsrConfig, VoiceTtsProviderConfig
+from app.config.models import (
+    HubConfig,
+    VoiceAsrConfig,
+    VoiceConfig,
+    VoiceTtsProviderConfig,
+)
 from app.config.store import ConfigStore, load_config_file
 from app.voice import (
     ConfigVoiceSource,
@@ -139,6 +144,154 @@ def test_voice_tts_provider_rules() -> None:
         provider="mimo", base_url="https://api.xiaomimimo.com/v1", secret_value="k"
     )
     assert mimo.voice == "冰糖"
+    # senseaudio 条目可留空密钥：回退共享连接（voice.senseaudio），但两边都没有则报错
+    with pytest.raises(
+        ValueError,
+        match=r"senseaudio tts requires per-entry secret or voice\.senseaudio secret",
+    ):
+        VoiceConfig(
+            tts=[VoiceTtsProviderConfig(provider="senseaudio", voice="male_0018_a")]
+        )
+    from app.config.models import SenseAudioConfig
+
+    shared = VoiceConfig(
+        senseaudio=SenseAudioConfig(secret_value="shared-key"),
+        tts=[VoiceTtsProviderConfig(provider="senseaudio", voice="male_0018_a")],
+    )
+    assert shared.tts[0].voice == "male_0018_a"
+
+
+def test_build_voice_providers_includes_senseaudio_chain_entry() -> None:
+    config = _config_with(
+        """
+voice:
+  tts:
+    - provider: senseaudio
+      base_url: https://api.senseaudio.cn
+      secret_value: sense-key
+      model: sensenova-tts-2.0
+      voice: yujie_voice
+    - provider: edge_tts
+      voice: zh-CN-YunxiNeural
+"""
+    )
+
+    _, chain = build_voice_providers(config)
+
+    from app.voice.senseaudio import SenseAudioTtsSynthesizer
+
+    providers = chain.providers if chain is not None else ()
+    assert len(providers) == 2
+    assert isinstance(providers[0], SenseAudioTtsSynthesizer)
+    assert providers[0].runs_local is False
+    assert providers[0].mime == "audio/mpeg"
+    assert providers[0]._voice == "yujie_voice"
+    assert isinstance(providers[1], EdgeTtsSynthesizer)
+
+
+def test_senseaudio_tts_falls_back_to_shared_connection() -> None:
+    # 条目留空时复用 voice.senseaudio（声音管理）的 Key/Base URL/模型。
+    config = _config_with(
+        """
+voice:
+  senseaudio:
+    enabled: true
+    base_url: https://api.senseaudio.cn
+    secret_value: shared-key
+    tts_model: sensenova-tts-2.0
+  tts:
+    - provider: senseaudio
+      voice: yujie_voice
+    - provider: edge_tts
+      voice: zh-CN-YunxiNeural
+"""
+    )
+
+    _, chain = build_voice_providers(config)
+
+    from app.voice.senseaudio import SenseAudioTtsSynthesizer
+
+    providers = chain.providers if chain is not None else ()
+    assert len(providers) == 2
+    synth = providers[0]
+    assert isinstance(synth, SenseAudioTtsSynthesizer)
+    assert synth._voice == "yujie_voice"
+    assert synth._client._api_key == "shared-key"
+    assert synth._client._base_url == "https://api.senseaudio.cn"
+
+
+def test_senseaudio_tts_skipped_without_secret() -> None:
+    config = _config_with(
+        """
+voice:
+  tts:
+    - provider: senseaudio
+      base_url: https://api.senseaudio.cn
+      secret_ref: env:SENSEAUDIO_MISSING_KEY
+    - provider: edge_tts
+      voice: zh-CN-YunxiNeural
+"""
+    )
+
+    _, chain = build_voice_providers(config)
+
+    providers = chain.providers if chain is not None else ()
+    assert len(providers) == 1
+    assert isinstance(providers[0], EdgeTtsSynthesizer)
+
+
+async def test_senseaudio_synthesizer_rejects_l2_and_streams_chunks(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.integrations.senseaudio import SenseAudioSynthesis
+    from app.schemas import PrivacyLevel
+    from app.voice.contracts import LocalOnlySynthesizerError
+    from app.voice.senseaudio import SenseAudioTtsSynthesizer
+
+    captured: dict[str, object] = {}
+
+    class FakeClient:
+        def __init__(self, api_key: str, **kwargs: object) -> None:
+            captured["api_key"] = api_key
+            captured.update(kwargs)
+
+        async def synthesize(
+            self, text: str, voice: str, **kwargs: object
+        ) -> SenseAudioSynthesis:
+            captured["text"] = text
+            captured["voice_id"] = voice
+            return SenseAudioSynthesis(
+                audio=b"x" * 10_000,
+                audio_format="mp3",
+                sample_rate=24_000,
+                usage_characters=len(text),
+                audio_length=None,
+                audio_size=10_000,
+            )
+
+    monkeypatch.setattr("app.voice.senseaudio.SenseAudioClient", FakeClient)
+
+    synth = SenseAudioTtsSynthesizer(
+        "sk-test",
+        base_url="https://api.senseaudio.cn",
+        model="sensenova-tts-2.0",
+        voice="yujie_voice",
+    )
+
+    with pytest.raises(LocalOnlySynthesizerError):
+        async for _ in synth.synthesize("私密内容", privacy_level=PrivacyLevel.L2):
+            pass
+
+    chunks = [
+        chunk
+        async for chunk in synth.synthesize("你好呀", privacy_level=PrivacyLevel.L1)
+    ]
+
+    assert captured["api_key"] == "sk-test"
+    assert captured["voice_id"] == "yujie_voice"
+    assert captured["text"] == "你好呀"
+    assert b"".join(chunks) == b"x" * 10_000
+    assert all(len(chunk) <= 4_096 for chunk in chunks)
 
 
 def test_build_voice_providers_from_config() -> None:

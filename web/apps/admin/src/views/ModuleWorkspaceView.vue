@@ -26,6 +26,7 @@ import ProactiveTopicsView from "./ProactiveTopicsView.vue";
 import QualityView from "./QualityView.vue";
 import SafetyAdminView from "./SafetyAdminView.vue";
 import ScreenAwarenessView from "./ScreenAwarenessView.vue";
+import SenseAudioView from "./SenseAudioView.vue";
 import SystemView from "./SystemView.vue";
 import TimelineView from "./TimelineView.vue";
 import UsageView from "./UsageView.vue";
@@ -41,6 +42,7 @@ const currentView = computed(() => {
   if (props.module === "overview" && activeTab.value === "usage") return UsageView;
   if (props.module === "overview" && activeTab.value === "activity") return ActivityView;
   if (props.module === "models" && activeTab.value === "mcp") return McpIntegrationView;
+  if (props.module === "models" && activeTab.value === "sound") return SenseAudioView;
   if (props.module === "models") return ModelsView;
   if (props.module === "persona" && activeTab.value === "proactive") return ProactiveTopicsView;
   if (props.module === "persona") return PersonasView;

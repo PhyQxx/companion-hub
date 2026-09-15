@@ -11,6 +11,7 @@ from .admin_persona import create_admin_persona_router
 from .admin_safety import create_admin_safety_router
 from .admin_screen_awareness import create_admin_screen_awareness_router
 from .admin_security import create_admin_security_router
+from .admin_senseaudio import create_admin_senseaudio_router
 from .admin_timeline import create_admin_timeline_router
 from .auth import ChatSessionGuard, create_auth_router
 from .avatar import create_avatar_router
@@ -32,8 +33,8 @@ from .meetings import create_meetings_router
 from .model_capabilities import create_model_capability_router
 from .pnkx import create_pnkx_router
 from .push import create_push_router
-from .safety import create_safety_router
 from .reviews import create_reviews_router
+from .safety import create_safety_router
 from .tasks import create_tasks_router
 from .theme import create_admin_theme_router, create_theme_router
 from .todo import create_todo_router
@@ -59,6 +60,7 @@ __all__ = [
     "create_admin_safety_router",
     "create_admin_screen_awareness_router",
     "create_admin_security_router",
+    "create_admin_senseaudio_router",
     "create_admin_theme_router",
     "create_admin_timeline_router",
     "create_auth_router",
@@ -78,8 +80,8 @@ __all__ = [
     "create_model_capability_router",
     "create_pnkx_router",
     "create_push_router",
-    "create_safety_router",
     "create_reviews_router",
+    "create_safety_router",
     "create_tasks_router",
     "create_theme_router",
     "create_todo_router",

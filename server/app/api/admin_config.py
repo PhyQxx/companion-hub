@@ -350,6 +350,9 @@ def _redact_config(config: HubConfig) -> HubConfig:
     for server in data["mcp"]["servers"]:
         if server.get("secret_value"):
             server["secret_value"] = _SECRET_MASK
+    senseaudio = data["voice"]["senseaudio"]
+    if senseaudio.get("secret_value"):
+        senseaudio["secret_value"] = _SECRET_MASK
     return HubConfig.model_validate(data)
 
 
@@ -374,6 +377,8 @@ def _restore_secret_masks(config: HubConfig, current: HubConfig) -> HubConfig:
         if server.get("secret_value") == _SECRET_MASK:
             previous = existing_mcp.get(server.get("server_id"))
             server["secret_value"] = previous.secret_value if previous else None
+    if data["voice"]["senseaudio"].get("secret_value") == _SECRET_MASK:
+        data["voice"]["senseaudio"]["secret_value"] = current.voice.senseaudio.secret_value
     return HubConfig.model_validate(data)
 
 

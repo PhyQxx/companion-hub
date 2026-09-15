@@ -29,6 +29,7 @@ from app.api import (
     create_admin_safety_router,
     create_admin_screen_awareness_router,
     create_admin_security_router,
+    create_admin_senseaudio_router,
     create_admin_theme_router,
     create_admin_timeline_router,
     create_auth_router,
@@ -39,7 +40,6 @@ from app.api import (
     create_chat_websocket_router,
     create_cognition_router,
     create_contacts_router,
-    create_safety_router,
     create_deletion_ledger_router,
     create_device_command_routers,
     create_device_routers,
@@ -50,6 +50,7 @@ from app.api import (
     create_pnkx_router,
     create_push_router,
     create_reviews_router,
+    create_safety_router,
     create_tasks_router,
     create_theme_router,
     create_todo_router,
@@ -1042,6 +1043,12 @@ def create_app(
                 admin_token=runtime_admin_token,
                 on_publish=reconfigure_integrations,
                 on_proactive_test=test_home_assistant_proactive,
+            )
+        )
+        app.include_router(
+            create_admin_senseaudio_router(
+                runtime_config,
+                admin_token=runtime_admin_token,
             )
         )
         app.include_router(

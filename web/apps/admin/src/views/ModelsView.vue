@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, inject, onMounted, ref, watch } from "vue";
+import { computed, inject, onActivated, onMounted, ref, watch } from "vue";
 import { AdminApi } from "@aria/shared";
 import { ElMessage } from "element-plus";
 import { useRoute } from "vue-router";
@@ -278,7 +278,7 @@ interface HubVoiceAsr {
   runs_local?: boolean;
 }
 interface HubVoiceTts {
-  provider: "mimo" | "edge_tts";
+  provider: "mimo" | "edge_tts" | "senseaudio";
   model: string;
   base_url?: string | null;
   voice: string;
@@ -333,7 +333,7 @@ interface DraftVoiceAsr {
 }
 
 interface DraftVoiceTts {
-  provider: "mimo" | "edge_tts";
+  provider: "mimo" | "edge_tts" | "senseaudio";
   model: string;
   base_url: string;
   voice: string;
@@ -475,15 +475,16 @@ const defaultVoiceAsr = (): DraftVoiceAsr => ({
   secret_ref: "env:MIMO_API_KEY",
 });
 
-const defaultVoiceTts = (provider: "mimo" | "edge_tts" = "mimo"): DraftVoiceTts => ({
+const defaultVoiceTts = (provider: "mimo" | "edge_tts" | "senseaudio" = "mimo"): DraftVoiceTts => ({
   provider,
-  model: provider === "mimo" ? "mimo-v2.5-tts" : "edge-tts",
+  model: provider === "mimo" ? "mimo-v2.5-tts" : provider === "senseaudio" ? "sensenova-tts-2.0" : "edge-tts",
+  // senseaudio 默认跟随「声音管理」共享连接：base_url/密钥留空，仅指定音色。
   base_url: provider === "mimo" ? "https://api.xiaomimimo.com/v1" : "",
-  voice: provider === "mimo" ? "冰糖" : "zh-CN-XiaoxiaoNeural",
+  voice: provider === "mimo" ? "冰糖" : provider === "senseaudio" ? "male_0018_a" : "zh-CN-XiaoxiaoNeural",
   enabled: true,
-  secret_mode: "value",
+  secret_mode: provider === "senseaudio" ? "none" : "value",
   secret_value: "",
-  secret_ref: "env:MIMO_API_KEY",
+  secret_ref: provider === "senseaudio" ? "env:SENSEAUDIO_API_KEY" : "env:MIMO_API_KEY",
 });
 
 const defaultVoice = (): DraftVoice => ({ asr: defaultVoiceAsr(), tts: [] });
@@ -751,16 +752,24 @@ function hubConfigToDraft(config: HubConfig | undefined | null): DraftState {
         secret_ref: asr.secret_ref ?? "env:MIMO_API_KEY",
       }
     : defaultVoiceAsr();
-  const draftTts: DraftVoiceTts[] = (config.voice?.tts ?? []).map((p) => ({
-    provider: p.provider,
-    model: p.model ?? (p.provider === "mimo" ? "mimo-v2.5-tts" : "edge-tts"),
-    base_url: p.base_url ?? "",
-    voice: p.voice ?? (p.provider === "mimo" ? "冰糖" : "zh-CN-XiaoxiaoNeural"),
-    enabled: p.enabled ?? true,
-    secret_mode: p.secret_value ? "value" : p.secret_ref ? "ref" : "none",
-    secret_value: p.secret_value ?? "",
-    secret_ref: p.secret_ref ?? "env:MIMO_API_KEY",
-  }));
+  const draftTts: DraftVoiceTts[] = (config.voice?.tts ?? []).map((p) => {
+    // 归一化：早期保存的 senseaudio 条目可能还带着 edge-tts 的模型/音色，
+    // 加载时重置为 senseaudio 默认，避免拿 edge 音色去调 SenseAudio。
+    const staleSenseaudio =
+      p.provider === "senseaudio"
+      && (p.model === "edge-tts" || (p.voice ?? "").startsWith("zh-CN-"));
+    const fresh = staleSenseaudio ? defaultVoiceTts("senseaudio") : null;
+    return {
+      provider: p.provider,
+      model: fresh?.model ?? p.model ?? (p.provider === "mimo" ? "mimo-v2.5-tts" : "edge-tts"),
+      base_url: p.base_url ?? "",
+      voice: fresh?.voice ?? p.voice ?? (p.provider === "mimo" ? "冰糖" : "zh-CN-XiaoxiaoNeural"),
+      enabled: p.enabled ?? true,
+      secret_mode: p.secret_value ? "value" : p.secret_ref ? "ref" : "none",
+      secret_value: p.secret_value ?? "",
+      secret_ref: p.secret_ref ?? "env:MIMO_API_KEY",
+    };
+  });
   const homeAssistant = config.integrations?.home_assistant;
   const draftHomeAssistant = homeAssistant
     ? {
@@ -849,10 +858,10 @@ function draftToHubConfig(d: DraftState): HubConfig {
   const voiceTts: HubVoiceTts[] = d.voice.tts.map((p) => ({
     provider: p.provider,
     model: p.model,
-    base_url: p.provider === "mimo" ? p.base_url : null,
+    base_url: p.provider !== "edge_tts" ? p.base_url || null : null,
     voice: p.voice,
     enabled: p.enabled,
-    ...(p.provider === "mimo" ? assembleSecret(p) : { secret_ref: null, secret_value: null }),
+    ...(p.provider !== "edge_tts" ? assembleSecret(p) : { secret_ref: null, secret_value: null }),
   }));
   const { secret_mode: _homeAssistantSecretMode, ...homeAssistantBase } = d.integrations.home_assistant;
   const homeAssistant: HomeAssistantConfig = {
@@ -1110,7 +1119,7 @@ function validateCandidate(config: HubConfig): string | null {
   return null;
 }
 
-function addVoiceTts(provider: "mimo" | "edge_tts") {
+function addVoiceTts(provider: "mimo" | "edge_tts" | "senseaudio") {
   if (draft.value.voice.tts.length >= 4) {
     ElMessage.warning("语音合成链最多 4 个提供方");
     return;
@@ -1144,6 +1153,48 @@ const edgeVoiceOptions = [
   "zh-CN-YunyangNeural",
   "zh-CN-XiaoyiNeural",
 ];
+// Free 套餐可合成的系统音色（静态兜底）；克隆/生成音色从「声音管理」目录动态加载。
+const senseaudioFreeVoiceOptions = [
+  { label: "沙哑青年 male_0018_a（Free）", value: "male_0018_a" },
+  { label: "儒雅道长 male_0004_a（Free）", value: "male_0004_a" },
+  { label: "可爱萌娃 child_0001_a（Free）", value: "child_0001_a" },
+  { label: "可爱萌娃 child_0001_b（Free）", value: "child_0001_b" },
+];
+
+interface SenseaudioCatalogVoice {
+  category: string;
+  voice_id: string;
+  voice_name: string;
+  free_tier?: boolean;
+}
+
+const senseaudioCatalogVoices = ref<SenseaudioCatalogVoice[]>([]);
+
+async function loadSenseaudioVoices() {
+  try {
+    const result = await api.request<{ voices: SenseaudioCatalogVoice[] }>(
+      "/api/v1/admin/senseaudio/voices?voice_type=all",
+    );
+    senseaudioCatalogVoices.value = result.voices;
+  } catch {
+    // SenseAudio 未启用或目录不可用：保留静态 Free 选项
+  }
+}
+
+const senseaudioVoiceOptions = computed(() => {
+  // 只列出本账号能合成的：克隆/生成音色 + Free 档系统音色；其余系统音色选了也会被上游拒绝。
+  const usable = senseaudioCatalogVoices.value.filter(
+    (v) => v.category !== "system" || v.free_tier,
+  );
+  const seen = new Set(senseaudioFreeVoiceOptions.map((v) => v.value));
+  const dynamic = usable.map((v) => ({
+    value: v.voice_id,
+    label:
+      `${v.voice_name} ${v.voice_id}` +
+      `（${v.category === "voice_clone" ? "克隆" : v.category === "voice_generation" ? "生成" : "Free"}）`,
+  }));
+  return [...senseaudioFreeVoiceOptions, ...dynamic.filter((v) => !seen.has(v.value))];
+});
 
 async function saveConfig() {
   busy.value = true;
@@ -1179,6 +1230,10 @@ async function saveConfig() {
 }
 
 onMounted(load);
+// 每次进入模型模块时刷新 SenseAudio 音色目录（新克隆的音色会出现在语音服务下拉里）
+onActivated(() => {
+  void loadSenseaudioVoices();
+});
 </script>
 
 <template>
@@ -1388,6 +1443,7 @@ onMounted(load);
             </div>
             <div>
               <el-button size="small" @click="addVoiceTts('mimo')">+ MiMo</el-button>
+              <el-button size="small" @click="addVoiceTts('senseaudio')">+ SenseAudio</el-button>
               <el-button size="small" @click="addVoiceTts('edge_tts')">+ edge-tts</el-button>
             </div>
           </div>
@@ -1396,30 +1452,34 @@ onMounted(load);
           </div>
           <div v-for="(p, index) in draft.voice.tts" :key="index" class="route-card voice-tts-card">
             <div class="route-name">
-              <strong>#{{ index + 1 }} {{ p.provider === 'mimo' ? 'MiMo' : 'edge-tts' }}</strong>
+              <strong>#{{ index + 1 }} {{ p.provider === 'mimo' ? 'MiMo' : p.provider === 'senseaudio' ? 'SenseAudio' : 'edge-tts' }}</strong>
               <el-tag v-if="index === 0" size="small" effect="plain">主通道</el-tag>
               <el-tag v-if="!p.enabled" size="small" type="info" effect="plain">已停用</el-tag>
             </div>
             <div class="form-grid three global-fields">
-              <label class="field"><span>提供方</span><el-select v-model="p.provider" @change="onTtsProviderChange(p)"><el-option label="小米 MiMo（PCM 直出）" value="mimo" /><el-option label="edge-tts（免费兜底）" value="edge_tts" /></el-select></label>
+              <label class="field"><span>提供方</span><el-select v-model="p.provider" @change="onTtsProviderChange(p)"><el-option label="小米 MiMo（PCM 直出）" value="mimo" /><el-option label="SenseAudio（云端音色/克隆）" value="senseaudio" /><el-option label="edge-tts（免费兜底）" value="edge_tts" /></el-select></label>
               <label class="field"><span>音色</span>
                 <el-select v-if="p.provider === 'mimo'" v-model="p.voice" filterable allow-create default-first-option placeholder="选择或输入音色"><el-option v-for="v in mimoVoiceOptions" :key="v" :label="v" :value="v" /></el-select>
+                <el-select v-else-if="p.provider === 'senseaudio'" v-model="p.voice" filterable allow-create default-first-option placeholder="voice_id（可用声音管理里的克隆音色）"><el-option v-for="v in senseaudioVoiceOptions" :key="v.value" :label="v.label" :value="v.value" /></el-select>
                 <el-select v-else v-model="p.voice" filterable allow-create default-first-option placeholder="选择或输入音色"><el-option v-for="v in edgeVoiceOptions" :key="v" :label="v" :value="v" /></el-select>
               </label>
               <label class="field"><span>启用</span><el-switch v-model="p.enabled" /></label>
             </div>
-            <div v-if="p.provider === 'mimo'" class="form-grid three global-fields">
-              <label class="field"><span>模型</span><el-input v-model="p.model" placeholder="mimo-v2.5-tts" /></label>
-              <label class="field"><span>Base URL</span><el-input v-model="p.base_url" placeholder="https://api.xiaomimimo.com/v1" /></label>
-              <label class="field"><span>密钥方式</span><el-select v-model="p.secret_mode"><el-option label="直接填写" value="value" /><el-option label="环境变量引用" value="ref" /></el-select></label>
+            <div v-if="p.provider !== 'edge_tts'" class="form-grid three global-fields">
+              <label class="field"><span>模型</span><el-input v-model="p.model" :placeholder="p.provider === 'senseaudio' ? 'sensenova-tts-2.0' : 'mimo-v2.5-tts'" /></label>
+              <label class="field"><span>Base URL</span><el-input v-model="p.base_url" :placeholder="p.provider === 'senseaudio' ? '留空 = 使用「声音管理」的连接' : 'https://api.xiaomimimo.com/v1'" /></label>
+              <label class="field"><span>密钥方式</span><el-select v-model="p.secret_mode"><el-option v-if="p.provider === 'senseaudio'" label="跟随声音管理（推荐）" value="none" /><el-option label="直接填写" value="value" /><el-option label="环境变量引用" value="ref" /></el-select></label>
             </div>
-            <div v-if="p.provider === 'mimo' && p.secret_mode === 'value'" class="form-grid three global-fields">
-              <label class="field"><span>API Key</span><el-input v-model="p.secret_value" type="password" show-password placeholder="MiMo API Key" /></label>
+            <div v-if="p.provider === 'senseaudio' && p.secret_mode === 'none'" class="form-grid three global-fields">
+              <span class="field hint-inline">Key / Base URL / 模型留空时自动复用「声音管理」里的 SenseAudio 连接配置，仅需在此选择音色。</span>
+            </div>
+            <div v-if="p.provider !== 'edge_tts' && p.secret_mode === 'value'" class="form-grid three global-fields">
+              <label class="field"><span>API Key</span><el-input v-model="p.secret_value" type="password" show-password :placeholder="p.provider === 'senseaudio' ? '覆盖「声音管理」的 Key（通常留空）' : 'MiMo API Key'" /></label>
               <span class="field" />
               <span class="field" />
             </div>
-            <div v-else-if="p.provider === 'mimo' && p.secret_mode === 'ref'" class="form-grid three global-fields">
-              <label class="field"><span>环境变量引用</span><el-input v-model="p.secret_ref" placeholder="env:MIMO_API_KEY" /></label>
+            <div v-else-if="p.provider !== 'edge_tts' && p.secret_mode === 'ref'" class="form-grid three global-fields">
+              <label class="field"><span>环境变量引用</span><el-input v-model="p.secret_ref" :placeholder="p.provider === 'senseaudio' ? 'env:SENSEAUDIO_API_KEY' : 'env:MIMO_API_KEY'" /></label>
               <span class="field" />
               <span class="field" />
             </div>
@@ -1726,6 +1786,7 @@ onMounted(load);
 .global-fields { max-width:900px; }
 .compact-global { padding-bottom:22px; }
 .capability-hint { color:var(--sub); background:var(--soft); border:1px dashed var(--border); border-radius:9px; padding:10px 12px; font-size:11px; line-height:1.6; }
+.hint-inline { color:var(--sub); font-size:11px; line-height:1.6; align-self:center; }
 .json-card { padding:0; overflow:auto; flex:1; min-height:0; }
 .json-card .global-head { padding:20px 22px 0; }
 .json-editor { padding:22px 24px; }
