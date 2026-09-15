@@ -56,6 +56,65 @@ const emotionLabels: Record<string, string> = {
   thinking: "思考",
   concerned: "关切",
 };
+interface EmotionMeta {
+  key: string;
+  label: string;
+  emoji: string;
+  color: string;
+  custom?: boolean;
+}
+// 情绪卡片元数据：emoji 与颜色让映射一目了然；key 必须与后端 Emotion 字面量一致
+const emotionMetas: EmotionMeta[] = [
+  { key: "neutral", label: "平静", emoji: "😌", color: "#8a94a6" },
+  { key: "happy", label: "开心", emoji: "😄", color: "#e8a23d" },
+  { key: "sad", label: "难过", emoji: "😢", color: "#5b8def" },
+  { key: "angry", label: "生气", emoji: "😠", color: "#e24b54" },
+  { key: "surprised", label: "惊讶", emoji: "😮", color: "#9a6df2" },
+  { key: "thinking", label: "思考", emoji: "🤔", color: "#2fa6a0" },
+  { key: "concerned", label: "关切", emoji: "🥺", color: "#d97b93" },
+];
+const mapMode = ref<"visual" | "json">("visual");
+function parseExpressionMap(): Record<string, string> | null {
+  try {
+    const value = JSON.parse(expressionMapText.value || "{}");
+    if (value && typeof value === "object" && !Array.isArray(value)) {
+      return value as Record<string, string>;
+    }
+  } catch {
+    // 落到下面的 null，由调用方提示
+  }
+  return null;
+}
+const visualMap = computed(() => parseExpressionMap() ?? {});
+const emotionCards = computed<EmotionMeta[]>(() => [
+  ...emotionMetas,
+  ...Object.keys(visualMap.value)
+    .filter((key) => !emotionMetas.some((meta) => meta.key === key))
+    .map((key) => ({ key, label: key, emoji: "❓", color: "#8a94a6", custom: true })),
+]);
+function setMapping(key: string, value: string) {
+  const current = { ...(parseExpressionMap() ?? {}) };
+  if (value) current[key] = value;
+  else delete current[key];
+  expressionMapText.value = JSON.stringify(current, null, 2);
+}
+function removeCustomEmotion(key: string) {
+  setMapping(key, "");
+}
+function fillIdentityMappings() {
+  const current = { ...(parseExpressionMap() ?? {}) };
+  for (const meta of emotionMetas) {
+    if (!current[meta.key]) current[meta.key] = meta.key;
+  }
+  expressionMapText.value = JSON.stringify(current, null, 2);
+}
+function switchMapMode(mode: "visual" | "json") {
+  if (mode === "visual" && !parseExpressionMap()) {
+    emit("status", "表情映射 JSON 无效，修正后才能回到可视化模式", true);
+    return;
+  }
+  mapMode.value = mode;
+}
 const statusLabels: Record<string, string> = {
   published: "已发布",
   draft: "草稿",
@@ -196,18 +255,71 @@ onMounted(load);
       <p class="hint">保存只产生草稿，发布后才会用于新对话轮次。</p>
       <div class="fields">
         <label v-if="activeTab === 'profile'">名称<el-input v-model="form.name" maxlength="80" show-word-limit /></label>
-        <label v-if="activeTab === 'motion'">默认情绪
-          <el-select v-model="form.default_emotion">
-            <el-option v-for="emotion in ['neutral', 'happy', 'sad', 'angry', 'surprised', 'thinking', 'concerned']" :key="emotion" :label="emotionLabels[emotion] ?? emotion" :value="emotion" />
-          </el-select>
-        </label>
         <label v-if="activeTab === 'profile'" class="wide">身份定位<el-input v-model="form.identity" type="textarea" :rows="3" /></label>
         <label v-if="activeTab === 'style'" class="wide">核心提示词<el-input v-model="form.system_prompt" type="textarea" :rows="6" /></label>
         <label v-if="activeTab === 'style'">表达风格<el-input v-model="form.speaking_style" type="textarea" :rows="3" /></label>
         <label v-if="activeTab === 'profile'">与用户的关系<el-input v-model="form.relationship" type="textarea" :rows="3" /></label>
         <label v-if="activeTab === 'boundaries'" class="wide">行为边界（每行一条）<el-input v-model="boundariesText" type="textarea" :rows="8" /></label>
         <label v-if="activeTab === 'style' || activeTab === 'motion'">声音配置标识<el-input v-model="form.voice_profile" placeholder="可选" /></label>
-        <label v-if="activeTab === 'motion'" class="wide">情绪 → 表情映射（JSON）<el-input v-model="expressionMapText" type="textarea" :rows="8" spellcheck="false" /></label>
+      </div>
+      <div v-if="activeTab === 'motion'" class="motion-section">
+        <div class="motion-head">
+          <h3>情绪 → 表情映射</h3>
+          <div class="motion-actions">
+            <el-button size="small" @click="fillIdentityMappings">一键同名映射</el-button>
+            <el-radio-group :model-value="mapMode" size="small" @update:model-value="switchMapMode($event as 'visual' | 'json')">
+              <el-radio-button value="visual">可视化</el-radio-button>
+              <el-radio-button value="json">JSON</el-radio-button>
+            </el-radio-group>
+          </div>
+        </div>
+        <p class="hint">对话判定为某种情绪时触发表情切换；未映射的情绪不切换表情。点击 ★ 设置默认情绪，模型无法判断情绪时使用。</p>
+        <div v-if="mapMode === 'visual'" class="emotion-grid">
+          <article
+            v-for="meta in emotionCards"
+            :key="meta.key"
+            class="emotion-card"
+            :class="{ 'is-default': form.default_emotion === meta.key, 'is-unmapped': !visualMap[meta.key], 'is-custom': meta.custom }"
+            :style="{ '--emotion-color': meta.color }"
+          >
+            <header class="emotion-head">
+              <span class="emotion-emoji">{{ meta.emoji }}</span>
+              <span class="emotion-names">
+                <strong>{{ meta.label }}</strong>
+                <small>{{ meta.key }}</small>
+              </span>
+              <button
+                type="button"
+                class="emotion-star"
+                :title="form.default_emotion === meta.key ? '当前默认情绪' : '设为默认情绪'"
+                @click="form.default_emotion = meta.key"
+              >{{ form.default_emotion === meta.key ? "★" : "☆" }}</button>
+            </header>
+            <el-input
+              :model-value="visualMap[meta.key] ?? ''"
+              size="small"
+              clearable
+              placeholder="未映射"
+              @update:model-value="setMapping(meta.key, $event)"
+            />
+            <footer class="emotion-flow">
+              <span class="arrow">→</span>
+              <span v-if="visualMap[meta.key]" class="flow-chip">{{ visualMap[meta.key] }}</span>
+              <span v-else class="flow-none">对话中不切换表情</span>
+            </footer>
+            <button
+              v-if="meta.custom"
+              type="button"
+              class="emotion-remove"
+              title="移除该自定义情绪"
+              @click="removeCustomEmotion(meta.key)"
+            >✕</button>
+          </article>
+        </div>
+        <template v-else>
+          <el-input v-model="expressionMapText" type="textarea" :rows="8" spellcheck="false" />
+          <el-alert v-if="!parseExpressionMap()" title="JSON 格式无效，无法保存" type="error" :closable="false" />
+        </template>
       </div>
       <div v-if="activeTab === 'profile'" class="profile-section">
         <h3>档案基线</h3>
@@ -253,6 +365,59 @@ onMounted(load);
 .profile-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; }
 .profile-grid label { display: grid; gap: 6px; font-size: 12px; color: var(--muted); }
 .row { display: flex; gap: 10px; }
+.motion-section { display: grid; gap: 10px; padding-top: 4px; border-top: 1px dashed var(--line); }
+.motion-head { display: flex; justify-content: space-between; align-items: center; gap: 10px; flex-wrap: wrap; }
+.motion-head h3 { margin: 0; font-size: 13px; }
+.motion-actions { display: flex; gap: 8px; align-items: center; }
+.emotion-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 10px; }
+.emotion-card {
+  position: relative;
+  display: grid;
+  gap: 8px;
+  align-content: start;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: linear-gradient(180deg, color-mix(in srgb, var(--emotion-color) 8%, #fff), #fff);
+}
+.emotion-card.is-default { border-color: var(--emotion-color); box-shadow: inset 0 0 0 1px var(--emotion-color); }
+.emotion-card.is-unmapped { border-style: dashed; opacity: 0.78; }
+.emotion-head { display: flex; align-items: center; gap: 8px; }
+.emotion-emoji { font-size: 22px; line-height: 1; }
+.emotion-names { flex: 1; display: grid; line-height: 1.25; }
+.emotion-names strong { font-size: 13px; }
+.emotion-names small { color: var(--muted); font-size: 10px; font-family: ui-monospace, monospace; }
+.emotion-star { border: none; background: none; cursor: pointer; padding: 2px 4px; font-size: 15px; color: #c9ced9; }
+.emotion-star:hover { color: #e8a23d; }
+.emotion-card.is-default .emotion-star { color: #e8a23d; }
+.emotion-remove {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  width: 18px;
+  height: 18px;
+  border: none;
+  border-radius: 50%;
+  background: var(--line);
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 18px;
+  cursor: pointer;
+}
+.emotion-remove:hover { background: var(--danger); color: #fff; }
+.emotion-card.is-custom .emotion-star { display: none; }
+.emotion-flow { display: flex; align-items: center; gap: 6px; min-height: 18px; font-size: 11px; }
+.emotion-flow .arrow { color: var(--emotion-color); font-weight: 600; }
+.flow-chip {
+  padding: 1px 8px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--emotion-color) 14%, #fff);
+  color: color-mix(in srgb, var(--emotion-color) 70%, #000);
+  font-family: ui-monospace, monospace;
+  font-size: 11px;
+  word-break: break-all;
+}
+.flow-none { color: var(--muted); }
 small { color: var(--muted); display: block; font-size: 11px; }
 .status { display: inline-block; padding: 2px 10px; border-radius: 999px; font-size: 11px; border: 1px solid; }
 .status.published { color: #168e59; border-color: #bfe8d2; background: #e9f8f0; }
