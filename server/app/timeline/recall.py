@@ -21,7 +21,37 @@ _HISTORY_MARKERS = re.compile(
     r"(刚才|之前|以前|昨天|昨晚|前几天|上周|上周末|这个月|上个月|去年|那次|上次|曾经)"
 )
 
-_RECENT_DURATION = re.compile(r"(?:过去|最近)\s*(\d{1,3})\s*(分钟|小时|天)")
+_RECENT_DURATION = re.compile(
+    r"(?:过去|最近)\s*([0-9一二两三四五六七八九十]{1,3})\s*(分钟|小时|天|周)"
+)
+_CN_NUMERAL_DIGITS = {
+    "一": 1,
+    "二": 2,
+    "两": 2,
+    "三": 3,
+    "四": 4,
+    "五": 5,
+    "六": 6,
+    "七": 7,
+    "八": 8,
+    "九": 9,
+}
+
+
+def _parse_recent_amount(text: str) -> int:
+    """解析时间窗数量：阿拉伯数字或一~九十九的中文数字（含"两"和"十X/X十"）。"""
+    if text.isdigit():
+        return int(text)
+    if text == "十":
+        return 10
+    if text.startswith("十"):
+        return 10 + _CN_NUMERAL_DIGITS[text[1]]
+    if "十" in text:
+        tens, _, ones = text.partition("十")
+        return _CN_NUMERAL_DIGITS[tens] * 10 + (
+            _CN_NUMERAL_DIGITS[ones] if ones else 0
+        )
+    return _CN_NUMERAL_DIGITS[text]
 
 
 def has_history_intent(query: str) -> bool:
@@ -45,17 +75,27 @@ class TemporalQueryParser:
 
         recent = _RECENT_DURATION.search(query)
         if recent is not None:
-            amount = int(recent.group(1))
+            amount = _parse_recent_amount(recent.group(1))
             unit = recent.group(2)
             delta = {
                 "分钟": timedelta(minutes=amount),
                 "小时": timedelta(hours=amount),
                 "天": timedelta(days=amount),
+                "周": timedelta(weeks=amount),
             }[unit]
             return TemporalRange(
                 moment - delta,
                 moment + timedelta(seconds=1),
                 recent.group(0),
+            )
+
+        if "最近" in query:
+            # 无明确时长的"最近"按最近一天处理：否则"总结下最近的浏览记录"
+            # 这类高频问法解析不出时间窗，活动回顾整条链路静默失效。
+            return TemporalRange(
+                moment - timedelta(hours=24),
+                moment + timedelta(seconds=1),
+                "最近",
             )
 
         if "刚才" in query:

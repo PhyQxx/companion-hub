@@ -140,6 +140,38 @@ def test_screen_activity_intent_and_time_range_cover_natural_summary_request() -
     assert recent.end_at == now + timedelta(seconds=1)
 
 
+def test_bare_recent_defaults_to_one_day_and_week_unit_parses() -> None:
+    timezone = ZoneInfo("Asia/Shanghai")
+    now = datetime(2026, 9, 15, 17, 16, tzinfo=timezone)
+    parser = TemporalQueryParser("Asia/Shanghai")
+    query = "总结下最近的浏览器观察记录"
+
+    assert has_browser_activity_intent(query) is True
+    bare = parser.parse(query, now=now)
+    assert bare is not None
+    assert bare.reason == "最近"
+    assert bare.start_at == now - timedelta(hours=24)
+    assert bare.end_at == now + timedelta(seconds=1)
+
+    week = parser.parse("最近一周看了哪些网站", now=now)
+    assert week is not None
+    assert week.start_at == now - timedelta(weeks=1)
+    assert week.end_at == now + timedelta(seconds=1)
+
+    cn_days = parser.parse("总结最近三天的浏览记录", now=now)
+    assert cn_days is not None
+    assert cn_days.start_at == now - timedelta(days=3)
+
+    cn_hours = parser.parse("最近两小时在忙什么", now=now)
+    assert cn_hours is not None
+    assert cn_hours.start_at == now - timedelta(hours=2)
+
+    numbered = parser.parse("最近30分钟的网页", now=now)
+    assert numbered is not None
+    assert numbered.start_at == now - timedelta(minutes=30)
+    assert numbered.end_at == now + timedelta(seconds=1)
+
+
 async def test_screen_activity_recall_filters_and_aggregates_observations(
     database: Database, user: AppUserRecord
 ) -> None:
