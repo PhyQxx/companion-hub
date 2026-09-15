@@ -118,6 +118,19 @@ def supports_device_capability(tool_name: str, capability_ids: Iterable[str]) ->
     return any(supports(value) for value in capability_ids)
 
 
+def tools_for_capability(capability_id: str) -> tuple[str, ...]:
+    """反查：哪些聊天工具能服务该在线能力（保持确定性顺序）。
+
+    用于把"设备在线但本会话未挂载对应工具"的能力在现实能力边界里标注出来，
+    避免系统提示宣称的能力与会话内实际可用的工具不一致。不在
+    DEVICE_TOOL_REQUIREMENTS 里的能力（如桌面动作，走 Action Registry）返回
+    空元组，不参与该标注。
+    """
+    return tuple(
+        name for name, supports in DEVICE_TOOL_REQUIREMENTS.items() if supports(capability_id)
+    )
+
+
 # 工具 → 在线能力要求。挂载只看能力与配置就绪；何时调用由模型根据工具描述自行判断。
 # 顺序即 select_device_tools 的确定性优先级：浏览器读取先于屏幕截图。
 DEVICE_TOOL_REQUIREMENTS: dict[str, Callable[[str], bool]] = {

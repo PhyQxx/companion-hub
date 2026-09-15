@@ -76,8 +76,9 @@ class InspectWebpageTool:
     async def execute(self, arguments: BaseModel, context: ToolContext) -> ToolResult:
         started = perf_counter()
         args = cast(InspectWebpageArgs, arguments)
-        if PrivacyLevel(context.privacy_level) is not PrivacyLevel.L2:
-            return self._failure("webpage_inspection_requires_l2", started)
+        if PrivacyLevel(context.privacy_level) is PrivacyLevel.L0:
+            # L0 公开模式不读取个人设备数据；L1/L2 会话均允许读取当前标签页。
+            return self._failure("webpage_inspection_requires_l1", started)
         if context.user_id is None or context.turn_id is None:
             return self._failure("tool_context_missing", started)
         capability = (

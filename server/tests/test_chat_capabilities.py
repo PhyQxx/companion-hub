@@ -77,3 +77,94 @@ def test_reality_grounding_compact_mode_groups_actions_per_device() -> None:
     assert prompt.count("light.bedroom") == 1
     assert "state.read" in prompt
     assert "turn_on" in prompt
+
+
+_BROWSER_ACTION = RuntimeActionCapability(
+    capability_id="device-1:browser.current_tab.read",
+    label="桌面浏览器",
+    description="在线设备已授权的 browser.current_tab.read 能力",
+)
+
+
+def test_reality_grounding_marks_browser_unavailable_when_tool_not_mounted() -> None:
+    prompt = render_reality_grounding(
+        [_BROWSER_ACTION], mounted_device_tools=frozenset()
+    )
+
+    assert "当前会话未开放对应的聊天工具" in prompt
+    assert "不得声称能使用或承诺执行" in prompt
+    assert "切换到私密会话" not in prompt
+
+
+def test_reality_grounding_offers_private_session_switch_for_browser() -> None:
+    prompt = render_reality_grounding(
+        [_BROWSER_ACTION],
+        mounted_device_tools=frozenset(),
+        private_session_ready=True,
+    )
+
+    assert "当前会话未开放该工具" in prompt
+    assert "引导切换到私密会话" in prompt
+
+
+def test_reality_grounding_keeps_mounted_browser_tool_in_available_list() -> None:
+    prompt = render_reality_grounding(
+        [_BROWSER_ACTION], mounted_device_tools=frozenset({"inspect_webpage"})
+    )
+
+    assert "当前会话未开放" not in prompt
+    assert "browser.current_tab.read" in prompt
+
+
+def test_reality_grounding_without_mount_info_keeps_legacy_prompt() -> None:
+    prompt = render_reality_grounding([_BROWSER_ACTION])
+
+    assert "当前会话未开放" not in prompt
+    assert "browser.current_tab.read" in prompt
+
+
+def test_reality_grounding_keeps_action_registry_capabilities_available() -> None:
+    # desktop.open_app 等动作走 Action Registry，不属于聊天工具门控范围。
+    action = RuntimeActionCapability(
+        capability_id="device-1:desktop.open_app",
+        label="打开应用",
+        description="在线设备已授权的 desktop.open_app 能力",
+    )
+
+    prompt = render_reality_grounding([action], mounted_device_tools=frozenset())
+
+    assert "当前会话未开放" not in prompt
+    assert "desktop.open_app" in prompt
+
+
+def test_reality_grounding_on_demand_marks_ha_unavailable_without_tools() -> None:
+    actions = [
+        RuntimeActionCapability(
+            capability_id="home_assistant:light.bedroom:turn_on",
+            label="卧室灯",
+            description="控制",
+        )
+    ]
+
+    prompt = render_reality_grounding(
+        actions, mounted_device_tools=frozenset({"inspect_webpage"})
+    )
+
+    assert "未开放 Home Assistant 工具" in prompt
+    assert "search_devices 返回为准" not in prompt
+
+
+def test_reality_grounding_screen_without_mount_uses_generic_note() -> None:
+    action = RuntimeActionCapability(
+        capability_id="device-1:screen.capture",
+        label="屏幕截图",
+        description="在线设备已授权的 screen.capture 能力",
+    )
+
+    prompt = render_reality_grounding(
+        [action], mounted_device_tools=frozenset(), private_session_ready=True
+    )
+
+    # 屏幕截图在 L2 还要求本地视觉模型就绪，不能仅凭 private_session_ready 承诺解锁。
+    assert "不得声称能使用或承诺执行" in prompt
+    assert "引导切换到私密会话" not in prompt

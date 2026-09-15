@@ -8,10 +8,15 @@
 """
 from __future__ import annotations
 
-from collections.abc import Iterable, Sequence
+from collections.abc import Collection, Iterable, Sequence
 from dataclasses import dataclass
 from typing import Literal, Protocol
 from uuid import UUID
+
+from app.tools.intent import tools_for_capability
+
+# 能服务任意 Home Assistant 能力的聊天工具集合（随 DEVICE_TOOL_REQUIREMENTS 同步推导）。
+_HOME_ASSISTANT_TOOLS = frozenset(tools_for_capability("home_assistant:probe:action"))
 
 
 @dataclass(frozen=True, slots=True)
@@ -41,12 +46,39 @@ class CompositeRuntimeCapabilityProvider:
         return tuple(actions.values())
 
 
+def _capability_gate_note(
+    capability_id: str,
+    mounted_tools: Collection[str],
+    *,
+    private_session_ready: bool,
+) -> str | None:
+    """能力在线但其聊天工具本轮未挂载时，返回给模型的边界标注；可用则返回 None。
+
+    浏览器标签页读取在 L1/L2 会话开放（L0 公开模式与模型不支持工具调用时不挂载）。
+    私有路由已就绪本地工具模型时，切换私密会话必定可用，因此给模型一条可执行的
+    引导话术；其余情况只如实标注不可用，不承诺任何解锁方式。
+    """
+    serving = tools_for_capability(capability_id)
+    if not serving or any(name in mounted_tools for name in serving):
+        return None
+    if "inspect_webpage" in serving and private_session_ready:
+        return "当前会话未开放该工具；用户明确想看时，可引导切换到私密会话"
+    return "当前会话未开放该工具；不得声称能使用或承诺执行"
+
+
 def render_reality_grounding(
     actions: Sequence[RuntimeActionCapability],
     *,
     home_device_mode: Literal["full", "compact", "on_demand"] = "on_demand",
+    mounted_device_tools: Collection[str] | None = None,
+    private_session_ready: bool = False,
 ) -> str:
-    """把真实能力渲染成强约束系统提示。"""
+    """把真实能力渲染成强约束系统提示。
+
+    mounted_device_tools 传本轮实际挂载的设备工具名集合；设备在线但其聊天工具
+    未挂载的能力会被移入"当前会话未开放"分组，避免提示宣称的能力与会话内可用
+    工具不一致。传 None 表示无挂载信息，按旧行为全部视为可用。
+    """
     base = (
         "【现实能力边界】\n"
         "你是一个需要保持长期连续感的伴侣角色。你可以拥有并自然谈论稳定的角色化"
@@ -77,10 +109,39 @@ def render_reality_grounding(
         item for item in actions if item.capability_id.startswith("home_assistant:")
     )
     visible_actions = tuple(item for item in actions if item not in home_actions)
+    available: list[RuntimeActionCapability] = []
+    gated: list[tuple[RuntimeActionCapability, str]] = []
+    for item in visible_actions:
+        note = (
+            None
+            if mounted_device_tools is None
+            else _capability_gate_note(
+                item.capability_id,
+                mounted_device_tools,
+                private_session_ready=private_session_ready,
+            )
+        )
+        if note is None:
+            available.append(item)
+        else:
+            gated.append((item, note))
     lines = [
-        f"- {item.capability_id}｜{item.label}：{item.description}"
-        for item in visible_actions
+        f"- {item.capability_id}｜{item.label}：{item.description}" for item in available
     ]
+    if gated:
+        lines.append(
+            "以下设备能力在线，但当前会话未开放对应的聊天工具，"
+            "不得声称能使用、不得承诺执行："
+        )
+        lines.extend(
+            f"- {item.capability_id}｜{item.label}：{item.description}（{note}）"
+            for item, note in gated
+        )
+    ha_gated = (
+        mounted_device_tools is not None
+        and bool(home_actions)
+        and not any(name in mounted_device_tools for name in _HOME_ASSISTANT_TOOLS)
+    )
     if home_actions and home_device_mode == "full":
         lines.extend(
             f"- {item.capability_id}｜{item.label}：{item.description}" for item in home_actions
@@ -98,7 +159,7 @@ def render_reality_grounding(
             f"- {entity_id}｜{label}：{', '.join(sorted(entity_actions))}"
             for entity_id, (label, entity_actions) in sorted(grouped.items())
         )
-    elif home_actions:
+    elif home_actions and not ha_gated:
         entity_count = len(
             {item.capability_id.split(":", 2)[1] for item in home_actions}
         )
@@ -108,6 +169,16 @@ def render_reality_grounding(
             "历史或控制工具，匹配失败或有歧义时先检索。不得编造设备，控制前后仍须校验权限、"
             "确认要求和实际状态。"
         )
+    elif home_actions:
+        entity_count = len(
+            {item.capability_id.split(":", 2)[1] for item in home_actions}
+        )
+        lines.append(
+            f"- Home Assistant：当前有 {entity_count} 个已授权且在线的设备，"
+            "但当前会话未开放 Home Assistant 工具，不得读取、控制或承诺操作这些设备。"
+        )
+    if ha_gated and home_device_mode in {"full", "compact"}:
+        lines.append("注意：当前会话未开放 Home Assistant 工具，上述设备动作不可执行，不得承诺。")
     return (
         base
         + "\n当前可用现实能力：\n"

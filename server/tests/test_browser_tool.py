@@ -128,6 +128,41 @@ async def test_inspect_webpage_reads_bounded_structured_text() -> None:
     assert result.data["truncated"] is True
 
 
+async def test_inspect_webpage_reads_in_l1_session() -> None:
+    owner_id = uuid7()
+    device_id = uuid7()
+    resolver = FakeResolver(_device(owner_id, device_id))
+    gateway = FakeGateway(owner_id=owner_id, device_id=device_id)
+    tool = InspectWebpageTool(resolver, gateway, FakeAnalyzer())
+
+    result = await tool.execute(
+        InspectWebpageArgs(),
+        ToolContext(privacy_level="L1", user_id=owner_id, turn_id=uuid7()),
+    )
+
+    assert result.ok is True
+    assert gateway.command_name == "browser.current_tab.read"
+    assert result.data["title"] == "Companion Hub Docs"
+
+
+async def test_inspect_webpage_rejects_public_mode() -> None:
+    owner_id = uuid7()
+    device_id = uuid7()
+    resolver = FakeResolver(_device(owner_id, device_id))
+    gateway = FakeGateway(owner_id=owner_id, device_id=device_id)
+    tool = InspectWebpageTool(resolver, gateway, FakeAnalyzer())
+
+    result = await tool.execute(
+        InspectWebpageArgs(),
+        ToolContext(privacy_level="L0", user_id=owner_id, turn_id=uuid7()),
+    )
+
+    assert result.ok is False
+    assert result.reason_code == "webpage_inspection_requires_l1"
+    assert gateway.command_name is None
+    assert resolver.capability is None
+
+
 async def test_inspect_webpage_capture_uses_local_vision() -> None:
     owner_id = uuid7()
     device_id = uuid7()

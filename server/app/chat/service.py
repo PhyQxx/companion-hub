@@ -165,7 +165,7 @@ def _device_tool_ready(
         "mcp_tool_call",
     }:
         # PC-01/WEB-01/MCP-D 桌面、浏览器与外部 MCP 动作：只经 Action Registry
-        # 计划—确认—执行链路触发，不作为聊天工具直接暴露给模型（docs/39 J5、docs/43 §5）。
+        # 计划—确认—执行链路触发，不作为聊天工具直接暴露给模型（docs/00 J5、docs/06 §5）。
         return False
     if name in {
         "reminder_create",
@@ -201,6 +201,10 @@ def _device_tool_ready(
             return _local_tool_model_ready(config)
         return False
     if privacy_level is PrivacyLevel.L1:
+        if name == "inspect_webpage":
+            # 浏览器标签页读取在 L1 也开放；页面文本会进入本轮对话上下文，
+            # 因此要求本轮路由模型支持工具调用（云端或本地由路由决定）。
+            return _cloud_tool_model_ready(config, llm_route)
         return bool(
             name == "capture_screen"
             and _cloud_tool_model_ready(config, llm_route)
@@ -723,9 +727,26 @@ class ChatService:
                 # 设备能力查询失败不能影响聊天；失败时按“没有现实能力”收紧边界。
                 logger.warning("runtime capability lookup failed", exc_info=True)
         pnkx_intent = _has_pnkx_intent(text)
+        # 工具挂载只看在线能力与配置就绪；选哪个、何时调用由模型根据工具描述自行判断。
+        # 先于 reality_block 计算：能力边界提示需要知道本轮真正挂载了哪些工具。
+        candidate_device_tools = self._device_tools.names()
+        if pnkx_intent:
+            candidate_device_tools = tuple(
+                name for name in candidate_device_tools if name.startswith("pnkx_")
+            )
+        device_tool_names = tuple(
+            name
+            for name in candidate_device_tools
+            if supports_device_capability(
+                name, (item.capability_id for item in runtime_capabilities)
+            )
+            and _device_tool_ready(name, snapshot.config, privacy_level, llm_route)
+        )
         reality_block = render_reality_grounding(
             () if pnkx_intent else runtime_capabilities,
             home_device_mode=snapshot.config.integrations.home_assistant.device_context_mode,
+            mounted_device_tools=frozenset(device_tool_names),
+            private_session_ready=_local_tool_model_ready(snapshot.config),
         )
         recent_device_block = self._recent_device_context(
             conversation_id,
@@ -814,20 +835,6 @@ class ChatService:
                 logger.warning("history recall failed for turn %s", turn_id, exc_info=True)
         query_tool_names = _enabled_query_tools(
             snapshot.config, privacy_level, llm_route
-        )
-        # 工具挂载只看在线能力与配置就绪；选哪个、何时调用由模型根据工具描述自行判断。
-        candidate_device_tools = self._device_tools.names()
-        if pnkx_intent:
-            candidate_device_tools = tuple(
-                name for name in candidate_device_tools if name.startswith("pnkx_")
-            )
-        device_tool_names = tuple(
-            name
-            for name in candidate_device_tools
-            if supports_device_capability(
-                name, (item.capability_id for item in runtime_capabilities)
-            )
-            and _device_tool_ready(name, snapshot.config, privacy_level, llm_route)
         )
         tool_names = (*query_tool_names, *device_tool_names)
         definition_builders = {
@@ -1434,7 +1441,7 @@ class ChatService:
                     "provider": execution.result.provider,
                     "result_count": _tool_result_count(execution.result),
                     "cache_hit": execution.result.cache_hit,
-                    # docs/35 §6.2: 只记解析来源枚举, 不记坐标或原始地址。
+                    # docs/05 地图/天气章节 §6.2: 只记解析来源枚举, 不记坐标或原始地址。
                     "location_source": execution.result.location_source,
                 }
                 for execution in tool_executions

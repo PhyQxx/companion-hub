@@ -719,12 +719,40 @@ async def test_l2_browser_tool_is_exposed_for_current_webpage_intent(
     assert [tool.name for tool in pending.request.tools] == ["inspect_webpage"]
 
 
-async def test_l1_browser_tool_remains_unexposed(
+async def test_l1_browser_tool_is_exposed_with_tool_calling_model(
     database: Database,
     store: DatabaseConfigStore,
 ) -> None:
     candidate = store.current.config.model_dump(mode="python")
     candidate["models"]["cloud"]["supports_tool_calling"] = True
+    draft = await store.create_draft(HubConfig.model_validate(candidate), actor="test")
+    await store.publish(draft.version, actor="test")
+    service = ChatService(
+        database,
+        store,
+        capability_provider=FakeBrowserCapabilityProvider(),
+        device_tools=(InspectWebpageTool.__new__(InspectWebpageTool),),
+    )
+    user = await create_user(database)
+    conversation = await service.create_conversation(user_id=user.id, title="browser-l1")
+
+    pending = await service.start_turn(
+        conversation.id,
+        user_id=user.id,
+        text="看一下我的电脑网页",
+        privacy_level=PrivacyLevel.L1,
+    )
+
+    assert pending.tool_names == ("inspect_webpage",)
+    assert [tool.name for tool in pending.request.tools] == ["inspect_webpage"]
+
+
+async def test_l1_browser_tool_remains_unexposed_without_tool_model(
+    database: Database,
+    store: DatabaseConfigStore,
+) -> None:
+    candidate = store.current.config.model_dump(mode="python")
+    candidate["models"]["cloud"]["supports_tool_calling"] = False
     draft = await store.create_draft(HubConfig.model_validate(candidate), actor="test")
     await store.publish(draft.version, actor="test")
     service = ChatService(
