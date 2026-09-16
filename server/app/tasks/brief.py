@@ -61,6 +61,18 @@ class BriefView(StrictModel):
 
 
 @dataclass(frozen=True, slots=True)
+class BriefCommute:
+    """当日首个带地点日程的出行建议（由 CommuteService 只读计算）。"""
+
+    destination: str
+    leave_by: datetime
+    event_title: str
+    starts_at: datetime
+    mode: str
+    duration_min: int | None
+
+
+@dataclass(frozen=True, slots=True)
 class BriefWeather:
     city: str
     condition: str
@@ -105,6 +117,7 @@ class DailyBriefService:
         contact_store: ContactStore | None = None,
         calendar_store: Any | None = None,
         weather_fetcher: BriefWeatherFetcher | None = None,
+        commute_fetcher: Callable[[UUID], Any] | None = None,
         timezone_name: str = "Asia/Shanghai",
         clock: Callable[[], datetime] | None = None,
     ) -> None:
@@ -114,6 +127,7 @@ class DailyBriefService:
         self._contacts = contact_store
         self._calendar = calendar_store
         self._weather = weather_fetcher
+        self._commute = commute_fetcher
         self._tz = ZoneInfo(timezone_name)
         self._clock = clock or (lambda: datetime.now(UTC))
 
@@ -266,6 +280,32 @@ class DailyBriefService:
                     )
                 )
 
+        # 通勤建议（当日首个带地点日程；只读计算，不建提醒）
+        if self._commute is not None:
+            try:
+                suggestion = await self._commute(user_id)
+            except Exception:
+                suggestion = None
+            if suggestion is not None:
+                duration_note = (
+                    f"，{suggestion.mode}约 {suggestion.duration_min} 分钟"
+                    if suggestion.duration_min
+                    else ""
+                )
+                facts.append(
+                    BriefFact(
+                        kind="commute",
+                        text=(
+                            f"建议 {suggestion.leave_by.astimezone(self._tz).strftime('%H:%M')}"
+                            f" 出发前往 {suggestion.destination}"
+                            f"（{suggestion.event_title} "
+                            f"{suggestion.starts_at.astimezone(self._tz).strftime('%H:%M')} 开始"
+                            f"{duration_note}）"
+                        ),
+                        source=f"commute:{suggestion.event_title}",
+                    )
+                )
+
         due_tasks = []
         for task in await self._tasks.list_tasks(user_id, status=TaskStatus.ACTIVE, limit=200):
             next_fire = _aware(task.next_fire_at)
@@ -350,6 +390,7 @@ def compose_brief_text(brief_date: date, facts: list[BriefFact]) -> str:
 
     weather = [fact.text for fact in facts if fact.kind == "weather"]
     events = [fact.text for fact in facts if fact.kind == "event"]
+    commute = [fact.text for fact in facts if fact.kind == "commute"]
     tasks = [fact.text for fact in facts if fact.kind == "task"]
     goals = [fact.text for fact in facts if fact.kind == "goal"]
     contact_dates = [fact.text for fact in facts if fact.kind == "contact_date"]
@@ -365,13 +406,15 @@ def compose_brief_text(brief_date: date, facts: list[BriefFact]) -> str:
     if events:
         lines.append(f"今日日程（{len(events)}）：")
         lines.extend(f"· {item}" for item in events)
+    if commute:
+        lines.append(f"出行建议：{commute[0]}")
     if tasks:
         lines.append(f"今日待办（{len(tasks)}）：")
         lines.extend(f"· {item}" for item in tasks)
     if goals:
         lines.append(f"到期承诺（{len(goals)}）：")
         lines.extend(f"· {item}" for item in goals)
-    if not tasks and not goals and not contact_dates and not events:
+    if not tasks and not goals and not contact_dates and not events and not commute:
         lines.append("今天没有到期的任务或承诺。")
     text = "\n".join(lines)
     if len(text) > MAX_TEXT_CHARS:

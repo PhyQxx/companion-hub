@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from time import perf_counter
-from typing import Annotated, cast
+from typing import Annotated, Any, Literal, cast
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -197,3 +197,86 @@ def _event_summary(view: CalendarEventView) -> dict[str, object]:
         "location": view.location,
         "participants": [item.name for item in view.participants],
     }
+
+
+class CalendarSyncArgs(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    provider: Literal["caldav", "google", "all"] = "all"
+
+
+class CalendarSyncTool:
+    """CAL-01 手动触发外部日历镜像同步（聊天入口，仅 L1）。"""
+
+    name = "calendar_sync"
+    description = (
+        "同步外部日历（CalDAV / Google）到本地镜像：用户要求同步日历、刷新"
+        "日程时调用。返回各提供方拉取与镜像数量；未配置或未授权的提供方会在"
+        " errors 里说明。仅 L1 可用。"
+    )
+    arguments_model: type[BaseModel] = CalendarSyncArgs
+    runs_local = True
+    max_privacy_level = PrivacyLevel.L2
+
+    def __init__(
+        self,
+        caldav_sync: Any | None = None,
+        google_sync: Any | None = None,
+    ) -> None:
+        self._caldav = caldav_sync
+        self._google = google_sync
+
+    @property
+    def available(self) -> bool:
+        return self._caldav is not None or self._google is not None
+
+    def definition(self) -> ToolDefinition:
+        return ToolDefinition(
+            name=self.name,
+            description=self.description,
+            parameters=CalendarSyncArgs.model_json_schema(),
+        )
+
+    async def execute(self, arguments: BaseModel, context: ToolContext) -> ToolResult:
+        started = perf_counter()
+        args = cast(CalendarSyncArgs, arguments)
+        if context.privacy_level == PrivacyLevel.L2:
+            return self._failure("private_session_unsupported", started)
+        providers: list[str] = (
+            ["caldav", "google"] if args.provider == "all" else [args.provider]
+        )
+        results: dict[str, dict[str, object]] = {}
+        for provider in providers:
+            service = self._caldav if provider == "caldav" else self._google
+            if service is None:
+                results[provider] = {"errors": ["not_configured"]}
+                continue
+            try:
+                stats = await service.sync_once()
+            except Exception:
+                results[provider] = {"errors": ["sync_failed"]}
+                continue
+            results[provider] = {
+                "calendars": stats.calendars,
+                "pulled": stats.pulled,
+                "mirrors_created": stats.mirrors_created,
+                "mirrors_updated": stats.mirrors_updated,
+                "mirrors_cancelled": stats.mirrors_cancelled,
+                "errors": stats.errors,
+            }
+        ok = any(not result["errors"] for result in results.values())
+        return ToolResult(
+            ok=ok,
+            tool_name=self.name,
+            data={"providers": results},
+            reason_code=None if ok else "calendar_sync_failed",
+            latency_ms=(perf_counter() - started) * 1_000,
+        )
+
+    def _failure(self, reason: str, started: float) -> ToolResult:
+        return ToolResult(
+            ok=False,
+            tool_name=self.name,
+            reason_code=reason,
+            latency_ms=(perf_counter() - started) * 1_000,
+        )

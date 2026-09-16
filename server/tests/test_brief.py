@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import AsyncIterator, Callable
 from datetime import UTC, date, datetime, timedelta
 from datetime import time as dt_time
+from typing import Any
 from uuid import UUID
 from zoneinfo import ZoneInfo
 
@@ -54,6 +55,7 @@ def _service(
     *,
     weather: BriefWeatherFetcher | None = None,
     calendar_store: CalendarStore | None = None,
+    commute_fetcher: Callable[[UUID], Any] | None = None,
     clock: Callable[[], datetime] = lambda: NOW,
 ) -> DailyBriefService:
     return DailyBriefService(
@@ -62,6 +64,7 @@ def _service(
         CognitiveStore(database),
         calendar_store=calendar_store,
         weather_fetcher=weather,
+        commute_fetcher=commute_fetcher,
         clock=clock,
     )
 
@@ -346,3 +349,44 @@ async def test_brief_without_calendar_store_skips_events(
 ) -> None:
     brief = await _service(database).build(user_id)
     assert not [fact for fact in brief.facts if fact.kind == "event"]
+
+
+# ---------------------------------------------------------------------------
+# 通勤建议事实
+# ---------------------------------------------------------------------------
+
+
+async def test_brief_includes_commute_suggestion(database: Database, user_id: UUID) -> None:
+    from datetime import datetime as _dt
+
+    from app.tasks.brief import BriefCommute
+
+    async def commute(user_id: UUID):
+        return BriefCommute(
+            destination="公司",
+            leave_by=_dt(2026, 9, 2, 1, 40, tzinfo=UTC),
+            event_title="周会",
+            starts_at=_dt(2026, 9, 2, 2, 0, tzinfo=UTC),
+            mode="driving",
+            duration_min=20,
+        )
+
+    brief = await _service(database, commute_fetcher=commute).build(user_id)
+    commute_facts = [fact for fact in brief.facts if fact.kind == "commute"]
+    assert len(commute_facts) == 1
+    text = commute_facts[0].text
+    assert "09:40 出发前往 公司" in text
+    assert "周会 10:00 开始" in text
+    assert "driving约 20 分钟" in text
+    assert commute_facts[0].source == "commute:周会"
+    assert "出行建议：" in brief.text
+
+    # 事件获取失败 → 静默降级，无通勤事实
+    def broken(user_id: UUID):
+        raise RuntimeError("amap down")
+
+    # build 按日幂等：换一天验证失败降级
+    empty = await _service(database, commute_fetcher=broken).build(
+        user_id, brief_date=date(2026, 9, 3)
+    )
+    assert not [fact for fact in empty.facts if fact.kind == "commute"]

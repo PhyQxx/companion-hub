@@ -9,6 +9,7 @@ from datetime import time as dt_time
 from pathlib import Path
 from typing import Any, cast
 from uuid import UUID
+from zoneinfo import ZoneInfo
 
 from fastapi import FastAPI
 from fastapi.responses import FileResponse
@@ -81,6 +82,7 @@ from app.calendar import (
     CalendarCreateTool,
     CalendarService,
     CalendarStore,
+    CalendarSyncTool,
     GoogleCalendarSyncScheduler,
     GoogleCalendarSyncService,
 )
@@ -166,7 +168,7 @@ from app.screen_awareness import (
     ScreenAwarenessResolver,
 )
 from app.tasks import ReminderCreateTool, TaskScheduler, TaskStore
-from app.tasks.brief import BriefWeather, DailyBriefService
+from app.tasks.brief import BriefCommute, BriefWeather, DailyBriefService
 from app.tasks.brief_scheduler import DailyBriefScheduler
 from app.tasks.goal_scheduler import GoalReminderScheduler
 from app.tasks.review import DailyReviewService
@@ -506,6 +508,32 @@ def create_app(
         )
 
     calendar_store = CalendarStore(runtime_database) if runtime_database is not None else None
+    async def fetch_brief_commute(user_id: UUID) -> BriefCommute | None:
+        """当日首个带地点日程的出行建议；只读计算（不建提醒），失败静默降级。"""
+        service = build_commute_service()
+        if service is None:
+            return None
+        brief_tz = ZoneInfo(os.getenv("ARIA_DEFAULT_TIMEZONE", "Asia/Shanghai"))
+        try:
+            event = await service.next_outing(user_id, within_hours=24)
+            if event is None:
+                return None
+            if event.starts_at.astimezone(brief_tz).date() != datetime.now(
+                brief_tz
+            ).date():
+                return None  # 今天没有带地点的日程，不为明天建议（简报无日期字段）
+            plan = await service.plan_commute(user_id, event, reminder=False)
+            return BriefCommute(
+                destination=plan.destination_text,
+                leave_by=plan.leave_by,
+                event_title=plan.event_title,
+                starts_at=plan.starts_at,
+                mode=plan.mode,
+                duration_min=int(plan.duration_s // 60) if plan.duration_s else None,
+            )
+        finally:
+            await service.aclose()
+
     daily_brief_service = (
         DailyBriefService(
             runtime_database,
@@ -514,6 +542,7 @@ def create_app(
             contact_store=contact_store,
             calendar_store=calendar_store,
             weather_fetcher=fetch_brief_weather,
+            commute_fetcher=fetch_brief_commute,
             timezone_name=os.getenv("ARIA_DEFAULT_TIMEZONE", "Asia/Shanghai"),
         )
         if runtime_database is not None and task_store is not None and cognitive_store is not None
@@ -1293,6 +1322,12 @@ def create_app(
                     drafts=pending_mutations,
                 )
                 device_tools.append(calendar_create_tool)
+            device_tools.append(
+                CalendarSyncTool(
+                    caldav_sync=caldav_sync_service,
+                    google_sync=google_calendar_sync_service,
+                )
+            )
             if contact_store is not None:
                 device_tools.append(ContactSaveTool(contact_store))
                 device_tools.append(ContactQueryTool(contact_store))

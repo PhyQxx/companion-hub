@@ -10,7 +10,7 @@ from .google_scheduler import GoogleCalendarSyncScheduler
 from .models import CalendarEventView, CalendarParticipant, CalendarPreview
 from .service import CalendarService
 from .store import CalendarStore
-from .tools import CalendarCreateTool
+from .tools import CalendarCreateTool, CalendarSyncTool
 
 __all__ = [
     "CalDavClient",
@@ -23,6 +23,7 @@ __all__ = [
     "CalendarPreview",
     "CalendarService",
     "CalendarStore",
+    "CalendarSyncTool",
     "GoogleCalendarClient",
     "GoogleCalendarError",
     "GoogleCalendarSyncScheduler",

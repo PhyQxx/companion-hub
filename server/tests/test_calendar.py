@@ -13,6 +13,7 @@ from app.auth import AuthService
 from app.calendar import CalendarCreateTool, CalendarParticipant, CalendarService, CalendarStore
 from app.db import AppUserRecord, Base, Database, create_database
 from app.ids import uuid7
+from app.schemas.common import PrivacyLevel
 from app.tasks.models import TaskStatus
 from app.tasks.store import TaskStore
 from app.tools.contracts import ToolContext
@@ -309,3 +310,82 @@ async def test_calendar_draft_api_binds_user_content_and_confirmation(database: 
     assert len(await service.list_events(owner.principal.user_id)) == 1
     with pytest.raises(LookupError):
         await tool.confirm(uuid7(), UUID(str(draft_id)), str(draft["digest"]))
+
+
+# ---------------------------------------------------------------------------
+# CAL-01 聊天端手动同步工具
+# ---------------------------------------------------------------------------
+
+
+class _FakeStats:
+    def __init__(self) -> None:
+        self.calendars = 1
+        self.pulled = 5
+        self.mirrors_created = 2
+        self.mirrors_updated = 1
+        self.mirrors_cancelled = 0
+        self.errors: list[str] = []
+
+
+class _FakeSyncService:
+    def __init__(self, *, fail: bool = False) -> None:
+        self.fail = fail
+        self.calls = 0
+
+    async def sync_once(self) -> _FakeStats:
+        self.calls += 1
+        if self.fail:
+            raise RuntimeError("boom")
+        return _FakeStats()
+
+
+async def test_calendar_sync_tool_dispatch_and_privacy() -> None:
+    from uuid import uuid4
+
+    from app.calendar.tools import CalendarSyncTool
+    from app.tools.contracts import ToolContext
+
+    context = ToolContext(privacy_level=PrivacyLevel.L1, user_id=uuid7(), turn_id=uuid4())
+
+    caldav = _FakeSyncService()
+    google = _FakeSyncService(fail=True)
+    tool = CalendarSyncTool(caldav_sync=caldav, google_sync=google)
+
+    result = await tool.execute(
+        CalendarSyncTool.arguments_model.model_validate({"provider": "caldav"}),
+        context.model_copy(update={"privacy_level": PrivacyLevel.L1}),
+    )
+    assert result.ok is True
+    assert caldav.calls == 1 and google.calls == 0
+    providers = result.data["providers"]
+    assert providers["caldav"]["pulled"] == 5
+
+    both = await tool.execute(
+        CalendarSyncTool.arguments_model.model_validate({"provider": "all"}),
+        context.model_copy(update={"privacy_level": PrivacyLevel.L1}),
+    )
+    assert both.ok is True  # google 失败但 caldav 成功
+    providers = both.data["providers"]
+    assert providers["caldav"]["errors"] == []
+    assert providers["google"]["errors"] == ["sync_failed"]
+
+    # 全部失败 → ok=False
+    failing = CalendarSyncTool(caldav_sync=_FakeSyncService(fail=True))
+    failed = await failing.execute(
+        CalendarSyncTool.arguments_model.model_validate({"provider": "all"}),
+        context.model_copy(update={"privacy_level": PrivacyLevel.L1}),
+    )
+    assert failed.ok is False
+    assert failed.reason_code == "calendar_sync_failed"
+
+    # L2 拒绝
+    private = await tool.execute(
+        CalendarSyncTool.arguments_model.model_validate({}),
+        context.model_copy(update={"privacy_level": PrivacyLevel.L2}),
+    )
+    assert private.ok is False
+    assert private.reason_code == "private_session_unsupported"
+
+    # 未配置任何提供方时工具不可用
+    assert not CalendarSyncTool().available
+    assert tool.available
