@@ -4,6 +4,7 @@ from collections.abc import AsyncIterator, Callable
 from datetime import UTC, date, datetime, timedelta
 from datetime import time as dt_time
 from uuid import UUID
+from zoneinfo import ZoneInfo
 
 import pytest
 from fastapi import FastAPI
@@ -11,6 +12,7 @@ from httpx import ASGITransport, AsyncClient
 
 from app.api import create_briefs_router
 from app.auth import AuthService
+from app.calendar import CalendarStore
 from app.cognition import CognitiveStore, GoalKind
 from app.db import AppUserRecord, Base, Database, create_database
 from app.ids import uuid7
@@ -51,12 +53,14 @@ def _service(
     database: Database,
     *,
     weather: BriefWeatherFetcher | None = None,
+    calendar_store: CalendarStore | None = None,
     clock: Callable[[], datetime] = lambda: NOW,
 ) -> DailyBriefService:
     return DailyBriefService(
         database,
         TaskStore(database),
         CognitiveStore(database),
+        calendar_store=calendar_store,
         weather_fetcher=weather,
         clock=clock,
     )
@@ -263,3 +267,82 @@ async def test_briefs_api_latest_generate_and_auth(database: Database) -> None:
     assert latest.json()["id"] == generated.json()["id"]
     assert [item["id"] for item in listed.json()["items"]] == [generated.json()["id"]]
     assert unauthorized.status_code == 401
+
+
+# ---------------------------------------------------------------------------
+# 当日日程事实（本地 + CalDAV/Google 镜像）
+# ---------------------------------------------------------------------------
+
+
+async def test_brief_includes_today_events_from_calendar(
+    database: Database, user_id: UUID
+) -> None:
+    from app.calendar import CalendarStore
+
+    store = CalendarStore(database)
+    day = NOW.astimezone(ZoneInfo("Asia/Shanghai")).date()
+    # SQLite 丢时区（读回按 UTC）：用 UTC 瞬间构造，上海本地显示 = UTC+8
+    day_start_utc = datetime.combine(day, dt_time.min, tzinfo=UTC) - timedelta(hours=8)
+    day_start = day_start_utc + timedelta(hours=8)
+    await store.create_event(
+        user_id=user_id,
+        title="周会",
+        starts_at=day_start_utc + timedelta(hours=10),
+        ends_at=day_start_utc + timedelta(hours=11),
+        location="301 会议室",
+    )
+    await store.create_event(
+        user_id=user_id,
+        title="团队日",
+        starts_at=day_start_utc,
+        ends_at=day_start_utc + timedelta(days=1),
+        all_day=True,
+    )
+    # 昨天的日程不进今天的简报
+    await store.create_event(
+        user_id=user_id,
+        title="昨天的事",
+        starts_at=day_start_utc - timedelta(hours=2),
+        ends_at=day_start_utc - timedelta(hours=1),
+    )
+    from app.db import CalendarEventRecord
+
+    async with database.sessions.begin() as session:
+        session.add(
+            CalendarEventRecord(
+                id=uuid7(),
+                user_id=user_id,
+                calendar_id="caldav:personal",
+                title="牙医",
+                starts_at=day_start_utc + timedelta(hours=15),
+                ends_at=day_start_utc + timedelta(hours=16),
+                participants=[],
+                status="active",
+                source="caldav",
+                source_ref="caldav:single-1#20260920T170000",
+            )
+        )
+
+    brief = await _service(
+        database, calendar_store=store, clock=lambda: day_start + timedelta(hours=1)
+    ).build(user_id, brief_date=day)
+    event_facts = [fact for fact in brief.facts if fact.kind == "event"]
+    texts = [fact.text for fact in event_facts]
+    assert any("10:00-11:00 周会" in text and "@301 会议室" in text for text in texts)
+    assert any("[caldav] 15:00-16:00 牙医" in text for text in texts)
+    assert any(text.startswith("全天：团队日") for text in texts)
+    assert not any("昨天的事" in text for text in texts)
+    # 每条日程事实带可核对的来源引用
+    sources = {fact.source for fact in event_facts}
+    assert all(source.startswith("calendar:") for source in sources)
+    assert len(sources) == 3
+
+    text = brief.text
+    assert "今日日程" in text or any("周会" in line for line in text.splitlines())
+
+
+async def test_brief_without_calendar_store_skips_events(
+    database: Database, user_id: UUID
+) -> None:
+    brief = await _service(database).build(user_id)
+    assert not [fact for fact in brief.facts if fact.kind == "event"]

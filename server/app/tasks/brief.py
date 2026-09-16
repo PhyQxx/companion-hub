@@ -18,7 +18,7 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 from datetime import time as dt_time
-from typing import Annotated
+from typing import Annotated, Any
 from uuid import UUID
 from zoneinfo import ZoneInfo
 
@@ -38,6 +38,7 @@ TRIGGER_KIND_BRIEF = "brief.daily"
 MAX_TASK_FACTS = 5
 MAX_GOAL_FACTS = 5
 MAX_CONTACT_DATE_FACTS = 5
+MAX_EVENT_FACTS = 8
 MAX_TEXT_CHARS = 1_200
 
 
@@ -102,6 +103,7 @@ class DailyBriefService:
         cognitive_store: CognitiveStore,
         *,
         contact_store: ContactStore | None = None,
+        calendar_store: Any | None = None,
         weather_fetcher: BriefWeatherFetcher | None = None,
         timezone_name: str = "Asia/Shanghai",
         clock: Callable[[], datetime] | None = None,
@@ -110,6 +112,7 @@ class DailyBriefService:
         self._tasks = task_store
         self._goals = cognitive_store
         self._contacts = contact_store
+        self._calendar = calendar_store
         self._weather = weather_fetcher
         self._tz = ZoneInfo(timezone_name)
         self._clock = clock or (lambda: datetime.now(UTC))
@@ -215,6 +218,54 @@ class DailyBriefService:
                     )
                 )
 
+        # 当日日程（本地 + CalDAV/Google 镜像同表；取消的不进简报）
+        if self._calendar is not None:
+            try:
+                # SQLite 把 aware 值按本地墙钟绑定，而镜像行存 UTC 墙钟：
+                # 查询边界统一归一到 UTC，保证两种存储语义一致（PG 无差别）。
+                events = await self._calendar.list_events(
+                    user_id,
+                    starts_from=day_start.astimezone(UTC),
+                    starts_to=day_end.astimezone(UTC),
+                    include_cancelled=False,
+                    limit=100,
+                )
+            except Exception:
+                events = []
+            timed = sorted(
+                (event for event in events if not event.all_day),
+                key=lambda item: item.starts_at,
+            )
+            for event in timed[:MAX_EVENT_FACTS]:
+                mirror_tag = ""
+                if event.source and event.source != "api":
+                    mirror_tag = f"[{event.source}] "
+                fact_text = (
+                    f"{mirror_tag}{event.starts_at.astimezone(self._tz).strftime('%H:%M')}"
+                    f"-{event.ends_at.astimezone(self._tz).strftime('%H:%M')} {event.title}"
+                )
+                if event.location:
+                    fact_text += f" @{event.location}"
+                facts.append(
+                    BriefFact(
+                        kind="event",
+                        text=fact_text,
+                        source=f"calendar:{event.id}",
+                    )
+                )
+            all_day_events = [event for event in events if event.all_day]
+            if all_day_events:
+                names = "、".join(event.title for event in all_day_events[:MAX_EVENT_FACTS])
+                extra = len(all_day_events) - MAX_EVENT_FACTS
+                suffix = f" 等{len(all_day_events)}条" if extra > 0 else ""
+                facts.append(
+                    BriefFact(
+                        kind="event",
+                        text=f"全天：{names}{suffix}",
+                        source=f"calendar:{all_day_events[0].id}",
+                    )
+                )
+
         due_tasks = []
         for task in await self._tasks.list_tasks(user_id, status=TaskStatus.ACTIVE, limit=200):
             next_fire = _aware(task.next_fire_at)
@@ -298,6 +349,7 @@ def compose_brief_text(brief_date: date, facts: list[BriefFact]) -> str:
     header = f"{brief_date.month}月{brief_date.day}日 周{weekdays[brief_date.weekday()]}"
 
     weather = [fact.text for fact in facts if fact.kind == "weather"]
+    events = [fact.text for fact in facts if fact.kind == "event"]
     tasks = [fact.text for fact in facts if fact.kind == "task"]
     goals = [fact.text for fact in facts if fact.kind == "goal"]
     contact_dates = [fact.text for fact in facts if fact.kind == "contact_date"]
@@ -310,13 +362,16 @@ def compose_brief_text(brief_date: date, facts: list[BriefFact]) -> str:
     if contact_dates:
         lines.append(f"今日重要日期（{len(contact_dates)}）：")
         lines.extend(f"· {item}" for item in contact_dates)
+    if events:
+        lines.append(f"今日日程（{len(events)}）：")
+        lines.extend(f"· {item}" for item in events)
     if tasks:
         lines.append(f"今日待办（{len(tasks)}）：")
         lines.extend(f"· {item}" for item in tasks)
     if goals:
         lines.append(f"到期承诺（{len(goals)}）：")
         lines.extend(f"· {item}" for item in goals)
-    if not tasks and not goals and not contact_dates:
+    if not tasks and not goals and not contact_dates and not events:
         lines.append("今天没有到期的任务或承诺。")
     text = "\n".join(lines)
     if len(text) > MAX_TEXT_CHARS:

@@ -3,7 +3,9 @@ from __future__ import annotations
 from collections.abc import AsyncIterator, Callable
 from datetime import UTC, date, datetime, timedelta
 from datetime import time as dt_time
+from typing import Any
 from uuid import UUID
+from zoneinfo import ZoneInfo
 
 import pytest
 from fastapi import FastAPI
@@ -11,6 +13,7 @@ from httpx import ASGITransport, AsyncClient
 
 from app.api import create_reviews_router
 from app.auth import AuthService
+from app.calendar import CalendarStore
 from app.cognition import CognitiveStore, GoalKind, GoalStatus
 from app.db import AppUserRecord, Base, Database, create_database
 from app.ids import uuid7
@@ -44,12 +47,14 @@ async def user_id(database: Database) -> UUID:
 def _service(
     database: Database,
     *,
+    calendar_store: Any | None = None,
     clock: Callable[[], datetime] = lambda: NOW,
 ) -> DailyReviewService:
     return DailyReviewService(
         database,
         TaskStore(database),
         CognitiveStore(database),
+        calendar_store=calendar_store,
         clock=clock,
     )
 
@@ -289,3 +294,64 @@ async def test_reviews_api_generate_latest_correct(database: Database) -> None:
     assert missing.status_code == 404
     assert out_of_range.status_code == 422
     assert unauthorized.status_code == 401
+
+
+# ---------------------------------------------------------------------------
+# 明日日程进入回顾
+# ---------------------------------------------------------------------------
+
+
+async def test_review_includes_tomorrow_events(database: Database, user_id: UUID) -> None:
+    """明日日程进入回顾；SQLite 上按 UTC 墙钟构造（生产 PostgreSQL 无此限制）。"""
+    from datetime import time as dt_time
+    from datetime import timedelta
+
+    store = CalendarStore(database)
+    day = NOW.astimezone(ZoneInfo("Asia/Shanghai")).date()
+    # 明日窗口（UTC 墙钟）：[上海明日00:00, 上海后日00:00)
+    tomorrow_start_utc = datetime.combine(day, dt_time.min, tzinfo=UTC) + timedelta(
+        hours=16
+    )
+    await store.create_event(
+        user_id=user_id,
+        title="项目评审",
+        starts_at=tomorrow_start_utc + timedelta(hours=9, minutes=30),
+        ends_at=tomorrow_start_utc + timedelta(hours=10, minutes=30),
+        location="501",
+    )
+    # 外部镜像日程（标识来源）
+    from app.db import CalendarEventRecord
+
+    async with database.sessions.begin() as session:
+        session.add(
+            CalendarEventRecord(
+                id=uuid7(),
+                user_id=user_id,
+                calendar_id="google:primary",
+                title="Google 例会",
+                starts_at=tomorrow_start_utc + timedelta(hours=14),
+                ends_at=tomorrow_start_utc + timedelta(hours=15),
+                participants=[],
+                status="active",
+                source="google",
+                source_ref="google:evt-9",
+            )
+        )
+    # 今天的日程不进明日重点
+    await store.create_event(
+        user_id=user_id,
+        title="今天的事",
+        starts_at=tomorrow_start_utc - timedelta(hours=4),
+        ends_at=tomorrow_start_utc - timedelta(hours=3),
+    )
+
+    review = await _service(
+        database, calendar_store=store, clock=lambda: NOW
+    ).build(user_id, review_date=day)
+    tomorrow = [item for item in review.items if item.section == "tomorrow"]
+    texts = [item.text for item in tomorrow]
+    assert any("项目评审" in text for text in texts)
+    assert any("[google]" in text and "Google 例会" in text for text in texts)
+    assert not any("今天的事" in text for text in texts)
+    sources = {item.source for item in tomorrow if item.source.startswith("calendar:")}
+    assert len(sources) == 2

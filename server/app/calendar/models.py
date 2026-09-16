@@ -32,6 +32,8 @@ class CalendarEventView(StrictModel):
     location: str | None = None
     participants: list[CalendarParticipant] = Field(default_factory=list)
     status: str
+    # 事件来源（api=本地 / caldav|google=外部镜像），供简报/回顾标注
+    source: str = "api"
     reminder_task_id: UUID | None = None
     created_at: datetime | None = None
     updated_at: datetime | None = None

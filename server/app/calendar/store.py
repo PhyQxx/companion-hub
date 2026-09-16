@@ -30,6 +30,7 @@ def _to_view(record: CalendarEventRecord) -> CalendarEventView:
         location=record.location,
         participants=[CalendarParticipant.model_validate(item) for item in record.participants],
         status=record.status,
+        source=record.source,
         created_at=_aware(record.created_at) if record.created_at is not None else None,
         updated_at=_aware(record.updated_at) if record.updated_at is not None else None,
     )

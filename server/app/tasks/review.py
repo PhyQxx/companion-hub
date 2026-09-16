@@ -14,7 +14,7 @@ from __future__ import annotations
 from collections.abc import Awaitable, Callable
 from datetime import UTC, date, datetime, timedelta
 from datetime import time as dt_time
-from typing import Annotated, Literal
+from typing import Annotated, Any, Literal
 from uuid import UUID
 from zoneinfo import ZoneInfo
 
@@ -93,12 +93,14 @@ class DailyReviewService:
         task_store: TaskStore,
         cognitive_store: CognitiveStore,
         *,
+        calendar_store: Any | None = None,
         timezone_name: str = "Asia/Shanghai",
         clock: Callable[[], datetime] | None = None,
     ) -> None:
         self._database = database
         self._tasks = task_store
         self._goals = cognitive_store
+        self._calendar = calendar_store
         self._tz = ZoneInfo(timezone_name)
         self._clock = clock or (lambda: datetime.now(UTC))
 
@@ -232,6 +234,43 @@ class DailyReviewService:
                     source=f"goal:{goal.id}",
                 )
             )
+
+        # 明日日程（本地 + 外部镜像；全天日程只列标题）
+        if self._calendar is not None:
+            try:
+                # 与 brief 同因：查询边界归一到 UTC，兼容 SQLite 墙钟存储
+                events = await self._calendar.list_events(
+                    user_id,
+                    starts_from=day_end.astimezone(UTC),
+                    starts_to=tomorrow_end.astimezone(UTC),
+                    include_cancelled=False,
+                    limit=50,
+                )
+            except Exception:
+                events = []
+            for event in sorted(
+                (item for item in events if not item.all_day),
+                key=lambda item: item.starts_at,
+            ):
+                mirror_tag = f"[{event.source}] " if event.source and event.source != "api" else ""
+                items.append(
+                    ReviewItem(
+                        section="tomorrow",
+                        text=(
+                            f"{mirror_tag}{event.starts_at.astimezone(self._tz).strftime('%H:%M')}"
+                            f" {event.title}"
+                        ),
+                        source=f"calendar:{event.id}",
+                    )
+                )
+            for event in (item for item in events if item.all_day):
+                items.append(
+                    ReviewItem(
+                        section="tomorrow",
+                        text=f"全天：{event.title}",
+                        source=f"calendar:{event.id}",
+                    )
+                )
 
         return _cap_sections(items)
 

@@ -505,12 +505,14 @@ def create_app(
             clock=lambda: datetime.now(UTC),
         )
 
+    calendar_store = CalendarStore(runtime_database) if runtime_database is not None else None
     daily_brief_service = (
         DailyBriefService(
             runtime_database,
             task_store,
             cognitive_store,
             contact_store=contact_store,
+            calendar_store=calendar_store,
             weather_fetcher=fetch_brief_weather,
             timezone_name=os.getenv("ARIA_DEFAULT_TIMEZONE", "Asia/Shanghai"),
         )
@@ -531,6 +533,7 @@ def create_app(
             runtime_database,
             task_store,
             cognitive_store,
+            calendar_store=calendar_store,
             timezone_name=os.getenv("ARIA_DEFAULT_TIMEZONE", "Asia/Shanghai"),
         )
         if runtime_database is not None and task_store is not None and cognitive_store is not None
@@ -546,18 +549,19 @@ def create_app(
         else None
     )
     calendar_service = (
-        CalendarService(CalendarStore(runtime_database), task_store)
-        if runtime_database is not None and task_store is not None
+        CalendarService(calendar_store, task_store)
+        if calendar_store is not None and task_store is not None
         else None
     )
     meeting_service = (
         MeetingService(
             MeetingStore(runtime_database),
-            CalendarStore(runtime_database),
+            calendar_store,
             task_store,
             LlmMeetingSummarizer(runtime_config),
         )
         if runtime_database is not None
+        and calendar_store is not None
         and task_store is not None
         and runtime_config is not None
         else None
