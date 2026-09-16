@@ -1,6 +1,20 @@
+export interface MailAttachment {
+  id: string;
+  filename: string;
+  mime_type: string;
+  size_bytes: number;
+  expires_at: string;
+}
+
 export interface MailDraft {
   id: string;
-  content: { to: string[]; cc: string[]; subject: string; body: string };
+  content: {
+    to: string[];
+    cc: string[];
+    subject: string;
+    body: string;
+    attachments?: Array<{ filename: string; size_bytes: number }>;
+  };
   digest: string;
   expires_at: string;
   status: string;
@@ -703,6 +717,31 @@ export class ChatApi {
     return this.request<MailDraft>(`/api/v1/mail/drafts/${id}/${action}`, {
       method: "POST", ...(action === "confirm" ? { body: JSON.stringify({ digest }) } : {}),
     }, token);
+  }
+
+  async listMailAttachments(token: string): Promise<MailAttachment[]> {
+    return this.request<MailAttachment[]>("/api/v1/mail/attachments", { method: "GET" }, token);
+  }
+
+  async uploadMailAttachment(token: string, file: File): Promise<MailAttachment> {
+    // multipart 不能带 JSON Content-Type（浏览器需要自动生成 boundary）
+    const body = new FormData();
+    body.append("file", file);
+    const response = await fetch(`${this.baseUrl}/api/v1/mail/attachments`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}` },
+      body,
+    });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      const detail = (payload as { detail?: unknown }).detail;
+      throw new ApiError(response.status, describeDetail(detail, `HTTP ${response.status}`));
+    }
+    return payload as MailAttachment;
+  }
+
+  async discardMailAttachment(token: string, id: string): Promise<void> {
+    await this.request<void>(`/api/v1/mail/attachments/${id}`, { method: "DELETE" }, token);
   }
 
   listConfirmationDrafts(token: string, kind: "calendar" | "workflows") {

@@ -55,6 +55,9 @@ const labels: Record<string, string> = {
       <p>收件人：{{ draft.content.to.join("，") }}</p>
       <p v-if="draft.content.cc.length">抄送：{{ draft.content.cc.join("，") }}</p>
       <p>主题：{{ draft.content.subject }}</p>
+      <p v-if="draft.content.attachments?.length">
+        附件：{{ draft.content.attachments.map(a => a.filename).join("，") }}
+      </p>
       <pre>{{ draft.content.body }}</pre>
       <template v-if="draft.status === 'pending'">
         <small>请核对全文。有效期至 {{ new Date(draft.expires_at).toLocaleTimeString() }}；修改内容需重新准备预览。</small>

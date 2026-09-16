@@ -32,6 +32,7 @@ import {
 } from "./voice";
 import ToolResultCard from "./ToolResultCard.vue";
 import PlanInbox from "./PlanInbox.vue";
+import MailAttachments from "./MailAttachments.vue";
 import MailDrafts from "./MailDrafts.vue";
 import SafetyAlerts from "./SafetyAlerts.vue";
 import ConfirmationDrafts from "./ConfirmationDrafts.vue";
@@ -1389,6 +1390,8 @@ async function installPwa() {
       </div>
 
       <SafetyAlerts v-if="token" :key="token" :token="token" />
+
+      <MailAttachments v-if="token && privacy === 'L1'" :key="token" :token="token" />
 
       <MailDrafts v-if="token && privacy === 'L1'" :key="token" :token="token" />
 

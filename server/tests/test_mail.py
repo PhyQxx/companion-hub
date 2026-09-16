@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 from typing import Any
-from uuid import UUID
+from uuid import UUID, uuid4
 
 import pytest
 
@@ -186,8 +186,14 @@ async def test_client_fetch_maps_imap_error(
     store = await _mail_store_enabled(tmp_path)
     client = MailClient(store)
 
-    def raising(account: object, query: str | None, limit: int) -> list[object]:
-        del account, query, limit
+    def raising(
+        account: object,
+        query: str | None,
+        limit: int,
+        unread_only: bool = False,
+        folder: str = "INBOX",
+    ) -> list[object]:
+        del account, query, limit, unread_only, folder
         raise IMAP4.error("auth failed")
 
     monkeypatch.setattr(client, "_fetch_sync", raising)
@@ -243,7 +249,7 @@ async def test_send_tool_requires_confirmation(
     assert confirmed.reason_code == "user_confirmation_required"
     assert sends == []
     assert context.user_id is not None
-    draft = send_tool.list_drafts(context.user_id)[0]
+    draft = (await send_tool.list_drafts(context.user_id))[0]
     receipt = await send_tool.confirm(context.user_id, UUID(str(draft["id"])), str(draft["digest"]))
     assert receipt["status"] == "sent"
     assert len(sends) == 1
@@ -306,9 +312,14 @@ async def test_read_tool_returns_summaries_and_blocks_l2(
     read_tool = MailReadTool(MailClient(store))
 
     async def fake_fetch(
-        self: MailClient, *, query: str | None = None, limit: int | None = None
+        self: MailClient,
+        *,
+        query: str | None = None,
+        limit: int | None = None,
+        unread_only: bool = False,
+        folder: str = "INBOX",
     ) -> list[MailSummary]:
-        del self, query, limit
+        del self, query, limit, unread_only, folder
         return [
             MailSummary(
                 uid=42,
@@ -383,10 +394,10 @@ async def test_mail_confirmation_boundaries(
     preview = await tool.execute(args, context)
     replay = await tool.execute(args, context)
     assert replay.data["draft_id"] == preview.data["draft_id"]
-    draft = tool.list_drafts(context.user_id)[0]
+    draft = (await tool.list_drafts(context.user_id))[0]
     draft_id = UUID(str(draft["id"]))
     digest = str(draft["digest"])
-    assert tool.list_drafts(uuid4()) == []
+    assert await tool.list_drafts(uuid4()) == []
     with pytest.raises(LookupError):
         await tool.confirm(uuid4(), draft_id, digest)
     with pytest.raises(ValueError, match="changed"):
@@ -395,7 +406,7 @@ async def test_mail_confirmation_boundaries(
     await tool.execute(args.model_copy(update={"body": "Changed body"}), context)
     with pytest.raises(ValueError, match="not_pending"):
         await tool.confirm(context.user_id, draft_id, digest)
-    newer = tool.list_drafts(context.user_id)[-1]
+    newer = (await tool.list_drafts(context.user_id))[-1]
     newer_id = UUID(str(newer["id"]))
     # 重启后的实例不认识旧预览，不会凭旧确认重发。
     with pytest.raises(LookupError):
@@ -433,7 +444,7 @@ async def test_mail_concurrent_confirmation_and_unknown_outcome(
         context,
     )
     assert context.user_id is not None
-    draft = tool.list_drafts(context.user_id)[0]
+    draft = (await tool.list_drafts(context.user_id))[0]
     draft_id, digest = UUID(str(draft["id"])), str(draft["digest"])
     first = asyncio.create_task(tool.confirm(context.user_id, draft_id, digest))
     await entered.wait()
@@ -444,7 +455,7 @@ async def test_mail_concurrent_confirmation_and_unknown_outcome(
         await first
     with pytest.raises(ValueError, match="not_pending"):
         await tool.confirm(context.user_id, draft_id, digest)
-    assert tool.list_drafts(context.user_id)[0]["status"] == "unknown_outcome"
+    assert (await tool.list_drafts(context.user_id))[0]["status"] == "unknown_outcome"
     assert sends == 1
 
 
@@ -513,7 +524,7 @@ async def test_mail_confirmation_api(tmp_path: Path, monkeypatch: pytest.MonkeyP
                 ),
             )
             cancelled_id = cancelled_preview.data["draft_id"]
-            cancelled_draft = tool.list_drafts(owner.principal.user_id)[-1]
+            cancelled_draft = (await tool.list_drafts(owner.principal.user_id))[-1]
             cancel_url = f"/api/v1/mail/drafts/{cancelled_id}/cancel"
             assert (await http.post(cancel_url, headers=headers)).json()["status"] == "cancelled"
             assert (
@@ -524,5 +535,366 @@ async def test_mail_confirmation_api(tmp_path: Path, monkeypatch: pytest.MonkeyP
                 )
             ).status_code == 409
             assert len(sent) == 1
+    finally:
+        await database.close()
+
+
+# ---------------------------------------------------------------------------
+# MAIL-01 增强：未读管理与附件发送
+# ---------------------------------------------------------------------------
+
+
+async def test_attachment_store_lifecycle_and_validation(database_mail: None = None) -> None:
+    from app.db import Base, create_database
+    from app.mail import MailAttachmentStore
+
+    database = create_database("sqlite+aiosqlite:///:memory:")
+    try:
+        async with database.engine.begin() as connection:
+            await connection.run_sync(Base.metadata.create_all)
+        auth_db = database
+        from app.auth import AuthService
+
+        auth = AuthService(auth_db)
+        owner = await auth.setup(display_name="Attach", password="correct horse")
+        store = MailAttachmentStore(database)
+        user = owner.principal.user_id
+
+        record = await store.create(
+            user_id=user, filename="报告.pdf", mime_type="application/pdf", payload=b"%PDF-1"
+        )
+        assert record.filename == "报告.pdf"
+        assert record.mime_type == "application/pdf"
+        assert record.size_bytes == 6
+
+        # 白名单外类型拒绝（无扩展名 + 未知声明）
+        with pytest.raises(ValueError, match="unsupported_attachment_type"):
+            await store.create(
+                user_id=user, filename="blob.bin", mime_type="application/x-elf", payload=b"x"
+            )
+        # 大小上限
+        with pytest.raises(ValueError, match="attachment_too_large"):
+            await store.create(
+                user_id=user,
+                filename="big.png",
+                mime_type="image/png",
+                payload=b"0" * (10 * 1024 * 1024 + 1),
+            )
+        # 用户隔离
+        other = uuid4()
+        with pytest.raises(LookupError):
+            await store.get_owned(other, record.id)
+        # 列表/丢弃/过期清理
+        assert [item.id for item in await store.list_pending(user)] == [record.id]
+        await store.discard(user, record.id)
+        assert await store.list_pending(user) == []
+        assert await store.delete_expired() == 0  # 已丢弃的行过期前不重复删
+    finally:
+        await database.close()
+
+
+async def test_attachment_upload_and_send_flow(
+    tmp_path: Path, context: ToolContext, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import io
+
+    from fastapi import FastAPI
+    from httpx import ASGITransport, AsyncClient
+
+    from app.api.mail import create_mail_router
+    from app.auth import AuthService
+    from app.db import Base, create_database
+    from app.mail import MailAttachmentStore
+
+    database = create_database(f"sqlite+aiosqlite:///{tmp_path / 'attach.db'}")
+    try:
+        async with database.engine.begin() as connection:
+            await connection.run_sync(Base.metadata.create_all)
+        auth = AuthService(database)
+        owner = await auth.setup(display_name="Mail", password="correct horse")
+        attachments = MailAttachmentStore(database)
+        client = MailClient(await _mail_store_enabled(tmp_path))
+        tool = MailSendTool(client, attachments=attachments)
+        sends: list[dict[str, Any]] = []
+
+        async def send(**kwargs: Any) -> dict[str, object]:
+            sends.append(kwargs)
+            return {"message_id": "with-attachment"}
+
+        monkeypatch.setattr(client, "send", send)
+
+        app = FastAPI()
+        app.include_router(create_mail_router(tool, auth, attachments=attachments))
+        headers = {"Authorization": f"Bearer {owner.access_token}"}
+        async with AsyncClient(
+            transport=ASGITransport(app=app), base_url="http://test"
+        ) as http:
+            uploaded = await http.post(
+                "/api/v1/mail/attachments",
+                headers=headers,
+                files={"file": ("照片.png", io.BytesIO(b"\x89PNG-data"), "image/png")},
+            )
+            bad_type = await http.post(
+                "/api/v1/mail/attachments",
+                headers=headers,
+                files={"file": ("evil.exe", io.BytesIO(b"MZ"), "application/x-msdownload")},
+            )
+            listed = await http.get("/api/v1/mail/attachments", headers=headers)
+        assert uploaded.status_code == 201
+        attachment_id = uploaded.json()["id"]
+        assert uploaded.json()["mime_type"] == "image/png"
+        assert bad_type.status_code == 422
+        assert [item["id"] for item in listed.json()] == [attachment_id]
+
+        # 模型引用附件准备预览 → 用户确认后附件进入 SMTP 载荷
+        preview = await tool.execute(
+            MailSendTool.arguments_model.model_validate(
+                {
+                    "to": ["friend@example.com"],
+                    "subject": "带附件",
+                    "body": "见附件",
+                    "attachment_ids": [attachment_id],
+                }
+            ),
+            ToolContext(
+                privacy_level=PrivacyLevel.L1,
+                user_id=owner.principal.user_id,
+                turn_id=uuid4(),
+            ),
+        )
+        assert preview.ok is True
+        assert preview.data["preview"]["attachments"][0]["filename"] == "照片.png"
+        draft = (await tool.list_drafts(owner.principal.user_id))[0]
+        receipt = await tool.confirm(
+            owner.principal.user_id, UUID(str(draft["id"])), str(draft["digest"])
+        )
+        assert receipt["status"] == "sent"
+        assert len(sends) == 1
+        assert sends[0]["attachments"][0].filename == "照片.png"
+        assert sends[0]["attachments"][0].payload.startswith(b"\x89PNG")
+        # 发送后附件被消费，不再出现在待发送列表
+        assert await attachments.list_pending(owner.principal.user_id) == []
+    finally:
+        await database.close()
+
+
+async def test_mark_tool_and_unread_summary(
+    tmp_path: Path, context: ToolContext, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from datetime import UTC as _UTC
+    from datetime import datetime as _dt
+
+    from app.mail import MailMarkTool
+    from app.mail.client import MailSummary
+
+    store = await _mail_store_enabled(tmp_path)
+    read_tool = MailReadTool(MailClient(store))
+    mark_tool = MailMarkTool(MailClient(store))
+
+    async def fake_fetch(
+        self: MailClient,
+        *,
+        query: str | None = None,
+        limit: int | None = None,
+        unread_only: bool = False,
+        folder: str = "INBOX",
+    ) -> list[MailSummary]:
+        del self, query, limit, folder
+        assert unread_only is True  # unread_only 参数透传
+        return [
+            MailSummary(
+                uid=7,
+                sender="张三 <z@example.com>",
+                subject="未读",
+                sent_at=_dt(2026, 9, 3, 8, 0, tzinfo=_UTC),
+                snippet="新邮件",
+                unread=True,
+            )
+        ]
+
+    monkeypatch.setattr(MailClient, "fetch_inbox", fake_fetch)
+    result = await read_tool.execute(
+        MailReadTool.arguments_model.model_validate({"unread_only": True}), context
+    )
+    assert result.ok is True
+    assert result.data["messages"][0]["unread"] is True
+    assert result.data["unread_count"] == 1
+
+    calls: list[tuple[int, bool]] = []
+
+    async def fake_mark(
+        self: MailClient, uid: int, *, read: bool, folder: str = "INBOX"
+    ) -> bool:
+        del self, folder
+        calls.append((uid, read))
+        return True
+
+    monkeypatch.setattr(MailClient, "mark_read", fake_mark)
+    marked = await mark_tool.execute(
+        MailMarkTool.arguments_model.model_validate({"uid": 7, "read": True}),
+        context.model_copy(update={"privacy_level": PrivacyLevel.L1}),
+    )
+    assert marked.ok is True
+    assert calls == [(7, True)]
+    private = await mark_tool.execute(
+        MailMarkTool.arguments_model.model_validate({"uid": 7}),
+        context.model_copy(update={"privacy_level": PrivacyLevel.L2}),
+    )
+    assert private.ok is False
+    assert private.reason_code == "private_session_unsupported"
+
+
+def test_mime_attachment_build() -> None:
+    from app.config.models import MailConfig
+    from app.mail.client import MailAccount, MailAttachment, _build_message
+
+    account = MailAccount(
+        address="aria@example.com", secret="x", config=MailConfig(smtp_host="smtp.test")
+    )
+    message = _build_message(
+        account,
+        to=["b@c.com"],
+        subject="附件",
+        body="正文",
+        cc=None,
+        attachments=[
+            MailAttachment(filename="照片.png", mime_type="image/png", payload=b"\x89PNG")
+        ],
+    )
+    raw = message.as_bytes()
+    assert any(
+        part.get_content_type() == "image/png" and part.get_filename() == "照片.png"
+        for part in message.walk()
+    )
+    assert b"\x89PNG" not in raw  # base64 编码后不含原始字节
+
+
+# ---------------------------------------------------------------------------
+# MAIL-01 文件夹归类
+# ---------------------------------------------------------------------------
+
+
+async def test_folder_tools_list_and_move(
+    tmp_path: Path, context: ToolContext, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from app.mail import MailFoldersTool, MailMoveTool
+
+    store = await _mail_store_enabled(tmp_path)
+    client = MailClient(store)
+    folders_tool = MailFoldersTool(client)
+    move_tool = MailMoveTool(client)
+
+    async def fake_list(self: MailClient) -> list[str]:
+        del self
+        return ["INBOX", "Archive", "工作"]
+
+    async def fake_move(self: MailClient, uid: int, *, to_folder: str, folder: str) -> bool:
+        moves.append({"uid": uid, "to": to_folder, "from": folder})
+        return to_folder != "NoSuch"
+
+    moves: list[dict[str, Any]] = []
+    monkeypatch.setattr(MailClient, "list_folders", fake_list)
+    monkeypatch.setattr(MailClient, "move_message", fake_move)
+
+    listed = await folders_tool.execute(
+        MailFoldersTool.arguments_model.model_validate({}),
+        context.model_copy(update={"privacy_level": PrivacyLevel.L1}),
+    )
+    assert listed.ok is True
+    assert listed.data["folders"] == ["INBOX", "Archive", "工作"]
+
+    moved = await move_tool.execute(
+        MailMoveTool.arguments_model.model_validate({"uid": 7, "to_folder": "工作"}),
+        context.model_copy(update={"privacy_level": PrivacyLevel.L1}),
+    )
+    assert moved.ok is True
+    assert moves == [{"uid": 7, "to": "工作", "from": "INBOX"}]
+
+    # 目标文件夹不存在：先经 list_folders 校验拒绝，不发起 MOVE
+    missing = await move_tool.execute(
+        MailMoveTool.arguments_model.model_validate({"uid": 7, "to_folder": "不存在"}),
+        context.model_copy(update={"privacy_level": PrivacyLevel.L1}),
+    )
+    assert missing.ok is False
+    assert missing.reason_code == "folder_not_found"
+    assert len(moves) == 1
+
+    private = await folders_tool.execute(
+        MailFoldersTool.arguments_model.model_validate({}),
+        context.model_copy(update={"privacy_level": PrivacyLevel.L2}),
+    )
+    assert private.ok is False
+
+
+async def test_mail_read_folder_param_flows(
+    tmp_path: Path, context: ToolContext, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from app.mail.client import MailSummary
+
+    store = await _mail_store_enabled(tmp_path)
+    read_tool = MailReadTool(MailClient(store))
+    seen_folders: list[str] = []
+
+    async def fake_fetch(
+        self: MailClient,
+        *,
+        query: str | None = None,
+        limit: int | None = None,
+        unread_only: bool = False,
+        folder: str = "INBOX",
+    ) -> list[MailSummary]:
+        del self, query, limit, unread_only
+        seen_folders.append(folder)
+        return []
+
+    monkeypatch.setattr(MailClient, "fetch_inbox", fake_fetch)
+    result = await read_tool.execute(
+        MailReadTool.arguments_model.model_validate({"folder": "工作"}),
+        context.model_copy(update={"privacy_level": PrivacyLevel.L1}),
+    )
+    assert result.ok is True
+    assert seen_folders == ["工作"]
+
+
+async def test_mail_attachments_tool_lists_pending_for_model(
+    database_mail: None = None,
+) -> None:
+    from app.auth import AuthService
+    from app.db import Base, create_database
+    from app.mail import MailAttachmentsTool, MailAttachmentStore
+
+    database = create_database("sqlite+aiosqlite:///:memory:")
+    try:
+        async with database.engine.begin() as connection:
+            await connection.run_sync(Base.metadata.create_all)
+        auth = AuthService(database)
+        owner = await auth.setup(display_name="Att", password="correct horse")
+        store = MailAttachmentStore(database)
+        record = await store.create(
+            user_id=owner.principal.user_id,
+            filename="照片.png",
+            mime_type="image/png",
+            payload=b"\x89PNG",
+        )
+        tool = MailAttachmentsTool(store)
+        context = ToolContext(
+            privacy_level=PrivacyLevel.L1,
+            user_id=owner.principal.user_id,
+            turn_id=uuid4(),
+        )
+        result = await tool.execute(
+            MailAttachmentsTool.arguments_model.model_validate({}), context
+        )
+        assert result.ok is True
+        assert result.data["count"] == 1
+        assert result.data["attachments"][0]["id"] == str(record.id)
+        assert result.data["attachments"][0]["filename"] == "照片.png"
+
+        private = await tool.execute(
+            MailAttachmentsTool.arguments_model.model_validate({}),
+            context.model_copy(update={"privacy_level": PrivacyLevel.L2}),
+        )
+        assert private.ok is False
+        assert private.reason_code == "private_session_unsupported"
     finally:
         await database.close()
