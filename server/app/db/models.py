@@ -15,6 +15,7 @@ from sqlalchemy import (
     ForeignKey,
     Index,
     Integer,
+    LargeBinary,
     String,
     Text,
     UniqueConstraint,
@@ -1363,6 +1364,8 @@ class TaskItemRecord(Base):
     external_updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     priority: Mapped[int | None] = mapped_column(Integer)
     group_label: Mapped[str | None] = mapped_column(String(64))
+    # 本地已改、尚未推回 pnkx 的优先级指令；推送成功后清空
+    pending_priority: Mapped[int | None] = mapped_column(Integer)
     privacy_level: Mapped[str] = mapped_column(String(2), nullable=False, default="L1")
     source: Mapped[str] = mapped_column(String(16), nullable=False, default="manual")
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
@@ -1478,6 +1481,9 @@ class CalendarEventRecord(Base):
     participants: Mapped[list[dict[str, Any]]] = mapped_column(JSON, nullable=False, default=list)
     status: Mapped[str] = mapped_column(String(16), nullable=False, default="active")
     source: Mapped[str] = mapped_column(String(16), nullable=False, default="api")
+    # CAL-01 外部镜像（caldav 为远端真源时的本地投影）；本地事件为 NULL
+    source_ref: Mapped[str | None] = mapped_column(String(160))
+    external_etag: Mapped[str | None] = mapped_column(String(128))
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
@@ -1770,5 +1776,98 @@ class SafetyAlertEscalationRecord(Base):
     status: Mapped[str] = mapped_column(String(16), nullable=False)
     reason: Mapped[str | None] = mapped_column(String(160), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+
+class PendingMutationRecord(Base):
+    """FIX-01/01B 待确认预览的持久化形态：邮件/日程/流程共享同一底座。
+
+    跨重启/跨 worker 存活；认领以 ``status='pending'`` 条件更新做原子守卫，
+    ``saving`` 中断遗留的行保持不确定终态语义由调用方写入。
+    """
+
+    __tablename__ = "pending_mutation"
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('pending','saving','completed','unknown_outcome','cancelled')",
+            name="ck_pending_mutation_status",
+        ),
+        Index("ix_pending_mutation_user_status", "user_id", "status"),
+        Index("ix_pending_mutation_expires", "expires_at"),
+    )
+
+    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True)
+    user_id: Mapped[UUID] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("app_user.id", ondelete="CASCADE"), nullable=False
+    )
+    turn_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
+    kind: Mapped[str] = mapped_column(String(64), nullable=False)
+    content: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    preview: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="pending")
+    result: Mapped[dict[str, Any] | None] = mapped_column(JSON)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now()
+    )
+
+
+class MailAttachmentRecord(Base):
+    """MAIL-01 待发送附件：上传后短时有效，确认发送时消费，过期自动清理。
+
+    个人单用户部署，内容直接落库（LargeBinary）；仅在预览与 SMTP 发送时读取。
+    """
+
+    __tablename__ = "mail_attachment"
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('pending','used','discarded')",
+            name="ck_mail_attachment_status",
+        ),
+        Index("ix_mail_attachment_user_status", "user_id", "status"),
+        Index("ix_mail_attachment_expires", "expires_at"),
+    )
+
+    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True)
+    user_id: Mapped[UUID] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("app_user.id", ondelete="CASCADE"), nullable=False
+    )
+    filename: Mapped[str] = mapped_column(String(255), nullable=False)
+    mime_type: Mapped[str] = mapped_column(
+        String(127), nullable=False, default="application/octet-stream"
+    )
+    size_bytes: Mapped[int] = mapped_column(Integer, nullable=False)
+    payload: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="pending")
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+
+class CalendarOAuthTokenRecord(Base):
+    """CAL-01 外部日历 OAuth 刷新令牌（Google 等）：按用户+提供方唯一。
+
+    刷新令牌只落库不进配置文档/日志；撤销 = 删除本行或 Google 端撤销授权。
+    """
+
+    __tablename__ = "calendar_oauth_token"
+    __table_args__ = (
+        UniqueConstraint("user_id", "provider", name="uq_calendar_oauth_user_provider"),
+    )
+
+    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True)
+    user_id: Mapped[UUID] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("app_user.id", ondelete="CASCADE"), nullable=False
+    )
+    provider: Mapped[str] = mapped_column(String(32), nullable=False)
+    refresh_token: Mapped[str] = mapped_column(Text, nullable=False)
+    account_email: Mapped[str | None] = mapped_column(String(254))
+    obtained_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
