@@ -97,12 +97,6 @@ class ProactiveDeliveryService:
         broadcast: bool = False,
     ) -> ProactiveDeliveryResult | None:
         """broadcast=True 时忽略 first_available 短路，所有可用通道都投递（SAFE critical）。"""
-        import logging
-
-        diag = logging.getLogger("aria.diag")
-        if not diag.handlers:
-            diag.addHandler(logging.FileHandler("/tmp/aria_deliver_diag.log"))
-        diag.warning("DIAG deliver() entered trigger_kind=%s enabled-config-next", trigger_kind)
         snapshot = (
             await self._config_store.refresh()
             if isinstance(self._config_store, DatabaseConfigStore)

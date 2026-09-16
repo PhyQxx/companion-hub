@@ -539,18 +539,12 @@ class BrowserAwarenessLoop:
     async def _deliver_event(
         self, event: SemanticEvent, decision: CognitiveDecision | None
     ) -> None:
-        import logging
-
-        diag = logging.getLogger("aria.diag")
-        if not diag.handlers:
-            diag.addHandler(logging.FileHandler("/tmp/aria_deliver_diag.log"))
-        diag.warning("DIAG browser._deliver_event kind=%s decision=%s fn=%s", event.kind, decision and decision.decision, self._proactive_deliver)
         if self._proactive_deliver is None or decision is None:
             return
         if decision.decision not in {"inform", "suggest", "ask", "escalate"}:
             return
-        try:
-            result = await self._proactive_deliver(
+        with contextlib.suppress(Exception):
+            await self._proactive_deliver(
                 str(event.attributes.get("message", event.summary)),
                 entity_id="browser:active_tab",
                 rule_id="perception_browser.observed",
@@ -559,9 +553,6 @@ class BrowserAwarenessLoop:
                 cognitive_decision=decision,
                 target_user_id=event.user_id,
             )
-            diag.warning("DIAG browser deliver result=%s", result)
-        except Exception:
-            diag.exception("DIAG browser deliver raised")
 
     async def _evaluate_direct(self, event: SemanticEvent) -> None:
         if self._cycle is None:
