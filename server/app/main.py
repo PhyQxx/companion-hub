@@ -30,8 +30,10 @@ from app.api import (
     create_admin_screen_awareness_router,
     create_admin_security_router,
     create_admin_senseaudio_router,
+    create_admin_tasks_router,
     create_admin_theme_router,
     create_admin_timeline_router,
+    create_admin_voice_router,
     create_auth_router,
     create_avatar_router,
     create_briefs_router,
@@ -73,7 +75,15 @@ from app.browser_awareness import (
     LlmBrowserAnalyzer,
 )
 from app.bus import DispatcherWorker, EventPublisher, LocalEventPublisher
-from app.calendar import CalendarCreateTool, CalendarService, CalendarStore
+from app.calendar import (
+    CalDavSyncScheduler,
+    CalDavSyncService,
+    CalendarCreateTool,
+    CalendarService,
+    CalendarStore,
+    GoogleCalendarSyncScheduler,
+    GoogleCalendarSyncService,
+)
 from app.chat import ChatService, CompositeRuntimeCapabilityProvider, RuntimeCapabilityProvider
 from app.cognition import (
     ActionPlanService,
@@ -98,6 +108,7 @@ from app.config import (
     DatabaseConfigStore,
     DesktopActionsConfig,
 )
+from app.confirmation import DatabasePendingMutationStore
 from app.contacts import ContactQueryTool, ContactSaveTool, ContactStore
 from app.db import Database, create_database
 from app.devices import (
@@ -127,7 +138,7 @@ from app.integrations.mcp.actions import sync_mcp_actions
 from app.integrations.mcp.chat_tools import McpChatToolProvider
 from app.jobs import AssetStore, JobEngine
 from app.llm.provider import EnvSecretProvider
-from app.mail import MailClient, MailSendTool, create_mail_tools
+from app.mail import MailAttachmentStore, MailClient, MailSendTool, create_mail_tools
 from app.meetings import LlmMeetingSummarizer, MeetingService, MeetingStore
 from app.memory import (
     LlmMemoryExtractor,
@@ -279,6 +290,10 @@ def create_app(
     daily_brief_scheduler: DailyBriefScheduler | None = None
     daily_review_scheduler: DailyReviewScheduler | None = None
     todo_sync_scheduler: TodoSyncScheduler | None = None
+    caldav_sync_service: CalDavSyncService | None = None
+    caldav_sync_scheduler: CalDavSyncScheduler | None = None
+    google_calendar_sync_service: GoogleCalendarSyncService | None = None
+    google_calendar_sync_scheduler: GoogleCalendarSyncScheduler | None = None
 
     async def test_home_assistant_proactive() -> bool:
         if home_assistant_proactive is None:
@@ -578,6 +593,33 @@ def create_app(
         if todo_sync_service is not None
         else None
     )
+    # CAL-01：CalDAV 外部日历只读镜像；配置中心 integrations.calendar.caldav 启用
+    caldav_sync_service = (
+        CalDavSyncService(runtime_database, runtime_config)
+        if runtime_database is not None and runtime_config is not None
+        else None
+    )
+    caldav_sync_scheduler = (
+        CalDavSyncScheduler(
+            caldav_sync_service,
+            interval_seconds=float(os.getenv("ARIA_CALDAV_SYNC_INTERVAL", "900")),
+        )
+        if caldav_sync_service is not None
+        else None
+    )
+    google_calendar_sync_service = (
+        GoogleCalendarSyncService(runtime_database, runtime_config)
+        if runtime_database is not None and runtime_config is not None
+        else None
+    )
+    google_calendar_sync_scheduler = (
+        GoogleCalendarSyncScheduler(
+            google_calendar_sync_service,
+            interval_seconds=float(os.getenv("ARIA_GOOGLE_SYNC_INTERVAL", "900")),
+        )
+        if google_calendar_sync_service is not None
+        else None
+    )
 
     async def deliver_task_reminder(
         text: str,
@@ -705,6 +747,10 @@ def create_app(
             daily_review_scheduler.start()
         if todo_sync_scheduler is not None:
             todo_sync_scheduler.start()
+        if caldav_sync_scheduler is not None:
+            caldav_sync_scheduler.start()
+        if google_calendar_sync_scheduler is not None:
+            google_calendar_sync_scheduler.start()
         try:
             yield
         finally:
@@ -712,6 +758,10 @@ def create_app(
                 await pnkx_life_client.close()
             if todo_sync_scheduler is not None:
                 await todo_sync_scheduler.stop()
+            if caldav_sync_scheduler is not None:
+                await caldav_sync_scheduler.stop()
+            if google_calendar_sync_scheduler is not None:
+                await google_calendar_sync_scheduler.stop()
             if daily_review_scheduler is not None:
                 await daily_review_scheduler.stop()
             if daily_brief_scheduler is not None:
@@ -1037,6 +1087,26 @@ def create_app(
             if xiaoai_materializer is not None:
                 await xiaoai_materializer.write()
 
+        async def trigger_calendar_sync(provider: str) -> dict[str, object]:
+            """Admin 手动同步外部日历；两个镜像服务等价，读各自配置门控。"""
+            service = (
+                caldav_sync_service if provider == "caldav" else google_calendar_sync_service
+            )
+            if service is None:
+                raise RuntimeError("calendar sync service unavailable")
+            if provider == "caldav":
+                stats = await service.sync_once()
+            else:
+                stats = await service.sync_once()
+            return {
+                "calendars": stats.calendars,
+                "pulled": stats.pulled,
+                "mirrors_created": stats.mirrors_created,
+                "mirrors_updated": stats.mirrors_updated,
+                "mirrors_cancelled": stats.mirrors_cancelled,
+                "errors": stats.errors,
+            }
+
         app.include_router(
             create_admin_config_router(
                 runtime_config,
@@ -1107,6 +1177,13 @@ def create_app(
                 app.include_router(
                     create_admin_jobs_router(
                         job_engine,
+                        admin_token=runtime_admin_token,
+                    )
+                )
+            if task_store is not None:
+                app.include_router(
+                    create_admin_tasks_router(
+                        task_store,
                         admin_token=runtime_admin_token,
                     )
                 )
@@ -1199,11 +1276,17 @@ def create_app(
                 )
             )
             default_timezone = os.getenv("ARIA_DEFAULT_TIMEZONE", "Asia/Shanghai")
+            # FIX-01/01B 确认预览统一持久化：跨重启/跨 worker 存活
+            pending_mutations = (
+                DatabasePendingMutationStore(runtime_database) if runtime_database else None
+            )
             if task_store is not None:
                 device_tools.append(ReminderCreateTool(task_store, timezone_name=default_timezone))
             if calendar_service is not None:
                 calendar_create_tool = CalendarCreateTool(
-                    calendar_service, timezone_name=default_timezone
+                    calendar_service,
+                    timezone_name=default_timezone,
+                    drafts=pending_mutations,
                 )
                 device_tools.append(calendar_create_tool)
             if contact_store is not None:
@@ -1211,7 +1294,7 @@ def create_app(
                 device_tools.append(ContactQueryTool(contact_store))
             device_tools.append(CommuteCheckTool(build_commute_service))
             if workflow_service is not None:
-                workflow_save_tool = WorkflowSaveTool(workflow_service)
+                workflow_save_tool = WorkflowSaveTool(workflow_service, drafts=pending_mutations)
                 device_tools.append(workflow_save_tool)
                 device_tools.append(WorkflowRunTool(workflow_service))
             if focus_service is not None:
@@ -1229,8 +1312,17 @@ def create_app(
                         HomeSceneListTool(home_scene_service),
                     ]
                 )
+            mail_attachments = (
+                MailAttachmentStore(runtime_database)
+                if runtime_config is not None and runtime_database
+                else None
+            )
             if runtime_config is not None:
-                device_tools.extend(create_mail_tools(runtime_config))
+                device_tools.extend(
+                    create_mail_tools(
+                        runtime_config, drafts=pending_mutations, attachments=mail_attachments
+                    )
+                )
             if pnkx_life_client is not None:
                 pnkx_is_local = pnkx_runs_local(pnkx_base_url or "")
                 device_tools.append(PnkxReadTool(pnkx_life_client, runs_local=pnkx_is_local))
@@ -1336,7 +1428,11 @@ def create_app(
             app.include_router(create_chat_router(runtime_chat_service, auth_service))
             for device_tool in device_tools:
                 if isinstance(device_tool, MailSendTool):
-                    app.include_router(create_mail_router(device_tool, auth_service))
+                    app.include_router(
+                        create_mail_router(
+                            device_tool, auth_service, attachments=mail_attachments
+                        )
+                    )
             if avatar_store is not None and persona_store is not None:
                 app.include_router(create_avatar_router(avatar_store, persona_store, auth_service))
             if theme_store is not None:
@@ -1369,9 +1465,17 @@ def create_app(
                 app.state.daily_review_scheduler = daily_review_scheduler
             if calendar_service is not None:
                 app.include_router(
-                    create_calendar_router(calendar_service, auth_service, calendar_create_tool)
+                    create_calendar_router(
+                        calendar_service,
+                        auth_service,
+                        calendar_create_tool,
+                        caldav_sync=caldav_sync_service,
+                        google_sync=google_calendar_sync_service,
+                        google_state_key=os.getenv("ARIA_ADMIN_TOKEN") or None,
+                    )
                 )
                 app.state.calendar_service = calendar_service
+                app.state.caldav_sync_service = caldav_sync_service
             if meeting_service is not None:
                 app.include_router(create_meetings_router(meeting_service, auth_service))
                 app.state.meeting_service = meeting_service
@@ -1456,6 +1560,13 @@ def create_app(
                     avatar_control_publisher=device_command_gateway,
                 )
                 app.state.voice_websocket_manager = voice_manager
+                app.include_router(
+                    create_admin_voice_router(
+                        voice_manager.latency_report,
+                        voice_manager.reset_latency_metrics,
+                        admin_token=runtime_admin_token,
+                    )
+                )
                 if device_command_gateway is not None:
                     device_command_gateway.set_pet_audio_handler(voice_manager.stream_device_speech)
                     device_command_gateway.set_satellite_utterance_handler(

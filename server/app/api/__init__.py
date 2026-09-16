@@ -12,7 +12,9 @@ from .admin_safety import create_admin_safety_router
 from .admin_screen_awareness import create_admin_screen_awareness_router
 from .admin_security import create_admin_security_router
 from .admin_senseaudio import create_admin_senseaudio_router
+from .admin_tasks import create_admin_tasks_router
 from .admin_timeline import create_admin_timeline_router
+from .admin_voice import create_admin_voice_router
 from .auth import ChatSessionGuard, create_auth_router
 from .avatar import create_avatar_router
 from .briefs import create_briefs_router
@@ -61,8 +63,10 @@ __all__ = [
     "create_admin_screen_awareness_router",
     "create_admin_security_router",
     "create_admin_senseaudio_router",
+    "create_admin_tasks_router",
     "create_admin_theme_router",
     "create_admin_timeline_router",
+    "create_admin_voice_router",
     "create_auth_router",
     "create_avatar_router",
     "create_briefs_router",
