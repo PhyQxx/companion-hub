@@ -1,6 +1,6 @@
 """pnkx TODO-01 真实联调脚本：真实 API + 本地 SQLite，验证全链契约。
 
-用法：cd server && uv run python scripts/pnkx_livecheck.py
+用法：ARIA_PNKX_TOKEN=pnkx PYTHONPATH=server uv run python server/scripts/pnkx_livecheck.py
 覆盖：令牌鉴权、分页拉取、镜像建立、新建推送（含绑定身份核对）、
 完成推送、远端清理。
 """
@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -20,11 +21,13 @@ from app.tasks.store import TaskStore
 from app.todo import PnkxTodoClient, TodoSyncService
 
 BASE_URL = "https://admin.pnkx.top:8/prod-api"
-TOKEN = "REMOVED_FROM_HISTORY"
+TOKEN = os.getenv("ARIA_PNKX_TOKEN")
 DB_PATH = Path("/tmp/aria_pnkx_livecheck.db")
 
 
 async def main() -> None:
+    if not TOKEN:
+        raise SystemExit("缺少 ARIA_PNKX_TOKEN 环境变量，退出。")
     if DB_PATH.exists():
         DB_PATH.unlink()
     database = create_database(f"sqlite+aiosqlite:///{DB_PATH}")
