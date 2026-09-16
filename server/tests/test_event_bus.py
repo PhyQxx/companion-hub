@@ -249,3 +249,27 @@ async def test_dev_event_endpoint_appends_event(
         )
     assert response.status_code == 202
     assert response.json() == {"accepted": True, "event_id": str(input_event.event_id)}
+
+
+async def test_dev_event_endpoint_requires_admin_token_when_configured(
+    database: Database, input_event: InputEnvelope, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """配置了管理令牌的生产部署：dev 事件注入必须携带 Bearer 令牌。"""
+    monkeypatch.setenv("ARIA_ADMIN_TOKEN", "test-admin-token")
+    app = create_app(database, enable_dev_endpoints=True)
+    payload = {"event": input_event.model_dump(mode="json"), "topics": ["hub.internal"]}
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        unauthorized = await client.post("/api/v1/dev/events", json=payload)
+        wrong = await client.post(
+            "/api/v1/dev/events",
+            json=payload,
+            headers={"Authorization": "Bearer wrong-token"},
+        )
+        authorized = await client.post(
+            "/api/v1/dev/events",
+            json=payload,
+            headers={"Authorization": "Bearer test-admin-token"},
+        )
+    assert unauthorized.status_code == 401
+    assert wrong.status_code == 401
+    assert authorized.status_code == 202

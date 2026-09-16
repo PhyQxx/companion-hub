@@ -49,7 +49,8 @@ services:
       - .env.docker
     environment:
       ARIA_DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-aria}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-aria}
-      ARIA_ENABLE_DEV_ENDPOINTS: "true"
+      # dev 事件注入接口可伪造感知事件：仅在本地开发时显式开启
+      ARIA_ENABLE_DEV_ENDPOINTS: ${ARIA_ENABLE_DEV_ENDPOINTS:-false}
       ARIA_MQTT_HOST: mosquitto
       ARIA_MQTT_PORT: "1883"
       ARIA_MQTT_USERNAME: ${MQTT_USERNAME:-aria}
@@ -83,6 +84,21 @@ services:
       - xiaoai-state:/var/lib/aria/xiaoai
     restart: unless-stopped
 
+  aria-vpn:
+    image: tailscale/tailscale:latest
+    profiles: ["vpn"]
+    environment:
+      TS_AUTHKEY: ${TAILSCALE_AUTHKEY:?set TAILSCALE_AUTHKEY in .env}
+      TS_EXTRA_ARGS: --advertise-routes=${ARIA_SUBNET:-172.28.0.0/24} --hostname=aria-hub
+      TS_ACCEPT_DNS: "false"
+    cap_add:
+      - NET_ADMIN
+      - NET_RAW
+    volumes:
+      - tailscale-state:/var/lib/tailscale
+      - /dev/net/tun:/dev/net/tun
+    restart: unless-stopped
+
   xiaoai-gateway:
     build:
       context: ./integrations/xiaoai_gateway
@@ -102,3 +118,10 @@ volumes:
   postgres-data:
   mosquitto-data:
   xiaoai-state:
+  tailscale-state:
+
+networks:
+  default:
+    ipam:
+      config:
+        - subnet: ${ARIA_SUBNET:-172.28.0.0/24}
