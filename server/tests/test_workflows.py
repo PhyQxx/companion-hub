@@ -200,7 +200,7 @@ async def test_save_tool_rejects_model_confirmation_and_ui_confirm_is_idempotent
     assert not direct.ok and direct.reason_code == "user_confirmation_required"
     prepared = await tool.execute(tool.arguments_model.model_validate(payload), context)
     assert context.user_id is not None
-    draft = tool.list_drafts(context.user_id)[0]
+    draft = (await tool.list_drafts(context.user_id))[0]
     first = await tool.confirm(
         context.user_id, UUID(str(prepared.data["draft_id"])), str(draft["digest"])
     )
@@ -335,7 +335,7 @@ async def test_workflow_draft_api_confirms_exact_preview_or_cancels(database: Da
         "steps": [{"action_id": "desktop.app.open", "arguments": {"app": "Safari"}}],
     }
     prepared = await tool.execute(tool.arguments_model.model_validate(payload), context)
-    draft = tool.list_drafts(owner.principal.user_id)[0]
+    draft = (await tool.list_drafts(owner.principal.user_id))[0]
     app = FastAPI()
     app.include_router(create_workflows_router(service, auth, tool))
     headers = {"Authorization": f"Bearer {owner.access_token}"}
@@ -358,7 +358,7 @@ async def test_workflow_draft_api_confirms_exact_preview_or_cancels(database: Da
         refused = await client.post(
             f"/api/v1/workflows/drafts/{second.data['draft_id']}/confirm",
             headers=headers,
-            json={"digest": tool.list_drafts(owner.principal.user_id)[-1]["digest"]},
+            json={"digest": (await tool.list_drafts(owner.principal.user_id))[-1]["digest"]},
         )
 
     assert listed.json()[0]["preview"]["steps"][0]["risk"] == "A1"

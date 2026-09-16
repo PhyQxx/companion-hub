@@ -278,7 +278,7 @@ async def test_calendar_draft_api_binds_user_content_and_confirmation(database: 
     }
     prepared = await tool.execute(tool.arguments_model.model_validate(payload), context)
     draft_id = prepared.data["draft_id"]
-    draft = tool.list_drafts(owner.principal.user_id)[0]
+    draft = (await tool.list_drafts(owner.principal.user_id))[0]
     app = FastAPI()
     app.include_router(create_calendar_router(service, auth, tool))
     headers = {"Authorization": f"Bearer {owner.access_token}"}

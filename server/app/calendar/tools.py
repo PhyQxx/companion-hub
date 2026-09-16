@@ -9,7 +9,7 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from app.confirmation import PendingMutationStore
+from app.confirmation import DatabasePendingMutationStore, PendingMutationStore
 from app.llm import ToolDefinition
 from app.schemas.common import PrivacyLevel
 from app.tasks.tools import localize
@@ -45,10 +45,16 @@ class CalendarCreateTool:
     runs_local = True
     max_privacy_level = PrivacyLevel.L2
 
-    def __init__(self, service: CalendarService, *, timezone_name: str = "Asia/Shanghai") -> None:
+    def __init__(
+        self,
+        service: CalendarService,
+        *,
+        timezone_name: str = "Asia/Shanghai",
+        drafts: PendingMutationStore | DatabasePendingMutationStore | None = None,
+    ) -> None:
         self._service = service
         self._timezone = timezone_name
-        self._drafts = PendingMutationStore()
+        self._drafts = drafts or PendingMutationStore()
 
     def definition(self) -> ToolDefinition:
         return ToolDefinition(
@@ -109,7 +115,7 @@ class CalendarCreateTool:
             "reminder_lead_minutes": preview.reminder_lead_minutes,
         }
         try:
-            draft = self._drafts.prepare(
+            draft = await self._drafts.prepare(
                 user_id=context.user_id,
                 turn_id=context.turn_id,
                 kind="calendar_create",
@@ -135,16 +141,16 @@ class CalendarCreateTool:
     def _cast(self, arguments: BaseModel) -> CalendarCreateArgs:
         return cast(CalendarCreateArgs, arguments)
 
-    def list_drafts(self, user_id: UUID) -> list[dict[str, object]]:
-        return self._drafts.list(user_id)
+    async def list_drafts(self, user_id: UUID) -> list[dict[str, object]]:
+        return [item.view() for item in await self._drafts.list(user_id)]
 
-    def cancel(self, user_id: UUID, draft_id: UUID) -> dict[str, object]:
-        return self._drafts.cancel(user_id, draft_id)
+    async def cancel(self, user_id: UUID, draft_id: UUID) -> dict[str, object]:
+        return (await self._drafts.cancel(user_id, draft_id)).view()
 
     async def confirm(
         self, user_id: UUID, draft_id: UUID, digest: str
     ) -> dict[str, object]:
-        draft = self._drafts.claim(user_id, draft_id, digest)
+        draft = await self._drafts.claim(user_id, draft_id, digest)
         if draft.status == "completed":
             return draft.view()
         content = draft.content
@@ -163,9 +169,9 @@ class CalendarCreateTool:
                 reminder_lead_minutes=int(cast(int, content["reminder_lead_minutes"])),
             )
         except BaseException:
-            self._drafts.mark_unknown(draft)
+            await self._drafts.mark_unknown(draft)
             raise
-        return self._drafts.complete(draft, _event_payload(view))
+        return (await self._drafts.complete(draft, _event_payload(view))).view()
 
     def _failure(self, reason: str, started: float) -> ToolResult:
         return ToolResult(

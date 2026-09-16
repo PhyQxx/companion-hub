@@ -52,7 +52,7 @@ def create_workflows_router(
         async def list_drafts(
             principal: Annotated[ChatPrincipal, Depends(guard)],
         ) -> list[dict[str, object]]:
-            return save_tool.list_drafts(principal.user_id)
+            return await save_tool.list_drafts(principal.user_id)
 
         @router.post("/drafts/{draft_id}/confirm")
         async def confirm_draft(
@@ -73,7 +73,7 @@ def create_workflows_router(
             principal: Annotated[ChatPrincipal, Depends(guard)],
         ) -> dict[str, object]:
             try:
-                return save_tool.cancel(principal.user_id, draft_id)
+                return await save_tool.cancel(principal.user_id, draft_id)
             except LookupError as error:
                 raise HTTPException(404, str(error)) from error
             except ValueError as error:

@@ -15,7 +15,7 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from app.confirmation import PendingMutationStore
+from app.confirmation import DatabasePendingMutationStore, PendingMutationStore
 from app.llm import ToolDefinition
 from app.schemas.common import PrivacyLevel
 from app.tools.contracts import ToolContext, ToolResult
@@ -55,9 +55,14 @@ class WorkflowSaveTool:
     runs_local = True
     max_privacy_level = PrivacyLevel.L2
 
-    def __init__(self, service: WorkflowService) -> None:
+    def __init__(
+        self,
+        service: WorkflowService,
+        *,
+        drafts: PendingMutationStore | DatabasePendingMutationStore | None = None,
+    ) -> None:
         self._service = service
-        self._drafts = PendingMutationStore()
+        self._drafts = drafts or PendingMutationStore()
 
     def definition(self) -> ToolDefinition:
         return ToolDefinition(
@@ -93,7 +98,7 @@ class WorkflowSaveTool:
                 "description": args.description,
                 "steps": [step.model_dump(mode="json") for step in args.steps],
             }
-            draft = self._drafts.prepare(
+            draft = await self._drafts.prepare(
                 user_id=context.user_id,
                 turn_id=context.turn_id,
                 kind="workflow_save",
@@ -116,16 +121,16 @@ class WorkflowSaveTool:
             latency_ms=(perf_counter() - started) * 1_000,
         )
 
-    def list_drafts(self, user_id: UUID) -> list[dict[str, object]]:
-        return self._drafts.list(user_id)
+    async def list_drafts(self, user_id: UUID) -> list[dict[str, object]]:
+        return [item.view() for item in await self._drafts.list(user_id)]
 
-    def cancel(self, user_id: UUID, draft_id: UUID) -> dict[str, object]:
-        return self._drafts.cancel(user_id, draft_id)
+    async def cancel(self, user_id: UUID, draft_id: UUID) -> dict[str, object]:
+        return (await self._drafts.cancel(user_id, draft_id)).view()
 
     async def confirm(
         self, user_id: UUID, draft_id: UUID, digest: str
     ) -> dict[str, object]:
-        draft = self._drafts.claim(user_id, draft_id, digest)
+        draft = await self._drafts.claim(user_id, draft_id, digest)
         if draft.status == "completed":
             return draft.view()
         content = draft.content
@@ -140,9 +145,10 @@ class WorkflowSaveTool:
                 ],
             )
         except BaseException:
-            self._drafts.mark_unknown(draft)
+            await self._drafts.mark_unknown(draft)
             raise
-        return self._drafts.complete(draft, {"workflow": _workflow_payload(view)})
+        completed = await self._drafts.complete(draft, {"workflow": _workflow_payload(view)})
+        return completed.view()
 
     def _invalid(self, detail: str, started: float) -> ToolResult:
         return ToolResult(

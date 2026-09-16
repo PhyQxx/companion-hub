@@ -230,7 +230,7 @@ class TestCalendarCreateTool:
         result = await tool.confirm(
             context.user_id,
             UUID(str(prepared.data["draft_id"])),
-            str(tool.list_drafts(context.user_id)[0]["digest"]),
+            str((await tool.list_drafts(context.user_id))[0]["digest"]),
         )
         result_payload = result["result"]
         assert isinstance(result_payload, dict)
@@ -303,7 +303,7 @@ class TestCalendarCreateTool:
 
         assert first.data["draft_id"] == second.data["draft_id"]
         assert context.user_id is not None
-        digest = str(tool.list_drafts(context.user_id)[0]["digest"])
+        digest = str((await tool.list_drafts(context.user_id))[0]["digest"])
         saved = await tool.confirm(context.user_id, UUID(str(first.data["draft_id"])), digest)
         replay = await tool.confirm(context.user_id, UUID(str(first.data["draft_id"])), digest)
         assert saved["result"] == replay["result"]

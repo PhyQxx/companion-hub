@@ -6,24 +6,24 @@ from app.confirmation import PendingMutationStore
 from app.ids import uuid7
 
 
-def test_confirmation_preview_is_bound_replaced_and_expires() -> None:
+async def test_confirmation_preview_is_bound_replaced_and_expires() -> None:
     store = PendingMutationStore(limit=3)
     owner, outsider, turn = uuid7(), uuid7(), uuid7()
-    first = store.prepare(
+    first = await store.prepare(
         user_id=owner,
         turn_id=turn,
         kind="calendar_create",
         content={"title": "A"},
         preview={"title": "A"},
     )
-    replay = store.prepare(
+    replay = await store.prepare(
         user_id=owner,
         turn_id=turn,
         kind="calendar_create",
         content={"title": "A"},
         preview={"title": "A"},
     )
-    replacement = store.prepare(
+    replacement = await store.prepare(
         user_id=owner,
         turn_id=turn,
         kind="calendar_create",
@@ -34,11 +34,11 @@ def test_confirmation_preview_is_bound_replaced_and_expires() -> None:
     assert first.status == "cancelled"
     assert replacement.id != first.id
     with pytest.raises(LookupError):
-        store.claim(outsider, replacement.id, replacement.digest)
+        await store.claim(outsider, replacement.id, replacement.digest)
     with pytest.raises(ValueError, match="changed"):
-        store.claim(owner, replacement.id, "0" * 64)
+        await store.claim(owner, replacement.id, "0" * 64)
 
-    expired = store.prepare(
+    expired = await store.prepare(
         user_id=owner,
         turn_id=uuid7(),
         kind="workflow_save",
@@ -47,23 +47,23 @@ def test_confirmation_preview_is_bound_replaced_and_expires() -> None:
         now=datetime.now(UTC) - timedelta(hours=1),
     )
     with pytest.raises(ValueError, match="expired"):
-        store.claim(owner, expired.id, expired.digest)
+        await store.claim(owner, expired.id, expired.digest)
 
 
-def test_confirmation_claim_is_single_use_and_completion_replays() -> None:
+async def test_confirmation_claim_is_single_use_and_completion_replays() -> None:
     store = PendingMutationStore()
     owner = uuid7()
-    item = store.prepare(
+    item = await store.prepare(
         user_id=owner,
         turn_id=uuid7(),
         kind="workflow_save",
         content={"name": "A"},
         preview={"name": "A"},
     )
-    claimed = store.claim(owner, item.id, item.digest)
+    claimed = await store.claim(owner, item.id, item.digest)
     with pytest.raises(ValueError, match="not_pending"):
-        store.claim(owner, item.id, item.digest)
-    completed = store.complete(claimed, {"id": "saved"})
-    replay = store.claim(owner, item.id, item.digest)
-    assert completed["result"] == {"id": "saved"}
+        await store.claim(owner, item.id, item.digest)
+    completed = await store.complete(claimed, {"id": "saved"})
+    replay = await store.claim(owner, item.id, item.digest)
+    assert completed.result == {"id": "saved"}
     assert replay.status == "completed"
