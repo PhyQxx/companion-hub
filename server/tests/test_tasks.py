@@ -8,10 +8,11 @@ from uuid import UUID, uuid4
 import pytest
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
+from sqlalchemy import select
 
 from app.api import create_tasks_router
 from app.auth import AuthService
-from app.db import AppUserRecord, Base, Database, create_database
+from app.db import AppUserRecord, Base, Database, TaskItemRecord, create_database
 from app.ids import uuid7
 from app.schemas.common import PrivacyLevel
 from app.tasks import (
@@ -504,6 +505,19 @@ async def test_tasks_api_lifecycle(database: Database) -> None:
         )
         task_id = created.json()["id"]
         listed = await client.get("/api/v1/tasks?status=active", headers=headers)
+        patched = await client.patch(
+            f"/api/v1/tasks/{task_id}",
+            headers=headers,
+            json={"priority": 2},
+        )
+        bad_patch = await client.patch(
+            f"/api/v1/tasks/{task_id}",
+            headers=headers,
+            json={"defer_until": future},
+        )
+        empty_patch = await client.patch(
+            f"/api/v1/tasks/{task_id}", headers=headers, json={}
+        )
         snoozed = await client.post(
             f"/api/v1/tasks/{task_id}/snooze",
             headers=headers,
@@ -519,8 +533,108 @@ async def test_tasks_api_lifecycle(database: Database) -> None:
     assert invalid.status_code == 422
     assert listed.status_code == 200
     assert [item["id"] for item in listed.json()] == [task_id]
+    assert patched.status_code == 200
+    assert patched.json()["priority"] == 2
+    assert bad_patch.status_code == 422  # 本地任务不接受延期（仅 pnkx 镜像）
+    assert empty_patch.status_code == 422
     assert snoozed.status_code == 200
     assert completed.status_code == 200
     assert completed.json()["status"] == "done"
     assert cancelled.status_code == 409
     assert missing.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# TODO-01 反向推送底座：update_fields 与镜像永不本地触发
+# ---------------------------------------------------------------------------
+
+
+async def test_update_fields_priority_and_mirror_defer_guardrails(
+    database: Database, user_id: UUID
+) -> None:
+    store = TaskStore(database)
+    local = await store.create(
+        user_id=user_id,
+        kind=TaskKind.TASK,
+        title="本地任务",
+        trigger=TaskTrigger(type="time", at=NOW + timedelta(hours=2)),
+        now=NOW,
+    )
+    updated = await store.update_fields(user_id, local.id, priority=2, now=NOW)
+    assert updated.priority == 2
+    cleared = await store.update_fields(user_id, local.id, clear_priority=True, now=NOW)
+    assert cleared.priority is None
+    with pytest.raises(ValueError, match="延期仅支持外部镜像任务"):
+        await store.update_fields(
+            user_id, local.id, defer_until=NOW + timedelta(hours=3), now=NOW
+        )
+    with pytest.raises(ValueError, match="priority"):
+        await store.update_fields(user_id, local.id, priority=9, now=NOW)
+
+    # 镜像任务：延期时间必须在未来；优先级变更同时登记待推标记
+    mirror_id = uuid7()
+    async with database.sessions.begin() as session:
+        session.add(
+            TaskItemRecord(
+                id=mirror_id,
+                user_id=user_id,
+                kind="task",
+                title="pnkx 镜像",
+                status="active",
+                trigger_type="time",
+                trigger_config={"type": "time", "at": None, "repeat_kind": "once"},
+                source="pnkx",
+                source_ref="pnkx:88",
+                privacy_level="L1",
+                created_at=NOW,
+                updated_at=NOW,
+            )
+        )
+    with pytest.raises(ValueError, match="未来"):
+        await store.update_fields(
+            user_id, mirror_id, defer_until=NOW - timedelta(minutes=1), now=NOW
+        )
+    deferred = await store.update_fields(
+        user_id,
+        mirror_id,
+        priority=3,
+        defer_until=NOW + timedelta(hours=5),
+        now=NOW,
+    )
+    assert deferred.priority == 3
+    assert deferred.next_fire_at == NOW + timedelta(hours=5)
+    async with database.sessions() as session:
+        pending = await session.scalar(
+            select(TaskItemRecord.pending_priority).where(TaskItemRecord.id == mirror_id)
+        )
+    assert pending == 3
+
+
+async def test_claim_due_never_fires_pnkx_mirror(database: Database, user_id: UUID) -> None:
+    """镜像的 next_fire_at 是待推送延期标记：到期也不会被调度器认领。"""
+    mirror_id = uuid7()
+    async with database.sessions.begin() as session:
+        session.add(
+            TaskItemRecord(
+                id=mirror_id,
+                user_id=user_id,
+                kind="task",
+                title="pnkx 镜像",
+                status="active",
+                trigger_type="time",
+                trigger_config={"type": "time", "at": None, "repeat_kind": "once"},
+                next_fire_at=NOW - timedelta(minutes=1),
+                source="pnkx",
+                source_ref="pnkx:77",
+                privacy_level="L1",
+                created_at=NOW,
+                updated_at=NOW,
+            )
+        )
+    claimed = await store_claim_probe(database, NOW + timedelta(minutes=1))
+    assert all(task.id != mirror_id for task in claimed)
+
+
+async def store_claim_probe(database: Database, moment):
+    store = TaskStore(database)
+    return await store.claim_due(now=moment)

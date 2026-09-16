@@ -1,18 +1,20 @@
 """TODO-01 任务同步引擎：pnkx 为单一真源，task_item 作本地镜像。
 
 同步语义（对应验收"双向同步不重复"）：
+- 推字段变更（先于拉取执行）：本地延期（镜像 next_fire_at 标记）与优先级
+  （本地值≠远端且本地 updated_at 晚于快照）推回 pnkx；延期推完即清标记；
 - 拉取：全量分页拉 pnkx → 按 source_ref=pnkx:{id} upsert 镜像（跳过子任务），
   external_updated_at 不一致才更新；远端已删除 → 本地镜像取消；
-- 推完成：本地镜像被标记 done 而远端未完成 → PUT status=1（延期/优先级
-  的推送待后续；删除远端是破坏性操作，v1 不自动做）；
+- 推完成：本地镜像被标记 done 而远端未完成 → PUT status=1
+  （删除远端是破坏性操作，v1 不自动做）；
 - 推新建：本地经 Aria API 手建的无 source_ref 任务 → POST 到 pnkx，
   clientUuid=aria:{task_id}；若上一轮推送后崩溃未回填，本轮拉取快照里
   能按 clientUuid 找到它并直接认领，绝不重复创建；
 - 回环防护：镜像 source=pnkx 不会被当作"新建"推送；拉取产生的本地变更
   也不会触发完成推送（远端状态已一致）。
 
-镜像不自动建提醒：pnkx 自带 Quartz 提醒，镜像行 next_fire_at 恒为 NULL，
-TaskScheduler 的到期认领天然跳过它们。
+镜像不自动建提醒：pnkx 自带 Quartz 提醒，镜像行 next_fire_at 只作为待推送的
+延期指令标记（TaskScheduler.claim_due 永不认领 pnkx 镜像），推送成功即清空。
 """
 
 from __future__ import annotations
@@ -43,6 +45,8 @@ class SyncStats:
     mirrors_updated: int = 0
     mirrors_cancelled: int = 0
     completions_pushed: int = 0
+    priorities_pushed: int = 0
+    defers_pushed: int = 0
     new_pushed: int = 0
     adopted_after_crash: int = 0
     errors: list[str] = field(default_factory=list)
@@ -95,6 +99,36 @@ class TodoSyncService:
         remote_by_client_uuid = {
             item.client_uuid: item for item in remote_items if item.client_uuid
         }
+
+        # 0. 推本地字段变更（延期/优先级）：必须在拉取 upsert 之前执行，
+        #    否则远端快照会覆盖还没推出去的本地修改。
+        #    - 延期：镜像 next_fire_at 非 NULL 即待推指令（调度器永不本地触发镜像）；
+        #    - 优先级：pending_priority 非 NULL 即显式登记的本地指令，
+        #      推的是登记值而非镜像列（拉取可能已覆盖列值）。
+        for ref, pending_local in local_by_ref.items():
+            remote = remote_by_ref.get(ref)
+            if remote is None or pending_local.status != "active":
+                continue
+            defer_at = _utc(pending_local.next_fire_at)
+            pending_priority = pending_local.pending_priority
+            if defer_at is None and pending_priority is None:
+                continue
+            try:
+                await self._client.update(
+                    remote.external_id,
+                    plan_end=defer_at,
+                    priority=pending_priority,
+                )
+            except Exception as error:
+                stats.errors.append(f"push_update_failed:{ref}")
+                logger.warning("todo field push failed for %s: %s", ref, error)
+                continue
+            if defer_at is not None:
+                await self._clear_mirror_defer(pending_local.id)
+                stats.defers_pushed += 1
+            if pending_priority is not None:
+                await self._clear_pending_priority(pending_local.id)
+                stats.priorities_pushed += 1
 
         # 1. 拉取 upsert + 删除检测
         for ref, item in remote_by_ref.items():
@@ -237,6 +271,31 @@ class TodoSyncService:
                 update(TaskItemRecord)
                 .where(TaskItemRecord.id == task_id, TaskItemRecord.status == "active")
                 .values(status="cancelled", cancelled_at=now, updated_at=now)
+            )
+
+    async def _clear_mirror_defer(self, task_id: UUID) -> None:
+        """延期指令已推到 pnkx：清掉标记，保持镜像永不本地触发的约束。"""
+        async with self._database.sessions.begin() as session:
+            await session.execute(
+                update(TaskItemRecord)
+                .where(TaskItemRecord.id == task_id)
+                .values(next_fire_at=None, updated_at=self._clock())
+            )
+
+    async def _clear_pending_priority(self, task_id: UUID) -> None:
+        """优先级指令已推到 pnkx：清掉标记，同时把镜像列对齐为已推值。"""
+        async with self._database.sessions.begin() as session:
+            pending = await session.scalar(
+                select(TaskItemRecord.pending_priority).where(TaskItemRecord.id == task_id)
+            )
+            await session.execute(
+                update(TaskItemRecord)
+                .where(TaskItemRecord.id == task_id)
+                .values(
+                    pending_priority=None,
+                    priority=pending if pending is not None else TaskItemRecord.priority,
+                    updated_at=self._clock(),
+                )
             )
 
     async def _backfill_source_ref(

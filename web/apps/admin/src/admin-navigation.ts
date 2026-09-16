@@ -64,6 +64,15 @@ export const adminModules: AdminModule[] = [
     ],
   },
   {
+    key: "tasks",
+    path: "/tasks",
+    label: "提醒与任务",
+    group: "伴侣核心",
+    tabs: [
+      { key: "list", label: "任务列表", description: "提醒与计划任务的状态、触发与投递回执。", state: "ready" },
+    ],
+  },
+  {
     key: "models",
     path: "/models",
     label: "模型与路由",

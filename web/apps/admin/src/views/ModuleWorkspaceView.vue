@@ -28,6 +28,7 @@ import SafetyAdminView from "./SafetyAdminView.vue";
 import ScreenAwarenessView from "./ScreenAwarenessView.vue";
 import SenseAudioView from "./SenseAudioView.vue";
 import SystemView from "./SystemView.vue";
+import TasksView from "./TasksView.vue";
 import TimelineView from "./TimelineView.vue";
 import UsageView from "./UsageView.vue";
 
@@ -51,6 +52,7 @@ const currentView = computed(() => {
   if (props.module === "memory" && activeTab.value === "conflicts") return ConflictsView;
   if (props.module === "memory" && activeTab.value === "timeline") return TimelineView;
   if (props.module === "memory" && activeTab.value === "deletion") return MemoryView;
+  if (props.module === "tasks") return TasksView;
   if (props.module === "devices" && ["registry", "commands"].includes(activeTab.value)) return DevicesView;
   if (props.module === "devices" && activeTab.value === "pairing") return PairingView;
   if (props.module === "devices" && activeTab.value === "channels") return ProactiveChannelsView;

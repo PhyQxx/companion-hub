@@ -12,7 +12,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any, cast
 from uuid import UUID
 
-from sqlalchemy import select, update
+from sqlalchemy import func, select, update
 from sqlalchemy.engine import CursorResult
 
 from app.db import Database, TaskItemRecord
@@ -50,6 +50,8 @@ def _to_view(record: TaskItemRecord) -> TaskView:
         privacy_level=PrivacyLevel(record.privacy_level),
         source=record.source,
         source_ref=record.source_ref,
+        priority=record.priority,
+        group_label=record.group_label,
         completed_at=_aware(record.completed_at) if record.completed_at is not None else None,
         cancelled_at=_aware(record.cancelled_at) if record.cancelled_at is not None else None,
         created_at=_aware(record.created_at) if record.created_at is not None else None,
@@ -136,6 +138,82 @@ class TaskStore:
         async with self._database.sessions() as session:
             records = (await session.execute(query)).scalars().all()
         return [_to_view(record) for record in records]
+
+    def _admin_filters(
+        self,
+        *,
+        user_id: UUID | None,
+        status: TaskStatus | None,
+        kind: TaskKind | None,
+        source: str | None,
+        query: str | None,
+    ) -> list[Any]:
+        filters: list[Any] = []
+        if user_id is not None:
+            filters.append(TaskItemRecord.user_id == user_id)
+        if status is not None:
+            filters.append(TaskItemRecord.status == str(status))
+        if kind is not None:
+            filters.append(TaskItemRecord.kind == str(kind))
+        if source:
+            filters.append(TaskItemRecord.source == source)
+        if query:
+            filters.append(TaskItemRecord.title.ilike(f"%{query}%"))
+        return filters
+
+    async def admin_list_tasks(
+        self,
+        *,
+        user_id: UUID | None = None,
+        status: TaskStatus | None = None,
+        kind: TaskKind | None = None,
+        source: str | None = None,
+        query: str | None = None,
+        limit: int = 20,
+        offset: int = 0,
+    ) -> list[TaskView]:
+        """Admin 可视化列表：跨用户分页，支持状态/类型/来源/标题筛选。"""
+        statement = select(TaskItemRecord)
+        for clause in self._admin_filters(
+            user_id=user_id, status=status, kind=kind, source=source, query=query
+        ):
+            statement = statement.where(clause)
+        statement = (
+            statement.order_by(TaskItemRecord.created_at.desc()).limit(limit).offset(offset)
+        )
+        async with self._database.sessions() as session:
+            records = (await session.execute(statement)).scalars().all()
+        return [_to_view(record) for record in records]
+
+    async def admin_count_tasks(
+        self,
+        *,
+        user_id: UUID | None = None,
+        status: TaskStatus | None = None,
+        kind: TaskKind | None = None,
+        source: str | None = None,
+        query: str | None = None,
+    ) -> int:
+        statement = select(func.count()).select_from(TaskItemRecord)
+        for clause in self._admin_filters(
+            user_id=user_id, status=status, kind=kind, source=source, query=query
+        ):
+            statement = statement.where(clause)
+        async with self._database.sessions() as session:
+            return int(await session.scalar(statement) or 0)
+
+    async def admin_status_counts(self, *, user_id: UUID | None = None) -> dict[str, int]:
+        """按状态聚合的任务计数，用于 Admin 概览卡片。"""
+        statement = (
+            select(TaskItemRecord.status, func.count())
+            .select_from(TaskItemRecord)
+            .group_by(TaskItemRecord.status)
+        )
+        if user_id is not None:
+            statement = statement.where(TaskItemRecord.user_id == user_id)
+        async with self._database.sessions() as session:
+            rows = (await session.execute(statement)).all()
+        return {str(row[0]): int(row[1]) for row in rows}
 
     async def get_task(self, user_id: UUID, task_id: UUID) -> TaskView:
         record = await self._get_record(user_id, task_id)
@@ -237,13 +315,69 @@ class TaskStore:
         updated = await self._get_record(user_id, task_id)
         return _to_view(updated)
 
+    async def update_fields(
+        self,
+        user_id: UUID,
+        task_id: UUID,
+        *,
+        priority: int | None = None,
+        clear_priority: bool = False,
+        defer_until: datetime | None = None,
+        now: datetime | None = None,
+    ) -> TaskView:
+        """TODO-01 反向推送的本地入口：优先级与延期。
+
+        - priority：任意任务可改；镜像任务的变更由 TodoSyncService 推回 pnkx；
+        - defer_until：仅外部镜像任务接受（本地任务用 snooze 语义）；
+          镜像的 next_fire_at 只是"待推送的延期指令"标记，调度器不会本地触发。
+        """
+        record = await self._get_record(user_id, task_id)
+        if record.status != str(TaskStatus.ACTIVE):
+            raise ValueError(f"任务当前状态 {record.status} 不能修改")
+        if defer_until is not None:
+            if record.source != "pnkx":
+                raise ValueError("延期仅支持外部镜像任务；本地任务请使用稍后提醒")
+            moment = now or datetime.now(UTC)
+            if defer_until <= moment:
+                raise ValueError("延期时间必须在未来")
+        if priority is not None and not 0 <= priority <= 3:
+            raise ValueError("priority 取值范围为 0~3")
+        moment = now or datetime.now(UTC)
+        values: dict[str, object] = {"updated_at": moment}
+        if clear_priority:
+            values["priority"] = None
+            if record.source == "pnkx":
+                values["pending_priority"] = None
+        elif priority is not None:
+            values["priority"] = priority
+            if record.source == "pnkx":
+                values["pending_priority"] = priority
+        if defer_until is not None:
+            values["next_fire_at"] = defer_until
+        async with self._database.sessions.begin() as session:
+            await session.execute(
+                update(TaskItemRecord)
+                .where(
+                    TaskItemRecord.id == task_id,
+                    TaskItemRecord.user_id == user_id,
+                    TaskItemRecord.status == str(TaskStatus.ACTIVE),
+                )
+                .values(**values)
+            )
+        updated = await self._get_record(user_id, task_id)
+        return _to_view(updated)
+
     async def claim_due(
         self,
         *,
         now: datetime | None = None,
         limit: int = 20,
     ) -> list[ClaimedTask]:
-        """认领所有到期的时间触发任务（跨用户，调度器全局调用）。"""
+        """认领所有到期的时间触发任务（跨用户，调度器全局调用）。
+
+        pnkx 镜像永不本地触发（pnkx 自带 Quartz 提醒，双端通知是红线）；
+        镜像上的 next_fire_at 是待推送回 pnkx 的延期指令标记。
+        """
         moment = now or datetime.now(UTC)
         async with self._database.sessions() as session:
             candidates = (
@@ -253,6 +387,7 @@ class TaskStore:
                         .where(
                             TaskItemRecord.trigger_type == "time",
                             TaskItemRecord.status == str(TaskStatus.ACTIVE),
+                            TaskItemRecord.source != "pnkx",
                             TaskItemRecord.next_fire_at.is_not(None),
                             TaskItemRecord.next_fire_at <= moment,
                         )

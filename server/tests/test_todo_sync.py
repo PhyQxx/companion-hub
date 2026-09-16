@@ -47,6 +47,7 @@ class FakePnkx:
         self._next_id = 100
         self.created_bodies: list[dict[str, object]] = []
         self.updated_bodies: list[dict[str, object]] = []
+        self.put_fails = False
 
     def add_item(self, **kwargs: object) -> int:
         external_id = self._next_id
@@ -82,6 +83,8 @@ class FakePnkx:
             external_id = self.add_item(**body)
             return httpx.Response(200, json={"code": 200, "data": external_id})
         if path == "/admin/toDo" and request.method == "PUT":
+            if self.put_fails:
+                return httpx.Response(500, json={"code": 500, "msg": "boom"})
             body = json.loads(request.content)
             self.updated_bodies.append(body)
             target = self.items[int(body["id"])]
@@ -346,3 +349,106 @@ async def test_todo_sync_api_requires_auth_and_returns_stats(
     assert authorized.status_code == 200
     assert authorized.json()["pulled"] == 1
     assert authorized.json()["mirrors_created"] == 1
+
+
+# ---------------------------------------------------------------------------
+# TODO-01 反向推送：延期/优先级推回 pnkx
+# ---------------------------------------------------------------------------
+
+
+async def test_local_priority_and_defer_push_back(database: Database, user_id: UUID) -> None:
+    from zoneinfo import ZoneInfo
+
+    from app.tasks import TaskStore
+
+    fake = FakePnkx()
+    external = fake.add_item(content="P 任务", priority=1)
+    service = _service(database, fake)
+    await service.sync_once()  # 建立镜像
+
+    store = TaskStore(database)
+    mirror = (await _mirrors(database, user_id))[0]
+    defer_until = NOW + timedelta(days=1)
+    patched = await store.update_fields(
+        user_id,
+        mirror.id,
+        priority=3,
+        defer_until=defer_until,
+        now=NOW + timedelta(hours=1),
+    )
+    assert patched.priority == 3
+    assert patched.next_fire_at == defer_until
+
+    stats = await service.sync_once()
+    assert stats.priorities_pushed == 1
+    assert stats.defers_pushed == 1
+    assert stats.errors == []
+    body = fake.updated_bodies[-1]
+    assert body["priority"] == 3
+    assert body["planEndTime"] == defer_until.astimezone(
+        ZoneInfo("Asia/Shanghai")
+    ).strftime("%Y-%m-%d %H:%M:%S")
+
+    # 推送后：延期标记清空、本地优先级保留（拉取不覆盖待推/已推值）、远端生效
+    fresh = (await _mirrors(database, user_id))[0]
+    assert fresh.next_fire_at is None
+    assert fresh.priority == 3
+    assert fake.items[external]["priority"] == 3
+    assert fake.items[external]["planEndTime"] == body["planEndTime"]
+
+    # 下一轮同步不再重复推送（远端值与本地一致）
+    again = await service.sync_once()
+    assert again.priorities_pushed == 0
+    assert again.defers_pushed == 0
+
+
+async def test_push_failure_keeps_local_change_for_retry(
+    database: Database, user_id: UUID
+) -> None:
+    from app.tasks import TaskStore
+
+    fake = FakePnkx()
+    fake.add_item(content="失败任务", priority=0)
+    service = _service(database, fake)
+    await service.sync_once()
+
+    store = TaskStore(database)
+    mirror = (await _mirrors(database, user_id))[0]
+    await store.update_fields(
+        user_id,
+        mirror.id,
+        priority=2,
+        defer_until=NOW + timedelta(hours=6),
+        now=NOW + timedelta(hours=1),
+    )
+    fake.put_fails = True
+    stats = await service.sync_once()
+    assert stats.priorities_pushed == 0
+    assert stats.defers_pushed == 0
+    assert any(error.startswith("push_update_failed:") for error in stats.errors)
+    # 失败保留本地值与标记，等待下一轮重试；拉取也没有覆盖
+    kept = (await _mirrors(database, user_id))[0]
+    assert kept.priority == 2
+    assert kept.next_fire_at is not None
+
+    fake.put_fails = False
+    recovered = await service.sync_once()
+    assert recovered.priorities_pushed == 1
+    assert recovered.defers_pushed == 1
+
+
+async def test_remote_priority_change_without_local_edit_pulls(
+    database: Database, user_id: UUID
+) -> None:
+    fake = FakePnkx()
+    external = fake.add_item(content="远端改优先级", priority=1)
+    service = _service(database, fake)
+    await service.sync_once()
+
+    # 只改远端（不动本地）：不产生推送，下一轮拉取生效
+    fake.items[external]["priority"] = 2
+    fake.items[external]["updateTime"] = "2026-09-02 06:00:00"
+    stats = await service.sync_once()
+    assert stats.priorities_pushed == 0
+    assert stats.mirrors_updated == 1
+    assert (await _mirrors(database, user_id))[0].priority == 2

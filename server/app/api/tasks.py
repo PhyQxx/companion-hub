@@ -31,6 +31,14 @@ class SnoozeTaskRequest(StrictModel):
     until: datetime | None = None
 
 
+class UpdateTaskRequest(StrictModel):
+    """TODO-01 反向推送入口：优先级（任意任务）与延期（仅 pnkx 镜像）。"""
+
+    priority: Annotated[int, Field(ge=0, le=3)] | None = None
+    clear_priority: bool = False
+    defer_until: datetime | None = None
+
+
 def create_tasks_router(store: TaskStore, auth_service: AuthService) -> APIRouter:
     guard = ChatSessionGuard(auth_service)
     router = APIRouter(prefix="/api/v1/tasks", tags=["tasks"])
@@ -69,6 +77,30 @@ def create_tasks_router(store: TaskStore, auth_service: AuthService) -> APIRoute
             return await store.get_task(principal.user_id, task_id)
         except LookupError as error:
             raise HTTPException(status.HTTP_404_NOT_FOUND, detail=str(error)) from error
+
+    @router.patch("/{task_id}", response_model=TaskView)
+    async def update_task(
+        task_id: UUID,
+        body: UpdateTaskRequest,
+        principal: Annotated[ChatPrincipal, Depends(guard)],
+    ) -> TaskView:
+        if body.priority is None and not body.clear_priority and body.defer_until is None:
+            raise HTTPException(
+                status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="必须提供 priority、clear_priority 或 defer_until",
+            )
+        try:
+            return await store.update_fields(
+                principal.user_id,
+                task_id,
+                priority=body.priority,
+                clear_priority=body.clear_priority,
+                defer_until=body.defer_until,
+            )
+        except LookupError as error:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, detail=str(error)) from error
+        except ValueError as error:
+            raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(error)) from error
 
     @router.post("/{task_id}/complete", response_model=TaskView)
     async def complete_task(

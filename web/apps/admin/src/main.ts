@@ -12,6 +12,7 @@ const router = createRouter({
     { path: "/models", component: () => import("./views/ModuleWorkspaceView.vue"), props: { module: "models" } },
     { path: "/personas", component: () => import("./views/ModuleWorkspaceView.vue"), props: { module: "persona" } },
     { path: "/memory", component: () => import("./views/ModuleWorkspaceView.vue"), props: { module: "memory" } },
+    { path: "/tasks", component: () => import("./views/ModuleWorkspaceView.vue"), props: { module: "tasks" } },
     { path: "/timeline", redirect: { path: "/memory", query: { tab: "timeline" } } },
     { path: "/devices", component: () => import("./views/ModuleWorkspaceView.vue"), props: { module: "devices" } },
     { path: "/logs", component: () => import("./views/ModuleWorkspaceView.vue"), props: { module: "logs" } },

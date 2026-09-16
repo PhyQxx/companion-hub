@@ -21,6 +21,8 @@ class TodoSyncResponse(StrictModel):
     mirrors_updated: int
     mirrors_cancelled: int
     completions_pushed: int
+    priorities_pushed: int
+    defers_pushed: int
     new_pushed: int
     adopted_after_crash: int
     errors: list[str]

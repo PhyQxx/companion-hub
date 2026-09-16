@@ -69,6 +69,9 @@ class TaskView(StrictModel):
     privacy_level: PrivacyLevel
     source: str
     source_ref: str | None = None
+    # TODO-01 外部镜像投影（pnkx 为单一真源时的本地可见字段）
+    priority: int | None = None
+    group_label: str | None = None
     completed_at: datetime | None = None
     cancelled_at: datetime | None = None
     created_at: datetime | None = None
