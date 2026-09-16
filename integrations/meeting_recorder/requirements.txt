@@ -1,0 +1,4 @@
+sounddevice>=0.4.6,<1
+faster-whisper>=1.2,<2
+httpx>=0.28,<1
+numpy>=1.26,<3

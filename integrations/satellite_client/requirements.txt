@@ -1,0 +1,4 @@
+websockets>=13,<16
+numpy>=1.26,<3
+sounddevice>=0.4.6,<1
+# 可选：唤醒词（pip install openwakeword）
