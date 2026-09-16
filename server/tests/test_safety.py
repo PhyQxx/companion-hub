@@ -556,10 +556,11 @@ async def test_activity_silent_outside_window_or_when_device_recent(tmp_path: An
 
 
 async def test_chat_safety_api_lists_and_acks_alerts(tmp_path: Any) -> None:
-    from app.api import create_safety_router
-    from app.auth import AuthService
     from fastapi import FastAPI
     from httpx import ASGITransport, AsyncClient
+
+    from app.api import create_safety_router
+    from app.auth import AuthService
 
     database = await _database(tmp_path)
     password = "correct horse battery staple"
@@ -578,6 +579,9 @@ async def test_chat_safety_api_lists_and_acks_alerts(tmp_path: Any) -> None:
         message="【危急】厨房烟感触发了烟雾告警…", evidence={},
     )
     assert alert is not None
+    # FakeTime 的 sleep 即时推进：后台升级链会在首个 await 处瞬间走完生命周期并把
+    # 告警终态化，与 HTTP ack 竞态（偶发 409/锁冲突）。先停升级任务再断言 ack 语义。
+    await service.stop()
 
     app = FastAPI()
     app.include_router(create_safety_router(service, auth))
