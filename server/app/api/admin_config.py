@@ -353,6 +353,12 @@ def _redact_config(config: HubConfig) -> HubConfig:
     senseaudio = data["voice"]["senseaudio"]
     if senseaudio.get("secret_value"):
         senseaudio["secret_value"] = _SECRET_MASK
+    caldav = data["integrations"]["calendar"]["caldav"]
+    if caldav.get("secret_value"):
+        caldav["secret_value"] = _SECRET_MASK
+    google = data["integrations"]["calendar"]["google"]
+    if google.get("secret_value"):
+        google["secret_value"] = _SECRET_MASK
     return HubConfig.model_validate(data)
 
 
@@ -379,6 +385,12 @@ def _restore_secret_masks(config: HubConfig, current: HubConfig) -> HubConfig:
             server["secret_value"] = previous.secret_value if previous else None
     if data["voice"]["senseaudio"].get("secret_value") == _SECRET_MASK:
         data["voice"]["senseaudio"]["secret_value"] = current.voice.senseaudio.secret_value
+    incoming_caldav = data["integrations"]["calendar"]["caldav"]
+    if incoming_caldav.get("secret_value") == _SECRET_MASK:
+        incoming_caldav["secret_value"] = current.integrations.calendar.caldav.secret_value
+    incoming_google = data["integrations"]["calendar"]["google"]
+    if incoming_google.get("secret_value") == _SECRET_MASK:
+        incoming_google["secret_value"] = current.integrations.calendar.google.secret_value
     return HubConfig.model_validate(data)
 
 
@@ -388,6 +400,7 @@ def create_admin_config_router(
     admin_token: str | None,
     on_publish: Callable[[], Awaitable[None]] | None = None,
     on_proactive_test: Callable[[], Awaitable[bool]] | None = None,
+    on_calendar_sync: Callable[[str], Awaitable[dict[str, object]]] | None = None,
 ) -> APIRouter:
     router = APIRouter(
         prefix="/api/v1/admin/config",
@@ -939,6 +952,17 @@ def create_admin_config_router(
                 "测试提醒已发送到最近使用的聊天" if delivered else "没有可接收测试提醒的活动聊天"
             ),
         )
+
+    @router.post("/integrations/calendar/{provider}/sync")
+    async def sync_calendar(provider: str) -> dict[str, object]:
+        """Admin 手动触发一次外部日历镜像同步（caldav / google）。"""
+        if on_calendar_sync is None:
+            raise HTTPException(
+                status.HTTP_503_SERVICE_UNAVAILABLE, detail="calendar sync service 未启动"
+            )
+        if provider not in ("caldav", "google"):
+            raise HTTPException(status.HTTP_404_NOT_FOUND, detail="unknown calendar provider")
+        return await on_calendar_sync(provider)
 
     @router.get("/tools/amap/metrics", response_model=AmapMetricsResult)
     async def amap_metrics() -> AmapMetricsResult:

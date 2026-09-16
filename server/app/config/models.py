@@ -663,11 +663,73 @@ class MailConfig(StrictModel):
         return self
 
 
+class CalDavConfig(StrictModel):
+    """CAL-01 CalDAV 外部日历：只读镜像同步（不回写远端）。
+
+    密码/App 专用密码走 secret_value/secret_ref 双模式；镜像事件仅进入
+    本地日历查询/简报/通勤，不创建本地提醒（外部日历自带通知）。
+    """
+
+    enabled: bool = False
+    url: Annotated[str, Field(min_length=8, max_length=500)] | None = None
+    username: Annotated[str, Field(min_length=1, max_length=254)] | None = None
+    secret_ref: Annotated[str, Field(pattern=r"^env:[A-Z][A-Z0-9_]{2,127}$")] | None = None
+    secret_value: Annotated[str, Field(min_length=4, max_length=4096)] | None = None
+    calendar_names: Annotated[
+        list[Annotated[str, Field(min_length=1, max_length=120)]], Field(max_length=16)
+    ] = Field(default_factory=list)
+    window_days_back: Annotated[int, Field(ge=0, le=90)] = 7
+    window_days_forward: Annotated[int, Field(ge=1, le=365)] = 60
+    timeout_seconds: Annotated[float, Field(ge=3, le=60)] = 15.0
+
+    @model_validator(mode="after")
+    def require_endpoint_when_enabled(self) -> CalDavConfig:
+        if self.enabled and (
+            self.url is None or (self.secret_value is None and self.secret_ref is None)
+        ):
+            raise ValueError("enabled caldav requires url and secret")
+        return self
+
+
+class GoogleCalendarConfig(StrictModel):
+    """CAL-01 Google 日历：OAuth 刷新令牌 + 只读镜像（不回写远端）。
+
+    client_secret 走 secret_value/secret_ref 双模式；刷新令牌经
+    /api/v1/calendar/google/authorize → callback 换取后落库，不入配置文档。
+    """
+
+    enabled: bool = False
+    client_id: Annotated[str, Field(min_length=10, max_length=254)] | None = None
+    secret_ref: Annotated[str, Field(pattern=r"^env:[A-Z][A-Z0-9_]{2,127}$")] | None = None
+    secret_value: Annotated[str, Field(min_length=8, max_length=4096)] | None = None
+    redirect_uri: Annotated[str, Field(min_length=8, max_length=500)] | None = None
+    calendar_ids: Annotated[
+        list[Annotated[str, Field(min_length=1, max_length=120)]], Field(max_length=16)
+    ] = Field(default_factory=list)
+    window_days_back: Annotated[int, Field(ge=0, le=90)] = 7
+    window_days_forward: Annotated[int, Field(ge=1, le=365)] = 60
+    timeout_seconds: Annotated[float, Field(ge=3, le=60)] = 15.0
+
+    @model_validator(mode="after")
+    def require_client_when_enabled(self) -> GoogleCalendarConfig:
+        if self.enabled and (
+            self.client_id is None or (self.secret_value is None and self.secret_ref is None)
+        ):
+            raise ValueError("enabled google calendar requires client_id and secret")
+        return self
+
+
+class CalendarIntegrationsConfig(StrictModel):
+    caldav: CalDavConfig = Field(default_factory=CalDavConfig)
+    google: GoogleCalendarConfig = Field(default_factory=GoogleCalendarConfig)
+
+
 class IntegrationsConfig(StrictModel):
     home_assistant: HomeAssistantConfig = Field(default_factory=HomeAssistantConfig)
     xiaoai: XiaoAiConfig = Field(default_factory=XiaoAiConfig)
     push: WebPushConfig = Field(default_factory=WebPushConfig)
     mail: MailConfig = Field(default_factory=MailConfig)
+    calendar: CalendarIntegrationsConfig = Field(default_factory=CalendarIntegrationsConfig)
 
 
 class ProactiveChannelConfig(StrictModel):
