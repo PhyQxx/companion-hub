@@ -88,7 +88,7 @@ services:
     image: tailscale/tailscale:latest
     profiles: ["vpn"]
     environment:
-      TS_AUTHKEY: ${TAILSCALE_AUTHKEY:?set TAILSCALE_AUTHKEY in .env}
+      TS_AUTHKEY: ${TAILSCALE_AUTHKEY:-}
       TS_EXTRA_ARGS: --advertise-routes=${ARIA_SUBNET:-172.28.0.0/24} --hostname=aria-hub
       TS_ACCEPT_DNS: "false"
     cap_add:
