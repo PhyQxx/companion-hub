@@ -514,6 +514,11 @@ export interface VoiceSocketHandlers {
   onClose: (code: number) => void;
 }
 
+export interface VoiceSocketConnectOptions {
+  /** 连续对话（电话模式）：麦克风常开，跳过唤醒词门，说话即打断。 */
+  continuous?: boolean;
+}
+
 /**
  * 语音 WebSocket 客户端：鉴权后发送 voice.hello，并以 voice.ready
  * 作为会话建立成功信号。二进制帧为当前 voice.sentence 的音频分片。
@@ -531,6 +536,7 @@ export class VoiceSocket {
     conversationId: string,
     privacyLevel: PrivacyLevel,
     location?: ClientLocationPayload | null,
+    options?: VoiceSocketConnectOptions,
   ): Promise<void> {
     return new Promise((resolve, reject) => {
       const socket = new WebSocket(this.url);
@@ -544,6 +550,7 @@ export class VoiceSocket {
           conversation_id: conversationId,
           privacy_level: privacyLevel,
           ...(location ? { location } : {}),
+          ...(options?.continuous ? { continuous: true } : {}),
           format: "pcm_s16le",
           sample_rate: 16_000,
           channels: 1,

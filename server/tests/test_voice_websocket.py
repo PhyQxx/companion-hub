@@ -28,7 +28,12 @@ from app.ids import uuid7
 from app.llm import CompletionRequest, CompletionResult, LLMRoute, ModelUsage
 from app.schemas import PrivacyLevel
 from app.tools import ClientLocation
-from app.voice import SpeechRecognitionUnavailable, StaticVoiceSource, TtsProviderChain
+from app.voice import (
+    EnergyVad,
+    SpeechRecognitionUnavailable,
+    StaticVoiceSource,
+    TtsProviderChain,
+)
 
 
 def config_yaml() -> str:
@@ -402,6 +407,9 @@ def _build(
             ),
         ),
         wake_word_factory=lambda: wake_word,
+        # 测试音频是合成方波，Silero 会正确判定"非人声"；固定用能量 VAD
+        # 保证断句边界可确定性构造。
+        vad_factory=EnergyVad,
     )
     app.include_router(router)
     return app, token, conversation_id
@@ -435,6 +443,7 @@ def _build_with_recognizer(
         service,
         auth,
         voice_source=StaticVoiceSource(recognizer, None),
+        vad_factory=EnergyVad,
     )
     app.include_router(router)
     return app, token, conversation_id
@@ -982,3 +991,156 @@ def test_voice_interrupt_stops_post_commit_remainder_tts_without_cancelling_turn
 
     assert events[-1]["turn_cancelled"] is False
     assert events[-1]["reason"] == "client_interrupt"
+
+
+def test_voice_websocket_continuous_mode_bypasses_wake_word_gate(tmp_path: Path) -> None:
+    """连续对话（电话模式）：唤醒词门被跳过，自动 VAD 断句即可发送。"""
+    wake_word = FakeWakeWord(detect_after=None)
+    app, token, conversation_id = _build(tmp_path, wake_word=wake_word)
+
+    with TestClient(app) as client, client.websocket_connect("/ws/voice") as websocket:
+        websocket.send_json({"type": "authenticate", "access_token": token})
+        websocket.send_json(
+            {
+                "type": "voice.hello",
+                "conversation_id": conversation_id,
+                "privacy_level": "L1",
+                "continuous": True,
+                "format": "pcm_s16le",
+                "sample_rate": 16000,
+                "channels": 1,
+            }
+        )
+        ready, _ = _receive_until(websocket, "voice.ready")
+        assert ready[-1]["wake_word_configured"] is True
+
+        # 未说唤醒词直接说话：连续模式不应被待命门拦截。
+        websocket.send_bytes(loud_frames(12))
+        websocket.send_bytes(silent_frames(25))
+        events, _ = _receive_until(websocket, "reply.committed")
+
+    types = [event["type"] for event in events]
+    assert "voice.wake_detected" not in types
+    assert "voice.transcript" in types
+    assert types[-1] == "reply.committed"
+
+
+def test_voice_websocket_continuous_new_utterance_interrupts_pending_turn(
+    tmp_path: Path,
+) -> None:
+    """连续对话里上一回合还在 ASR/生成间隙时用户又开口：打断旧回合并处理新话语。"""
+
+    class SequencedRecognizer:
+        """每次调用返回不同文本，模拟真实的前后两句话。"""
+
+        runs_local = False
+
+        def __init__(self) -> None:
+            self.texts = iter(["今天天气怎么样", "帮我看看明天适合穿什么"])
+            self.delay_s = 1.5
+
+        async def transcribe(
+            self, pcm: bytes, *, sample_rate: int, language: str | None
+        ) -> str:
+            await asyncio.sleep(self.delay_s)
+            return next(self.texts)
+
+    app, token, conversation_id = _build(tmp_path, recognizer=SequencedRecognizer())
+
+    with TestClient(app) as client, client.websocket_connect("/ws/voice") as websocket:
+        websocket.send_json({"type": "authenticate", "access_token": token})
+        websocket.send_json(
+            {
+                "type": "voice.hello",
+                "conversation_id": conversation_id,
+                "privacy_level": "L1",
+                "continuous": True,
+                "format": "pcm_s16le",
+                "sample_rate": 16000,
+                "channels": 1,
+            }
+        )
+        _receive_until(websocket, "voice.ready")
+
+        # 第一句话还在识别/生成中，紧接着说第二句——第二句必须触发打断并被处理，
+        # 而不是被静默丢弃（旧行为）。
+        websocket.send_bytes(loud_frames(12))
+        websocket.send_bytes(silent_frames(25))
+        websocket.send_bytes(loud_frames(12))
+        websocket.send_bytes(silent_frames(25))
+        events, _ = _receive_until(websocket, "reply.committed")
+
+    types = [event["type"] for event in events]
+    assert "voice.interrupted" in types
+    interrupted = next(event for event in events if event["type"] == "voice.interrupted")
+    assert interrupted["reason"] == "barge_in"
+    transcript = [event for event in events if event["type"] == "voice.transcript"]
+    assert transcript[-1]["text"] == "帮我看看明天适合穿什么"
+    assert types[-1] == "reply.committed"
+
+
+def test_voice_websocket_continuous_drops_verbatim_repeat(tmp_path: Path) -> None:
+    """连续对话：噪声幻听/回声导致的逐字重复转写在短窗口内只处理一次。"""
+    app, token, conversation_id = _build(tmp_path)
+
+    with TestClient(app) as client, client.websocket_connect("/ws/voice") as websocket:
+        websocket.send_json({"type": "authenticate", "access_token": token})
+        websocket.send_json(
+            {
+                "type": "voice.hello",
+                "conversation_id": conversation_id,
+                "privacy_level": "L1",
+                "continuous": True,
+                "format": "pcm_s16le",
+                "sample_rate": 16000,
+                "channels": 1,
+            }
+        )
+        _receive_until(websocket, "voice.ready")
+        websocket.send_bytes(loud_frames(12))
+        websocket.send_bytes(silent_frames(25))
+        _receive_until(websocket, "reply.committed")
+        # 紧接着的逐字相同“话语”按重复丢弃，不再产生第二个回合。
+        websocket.send_bytes(loud_frames(12))
+        websocket.send_bytes(silent_frames(25))
+        time.sleep(1.0)
+
+    with TestClient(app) as client:
+        report = client.get("/api/v1/meta/voice/latency")
+    assert report.status_code == 200
+    assert report.json()["count"] == 1
+
+
+def test_voice_websocket_ptt_utterance_during_pending_turn_still_dropped(
+    tmp_path: Path,
+) -> None:
+    """非连续模式保持原语义：上一回合未结束时到达的话语被丢弃、不打断。"""
+    recognizer = FakeRecognizer("帮我看看今天适合穿什么", delay_s=1.5)
+    app, token, conversation_id = _build(tmp_path, recognizer=recognizer)
+
+    with TestClient(app) as client, client.websocket_connect("/ws/voice") as websocket:
+        websocket.send_json({"type": "authenticate", "access_token": token})
+        websocket.send_json(
+            {
+                "type": "voice.hello",
+                "conversation_id": conversation_id,
+                "privacy_level": "L1",
+                "format": "pcm_s16le",
+                "sample_rate": 16000,
+                "channels": 1,
+            }
+        )
+        _receive_until(websocket, "voice.ready")
+        websocket.send_json({"type": "utterance.begin"})
+        websocket.send_bytes(loud_frames(10))
+        websocket.send_json({"type": "utterance.end"})
+        # 上一回合还在跑，第二句 PTT 话语应被丢弃。
+        websocket.send_json({"type": "utterance.begin"})
+        websocket.send_bytes(loud_frames(10))
+        websocket.send_json({"type": "utterance.end"})
+        events, _ = _receive_until(websocket, "reply.committed")
+
+    types = [event["type"] for event in events]
+    assert "voice.interrupted" not in types
+    assert types.count("turn.accepted") == 1
+    assert types[-1] == "reply.committed"

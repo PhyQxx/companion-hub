@@ -62,7 +62,13 @@ SUPPORTED_FORMAT = "pcm_s16le"
 SUPPORTED_SAMPLE_RATE = 16_000
 SUPPORTED_CHANNELS = 1
 MIN_UTTERANCE_BYTES = 4_800  # 150ms：短于该长度视为噪声丢弃
+# 连续对话麦克风常开，环境噪声的瞬时爆发也能触发 VAD；带 450ms hangover
+# 尾巴仍不足 600ms 的话语只可能是单次噪声脉冲，直接丢弃。
+MIN_AUTO_UTTERANCE_BYTES = 19_200  # 600ms @ 16kHz PCM16 mono
 MAX_TEXT_LENGTH = 20_000
+# 连续对话里 Whisper 对噪声的复读/回声会造成逐字相同的连续“话语”，
+# 窗口内完全相同的转写只处理第一次。
+DUPLICATE_TRANSCRIPT_WINDOW_SECONDS = 6.0
 # 语音回合只携带最近几轮消息：首响延迟对上下文长度极其敏感（lite 模型
 # 20 条历史时首句可达 14s），更早的上下文由记忆检索与历史召回按需补齐。
 VOICE_CONTEXT_MESSAGES = 8
@@ -147,6 +153,9 @@ class VoiceSession:
     vad: VoiceActivityDetector = field(default_factory=create_default_vad)
     wake_word: WakeWordDetector | None = field(default_factory=create_default_wake_word)
     wake_armed: bool = False
+    # 连续对话（电话模式）：麦克风常开，自动 VAD 断句即发送、说话即打断，
+    # 且跳过唤醒词待命门——通话中不应每句话都重新唤醒。
+    continuous: bool = False
     ptt_active: bool = False
     collecting: bool = False
     utterance: bytearray = field(default_factory=bytearray)
@@ -156,6 +165,8 @@ class VoiceSession:
     turn_task: asyncio.Task[None] | None = None
     asr_prefetch: AsrPrefetch | None = None
     tts_unavailable_notified: bool = False
+    last_transcript: str | None = None
+    last_transcript_at: float | None = None
     send_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
 
     def resolve_location(self, payload: object) -> ClientLocation | None:
@@ -176,11 +187,13 @@ class VoiceWebSocketManager:
         voice_source: VoiceProviderSource,
         turn_coordinator: TurnCoordinator | None = None,
         avatar_control_publisher: AvatarControlPublisher | None = None,
+        vad_factory: Callable[[], VoiceActivityDetector] = create_default_vad,
     ) -> None:
         self._service = service
         self._turns = turn_coordinator
         self._voice_source = voice_source
         self._avatar_control = avatar_control_publisher
+        self._vad_factory = vad_factory
         self._avatar_tasks: set[asyncio.Task[int]] = set()
         self._latency_metrics = VoiceLatencyMetrics()
         self._sessions: dict[int, VoiceSession] = {}
@@ -408,6 +421,7 @@ class VoiceWebSocketManager:
             conversation_id=conversation_id,
             privacy_level=privacy_level,
             wake_word=None,
+            vad=self._vad_factory(),
         )
         session.turn_task = asyncio.current_task()
         session_key = id(session)
@@ -566,7 +580,7 @@ class VoiceWebSocketManager:
                 await self._acquire_microphone(session)
             case "utterance.end":
                 session.ptt_active = False
-                await self._finalize_utterance(session)
+                await self._finalize_utterance(session, explicit=True)
             case "text.submit":
                 await self._on_text_submit(session, frame)
             case "interrupt":
@@ -626,7 +640,12 @@ class VoiceWebSocketManager:
             return
         session.conversation_id = UUID(conversation_raw)
         session.privacy_level = PrivacyLevel(frame.get("privacy_level", "L1"))
+        session.continuous = frame.get("continuous") is True
         session.resolve_location(frame.get("location"))
+        # Silero/torch 初始化较重，连接建立即后台预热，不落在第一句话上。
+        warmup = getattr(session.vad, "warmup", None)
+        if callable(warmup):
+            asyncio.get_running_loop().create_task(self._warm_vad(session))
         recognizer, tts_chain = await self._voice_source.resolve()
         asr_warmup_ms: int | None = None
         asr_unavailable_reason: str | None = None
@@ -660,6 +679,16 @@ class VoiceWebSocketManager:
             },
         )
 
+    async def _warm_vad(self, session: VoiceSession) -> None:
+        warmup = getattr(session.vad, "warmup", None)
+        if not callable(warmup):
+            return
+        try:
+            await asyncio.to_thread(warmup)
+        except Exception:
+            # 预热失败不打断连接；首次喂帧时按既有降级逻辑回退能量 VAD。
+            logger.warning("voice vad warmup failed; lazy load on first frame", exc_info=True)
+
     async def _on_audio(self, session: VoiceSession, pcm: bytes) -> None:
         # 打断仲裁：回合进行中（生成或播报）时，人声能量立即取消
         if session.generation_id is not None and session.vad.is_voiced(pcm):
@@ -671,7 +700,7 @@ class VoiceWebSocketManager:
             session.utterance.extend(pcm)
         if session.ptt_active:
             return
-        if session.wake_word is not None and not session.wake_armed:
+        if session.wake_word is not None and not session.continuous and not session.wake_armed:
             try:
                 if not session.wake_word.feed(pcm):
                     return
@@ -717,9 +746,9 @@ class VoiceWebSocketManager:
             session.utterance.extend(pcm)
             await self._acquire_microphone(session)
         elif event.kind == "utterance_ended":
-            await self._finalize_utterance(session)
+            await self._finalize_utterance(session, explicit=False)
 
-    async def _finalize_utterance(self, session: VoiceSession) -> None:
+    async def _finalize_utterance(self, session: VoiceSession, *, explicit: bool) -> None:
         session.collecting = False
         await self._release_microphone(session)
         session.vad.force_end()
@@ -728,7 +757,9 @@ class VoiceWebSocketManager:
             session.wake_armed = False
         pcm = bytes(session.utterance)
         session.utterance.clear()
-        if len(pcm) < MIN_UTTERANCE_BYTES:
+        # PTT 是明确的用户意图，保留短话语；自动断句按更长下限滤噪。
+        min_bytes = MIN_UTTERANCE_BYTES if explicit else MIN_AUTO_UTTERANCE_BYTES
+        if len(pcm) < min_bytes:
             self._discard_asr_prefetch(session)
             return
         # 每条话语解析一次提供方：管理端改语音配置即时生效，无需重启
@@ -741,9 +772,16 @@ class VoiceWebSocketManager:
             self._discard_asr_prefetch(session)
             await self._send(session, "voice.asr_unavailable", {"reason": "local_asr_required"})
             return
-        if session.conversation_id is None or session.turn_task is not None:
+        if session.conversation_id is None:
             self._discard_asr_prefetch(session)
             return
+        if session.turn_task is not None:
+            # 连续对话里新话语即打断：上一回合还卡在 ASR/生成间隙时，用户
+            # 又开口了，应取消旧回合并处理新话语，而不是静默丢弃。
+            if not session.continuous:
+                self._discard_asr_prefetch(session)
+                return
+            await self._interrupt(session, reason="barge_in")
         prefetched_transcript = await self._consume_asr_prefetch(session, recognizer)
         session.turn_task = asyncio.create_task(
             self._run_utterance(
@@ -852,6 +890,23 @@ class VoiceWebSocketManager:
             transcript_at = time.perf_counter()
             if not transcript.strip():
                 return
+            # 连续对话：噪声触发的幻觉/回声往往逐字重复，短窗口内完全
+            # 相同的转写只处理第一次（文字输入与卫星设备不受影响）。
+            now = time.monotonic()
+            if (
+                session.continuous
+                and transcript == session.last_transcript
+                and session.last_transcript_at is not None
+                and now - session.last_transcript_at
+                < DUPLICATE_TRANSCRIPT_WINDOW_SECONDS
+            ):
+                logger.info(
+                    "voice duplicate transcript dropped generation_window_s=%.1f",
+                    now - session.last_transcript_at,
+                )
+                return
+            session.last_transcript = transcript
+            session.last_transcript_at = now
             await self._send(
                 session,
                 "voice.transcript",
@@ -1297,6 +1352,7 @@ def create_voice_websocket_router(
     turn_coordinator: TurnCoordinator | None = None,
     wake_word_factory: Callable[[], WakeWordDetector | None] = create_default_wake_word,
     avatar_control_publisher: AvatarControlPublisher | None = None,
+    vad_factory: Callable[[], VoiceActivityDetector] = create_default_vad,
 ) -> tuple[APIRouter, VoiceWebSocketManager]:
     router = APIRouter(tags=["voice-websocket"])
     manager = VoiceWebSocketManager(
@@ -1304,6 +1360,7 @@ def create_voice_websocket_router(
         voice_source=voice_source,
         turn_coordinator=turn_coordinator,
         avatar_control_publisher=avatar_control_publisher,
+        vad_factory=vad_factory,
     )
 
     @router.get("/api/v1/meta/voice/latency")
@@ -1337,6 +1394,7 @@ def create_voice_websocket_router(
             websocket=websocket,
             principal=principal,
             wake_word=wake_word_factory(),
+            vad=manager._vad_factory(),
         )
         try:
             await manager.run(session)

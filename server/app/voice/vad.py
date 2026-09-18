@@ -132,7 +132,7 @@ class _SileroProbabilityModel:
         self._torch: Any | None = None
 
     def __call__(self, pcm: bytes) -> float:
-        self._ensure_loaded()
+        self.ensure_loaded()
         if self._model is None or self._torch is None:
             raise SileroVadUnavailable("silero_model_not_loaded")
         samples = _pcm16_to_float(pcm)
@@ -148,7 +148,7 @@ class _SileroProbabilityModel:
         if callable(reset):
             reset()
 
-    def _ensure_loaded(self) -> None:
+    def ensure_loaded(self) -> None:
         if self._model is not None:
             return
         try:
@@ -196,6 +196,11 @@ class SileroVad:
     @property
     def speaking(self) -> bool:
         return self._speaking
+
+    def warmup(self) -> None:
+        """连接建立时预加载模型，避免 torch/ONNX 初始化落在第一句话上。"""
+        if self._runtime is not None:
+            self._runtime.ensure_loaded()
 
     def feed(self, pcm: bytes) -> VadEvent | None:
         self._buffer.extend(pcm)
@@ -286,6 +291,12 @@ class ResilientVad:
 
     def force_end(self) -> VadEvent | None:
         return self._active.force_end()
+
+    def warmup(self) -> None:
+        """预加载主 VAD；失败留给 feed 的一次性降级逻辑处理。"""
+        warmup = getattr(self._active, "warmup", None)
+        if callable(warmup):
+            warmup()
 
     def is_voiced(self, pcm: bytes) -> bool:
         return self._active.is_voiced(pcm)

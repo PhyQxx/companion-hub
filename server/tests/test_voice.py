@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import json
 import wave
@@ -72,6 +73,7 @@ async def test_faster_whisper_adapter_lazy_loads_and_joins_segments(
             language: str | None,
             beam_size: int,
             vad_filter: bool,
+            condition_on_previous_text: bool,
             initial_prompt: str | None,
             hotwords: str | None,
         ) -> tuple[list[SimpleNamespace], object]:
@@ -80,6 +82,7 @@ async def test_faster_whisper_adapter_lazy_loads_and_joins_segments(
                 language=language,
                 beam_size=beam_size,
                 vad_filter=vad_filter,
+                condition_on_previous_text=condition_on_previous_text,
                 initial_prompt=initial_prompt,
                 hotwords=hotwords,
             )
@@ -108,7 +111,8 @@ async def test_faster_whisper_adapter_lazy_loads_and_joins_segments(
         "wav_header": b"RIFF",
         "language": "zh",
         "beam_size": 1,
-        "vad_filter": False,
+        "vad_filter": True,
+        "condition_on_previous_text": False,
         "initial_prompt": "这是与小艾的普通话对话。",
         "hotwords": "小艾 Aria 只回答",
     }
@@ -136,6 +140,119 @@ async def test_faster_whisper_warmup_loads_model_once(
     await recognizer.warmup()
 
     assert loaded == [("base", "cpu", "int8")]
+
+
+def test_faster_whisper_drops_low_confidence_and_repetitive_segments(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """疑似无语音的低置信段与高压缩比复读段整段丢弃，只留可信文本。"""
+
+    class FakeWhisperModel:
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            return None
+
+        def transcribe(
+            self, audio: BytesIO, **kwargs: Any
+        ) -> tuple[list[SimpleNamespace], object]:
+            return (
+                [
+                    SimpleNamespace(
+                        text="帮我把灯打开",
+                        no_speech_prob=0.1,
+                        avg_logprob=-0.3,
+                        compression_ratio=1.2,
+                    ),
+                    SimpleNamespace(
+                        text="这段是与智能伴侣的对话",
+                        no_speech_prob=0.9,
+                        avg_logprob=-1.6,
+                        compression_ratio=1.1,
+                    ),
+                    SimpleNamespace(
+                        text="一双药这是一双药这是一双药这是一双药",
+                        no_speech_prob=0.2,
+                        avg_logprob=-0.4,
+                        compression_ratio=4.2,
+                    ),
+                ],
+                object(),
+            )
+
+    monkeypatch.setattr(
+        "app.voice.faster_whisper.importlib.import_module",
+        lambda name: SimpleNamespace(WhisperModel=FakeWhisperModel),
+    )
+    recognizer = FasterWhisperRecognizer(
+        model="base", device="cpu", compute_type="int8", language="zh"
+    )
+
+    text = asyncio.run(recognizer.transcribe(loud_frames(5), sample_rate=16_000, language=None))
+
+    assert text == "帮我把灯打开"
+
+
+def test_faster_whisper_drops_initial_prompt_echo(monkeypatch: pytest.MonkeyPatch) -> None:
+    """噪声上 whisper"念"出 initial_prompt 的转写按幻听丢弃；真实提及不受影响。"""
+
+    class FakeWhisperModel:
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            return None
+
+        def transcribe(
+            self, audio: BytesIO, **kwargs: Any
+        ) -> tuple[list[SimpleNamespace], object]:
+            return (
+                [
+                    SimpleNamespace(
+                        text="这一段与智能伴侣小艾（Aria）的普通话对话。",
+                        no_speech_prob=0.1,
+                        avg_logprob=-0.2,
+                        compression_ratio=1.1,
+                    )
+                ],
+                object(),
+            )
+
+    monkeypatch.setattr(
+        "app.voice.faster_whisper.importlib.import_module",
+        lambda name: SimpleNamespace(WhisperModel=FakeWhisperModel),
+    )
+    recognizer = FasterWhisperRecognizer(
+        model="base", device="cpu", compute_type="int8", language="zh"
+    )
+
+    text = asyncio.run(recognizer.transcribe(loud_frames(5), sample_rate=16_000, language=None))
+    assert text == ""
+
+    # 真实话语即使提到"智能伴侣小艾"也不应被误杀。
+    class GenuineWhisperModel:
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            return None
+
+        def transcribe(
+            self, audio: BytesIO, **kwargs: Any
+        ) -> tuple[list[SimpleNamespace], object]:
+            return (
+                [
+                    SimpleNamespace(
+                        text="我想和智能伴侣小艾聊聊今天的安排",
+                        no_speech_prob=0.1,
+                        avg_logprob=-0.2,
+                        compression_ratio=1.1,
+                    )
+                ],
+                object(),
+            )
+
+    monkeypatch.setattr(
+        "app.voice.faster_whisper.importlib.import_module",
+        lambda name: SimpleNamespace(WhisperModel=GenuineWhisperModel),
+    )
+    genuine = FasterWhisperRecognizer(
+        model="base", device="cpu", compute_type="int8", language="zh"
+    )
+    text = asyncio.run(genuine.transcribe(loud_frames(5), sample_rate=16_000, language=None))
+    assert text == "我想和智能伴侣小艾聊聊今天的安排"
 
 
 def test_energy_vad_segments_utterance_boundaries() -> None:

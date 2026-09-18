@@ -102,10 +102,13 @@ const voiceReady = ref(false);
 const voiceAsrConfigured = ref<boolean | null>(null);
 const voiceAsrBlockMessage = ref("");
 const voiceRecording = ref(false);
+// 连续对话（电话模式）：麦克风常开，服务端自动断句即发送、说话即打断。
+const voiceLive = ref(false);
 const voiceBusy = ref(false);
 const sendPending = ref(false);
 const voiceStatus = ref("语音未连接");
 const voiceTranscript = ref("");
+const voiceVadBackend = ref("");
 const voiceViseme = ref(0);
 const avatarMotion = ref<{ value: string; sequence: number } | null>(null);
 const textReplyVoice = ref(localStorage.getItem(TEXT_REPLY_VOICE_KEY) === "1");
@@ -349,7 +352,8 @@ const canSend = computed(
     !streaming.value &&
     !sendPending.value &&
     !voiceBusy.value &&
-    !voiceRecording.value,
+    !voiceRecording.value &&
+    !voiceLive.value,
 );
 const visibleConversations = computed(() =>
   showArchivedConversations.value ? archivedConversations.value : conversations.value,
@@ -362,6 +366,7 @@ function setStatus(text: string, error = false) {
 
 async function closeVoice() {
   voiceRecording.value = false;
+  voiceLive.value = false;
   voiceBusy.value = false;
   voiceReady.value = false;
   voiceAsrConfigured.value = null;
@@ -380,11 +385,11 @@ async function closeVoice() {
   voiceViseme.value = 0;
 }
 
-async function ensureVoiceSocket(): Promise<VoiceSocket> {
+async function ensureVoiceSocket(continuous = false): Promise<VoiceSocket> {
   if (!activeId.value) throw new Error("请先选择会话");
   const conversationId = activeId.value;
   const privacyLevel = privacy.value;
-  const key = `${conversationId}:${privacyLevel}`;
+  const key = `${conversationId}:${privacyLevel}:${continuous ? "live" : "auto"}`;
   if (
     voiceSocket &&
     voiceReady.value &&
@@ -406,6 +411,7 @@ async function ensureVoiceSocket(): Promise<VoiceSocket> {
           if (voiceSocket === next) {
             voiceReady.value = false;
             voiceBusy.value = false;
+            voiceLive.value = false;
             if (streaming.value?.conversationId === activeId.value) {
               streaming.value = null;
             }
@@ -419,7 +425,7 @@ async function ensureVoiceSocket(): Promise<VoiceSocket> {
     voiceSocketKey = key;
     try {
       // 纯语音回合没有输入帧, hello 时带上新鲜缓存位置(不触发授权弹窗)。
-      await next.connect(conversationId, privacyLevel, freshCachedLocation());
+      await next.connect(conversationId, privacyLevel, freshCachedLocation(), { continuous });
       return next;
     } catch (error) {
       if (voiceSocket === next) {
@@ -452,6 +458,7 @@ function handleVoiceEvent(event: VoiceControlEvent) {
     case "voice.ready":
       voiceReady.value = true;
       voiceTtsConfigured.value = event.tts_configured ?? false;
+      voiceVadBackend.value = event.vad_backend === "silero" ? "Silero VAD" : "能量 VAD";
       if (event.asr_configured === false) {
         voiceAsrConfigured.value = false;
         voiceAsrBlockMessage.value = "后台尚未启用语音识别";
@@ -466,6 +473,8 @@ function handleVoiceEvent(event: VoiceControlEvent) {
         voiceStatus.value = voiceTtsConfigured.value
           ? "文字语音回复已就绪"
           : "未配置语音合成，回复将仅显示文字";
+      } else if (voiceLive.value) {
+        voiceStatus.value = "通话已连接，请说话";
       } else {
         voiceStatus.value = voiceAsrConfigured.value
           ? `语音已就绪 · ${event.asr_runs_local ? "本地识别" : "云端识别"} · ${event.vad_backend === "silero" ? "Silero VAD" : "Energy VAD"}${event.wake_word_configured ? " · 唤醒词待命" : ""}`
@@ -480,10 +489,11 @@ function handleVoiceEvent(event: VoiceControlEvent) {
       break;
     case "voice.microphone_preempted":
       // 另一设备抢占了麦克风：本地立即停止采集（服务端已丢弃本连接话语）
-      if (voiceRecording.value) {
+      if (voiceRecording.value || voiceLive.value) {
         voiceRecording.value = false;
+        voiceLive.value = false;
         void microphone.stop();
-        voiceStatus.value = "麦克风已被其他设备接管";
+        voiceStatus.value = "麦克风已被其他设备接管，通话结束";
       }
       break;
     case "voice.audio_preempted":
@@ -582,7 +592,7 @@ function handleVoiceEvent(event: VoiceControlEvent) {
       playback.interrupt();
       voiceSentence = null;
       voiceViseme.value = 0;
-      voiceStatus.value = "已打断";
+      voiceStatus.value = voiceLive.value ? "已打断，请继续说" : "已打断";
       break;
     case "turn.cancelled":
       voiceBusy.value = false;
@@ -590,7 +600,7 @@ function handleVoiceEvent(event: VoiceControlEvent) {
       playback.interrupt();
       voiceSentence = null;
       voiceViseme.value = 0;
-      voiceStatus.value = "语音回合已取消";
+      voiceStatus.value = voiceLive.value ? "已打断，请继续说" : "语音回合已取消";
       break;
     case "turn.failed":
       voiceBusy.value = false;
@@ -616,7 +626,7 @@ function handleVoiceEvent(event: VoiceControlEvent) {
       break;
     case "reply.committed":
       voiceBusy.value = false;
-      voiceStatus.value = "语音回复已完成";
+      voiceStatus.value = voiceLive.value ? "回复完成，请继续说" : "语音回复已完成";
       if (activeId.value) {
         const conversationId = activeId.value;
         const generationId = event.generation_id;
@@ -641,6 +651,7 @@ async function refreshMessages(conversationId: string) {
 }
 
 async function toggleVoiceRecording() {
+  if (voiceLive.value) return;
   if (voiceRecording.value) {
     voiceRecording.value = false;
     voiceBusy.value = true;
@@ -667,6 +678,40 @@ async function toggleVoiceRecording() {
     voiceStatus.value = "正在听你说话…";
   } catch (error) {
     voiceRecording.value = false;
+    await microphone.stop();
+    voiceStatus.value = error instanceof Error ? `麦克风不可用：${error.message}` : "麦克风不可用";
+  }
+}
+
+/**
+ * 连续对话（电话模式）：接通后麦克风常开，不再逐句点开始/结束。
+ * 服务端自动断句——停顿即发送；播报中一开口即打断（barge-in）；
+ * 回复完毕继续待命，直到点挂断。
+ */
+async function toggleVoiceCall() {
+  if (voiceLive.value) {
+    await closeVoice();
+    return;
+  }
+  if (!activeId.value || streaming.value || voiceBusy.value || voiceRecording.value) return;
+  try {
+    // 通话按钮是移动端可信用户手势，同时解锁稍后的 TTS 播放。
+    unlockVoicePlayback();
+    const socket = await ensureVoiceSocket(true);
+    if (voiceAsrConfigured.value === false) {
+      voiceStatus.value = voiceAsrBlockMessage.value || "语音识别当前不可用";
+      return;
+    }
+    await microphone.start((chunk) => {
+      if (voiceLive.value) voiceSocket?.sendPcm(chunk);
+    });
+    voiceLive.value = true;
+    voiceTranscript.value = "";
+    voiceStatus.value = voiceVadBackend.value
+      ? `通话已连接 · ${voiceVadBackend.value} · 请说话`
+      : "通话已连接，请说话";
+  } catch (error) {
+    voiceLive.value = false;
     await microphone.stop();
     voiceStatus.value = error instanceof Error ? `麦克风不可用：${error.message}` : "麦克风不可用";
   }
@@ -1402,7 +1447,7 @@ async function installPwa() {
       <footer class="composer">
         <p v-if="activeConversationArchived" class="archived-notice">此会话已归档。恢复后可以继续发送消息。</p>
         <div class="composer-meta">
-          <select v-model="privacy" :disabled="!!streaming || voiceRecording || voiceBusy" @change="onPrivacyChanged">
+          <select v-model="privacy" :disabled="!!streaming || voiceRecording || voiceLive || voiceBusy" @change="onPrivacyChanged">
             <option value="L0">L0 · 可上云</option>
             <option value="L1">L1 · 常规</option>
             <option value="L2">L2 · 仅本地</option>
@@ -1411,7 +1456,7 @@ async function installPwa() {
             <input
               v-model="textReplyVoice"
               type="checkbox"
-              :disabled="!!streaming || voiceRecording || voiceBusy"
+              :disabled="!!streaming || voiceRecording || voiceLive || voiceBusy"
               @change="onTextReplyVoiceChanged"
             />
             <span>文字回复播报</span>
@@ -1424,7 +1469,7 @@ async function installPwa() {
             <input
               v-model="locationEnabled"
               type="checkbox"
-              :disabled="!!streaming || voiceRecording || voiceBusy"
+              :disabled="!!streaming || voiceRecording || voiceLive || voiceBusy"
               @change="onLocationEnabledChanged"
             />
             <span>📍自动定位</span>
@@ -1437,7 +1482,7 @@ async function installPwa() {
             <input
               v-model="notificationsEnabled"
               type="checkbox"
-              :disabled="!token || !!streaming || voiceRecording || voiceBusy"
+              :disabled="!token || !!streaming || voiceRecording || voiceLive || voiceBusy"
               @change="onNotificationsChanged"
             />
             <span>🔔移动通知</span>
@@ -1447,12 +1492,22 @@ async function installPwa() {
         <div class="voice-row">
           <button
             class="voice-button"
+            :class="{ recording: voiceLive }"
+            type="button"
+            :disabled="!activeId || activeConversationArchived || !!streaming || voiceRecording || (voiceBusy && !voiceLive)"
+            @click="toggleVoiceCall"
+          >
+            {{ voiceLive ? "📞 挂断通话" : "📞 连续对话" }}
+          </button>
+          <button
+            v-if="!voiceLive"
+            class="voice-button"
             :class="{ recording: voiceRecording }"
             type="button"
             :disabled="!activeId || activeConversationArchived || !!streaming || (voiceBusy && !voiceRecording)"
             @click="toggleVoiceRecording"
           >
-            {{ voiceRecording ? "结束并发送" : "🎙 开始说话" }}
+            {{ voiceRecording ? "结束并发送" : "🎙 说一句" }}
           </button>
           <button v-if="voiceBusy && !voiceRecording" type="button" @click="interruptVoice">打断/停止播报</button>
           <span class="voice-status">{{ voiceStatus }}</span>
