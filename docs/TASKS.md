@@ -1,6 +1,6 @@
 # Aria 当前任务
 
-> 最后更新：2026-09-16
+> 最后更新：2026-09-18
 > 详细设计入口：[00-产品与架构.md](./00-产品与架构.md)
 
 本文件只维护当前执行队列、未完成门槛和最新质量基线。历史交付细节留在对应阶段文档，不在这里重复。
@@ -54,6 +54,7 @@
 
 ### 0.1 并行收口项（不占用下一功能定义）
 
+- [ ] tests 存量严格 mypy 清理（2026-09-18 发现）：`server/tests` 11 个测试文件共 42 项错误（Fake/桩函数缺类型注解为主：`test_calendar_caldav` 14、`test_mcp_integration` 7、`test_calendar_google` 6、`test_satellite_client_protocol` 5 等），经核对文件与 HEAD 逐字一致、非连续对话批次引入；app 源文件严格 mypy 保持零错误。清理后恢复「app+tests 全绿」基线。
 - [x] 恢复在制分支质量闸门：Ruff **163** 项、mypy **38** 项和 Admin TypeScript **4** 项已清零；非 soak 全量 pytest **532 通过 / 0 失败**（3 个既有全局 Admin token 状态污染失败已用 conftest autouse 重置 fixture 修复）；Chat/Admin/Shared typecheck 与 production build、Alembic 空库升级到 `0022` 单 head 和 `git diff --check` 全部通过。
 - [x] 收口当前实现批次：迁移链 `0019 → 0020 → 0021 → bb15882faef4 → 0022 → 0023` 已确认单 head，空库升级复验通过；`.design-qa/`、`.zcode/`、本地截图、`server/assets/` 运行时上传与授权 SDK/Core 已入 `.gitignore`，在制批次已分 9 个逻辑提交入库。
 - [x] P5 连续 14 天文字稳定性观察已由用户确认完成；外部每日记录的仓库证据索引仍需回填到 `docs/history/P4-P5-Vue迁移与闸门` 的 P5 闸门章节。M2 语音延迟优化作为并行性能专项推进。
@@ -177,6 +178,8 @@
 
 ## 3. 最近完成
 
+- [x] 2026-09-18 `连续对话（电话模式）+ 五层抗噪防线 + 登录过期统一处理`：`voice.hello` 新增 `continuous` 声明——麦克风常开、自动 VAD 断句即发送、说话即打断（新话语在旧回合 ASR/生成间隙到达时先打断旧回合再处理，非连续模式保持丢弃语义）、跳过唤醒词待命门。五层抗噪：①断句层运行环境补装 `silero-vad`+`torch` 后自动升级 Silero 概率 VAD（稳态噪声不再产生"话语"；`vad_factory` 注入点保持测试确定性，`voice.hello` 即后台预热、失败回退能量 VAD）；②ASR 层 faster-whisper `vad_filter=True`+`condition_on_previous_text=False`（纯噪声空转写静默跳过、阻断幻觉跨窗滚雪球）；③ASR 逐段复核丢弃低置信无语音段与复读段（`no_speech_prob>0.5 且 avg_logprob<-0.9`；`compression_ratio>2.5` 且 ≥8 字）；④提示词回显检测（转写与 `initial_prompt` bigram overlap≥0.5 且 coverage≥0.55 判幻听丢弃，真实话语提及"智能伴侣小艾"只命中零碎片段不受影响）；⑤断句/回合层自动话语 600ms 总长下限（PTT 显式边界仍 150ms）+ 连续模式 6 秒内逐字相同转写只处理第一次（文字输入与卫星设备通道不受影响）。Chat 前端新增 📞 连续对话按钮（接通手势内预解锁 AudioContext，点挂断结束，麦克风被抢占即结束通话并提示）。另：任一 REST 轮询收到 401（8h 会话过期而 WebSocket 长连接不会自动断开）时经 `ChatApi.onUnauthorized` 统一登出并提示「登录已过期」，停止无效轮询刷 401 日志；安全服务未启用时 `/api/v1/safety/alerts` 404 后安全面板拉取一次即停止轮询。docs/04 §3.1/§6.3 同步；新增 6 项语音回归。全量非 soak **936 通过 / 0 失败**，Ruff、严格 mypy（app 零错误）、Chat typecheck 与 production build 通过。
+
 - [x] 2026-09-16 `简报通勤建议 + 聊天端日历同步工具`：每日简报新增**出行建议**行——当日首个带地点日程经 CommuteService 只读计算（建议出发时刻/目的地/模式/耗时，不建提醒，失败或非当日日程静默降级），带 `commute:{event_title}` 来源；新增 `calendar_sync` 聊天工具（L1，`provider=caldav|google|all`，手动触发外部日历镜像同步并返回各提供方统计，未配置方在 errors 说明）。main.py 注入 `commute_fetcher` 闭包（复用 build_commute_service，用完 aclose）。新增 2 项回归（通勤建议文本/来源/降级；同步工具分发/L2 拒绝/全失败语义/available）。全量非 soak 0 失败，Ruff、mypy（278 files）通过。
 
 - [x] 2026-09-16 `简报/回顾接日程（BRIEF-01/REVIEW-01 扩展）`：J4 日历（本地 + CalDAV/Google 镜像）就绪后解除"日程待接入"暂缓——每日简报新增**今日日程**区块（按开始时间排序、来源标注、地点、全天事件归并一条、`calendar:{id}` 来源引用）；晚间回顾**明日重点**并入明日日程（同样带来源）。`CalendarEventView` 补 `source` 投影；main.py 统一 `calendar_store` 构造并注入两个服务；日历窗口查询边界归一到 UTC（SQLite 墙钟存储与镜像 UTC 行对齐，PostgreSQL 无差别）。新增 2 项回归（简报日程事实含镜像标注/全天归并/昨日排除/来源核对；回顾明日日程含 google 标注/今日排除）。全量非 soak 0 失败，Ruff、mypy（278 files）通过。
@@ -294,6 +297,8 @@
 - [x] 伴侣形象与角色系统 v1 骨架：`app/avatar/store.py` 实现 AvatarStore（形象包管理、实例创建/更新/删除、人格绑定与默认形象查询）；内置 `warm-daily`（静态）与 `light-core`（抽象）两个种子形象包；新增 `avatar_pack`/`avatar_instance`/`persona_avatar_binding` 表；Admin 后台路由 `/api/v1/admin/avatars` 支持包列表/实例列表/创建/更新/删除/绑定/查询默认形象；`ChatService` 在 `decision_meta` 中注入当前人格默认形象的 `avatar_instance_id` 与 `avatar_pack_id`；新增 11 个单元测试全部通过。
 
 ## 4. 最新质量基线
+
+- 2026-09-18 连续对话批次：新增 test_voice_websocket 连续模式 4 项（跳过唤醒门、新话语打断旧回合（`voice.interrupted reason=barge_in` 且最终转写为新话语）、6s 逐字重复转写丢弃（按 `/api/v1/meta/voice/latency` count=1 判定）、非连续模式旧语义保持不误伤）+ test_faster_whisper 抗噪 2 项（逐段复核只留可信文本、提示词回显判幻听而真实提及放行）；test_voice 既有 Fake 补齐返回类型注解。全量非 soak pytest **936 通过 / 2 跳过 / 0 失败**，Ruff、严格 mypy（app 全部源文件零错误）、Chat typecheck 与 production build 通过。存量问题见 §0.1（tests 42 项严格 mypy，非本批引入）。
 
 - 2026-09-16 开发批次二：新增 test_calendar_google 8 项（state 签名往返/过期/密钥与用户隔离、令牌存储 CRUD 与用户隔离、事件→镜像映射（单次/取消/周期锚点/全天）、镜像 upsert 与 etag 跳过、刷新失败映射、code 交换错误映射）+ test_mail 文件夹 2 项；定向 43 通过；非 soak 全量 0 失败；Ruff、严格 mypy（278 source files）、单 head `0044_google_oauth_token` 通过。integrations/satellite_client 通过 ruff 与语法检查（无 pytest 依赖，真机验收为门槛）。
 

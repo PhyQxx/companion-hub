@@ -657,6 +657,9 @@ export interface SafetyAlertItem {
 }
 
 export class ChatApi {
+  /** 会话过期钩子：任一实例收到 401 时触发一次，供 UI 登出并提示重新登录。 */
+  static onUnauthorized: ((path: string) => void) | null = null;
+
   constructor(private baseUrl = "") {}
 
   /** 统一请求封装：附加 JSON 头与 Bearer 令牌，统一错误展开 */
@@ -669,6 +672,7 @@ export class ChatApi {
     const response = await fetch(`${this.baseUrl}${path}`, { ...init, headers });
     const body = await response.json().catch(() => ({}));
     if (!response.ok) {
+      if (response.status === 401 && token) ChatApi.onUnauthorized?.(path);
       const detail = (body as { detail?: unknown }).detail;
       throw new ApiError(response.status, describeDetail(detail, `HTTP ${response.status}`));
     }

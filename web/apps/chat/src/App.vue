@@ -916,6 +916,30 @@ async function logout() {
   }
 }
 
+/**
+ * 会话过期（登录态 8 小时 TTL）：轮询面板收到 401 时触发。WebSocket 是
+ * 长连接、只在建连时鉴权，所以聊天看似正常而 REST 轮询持续 401——这里
+ * 统一登出并明确提示，停止无效轮询刷屏。
+ */
+let sessionExpiring = false;
+ChatApi.onUnauthorized = () => {
+  if (!token.value || sessionExpiring) return;
+  sessionExpiring = true;
+  void (async () => {
+    closeSocket();
+    await closeVoice();
+    token.value = "";
+    displayName.value = "";
+    authStorage.removeItem(TOKEN_KEY);
+    conversations.value = [];
+    archivedConversations.value = [];
+    activeId.value = null;
+    messagesByConversation.clear();
+    setStatus("登录已过期，请重新登录", true);
+    sessionExpiring = false;
+  })();
+}
+
 function closeSocket() {
   if (reconnectTimer !== null) {
     clearTimeout(reconnectTimer);

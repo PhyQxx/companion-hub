@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { onBeforeUnmount, onMounted, ref } from "vue";
-import { ChatApi, type SafetyAlertItem } from "@aria/shared";
+import { ChatApi, ApiError, type SafetyAlertItem } from "@aria/shared";
 
 const props = defineProps<{ token: string }>();
 const api = new ChatApi();
@@ -16,8 +16,10 @@ async function load() {
   try {
     const items = await api.listSafetyAlerts(props.token);
     if (!stopped) alerts.value = items;
-  } catch {
-    // 安全面板是增强路径：拉取失败静默，不打断聊天
+  } catch (err) {
+    // 安全面板是增强路径：拉取失败静默，不打断聊天。
+    // 服务端未启用安全服务时路由是 404，停止轮询避免刷日志。
+    if (err instanceof ApiError && err.status === 404) stopped = true;
   }
 }
 
