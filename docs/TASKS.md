@@ -54,7 +54,7 @@
 
 ### 0.1 并行收口项（不占用下一功能定义）
 
-- [ ] tests 存量严格 mypy 清理（2026-09-18 发现）：`server/tests` 11 个测试文件共 42 项错误（Fake/桩函数缺类型注解为主：`test_calendar_caldav` 14、`test_mcp_integration` 7、`test_calendar_google` 6、`test_satellite_client_protocol` 5 等），经核对文件与 HEAD 逐字一致、非连续对话批次引入；app 源文件严格 mypy 保持零错误。清理后恢复「app+tests 全绿」基线。
+- [x] tests 存量严格 mypy 清理（2026-09-18 发现并同日清理）：`server/tests` 共 41 项错误（Fake/桩函数缺类型注解为主：`test_calendar_caldav` 14、`test_mcp_integration` 7、`test_calendar_google` 6、`test_satellite_client_protocol` 5 等；在 `server/` 子目录跑 mypy 会多报 2 项——`mypy_path` 相对仓库根解析导致 `aria_olv_bridge` 伪错，权威口径为仓库根 `uv run mypy`），经核对文件与 HEAD 逐字一致、非连续对话批次引入。清理方式：补真实注解（返回类型/`tmp_path: Path`/`ModuleType`）、`cast` 收窄（`McpServerState`/`McpToolDescriptor`/动态校验模型）、`source_ref is not None` 过滤收窄字典键。**app+tests 373 文件严格 mypy 零错误基线恢复**。
 - [x] 恢复在制分支质量闸门：Ruff **163** 项、mypy **38** 项和 Admin TypeScript **4** 项已清零；非 soak 全量 pytest **532 通过 / 0 失败**（3 个既有全局 Admin token 状态污染失败已用 conftest autouse 重置 fixture 修复）；Chat/Admin/Shared typecheck 与 production build、Alembic 空库升级到 `0022` 单 head 和 `git diff --check` 全部通过。
 - [x] 收口当前实现批次：迁移链 `0019 → 0020 → 0021 → bb15882faef4 → 0022 → 0023` 已确认单 head，空库升级复验通过；`.design-qa/`、`.zcode/`、本地截图、`server/assets/` 运行时上传与授权 SDK/Core 已入 `.gitignore`，在制批次已分 9 个逻辑提交入库。
 - [x] P5 连续 14 天文字稳定性观察已由用户确认完成；外部每日记录的仓库证据索引仍需回填到 `docs/history/P4-P5-Vue迁移与闸门` 的 P5 闸门章节。M2 语音延迟优化作为并行性能专项推进。
@@ -298,7 +298,9 @@
 
 ## 4. 最新质量基线
 
-- 2026-09-18 连续对话批次：新增 test_voice_websocket 连续模式 4 项（跳过唤醒门、新话语打断旧回合（`voice.interrupted reason=barge_in` 且最终转写为新话语）、6s 逐字重复转写丢弃（按 `/api/v1/meta/voice/latency` count=1 判定）、非连续模式旧语义保持不误伤）+ test_faster_whisper 抗噪 2 项（逐段复核只留可信文本、提示词回显判幻听而真实提及放行）；test_voice 既有 Fake 补齐返回类型注解。全量非 soak pytest **936 通过 / 2 跳过 / 0 失败**，Ruff、严格 mypy（app 全部源文件零错误）、Chat typecheck 与 production build 通过。存量问题见 §0.1（tests 42 项严格 mypy，非本批引入）。
+- 2026-09-18 tests 严格 mypy 清理：9 个测试文件补齐注解/cast（无生产行为改动），全量非 soak pytest **936 通过 / 2 跳过 / 0 失败**，Ruff、**严格 mypy（app+tests 373 文件零错误）** 通过。至此本地发布闸门全项恢复：Ruff、严格 mypy 全量、Chat/Admin typecheck 与 production build、Alembic 单 head `0044`、`git diff --check`。
+
+- 2026-09-18 连续对话批次：新增 test_voice_websocket 连续模式 4 项（跳过唤醒门、新话语打断旧回合（`voice.interrupted reason=barge_in` 且最终转写为新话语）、6s 逐字重复转写丢弃（按 `/api/v1/meta/voice/latency` count=1 判定）、非连续模式旧语义保持不误伤）+ test_faster_whisper 抗噪 2 项（逐段复核只留可信文本、提示词回显判幻听而真实提及放行）；test_voice 既有 Fake 补齐返回类型注解。全量非 soak pytest **936 通过 / 2 跳过 / 0 失败**，Ruff、严格 mypy（app 全部源文件零错误）、Chat typecheck 与 production build 通过。存量问题见 §0.1（tests 42 项严格 mypy，非本批引入；同日已清理归零）。
 
 - 2026-09-16 开发批次二：新增 test_calendar_google 8 项（state 签名往返/过期/密钥与用户隔离、令牌存储 CRUD 与用户隔离、事件→镜像映射（单次/取消/周期锚点/全天）、镜像 upsert 与 etag 跳过、刷新失败映射、code 交换错误映射）+ test_mail 文件夹 2 项；定向 43 通过；非 soak 全量 0 失败；Ruff、严格 mypy（278 source files）、单 head `0044_google_oauth_token` 通过。integrations/satellite_client 通过 ruff 与语法检查（无 pytest 依赖，真机验收为门槛）。
 

@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
+from typing import cast
 from uuid import UUID
 
 import httpx
@@ -61,7 +63,7 @@ integrations:
 """
 
 
-async def _config_store(tmp_path) -> ConfigStore:
+async def _config_store(tmp_path: Path) -> ConfigStore:
     path = tmp_path / "google.yaml"
     path.write_text(YAML_TEMPLATE, encoding="utf-8")
     store = ConfigStore(path)
@@ -192,12 +194,12 @@ class FakeGoogleHttp:
 def _service(
     database: Database, config_store: ConfigStore, fake: FakeGoogleHttp
 ) -> GoogleCalendarSyncService:
-    def factory(**kwargs: object):
+    def factory(**kwargs: object) -> GoogleCalendarClient:
         return GoogleCalendarClient(
             client_id=str(kwargs["client_id"]),
             client_secret=str(kwargs["client_secret"]),
             refresh_token=str(kwargs["refresh_token"]),
-            timeout_seconds=float(kwargs.get("timeout_seconds", 15.0)),
+            timeout_seconds=cast(float, kwargs.get("timeout_seconds", 15.0)),
             client=httpx.AsyncClient(transport=httpx.MockTransport(fake.handler)),
         )
 
@@ -208,14 +210,14 @@ def _service(
 
 class TestGoogleSync:
     async def test_not_authorized_short_circuits(
-        self, database: Database, user_id: UUID, tmp_path
+        self, database: Database, user_id: UUID, tmp_path: Path
     ) -> None:
         store = await _config_store(tmp_path)
         stats = await _service(database, store, FakeGoogleHttp([])).sync_once()
         assert stats.errors == ["google_not_authorized"]
 
     async def test_sync_creates_mirrors_and_reuses_etag(
-        self, database: Database, user_id: UUID, tmp_path
+        self, database: Database, user_id: UUID, tmp_path: Path
     ) -> None:
         fake = FakeGoogleHttp(
             [
@@ -249,7 +251,7 @@ class TestGoogleSync:
         assert again.mirrors_created == 0
 
     async def test_refresh_failure_maps_to_error(
-        self, database: Database, user_id: UUID, tmp_path
+        self, database: Database, user_id: UUID, tmp_path: Path
     ) -> None:
         fake = FakeGoogleHttp([], fail=True)
         store = await _config_store(tmp_path)

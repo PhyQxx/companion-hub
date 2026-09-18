@@ -13,6 +13,7 @@ import importlib.util
 import json
 import sys
 from pathlib import Path
+from types import ModuleType
 from uuid import uuid4
 
 from app.api.device_commands import sign_device_frame, verify_device_signature
@@ -25,7 +26,7 @@ _CLIENT_PATH = (
 )
 
 
-def _load_client_module():
+def _load_client_module() -> ModuleType:
     spec = importlib.util.spec_from_file_location("satellite_client_under_test", _CLIENT_PATH)
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)

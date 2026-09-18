@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime
+from pathlib import Path
 from uuid import UUID
 from zoneinfo import ZoneInfo
 
@@ -167,7 +168,9 @@ class FakeCalDav:
         return httpx.Response(404, text="not found")
 
 
-async def _config_store(tmp_path, *, enabled: bool = True, calendar_names: str = "") -> ConfigStore:
+async def _config_store(
+    tmp_path: Path, *, enabled: bool = True, calendar_names: str = ""
+) -> ConfigStore:
     body = YAML_TEMPLATE
     if enabled:
         body += (
@@ -211,7 +214,9 @@ async def user_id(database: Database) -> UUID:
 def _service(
     database: Database, config_store: ConfigStore, fake: FakeCalDav
 ) -> CalDavSyncService:
-    def factory(*, base_url: str, username: str, secret: str, timeout_seconds: float):
+    def factory(
+        *, base_url: str, username: str, secret: str, timeout_seconds: float
+    ) -> CalDavClient:
         return CalDavClient(
             base_url=base_url,
             username=username,
@@ -234,14 +239,16 @@ async def _mirrors(database: Database) -> list[CalendarEventRecord]:
 
 
 class TestCalDavSync:
-    async def test_disabled_config_short_circuits(self, database: Database, tmp_path) -> None:
+    async def test_disabled_config_short_circuits(
+        self, database: Database, tmp_path: Path
+    ) -> None:
         store = await _config_store(tmp_path, enabled=False)
         stats = await _service(database, store, FakeCalDav()).sync_once()
         assert stats.errors == ["caldav_not_configured"]
         assert stats.mirrors_created == 0
 
     async def test_sync_creates_mirrors_with_recurrence_and_exdate(
-        self, database: Database, user_id: UUID, tmp_path
+        self, database: Database, user_id: UUID, tmp_path: Path
     ) -> None:
         fake = FakeCalDav()
         store = await _config_store(tmp_path)
@@ -249,7 +256,11 @@ class TestCalDavSync:
 
         assert stats.calendars == 1  # inbox 不是日历集合
         assert stats.errors == []
-        mirrors = {record.source_ref: record for record in await _mirrors(database)}
+        mirrors = {
+            record.source_ref: record
+            for record in await _mirrors(database)
+            if record.source_ref is not None
+        }
         # 单次 1 + 周例会 4 次（14/21/28/1005 在窗口内）+ 日站会 22 次（17 被 EXDATE）
         # 远端已取消的事件不建镜像
         assert len(mirrors) == 27
@@ -273,7 +284,7 @@ class TestCalDavSync:
         ).decode()
 
     async def test_unchanged_etag_skips_and_update_propagates(
-        self, database: Database, user_id: UUID, tmp_path
+        self, database: Database, user_id: UUID, tmp_path: Path
     ) -> None:
         fake = FakeCalDav()
         store = await _config_store(tmp_path)
@@ -294,7 +305,7 @@ class TestCalDavSync:
         assert mirrors["caldav:single-1#20260920T170000"].title == "牙医复诊"
 
     async def test_remote_delete_cancels_mirror_but_keeps_local_events(
-        self, database: Database, user_id: UUID, tmp_path
+        self, database: Database, user_id: UUID, tmp_path: Path
     ) -> None:
         fake = FakeCalDav()
         store = await _config_store(tmp_path)
@@ -337,7 +348,9 @@ class TestCalDavSync:
             ).all()
         assert len(local) == 1 and local[0].status == "active"
 
-    async def test_calendar_name_filter(self, database: Database, user_id: UUID, tmp_path) -> None:
+    async def test_calendar_name_filter(
+        self, database: Database, user_id: UUID, tmp_path: Path
+    ) -> None:
         fake = FakeCalDav()
         store = await _config_store(tmp_path, calendar_names="      - 别的日历\n")
         stats = await _service(database, store, fake).sync_once()
@@ -345,7 +358,7 @@ class TestCalDavSync:
         assert await _mirrors(database) == []
 
     async def test_auth_failure_maps_to_error(
-        self, database: Database, user_id: UUID, tmp_path
+        self, database: Database, user_id: UUID, tmp_path: Path
     ) -> None:
         class Rejecting(FakeCalDav):
             def handler(self, request: httpx.Request) -> httpx.Response:

@@ -8,7 +8,7 @@ from uuid import UUID
 
 import pytest
 
-from app.confirmation import DatabasePendingMutationStore
+from app.confirmation import DatabasePendingMutationStore, PendingMutation
 from app.db import AppUserRecord, Base, Database, create_database
 from app.ids import uuid7
 
@@ -39,7 +39,7 @@ async def _prepare(
     kind: str = "calendar_create",
     content: dict[str, object] | None = None,
     now: datetime | None = None,
-):
+) -> PendingMutation:
     return await store.prepare(
         user_id=user_id,
         turn_id=uuid7(),

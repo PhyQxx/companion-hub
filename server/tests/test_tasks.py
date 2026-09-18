@@ -16,6 +16,7 @@ from app.db import AppUserRecord, Base, Database, TaskItemRecord, create_databas
 from app.ids import uuid7
 from app.schemas.common import PrivacyLevel
 from app.tasks import (
+    ClaimedTask,
     RepeatKind,
     TaskKind,
     TaskScheduler,
@@ -635,6 +636,8 @@ async def test_claim_due_never_fires_pnkx_mirror(database: Database, user_id: UU
     assert all(task.id != mirror_id for task in claimed)
 
 
-async def store_claim_probe(database: Database, moment):
+async def store_claim_probe(
+    database: Database, moment: datetime
+) -> list[ClaimedTask]:
     store = TaskStore(database)
     return await store.claim_due(now=moment)

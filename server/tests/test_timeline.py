@@ -4,6 +4,7 @@ from __future__ import annotations
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import Any, cast
 from uuid import uuid4
 from zoneinfo import ZoneInfo
 
@@ -260,7 +261,9 @@ async def test_chat_injects_screen_activity_recall_and_records_meta(
     system_prompt = requests[-1].messages[0].content
     assert "【屏幕活动回顾】" in system_prompt
     assert "修改屏幕事件聚合检索代码" in system_prompt
-    recall_meta = (turn.assistant_message.decision_meta or {})["recall"]
+    recall_meta = cast(
+        dict[str, Any], (turn.assistant_message.decision_meta or {})["recall"]
+    )
     assert isinstance(recall_meta, dict)
     assert recall_meta["mode"] == "screen_activity"
     assert recall_meta["timeline_ids"]
@@ -438,7 +441,9 @@ async def test_timeline_only_mode_is_observable_when_source_is_unavailable(
     system_prompt = requests[-1].messages[0].content
     assert "【历史回溯证据】" in system_prompt
     assert "海边的卡夫卡" in system_prompt
-    recall_meta = (turn.assistant_message.decision_meta or {})["recall"]
+    recall_meta = cast(
+        dict[str, Any], (turn.assistant_message.decision_meta or {})["recall"]
+    )
     assert isinstance(recall_meta, dict)
     assert recall_meta["mode"] == RecallMode.TIMELINE.value
     assert recall_meta["timeline_ids"]
@@ -503,7 +508,9 @@ async def test_history_recall_without_evidence_instructs_model_not_to_invent(
     assert "没有找到足以确认答案的证据" in system_prompt
     assert "黑咖啡" not in system_prompt
     assert "星际穿越" not in system_prompt
-    recall_meta = (turn.assistant_message.decision_meta or {})["recall"]
+    recall_meta = cast(
+        dict[str, Any], (turn.assistant_message.decision_meta or {})["recall"]
+    )
     assert isinstance(recall_meta, dict)
     assert recall_meta["mode"] == RecallMode.NONE.value
     memory_meta = (turn.assistant_message.decision_meta or {})["memory"]
@@ -539,7 +546,9 @@ async def test_ordinary_chat_does_not_search_timeline(
     )
 
     assert search_count == 0
-    recall_meta = (turn.assistant_message.decision_meta or {})["recall"]
+    recall_meta = cast(
+        dict[str, Any], (turn.assistant_message.decision_meta or {})["recall"]
+    )
     assert isinstance(recall_meta, dict)
     assert recall_meta["mode"] == RecallMode.WORKING.value
 
@@ -589,7 +598,9 @@ async def test_memory_hit_takes_precedence_when_timeline_has_no_evidence(
     system_prompt = requests[-1].messages[0].content
     assert "用户不吃香菜" in system_prompt
     assert "没有找到足以确认答案的证据" not in system_prompt
-    recall_meta = (turn.assistant_message.decision_meta or {})["recall"]
+    recall_meta = cast(
+        dict[str, Any], (turn.assistant_message.decision_meta or {})["recall"]
+    )
     assert isinstance(recall_meta, dict)
     assert recall_meta["mode"] == RecallMode.MEMORY.value
 
@@ -855,6 +866,8 @@ async def test_chat_injects_browser_activity_recall_and_records_meta(
     system_prompt = requests[-1].messages[0].content
     assert "【浏览活动回顾】" in system_prompt
     assert "companion-hub" in system_prompt
-    recall_meta = (turn.assistant_message.decision_meta or {})["recall"]
+    recall_meta = cast(
+        dict[str, Any], (turn.assistant_message.decision_meta or {})["recall"]
+    )
     assert recall_meta["mode"] == "browser_activity"
     assert recall_meta["segment_count"] == 1

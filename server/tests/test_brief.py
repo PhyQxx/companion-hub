@@ -361,7 +361,7 @@ async def test_brief_includes_commute_suggestion(database: Database, user_id: UU
 
     from app.tasks.brief import BriefCommute
 
-    async def commute(user_id: UUID):
+    async def commute(user_id: UUID) -> BriefCommute:
         return BriefCommute(
             destination="公司",
             leave_by=_dt(2026, 9, 2, 1, 40, tzinfo=UTC),
@@ -382,7 +382,7 @@ async def test_brief_includes_commute_suggestion(database: Database, user_id: UU
     assert "出行建议：" in brief.text
 
     # 事件获取失败 → 静默降级，无通勤事实
-    def broken(user_id: UUID):
+    def broken(user_id: UUID) -> BriefCommute:
         raise RuntimeError("amap down")
 
     # build 按日幂等：换一天验证失败降级

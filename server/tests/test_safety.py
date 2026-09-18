@@ -448,7 +448,7 @@ async def test_activity_inactivity_reminds_within_window_and_respects_cooldown(
     class FakeTime2:
         def __init__(self) -> None:
             self.now = datetime(2026, 9, 13, 13, 0, tzinfo=UTC)  # 北京 21:00，窗口内
-        def clock(self):
+        def clock(self) -> datetime:
             return self.now
         async def sleep(self, seconds: float) -> None:
             self.now += timedelta(seconds=seconds)
@@ -513,7 +513,7 @@ async def test_activity_silent_outside_window_or_when_device_recent(tmp_path: An
     class FakeTime3:
         def __init__(self) -> None:
             self.now = datetime(2026, 9, 13, 13, 0, tzinfo=UTC)  # 北京 21:00，窗口内
-        def clock(self):
+        def clock(self) -> datetime:
             return self.now
         async def sleep(self, seconds: float) -> None:
             self.now += timedelta(seconds=seconds)

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from pathlib import Path
 from types import SimpleNamespace, TracebackType
 from typing import Any, Self, cast
 from uuid import uuid4
@@ -17,6 +18,8 @@ from app.integrations.mcp import (
     McpManagerError,
     McpRemoteClient,
     McpRemoteTool,
+    McpServerState,
+    McpToolDescriptor,
 )
 
 
@@ -295,7 +298,9 @@ def test_build_arguments_model_accepts_only_conservative_schemas() -> None:
 
     model = build_arguments_model(_write_tool_schema())
     assert model is not None
-    validated = model.model_validate({"arguments": {"title": "书名", "copies": 2}})
+    validated = cast(
+        Any, model.model_validate({"arguments": {"title": "书名", "copies": 2}})
+    )
     assert validated.arguments.title == "书名"
     with pytest.raises(ValidationError):
         model.model_validate({"arguments": {"title": "x", "copies": 99}})
@@ -399,7 +404,7 @@ async def test_mcp_tool_call_tool_routes_through_call_write_and_bounds_payload()
     )
     manager = McpManager(make_store(make_config()), client_factory=FakeFactory([client]))
     # 目录中注入一个写工具（FakeFactory 固定 server books）
-    manager._states["books"] = SimpleNamespace(
+    manager._states["books"] = cast(McpServerState, SimpleNamespace(
         configured_enabled=True,
         available=True,
         tools={
@@ -423,7 +428,7 @@ async def test_mcp_tool_call_tool_routes_through_call_write_and_bounds_payload()
         last_error=None,
         refreshing=False,
         consecutive_failures=0,
-    )
+    ))
     tool = McpToolCallTool(manager)
 
     ok = await tool.execute(
@@ -457,7 +462,7 @@ async def test_manager_call_still_blocks_write_but_call_write_executes() -> None
         payload=McpCallPayload(False, {"created": True}, "created"),
     )
     manager = McpManager(make_store(make_config()), client_factory=FakeFactory([client]))
-    manager._states["books"] = SimpleNamespace(
+    manager._states["books"] = cast(McpServerState, SimpleNamespace(
         configured_enabled=True,
         available=True,
         tools={
@@ -481,7 +486,7 @@ async def test_manager_call_still_blocks_write_but_call_write_executes() -> None
         last_error=None,
         refreshing=False,
         consecutive_failures=0,
-    )
+    ))
     with pytest.raises(McpManagerError, match="mcp_write_requires_action_plan"):
         await manager.call("mcp.books.create", {})
     result = await manager.call_write("mcp.books.create", {"title": "x"})
@@ -494,7 +499,7 @@ async def test_plan_runner_executes_mcp_step_with_l1_context_and_receipt() -> No
 
     from app.cognition.action_plan import ActionStepView, ActionVerificationStatus
     from app.cognition.action_runner import ToolActionRunner
-    from app.tools import ToolExecutor, ToolRegistry
+    from app.tools import ToolExecutor, ToolRegistry, ToolResult
     from app.tools.mcp_actions import McpToolCallTool
 
     class RecordingTool(McpToolCallTool):
@@ -502,9 +507,7 @@ async def test_plan_runner_executes_mcp_step_with_l1_context_and_receipt() -> No
             super().__init__(cast(Any, SimpleNamespace()))
             self.contexts: list[Any] = []
 
-        async def execute(self, args: Any, context: Any):  # type: ignore[override]
-            from app.tools import ToolResult
-
+        async def execute(self, args: Any, context: Any) -> ToolResult:
             self.contexts.append(context)
             return ToolResult(
                 ok=True,
@@ -672,16 +675,19 @@ async def test_chat_tool_provider_bounds_per_turn_and_skips_bad_schema() -> None
         destructive_hint=False,
         idempotent_hint=True,
     )
-    manager._states["books"].tools["mcp.books.broken"] = SimpleNamespace(
-        internal_name="mcp.books.broken",
-        server_id="books",
-        remote_name="broken",
-        title="Broken",
-        description="",
-        input_schema={"type": "object", "anyOf": []},
-        read_only=True,
-        destructive=False,
-        idempotent=True,
+    manager._states["books"].tools["mcp.books.broken"] = cast(
+        McpToolDescriptor,
+        SimpleNamespace(
+            internal_name="mcp.books.broken",
+            server_id="books",
+            remote_name="broken",
+            title="Broken",
+            description="",
+            input_schema={"type": "object", "anyOf": []},
+            read_only=True,
+            destructive=False,
+            idempotent=True,
+        ),
     )
     del broken
     assert provider.select("books broken 查询", config=config, privacy_level="L1") == ()
@@ -709,7 +715,9 @@ async def test_read_tool_handler_executes_via_manager_call() -> None:
     await manager.stop()
 
 
-async def test_chat_service_mounts_mcp_tools_only_for_relevant_turns(tmp_path):
+async def test_chat_service_mounts_mcp_tools_only_for_relevant_turns(
+    tmp_path: Path,
+) -> None:
     from test_chat import FakeRouter, config_yaml
 
     from app.chat import ChatService
