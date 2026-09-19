@@ -4,7 +4,7 @@ import logging
 import os
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager, suppress
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from datetime import time as dt_time
 from pathlib import Path
 from typing import Any, cast
@@ -1247,7 +1247,15 @@ def create_app(
                         admin_token=runtime_admin_token,
                     )
                 )
-            auth_service = AuthService(runtime_database)
+            auth_service = AuthService(
+                runtime_database,
+                # 会话滑动续期：活跃用户不再每 8 小时被强制登出；
+                # 硬顶期内到期自动顺延，超过硬顶仍需重新登录。
+                session_ttl=timedelta(hours=float(os.getenv("ARIA_SESSION_TTL_HOURS", "8"))),
+                session_max_lifetime=timedelta(
+                    days=float(os.getenv("ARIA_SESSION_MAX_LIFETIME_DAYS", "7"))
+                ),
+            )
             app.include_router(
                 create_admin_security_router(
                     admin_token=runtime_admin_token,

@@ -25,6 +25,9 @@ _SCRYPT_R = 8
 _SCRYPT_P = 1
 _SCRYPT_MAXMEM = 64 * 1024 * 1024
 _SESSION_TTL = timedelta(hours=8)
+# 活跃滑动续期不断顺延 8 小时滚动窗口；硬顶限制单个令牌的绝对寿命，
+# 到顶后 expires_at 不再变化，到期必须重新登录，防止长期活跃令牌无限续期。
+_SESSION_MAX_LIFETIME = timedelta(days=7)
 
 
 class AuthSetupExists(RuntimeError):
@@ -54,8 +57,16 @@ class AuthSession:
 
 
 class AuthService:
-    def __init__(self, database: Database) -> None:
+    def __init__(
+        self,
+        database: Database,
+        *,
+        session_ttl: timedelta = _SESSION_TTL,
+        session_max_lifetime: timedelta = _SESSION_MAX_LIFETIME,
+    ) -> None:
         self._database = database
+        self._session_ttl = session_ttl
+        self._session_max_lifetime = session_max_lifetime
 
     async def setup_required(self) -> bool:
         async with self._database.sessions() as session:
@@ -167,6 +178,14 @@ class AuthService:
             if record.revoked_at is not None or expires_at <= now or user.status != "active":
                 raise InvalidSession("invalid chat session")
             record.last_seen_at = now
+            # 滑动续期：剩余寿命不足一半时才写库顺延，避免每个请求都
+            # 产生一次 UPDATE；到达硬顶后不再延长，到期必须重新登录。
+            if expires_at - now < self._session_ttl / 2:
+                ceiling = _aware(record.issued_at) + self._session_max_lifetime
+                candidate = min(now + self._session_ttl, ceiling)
+                if candidate > expires_at:
+                    record.expires_at = candidate
+                    expires_at = candidate
         return ChatPrincipal(
             session_id=record.id,
             user_id=user.id,
@@ -212,7 +231,7 @@ class AuthService:
         self, user: AppUserRecord, now: datetime
     ) -> tuple[AuthSessionRecord, AuthSession]:
         token = f"aria_chat_{secrets.token_urlsafe(32)}"
-        expires_at = now + _SESSION_TTL
+        expires_at = now + self._session_ttl
         record = AuthSessionRecord(
             id=uuid7(),
             user_id=user.id,
