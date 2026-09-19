@@ -17,8 +17,14 @@ depends_on: str | None = None
 
 
 def upgrade() -> None:
-    op.add_column("calendar_event", sa.Column("source_ref", sa.String(length=160), nullable=True))
-    op.add_column("calendar_event", sa.Column("external_etag", sa.String(length=128), nullable=True))
+    op.add_column(
+        "calendar_event",
+        sa.Column("source_ref", sa.String(length=160), nullable=True),
+    )
+    op.add_column(
+        "calendar_event",
+        sa.Column("external_etag", sa.String(length=128), nullable=True),
+    )
     op.create_index(
         "ix_calendar_event_source_ref",
         "calendar_event",

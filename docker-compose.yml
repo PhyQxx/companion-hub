@@ -114,6 +114,30 @@ services:
       - xiaoai-state:/data
     restart: unless-stopped
 
+  # 数据库每日逻辑备份（BK-01）：与 postgres 同镜像保证 pg_dump 版本一致；
+  # 备份落在宿主机 ./backups/，恢复步骤见 docs/07「数据备份与恢复（BK-01）」。
+  backup:
+    image: pgvector/pgvector:pg16
+    profiles: ["backup"]
+    environment:
+      PGHOST: postgres
+      PGPORT: "5432"
+      # 容器默认 UTC：显式给 TZ 让 ARIA_BACKUP_AT 的 03:30 是本地凌晨
+      TZ: ${ARIA_BACKUP_TZ:-Asia/Shanghai}
+      PGUSER: ${POSTGRES_USER:-aria}
+      PGPASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      PGDATABASE: ${POSTGRES_DB:-aria}
+      ARIA_BACKUP_AT: ${ARIA_BACKUP_AT:-03:30}
+      ARIA_BACKUP_KEEP_DAYS: ${ARIA_BACKUP_KEEP_DAYS:-14}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - ./deploy/backup.sh:/usr/local/bin/aria-backup.sh:ro
+      - ./backups:/backups
+    entrypoint: ["/bin/bash", "/usr/local/bin/aria-backup.sh"]
+    restart: unless-stopped
+
 volumes:
   postgres-data:
   mosquitto-data:

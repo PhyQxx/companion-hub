@@ -35,3 +35,6 @@ integrations/esp32_ld2410/.esphome/
 
 # 本地 MCP 调试 Server 的运行时状态（server/scripts/local_mcp_stub.py）
 server/scripts/local_mcp_stub_notes.jsonl
+
+# 数据库每日备份产物（compose backup 服务写入，BK-01）
+/backups/

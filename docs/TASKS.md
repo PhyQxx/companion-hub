@@ -178,6 +178,8 @@
 
 ## 3. 最近完成
 
+- [x] 2026-09-19 `平台加固批次（会话滑动续期 + 数据库每日备份 BK-01）`：**会话滑动续期**——`AuthService.authenticate` 在剩余寿命不足 TTL 一半时把 `expires_at` 顺延到 `now+TTL`（写库频率降到每段约一次），绝对寿命封顶 `issued_at+7 天`（`ARIA_SESSION_TTL_HOURS`/`ARIA_SESSION_MAX_LIFETIME_DAYS` 可调），活跃用户不再每 8 小时被强制登出，闲置会话仍按 8 小时过期、被盗令牌最长 7 天失效，与既有 401 统一登出闭环衔接；新增 3 项回归（滑动+不重复写、硬顶封顶、过期仍拒绝）。**数据库每日备份**——compose 新增 `backup` profile：与 postgres 同镜像（`pgvector/pgvector:pg16`）保证 `pg_dump` 版本一致，`deploy/backup.sh` 每日 `ARIA_BACKUP_AT`（默认 03:30，`ARIA_BACKUP_TZ` 默认 Asia/Shanghai 修正容器 UTC）自定义格式落盘宿主机 `./backups/`（已 gitignore），保留 `ARIA_BACKUP_KEEP_DAYS`（默认 14）天滚动清理、失败 10 分钟重试、启动晚于当日时刻自动补跑；docs/07 新增「数据备份与恢复（BK-01）」章节（边界/启用/隔离演练/真实恢复四步）。本机已完成真实验证：compose 启动产出 4.2MB 备份；恢复演练 `createdb aria_drill + pg_restore` 成功且关键表行数与生产一致（message 585、task_item 109、timeline_event 1361、alembic 版本随备份携带），演练库已删。顺带修复存量 `0043_calendar_mirror.py` 两行 E501（CI `ruff check server` 范围含 alembic，此前会挂）。全量非 soak **938 通过 / 0 失败**，Ruff、严格 mypy（373 文件）通过。
+
 - [x] 2026-09-18 `连续对话（电话模式）+ 五层抗噪防线 + 登录过期统一处理`：`voice.hello` 新增 `continuous` 声明——麦克风常开、自动 VAD 断句即发送、说话即打断（新话语在旧回合 ASR/生成间隙到达时先打断旧回合再处理，非连续模式保持丢弃语义）、跳过唤醒词待命门。五层抗噪：①断句层运行环境补装 `silero-vad`+`torch` 后自动升级 Silero 概率 VAD（稳态噪声不再产生"话语"；`vad_factory` 注入点保持测试确定性，`voice.hello` 即后台预热、失败回退能量 VAD）；②ASR 层 faster-whisper `vad_filter=True`+`condition_on_previous_text=False`（纯噪声空转写静默跳过、阻断幻觉跨窗滚雪球）；③ASR 逐段复核丢弃低置信无语音段与复读段（`no_speech_prob>0.5 且 avg_logprob<-0.9`；`compression_ratio>2.5` 且 ≥8 字）；④提示词回显检测（转写与 `initial_prompt` bigram overlap≥0.5 且 coverage≥0.55 判幻听丢弃，真实话语提及"智能伴侣小艾"只命中零碎片段不受影响）；⑤断句/回合层自动话语 600ms 总长下限（PTT 显式边界仍 150ms）+ 连续模式 6 秒内逐字相同转写只处理第一次（文字输入与卫星设备通道不受影响）。Chat 前端新增 📞 连续对话按钮（接通手势内预解锁 AudioContext，点挂断结束，麦克风被抢占即结束通话并提示）。另：任一 REST 轮询收到 401（8h 会话过期而 WebSocket 长连接不会自动断开）时经 `ChatApi.onUnauthorized` 统一登出并提示「登录已过期」，停止无效轮询刷 401 日志；安全服务未启用时 `/api/v1/safety/alerts` 404 后安全面板拉取一次即停止轮询。docs/04 §3.1/§6.3 同步；新增 6 项语音回归。全量非 soak **936 通过 / 0 失败**，Ruff、严格 mypy（app 零错误）、Chat typecheck 与 production build 通过。
 
 - [x] 2026-09-16 `简报通勤建议 + 聊天端日历同步工具`：每日简报新增**出行建议**行——当日首个带地点日程经 CommuteService 只读计算（建议出发时刻/目的地/模式/耗时，不建提醒，失败或非当日日程静默降级），带 `commute:{event_title}` 来源；新增 `calendar_sync` 聊天工具（L1，`provider=caldav|google|all`，手动触发外部日历镜像同步并返回各提供方统计，未配置方在 errors 说明）。main.py 注入 `commute_fetcher` 闭包（复用 build_commute_service，用完 aclose）。新增 2 项回归（通勤建议文本/来源/降级；同步工具分发/L2 拒绝/全失败语义/available）。全量非 soak 0 失败，Ruff、mypy（278 files）通过。
@@ -297,6 +299,8 @@
 - [x] 伴侣形象与角色系统 v1 骨架：`app/avatar/store.py` 实现 AvatarStore（形象包管理、实例创建/更新/删除、人格绑定与默认形象查询）；内置 `warm-daily`（静态）与 `light-core`（抽象）两个种子形象包；新增 `avatar_pack`/`avatar_instance`/`persona_avatar_binding` 表；Admin 后台路由 `/api/v1/admin/avatars` 支持包列表/实例列表/创建/更新/删除/绑定/查询默认形象；`ChatService` 在 `decision_meta` 中注入当前人格默认形象的 `avatar_instance_id` 与 `avatar_pack_id`；新增 11 个单元测试全部通过。
 
 ## 4. 最新质量基线
+
+- 2026-09-19 平台加固批次：新增 test_auth 3 项（滑动续期/硬顶/过期拒绝）；全量非 soak pytest **938 通过 / 2 跳过 / 0 失败**，Ruff（含 alembic）、严格 mypy（app+tests 373 文件零错误）通过；compose `--profile backup` 配置解析与备份/恢复链路本机实测通过。备份服务已在本机保持运行（每日 03:30）。
 
 - 2026-09-18 tests 严格 mypy 清理：9 个测试文件补齐注解/cast（无生产行为改动），全量非 soak pytest **936 通过 / 2 跳过 / 0 失败**，Ruff、**严格 mypy（app+tests 373 文件零错误）** 通过。至此本地发布闸门全项恢复：Ruff、严格 mypy 全量、Chat/Admin typecheck 与 production build、Alembic 单 head `0044`、`git diff --check`。
 
