@@ -506,6 +506,11 @@ function handleVoiceEvent(event: VoiceControlEvent) {
       voiceSentence = null;
       voiceStatus.value = "语音播报已由其他设备接管";
       break;
+    case "voice.partial_transcript":
+      // 流式 ASR 实时字幕（docs/04 §6.4 P1）：断句前即时显示识别中的文字
+      voiceTranscript.value = event.text ?? "";
+      voiceStatus.value = "正在识别…";
+      break;
     case "voice.transcript":
       voiceTranscript.value = event.text ?? "";
       voiceStatus.value = textReplyVoice.value
