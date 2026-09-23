@@ -20,9 +20,12 @@ from app.adapters import AdapterRegistry
 from app.adapters.builtin import create_builtin_registry
 from app.api import (
     create_admin_avatar_router,
+    create_admin_backups_router,
     create_admin_browser_awareness_router,
+    create_admin_butler_router,
     create_admin_config_router,
     create_admin_dashboard_router,
+    create_admin_export_router,
     create_admin_jobs_router,
     create_admin_mcp_router,
     create_admin_memory_router,
@@ -323,7 +326,14 @@ def create_app(
     avatar_importer = (
         AvatarAssetImporter(avatar_upload_root, avatar_store) if avatar_store is not None else None
     )
-    theme_store = ThemeStore(runtime_database) if runtime_database is not None else None
+    theme_store = (
+        ThemeStore(
+            runtime_database,
+            timezone_name=os.getenv("ARIA_DEFAULT_TIMEZONE", "Asia/Shanghai"),
+        )
+        if runtime_database is not None
+        else None
+    )
     cognitive_store = CognitiveStore(runtime_database) if runtime_database is not None else None
     action_registry = build_builtin_action_registry()
     action_plan_service = (
@@ -1193,7 +1203,25 @@ def create_app(
                     admin_token=runtime_admin_token,
                 )
             )
+        # BK-01 备份状态：目录只读检视，不依赖数据库
+        app.include_router(
+            create_admin_backups_router(
+                backup_dir=Path(os.getenv("ARIA_BACKUP_DIR", "backups")),
+                keep_days=int(os.getenv("ARIA_BACKUP_KEEP_DAYS", "14")),
+                backup_at=os.getenv("ARIA_BACKUP_AT", "03:30"),
+                timezone_name=os.getenv("ARIA_BACKUP_TZ", "Asia/Shanghai"),
+                admin_token=runtime_admin_token,
+            )
+        )
         if runtime_database is not None:
+            # FR-S3 数据导出/导入：伴侣数据 JSON 档案，凭据与机器状态不导出
+            app.include_router(
+                create_admin_export_router(
+                    database=runtime_database,
+                    admin_token=runtime_admin_token,
+                    hub_version=__version__,
+                )
+            )
             app.include_router(
                 create_admin_dashboard_router(
                     runtime_database,
@@ -1217,6 +1245,24 @@ def create_app(
                 app.include_router(
                     create_admin_tasks_router(
                         task_store,
+                        admin_token=runtime_admin_token,
+                    )
+                )
+            if (
+                workflow_service is not None
+                and home_scene_service is not None
+                and meeting_service is not None
+                and daily_brief_service is not None
+                and daily_review_service is not None
+            ):
+                app.include_router(
+                    create_admin_butler_router(
+                        database=runtime_database,
+                        workflows=workflow_service,
+                        scenes=home_scene_service,
+                        meetings=meeting_service,
+                        briefs=daily_brief_service,
+                        reviews=daily_review_service,
                         admin_token=runtime_admin_token,
                     )
                 )

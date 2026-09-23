@@ -113,3 +113,86 @@ async def test_chat_theme_api_requires_session_and_updates_shared_preference(
         fetched = await client.get("/api/v1/ui/preferences", headers=headers)
         assert fetched.status_code == 200
         assert fetched.json()["appearance_mode"] == "system"
+
+
+class TestScheduledTheme:
+    async def test_validate_schedule_boundaries(self) -> None:
+        from app.appearance import validate_schedule
+
+        assert validate_schedule("07:00", "19:00") == ("07:00", "19:00")
+        with pytest.raises(ValueError, match="HH:MM"):
+            validate_schedule("7:00", "19:00")
+        with pytest.raises(ValueError, match="HH:MM"):
+            validate_schedule("07:00", "24:30")
+        with pytest.raises(ValueError, match="不能相同"):
+            validate_schedule("08:00", "08:00")
+
+    async def test_schedule_prefers_light_windows(self) -> None:
+        from datetime import datetime
+        from zoneinfo import ZoneInfo
+
+        from app.appearance import schedule_prefers_light
+
+        tz = ZoneInfo("Asia/Shanghai")
+        assert schedule_prefers_light("07:00", "19:00", datetime(2026, 9, 22, 12, 0, tzinfo=tz))
+        assert not schedule_prefers_light("07:00", "19:00", datetime(2026, 9, 22, 21, 0, tzinfo=tz))
+        assert schedule_prefers_light("07:00", "19:00", datetime(2026, 9, 22, 7, 0, tzinfo=tz))
+        assert not schedule_prefers_light("07:00", "19:00", datetime(2026, 9, 22, 19, 0, tzinfo=tz))
+        # 亮窗跨夜（19:00 起亮、07:00 起暗）的倒置配置
+        assert schedule_prefers_light("19:00", "07:00", datetime(2026, 9, 22, 23, 0, tzinfo=tz))
+        assert not schedule_prefers_light("19:00", "07:00", datetime(2026, 9, 22, 12, 0, tzinfo=tz))
+
+    async def test_scheduled_preference_resolves_and_persists(self, store: ThemeStore) -> None:
+        await store.load_builtin_themes()
+        saved = await store.set_preference("scheduled", light_time="07:00", dark_time="19:00")
+        assert saved.selection == "scheduled"
+        assert saved.appearance_mode == "scheduled"
+        assert saved.schedule == ("07:00", "19:00")
+        # 生效主题按当前本地时间解析为明暗之一
+        assert saved.theme.key in {"pure-light", "midnight-violet"}
+
+        # 重新读取持久化的时段边界
+        reread = await store.get_preference()
+        assert reread.schedule == ("07:00", "19:00")
+
+        # 切回普通模式清空时段
+        plain = await store.set_preference("pure-light")
+        assert plain.schedule is None
+        cleared = await store.get_preference()
+        assert cleared.schedule is None
+
+    async def test_invalid_schedule_rejected(self, store: ThemeStore) -> None:
+        await store.load_builtin_themes()
+        with pytest.raises(ValueError, match="不能相同"):
+            await store.set_preference("scheduled", light_time="09:00", dark_time="09:00")
+
+    async def test_admin_api_roundtrips_schedule(self, store: ThemeStore) -> None:
+        await store.load_builtin_themes()
+        app = FastAPI()
+        app.include_router(create_admin_theme_router(store, admin_token="test-admin-token"))
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            updated = await client.put(
+                "/api/v1/admin/ui/preferences",
+                headers={"Authorization": "Bearer test-admin-token"},
+                json={"selection": "scheduled", "light_time": "06:30", "dark_time": "18:30"},
+            )
+            assert updated.status_code == 200
+            body = updated.json()
+            assert body["selection"] == "scheduled"
+            assert body["schedule"] == {"light_time": "06:30", "dark_time": "18:30"}
+
+            invalid = await client.put(
+                "/api/v1/admin/ui/preferences",
+                headers={"Authorization": "Bearer test-admin-token"},
+                json={"selection": "scheduled", "light_time": "99:00", "dark_time": "19:00"},
+            )
+            assert invalid.status_code == 422
+
+            # 切回非定时选择时 schedule 为 null
+            plain = await client.put(
+                "/api/v1/admin/ui/preferences",
+                headers={"Authorization": "Bearer test-admin-token"},
+                json={"selection": "system"},
+            )
+            assert plain.json()["schedule"] is None

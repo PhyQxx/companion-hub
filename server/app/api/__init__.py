@@ -1,8 +1,11 @@
 """HTTP API package."""
 from .admin_avatar import create_admin_avatar_router
+from .admin_backups import create_admin_backups_router
 from .admin_browser_awareness import create_admin_browser_awareness_router
+from .admin_butler import create_admin_butler_router
 from .admin_config import create_admin_config_router
 from .admin_dashboard import create_admin_dashboard_router
+from .admin_export import create_admin_export_router
 from .admin_jobs import create_admin_jobs_router
 from .admin_logs_stream import create_logs_stream_router
 from .admin_mcp import create_admin_mcp_router
@@ -52,9 +55,12 @@ __all__ = [
     "VoiceWebSocketManager",
     "XiaoAiWebSocketManager",
     "create_admin_avatar_router",
+    "create_admin_backups_router",
     "create_admin_browser_awareness_router",
+    "create_admin_butler_router",
     "create_admin_config_router",
     "create_admin_dashboard_router",
+    "create_admin_export_router",
     "create_admin_jobs_router",
     "create_admin_mcp_router",
     "create_admin_memory_router",
