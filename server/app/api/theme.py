@@ -26,16 +26,26 @@ class ThemeItem(StrictModel):
     updated_at: datetime
 
 
+class ThemeSchedule(StrictModel):
+    """定时主题切换边界：light_time 起用明亮、dark_time 起用深色（HH:MM）。"""
+
+    light_time: str
+    dark_time: str
+
+
 class ThemePreferenceItem(StrictModel):
     owner: str
-    selection: Literal["pure-light", "midnight-violet", "system"]
+    selection: Literal["pure-light", "midnight-violet", "system", "scheduled"]
     theme: ThemeItem
     appearance_mode: str
     updated_at: datetime | None
+    schedule: ThemeSchedule | None = None
 
 
 class UpdateThemePreferenceRequest(StrictModel):
-    selection: Literal["pure-light", "midnight-violet", "system"]
+    selection: Literal["pure-light", "midnight-violet", "system", "scheduled"]
+    light_time: str = "07:00"
+    dark_time: str = "19:00"
 
 
 def create_admin_theme_router(store: ThemeStore, *, admin_token: str | None) -> APIRouter:
@@ -56,9 +66,17 @@ def create_admin_theme_router(store: ThemeStore, *, admin_token: str | None) -> 
     @router.put("/preferences", response_model=ThemePreferenceItem)
     async def update_preference(body: UpdateThemePreferenceRequest) -> ThemePreferenceItem:
         try:
-            return _preference_item(await store.set_preference(body.selection))
+            return _preference_item(
+                await store.set_preference(
+                    body.selection,
+                    light_time=body.light_time,
+                    dark_time=body.dark_time,
+                )
+            )
         except LookupError as error:
             raise HTTPException(status_code=404, detail=str(error)) from error
+        except ValueError as error:
+            raise HTTPException(status_code=422, detail=str(error)) from error
 
     return router
 
@@ -85,7 +103,16 @@ def create_theme_router(store: ThemeStore, auth_service: AuthService) -> APIRout
         body: UpdateThemePreferenceRequest,
         _principal: ChatPrincipal = guard_dependency,
     ) -> ThemePreferenceItem:
-        return _preference_item(await store.set_preference(body.selection))
+        try:
+            return _preference_item(
+                await store.set_preference(
+                    body.selection,
+                    light_time=body.light_time,
+                    dark_time=body.dark_time,
+                )
+            )
+        except ValueError as error:
+            raise HTTPException(status_code=422, detail=str(error)) from error
 
     return router
 
@@ -112,4 +139,7 @@ def _preference_item(view: ThemePreferenceView) -> ThemePreferenceItem:
         theme=_theme_item(view.theme),
         appearance_mode=view.appearance_mode,
         updated_at=view.updated_at,
+        schedule=ThemeSchedule(light_time=view.schedule[0], dark_time=view.schedule[1])
+        if view.schedule
+        else None,
     )

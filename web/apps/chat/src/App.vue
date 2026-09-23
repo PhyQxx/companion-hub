@@ -9,6 +9,7 @@ import {
   VoiceSocket,
   broadcastThemePreference,
   readThemePreference,
+  readThemeSchedule,
   safeWebStorage,
   saveThemePreference,
   matchesLocationIntent,
@@ -21,6 +22,7 @@ import {
   type PrivacyLevel,
   type SocketEvent,
   type ThemePreference,
+  type ThemeSchedule,
   type ToolPresentation,
   type VoiceControlEvent,
 } from "@aria/shared";
@@ -223,11 +225,13 @@ async function onNotificationsChanged() {
 }
 
 async function onThemeChanged() {
-  saveThemePreference(themePreference.value);
-  broadcastThemePreference(themePreference.value);
+  // 定时切换时沿用当前存储的时段边界（时段编辑入口在管理后台主题中心）
+  const schedule = themePreference.value === "scheduled" ? readThemeSchedule() : undefined;
+  saveThemePreference(themePreference.value, schedule);
+  broadcastThemePreference(themePreference.value, schedule);
   if (!token.value) return;
   try {
-    await api.updateThemePreference(token.value, themePreference.value);
+    await api.updateThemePreference(token.value, themePreference.value, schedule);
     setStatus("主题已同步");
   } catch (error) {
     setStatus(error instanceof Error ? `${error.message}；已保存在本机` : "主题同步失败；已保存在本机", true);
@@ -240,7 +244,7 @@ async function syncThemePreference() {
     const preference = await api.themePreference(token.value);
     if (preference.selection !== themePreference.value) {
       themePreference.value = preference.selection;
-      saveThemePreference(preference.selection);
+      saveThemePreference(preference.selection, preference.schedule ?? undefined);
     }
   } catch {
     /* 服务不可用时保留本机最后可用主题 */
@@ -1289,11 +1293,11 @@ onMounted(async () => {
   document.addEventListener("visibilitychange", handleVisibilityChange);
   if (typeof BroadcastChannel !== "undefined") {
     themeChannel = new BroadcastChannel(THEME_CHANNEL_NAME);
-    themeChannel.onmessage = (event: MessageEvent<{ selection?: ThemePreference }>) => {
+    themeChannel.onmessage = (event: MessageEvent<{ selection?: ThemePreference; schedule?: ThemeSchedule }>) => {
       const selection = event.data?.selection;
       if (!selection || !THEME_OPTIONS.some((option) => option.value === selection)) return;
       themePreference.value = selection;
-      saveThemePreference(selection);
+      saveThemePreference(selection, event.data?.schedule);
     };
   }
   const saved = authStorage.getItem(TOKEN_KEY);

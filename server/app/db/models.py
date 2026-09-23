@@ -1296,7 +1296,7 @@ class UiPreferenceRecord(Base):
     __tablename__ = "ui_preference"
     __table_args__ = (
         CheckConstraint(
-            "appearance_mode IN ('light','dark','system')",
+            "appearance_mode IN ('light','dark','system','scheduled')",
             name="ck_ui_preference_mode",
         ),
     )
@@ -1306,6 +1306,9 @@ class UiPreferenceRecord(Base):
         Uuid(as_uuid=True), ForeignKey("ui_theme.id", ondelete="RESTRICT"), nullable=False
     )
     appearance_mode: Mapped[str] = mapped_column(String(16), nullable=False, server_default="light")
+    # 定时主题（appearance_mode='scheduled'）的切换边界，HH:MM；其余模式为 NULL
+    schedule_light_time: Mapped[str | None] = mapped_column(String(5), nullable=True)
+    schedule_dark_time: Mapped[str | None] = mapped_column(String(5), nullable=True)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now()
     )

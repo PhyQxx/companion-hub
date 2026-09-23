@@ -39,8 +39,8 @@ export interface ConfirmationDraft {
 /** 隐私等级：L0 可上云 / L1 常规 / L2 仅本地模型 */
 export type PrivacyLevel = "L0" | "L1" | "L2";
 
-/** 聊天端与管理后台共享的基础主题。system 只负责选择明/暗预设。 */
-export type ThemePreference = "pure-light" | "midnight-violet" | "system";
+/** 聊天端与管理后台共享的基础主题。system 跟随系统，scheduled 按时段切换。 */
+export type ThemePreference = "pure-light" | "midnight-violet" | "system" | "scheduled";
 
 export const THEME_STORAGE_KEY = "ariaThemePreference";
 export const THEME_CHANNEL_NAME = "ariaThemePreferenceChanged";
@@ -49,7 +49,42 @@ export const THEME_OPTIONS: ReadonlyArray<{ value: ThemePreference; label: strin
   { value: "pure-light", label: "纯净明亮" },
   { value: "midnight-violet", label: "静夜紫" },
   { value: "system", label: "跟随系统" },
+  { value: "scheduled", label: "定时切换" },
 ];
+
+/** 定时主题切换边界（HH:MM）：light_time 起用明亮、dark_time 起用深色。 */
+export interface ThemeSchedule {
+  light_time: string;
+  dark_time: string;
+}
+
+export const DEFAULT_THEME_SCHEDULE: ThemeSchedule = { light_time: "07:00", dark_time: "19:00" };
+
+export interface StoredThemePreference {
+  selection: ThemePreference;
+  schedule?: ThemeSchedule;
+}
+
+function isValidSchedule(value: unknown): value is ThemeSchedule {
+  if (typeof value !== "object" || value === null) return false;
+  const schedule = value as Partial<ThemeSchedule>;
+  return typeof schedule.light_time === "string" && typeof schedule.dark_time === "string";
+}
+
+/** 定时主题按本地时钟解析当前应使用的主题；与后端 schedule_prefers_light 语义一致。 */
+export function resolveScheduledTheme(schedule: ThemeSchedule): "pure-light" | "midnight-violet" {
+  const now = new Date();
+  const minute = now.getHours() * 60 + now.getMinutes();
+  const toMinutes = (value: string): number => {
+    const [hour, minutePart] = value.split(":");
+    return Number(hour) * 60 + Number(minutePart);
+  };
+  const light = toMinutes(schedule.light_time);
+  const dark = toMinutes(schedule.dark_time);
+  if (light === dark || Number.isNaN(light) || Number.isNaN(dark)) return "pure-light";
+  if (light < dark) return light <= minute && minute < dark ? "pure-light" : "midnight-violet";
+  return dark <= minute && minute < light ? "midnight-violet" : "pure-light";
+}
 
 export interface UiThemeItem {
   id: string;
@@ -72,8 +107,9 @@ export interface UiThemePreference {
   owner: string;
   selection: ThemePreference;
   theme: UiThemeItem;
-  appearance_mode: "light" | "dark" | "system";
+  appearance_mode: "light" | "dark" | "system" | "scheduled";
   updated_at: string | null;
+  schedule: ThemeSchedule | null;
 }
 
 const THEME_TOKENS = {
@@ -122,23 +158,56 @@ export function safeWebStorage(kind: "local" | "session"): Storage {
   }
 }
 
-export function readThemePreference(): ThemePreference {
-  if (typeof localStorage === "undefined") return "pure-light";
+export function readStoredThemePreference(): StoredThemePreference {
+  if (typeof localStorage === "undefined") return { selection: "pure-light" };
   let saved: string | null = null;
   try {
     saved = localStorage.getItem(THEME_STORAGE_KEY);
   } catch {
-    return "pure-light";
+    return { selection: "pure-light" };
   }
-  return THEME_OPTIONS.some((option) => option.value === saved)
-    ? saved as ThemePreference
-    : "pure-light";
+  if (!saved) return { selection: "pure-light" };
+  // 兼容旧版本存储的纯字符串
+  if (!saved.startsWith("{")) {
+    return THEME_OPTIONS.some((option) => option.value === saved)
+      ? { selection: saved as ThemePreference }
+      : { selection: "pure-light" };
+  }
+  try {
+    const parsed = JSON.parse(saved) as { selection?: unknown; schedule?: unknown };
+    if (
+      typeof parsed.selection === "string" &&
+      THEME_OPTIONS.some((option) => option.value === parsed.selection)
+    ) {
+      const selection = parsed.selection as ThemePreference;
+      return {
+        selection,
+        schedule: selection === "scheduled" && isValidSchedule(parsed.schedule)
+          ? (parsed.schedule as ThemeSchedule)
+          : undefined,
+      };
+    }
+  } catch {
+    /* 损坏的存储回退默认 */
+  }
+  return { selection: "pure-light" };
 }
 
-export function applyThemePreference(preference: ThemePreference): void {
+export function readThemePreference(): ThemePreference {
+  return readStoredThemePreference().selection;
+}
+
+export function readThemeSchedule(): ThemeSchedule {
+  return readStoredThemePreference().schedule ?? DEFAULT_THEME_SCHEDULE;
+}
+
+export function applyThemePreference(preference: ThemePreference, schedule?: ThemeSchedule): void {
   if (typeof document === "undefined") return;
   const prefersDark = typeof matchMedia !== "undefined" && matchMedia("(prefers-color-scheme: dark)").matches;
-  const resolved = preference === "system" ? (prefersDark ? "midnight-violet" : "pure-light") : preference;
+  let resolved: "pure-light" | "midnight-violet";
+  if (preference === "system") resolved = prefersDark ? "midnight-violet" : "pure-light";
+  else if (preference === "scheduled") resolved = resolveScheduledTheme(schedule ?? readThemeSchedule());
+  else resolved = preference;
   const root = document.documentElement;
   root.dataset.themePreference = preference;
   root.dataset.theme = resolved;
@@ -148,31 +217,45 @@ export function applyThemePreference(preference: ThemePreference): void {
   }
 }
 
-export function saveThemePreference(preference: ThemePreference): void {
+export function saveThemePreference(preference: ThemePreference, schedule?: ThemeSchedule): void {
+  const stored: StoredThemePreference =
+    preference === "scheduled" ? { selection: preference, schedule: schedule ?? readThemeSchedule() } : { selection: preference };
   try {
-    if (typeof localStorage !== "undefined") localStorage.setItem(THEME_STORAGE_KEY, preference);
+    if (typeof localStorage !== "undefined") localStorage.setItem(THEME_STORAGE_KEY, JSON.stringify(stored));
   } catch {
     // 存储被浏览器沙盒拒绝：仅应用到当前文档，不持久化
   }
-  applyThemePreference(preference);
+  applyThemePreference(preference, stored.schedule);
 }
 
-export function broadcastThemePreference(preference: ThemePreference): void {
+export function broadcastThemePreference(preference: ThemePreference, schedule?: ThemeSchedule): void {
   if (typeof BroadcastChannel === "undefined") return;
   const channel = new BroadcastChannel(THEME_CHANNEL_NAME);
-  channel.postMessage({ selection: preference });
+  channel.postMessage({
+    selection: preference,
+    schedule: preference === "scheduled" ? schedule ?? readThemeSchedule() : undefined,
+  });
   channel.close();
 }
 
 export function initializeTheme(): () => void {
-  applyThemePreference(readThemePreference());
+  const stored = readStoredThemePreference();
+  applyThemePreference(stored.selection, stored.schedule);
   if (typeof matchMedia === "undefined") return () => undefined;
   const query = matchMedia("(prefers-color-scheme: dark)");
   const update = () => {
     if (readThemePreference() === "system") applyThemePreference("system");
   };
   query.addEventListener("change", update);
-  return () => query.removeEventListener("change", update);
+  // 定时主题：每分钟按本地时钟复评切换边界
+  const tick = window.setInterval(() => {
+    const current = readStoredThemePreference();
+    if (current.selection === "scheduled") applyThemePreference("scheduled", current.schedule);
+  }, 60_000);
+  return () => {
+    query.removeEventListener("change", update);
+    window.clearInterval(tick);
+  };
 }
 
 /** 终端 WGS84 临时位置：仅随消息帧在内存中传递，用于工具位置解析，不落库 */
@@ -216,6 +299,16 @@ export interface VoiceLatencySummary {
   total_ms: VoiceLatencyMetricSummary;
   interrupt_ms: VoiceLatencyMetricSummary;
   asr_prefetched_count: number;
+  /** P2 投机可行性前置测量（docs/04 §6.4）：句中停顿与 partial 匹配分布 */
+  speculation?: {
+    streamed_turns: number;
+    stable_partial_ms: VoiceLatencyMetricSummary;
+    pause_ge_300ms: number;
+    pause_ge_600ms: number;
+    partial_exact_match: number;
+    partial_prefix: number;
+    partial_diverged: number;
+  };
   targets: {
     completed_turns: number;
     first_audio_samples: number;
@@ -226,8 +319,8 @@ export interface VoiceLatencySummary {
   acceptance: {
     completed_turns_ready: boolean;
     first_audio_samples_ready: boolean;
-    interrupt_samples_ready: boolean;
     first_audio_p90_pass: boolean;
+    interrupt_samples_ready: boolean;
     interrupt_p90_pass: boolean;
     overall_pass: boolean;
   };
@@ -862,10 +955,15 @@ export class ChatApi {
     return this.request<UiThemePreference>("/api/v1/ui/preferences", { method: "GET" }, token);
   }
 
-  updateThemePreference(token: string, selection: ThemePreference) {
+  updateThemePreference(token: string, selection: ThemePreference, schedule?: ThemeSchedule) {
+    const body: { selection: ThemePreference; light_time?: string; dark_time?: string } = { selection };
+    if (selection === "scheduled" && schedule) {
+      body.light_time = schedule.light_time;
+      body.dark_time = schedule.dark_time;
+    }
     return this.request<UiThemePreference>("/api/v1/ui/preferences", {
       method: "PUT",
-      body: JSON.stringify({ selection }),
+      body: JSON.stringify(body),
     }, token);
   }
 
