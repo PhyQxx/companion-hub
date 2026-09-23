@@ -52,9 +52,18 @@ interface HaEntityPolicy {
 
 interface HaConfig {
   enabled: boolean;
+  instance_id: string;
   base_url: string | null;
+  secret_mode: "value" | "ref" | "none";
   secret_ref?: string | null;
   secret_value?: string | null;
+  verify_tls: boolean;
+  allow_insecure_local_http: boolean;
+  connect_timeout_ms: number;
+  request_timeout_ms: number;
+  reconnect_min_seconds: number;
+  reconnect_max_seconds: number;
+  state_cache_ttl_seconds: number;
   proactive_enabled: boolean;
   proactive_quiet_hours_start: string;
   proactive_quiet_hours_end: string;
@@ -64,53 +73,8 @@ interface HaConfig {
   [key: string]: unknown;
 }
 
-interface XiaoAiConfig {
-  enabled: boolean;
-  xiaomi_user_id: string | null;
-  xiaomi_password_secret_value: string | null;
-  xiaomi_password_secret_ref: string | null;
-  xiaomi_pass_token_secret_value: string | null;
-  xiaomi_pass_token_secret_ref: string | null;
-  speaker_name: string | null;
-  ha_device_id: string | null;
-  model: string | null;
-  owner_user_id: string | null;
-  gateway_token_secret_value: string | null;
-  gateway_token_secret_ref: string | null;
-  trigger_prefix: string;
-  tts_siid: number | null;
-  tts_aiid: number | null;
-}
-
-interface CalDavConfig {
-  enabled: boolean;
-  url: string | null;
-  username: string | null;
-  secret_value: string | null;
-  secret_ref: string | null;
-  calendar_names: string[];
-  window_days_back: number;
-  window_days_forward: number;
-}
-
-interface GoogleCalendarConfig {
-  enabled: boolean;
-  client_id: string | null;
-  secret_value: string | null;
-  secret_ref: string | null;
-  redirect_uri: string | null;
-  calendar_ids: string[];
-  window_days_back: number;
-  window_days_forward: number;
-}
-
-interface CalendarIntegrations {
-  caldav: CalDavConfig;
-  google: GoogleCalendarConfig;
-}
-
 interface HubConfig {
-  integrations: { home_assistant: HaConfig; xiaoai?: XiaoAiConfig; calendar?: CalendarIntegrations };
+  integrations: { home_assistant: HaConfig; [key: string]: unknown };
   [key: string]: unknown;
 }
 
@@ -153,18 +117,11 @@ const api = inject("adminApi") as AdminApi;
 const emit = defineEmits<{ status: [text: string, error?: boolean] }>();
 const current = ref<CurrentConfig | null>(null);
 const ha = ref<HaConfig | null>(null);
-const xiaoai = ref<XiaoAiConfig | null>(null);
-const calendar = ref<CalendarIntegrations | null>(null);
-const caldavSyncing = ref(false);
-const googleSyncing = ref(false);
-const googleSyncResult = ref<string>("");
-const caldavSyncResult = ref<string>("");
 const loading = ref(false);
 const saving = ref(false);
 const testing = ref(false);
 const testingProactive = ref(false);
 const testResult = ref<ConnectionResult | null>(null);
-const search = ref("");
 const selected = ref<string[]>([]);
 
 const HA_ENTITIES_KEY = "aria:ha:entities";
@@ -199,29 +156,6 @@ const areaOptions = computed(() =>
 const domainOptions = computed(() =>
   [...new Set(allEntities.value.map((e) => e.domain))].sort(),
 );
-const speakerOptions = computed(() => {
-  const found = new Map<string, { device_id: string; name: string; model: string; manufacturer: string }>();
-  for (const entity of allEntities.value) {
-    const entitySpeaker = entity.entity_id.match(
-      /^media_player\.([a-z0-9]+)_cn_\d+_([a-z0-9]+)$/i,
-    );
-    const model = entity.model?.includes("wifispeaker")
-      ? entity.model
-      : entitySpeaker
-        ? `${entitySpeaker[1]}.wifispeaker.${entitySpeaker[2]}`
-        : null;
-    if (!model) continue;
-    const inferredName = entity.friendly_name.split(/\s{2,}/, 1)[0]?.trim();
-    const key = entity.device_id || `entity:${entity.entity_id}`;
-    found.set(key, {
-      device_id: key,
-      name: entity.device_name || inferredName || entity.friendly_name,
-      model,
-      manufacturer: entity.manufacturer || entitySpeaker?.[1] || "",
-    });
-  }
-  return [...found.values()].sort((a, b) => a.name.localeCompare(b.name, "zh-CN"));
-});
 const filteredEntities = computed(() => {
   let rows = allEntities.value;
   const kw = keyword.value.trim().toLowerCase();
@@ -291,19 +225,18 @@ const ruleLabels: Record<RuleKind, string> = {
   device_offline: "设备离线",
 };
 
-const discovered = computed(() => {
-  const kw = search.value.trim().toLocaleLowerCase();
-  const rows = allEntities.value;
-  if (!kw) return rows;
-  return rows.filter((item) =>
-    [item.entity_id, item.friendly_name, item.domain, item.device_class ?? "", item.area ?? "", item.device_name ?? "", item.manufacturer ?? "", item.model ?? ""]
-      .some((value) => value.toLocaleLowerCase().includes(kw)),
-  );
-});
-
 function normalizeConfig(config: HaConfig): HaConfig {
   return {
     ...config,
+    instance_id: config.instance_id ?? "home-main",
+    secret_mode: config.secret_value ? "value" : config.secret_ref ? "ref" : "none",
+    verify_tls: config.verify_tls ?? true,
+    allow_insecure_local_http: config.allow_insecure_local_http ?? false,
+    connect_timeout_ms: config.connect_timeout_ms ?? 5000,
+    request_timeout_ms: config.request_timeout_ms ?? 8000,
+    reconnect_min_seconds: config.reconnect_min_seconds ?? 1,
+    reconnect_max_seconds: config.reconnect_max_seconds ?? 30,
+    state_cache_ttl_seconds: config.state_cache_ttl_seconds ?? 300,
     proactive_enabled: config.proactive_enabled ?? false,
     proactive_quiet_hours_start: config.proactive_quiet_hours_start ?? "23:00",
     proactive_quiet_hours_end: config.proactive_quiet_hours_end ?? "07:00",
@@ -331,100 +264,11 @@ function normalizeConfig(config: HaConfig): HaConfig {
   };
 }
 
-function defaultXiaoAi(): XiaoAiConfig {
-  return {
-    enabled: false,
-    xiaomi_user_id: null,
-    xiaomi_password_secret_value: null,
-    xiaomi_password_secret_ref: null,
-    xiaomi_pass_token_secret_value: null,
-    xiaomi_pass_token_secret_ref: null,
-    speaker_name: null,
-    ha_device_id: null,
-    model: null,
-    owner_user_id: null,
-    gateway_token_secret_value: null,
-    gateway_token_secret_ref: null,
-    trigger_prefix: "请阿莉娅",
-    tts_siid: null,
-    tts_aiid: null,
-  };
-}
-
-function onSpeakerChange(deviceId: string) {
-  if (!xiaoai.value) return;
-  const speaker = speakerOptions.value.find((item) => item.device_id === deviceId);
-  if (!speaker) return;
-  xiaoai.value.speaker_name = speaker.name;
-  xiaoai.value.model = speaker.model;
-}
-
-function defaultCalendar(): CalendarIntegrations {
-  return {
-    caldav: {
-      enabled: false,
-      url: null,
-      username: null,
-      secret_value: null,
-      secret_ref: null,
-      calendar_names: [],
-      window_days_back: 7,
-      window_days_forward: 60,
-    },
-    google: {
-      enabled: false,
-      client_id: null,
-      secret_value: null,
-      secret_ref: null,
-      redirect_uri: null,
-      calendar_ids: [],
-      window_days_back: 7,
-      window_days_forward: 60,
-    },
-  };
-}
-
-function parseCalendarNames(raw: string): string[] {
-  return raw.split(/[,,\n]/).map((item) => item.trim()).filter(Boolean);
-}
-
-async function syncCalendar(provider: "caldav" | "google") {
-  const syncing = provider === "caldav" ? caldavSyncing : googleSyncing;
-  const resultRef = provider === "caldav" ? caldavSyncResult : googleSyncResult;
-  syncing.value = true;
-  resultRef.value = "";
-  try {
-    const result = await api.request<Record<string, unknown>>(
-      `/api/v1/admin/config/integrations/calendar/${provider}/sync`,
-      { method: "POST" },
-    );
-    const errors = (result.errors as string[]) ?? [];
-    resultRef.value = errors.length
-      ? `失败：${errors.join("；")}`
-      : `同步 ${result.pulled} 条事件，新建 ${result.mirrors_created}，更新 ${result.mirrors_updated}`;
-    errors.length ? ElMessage.error(resultRef.value) : ElMessage.success("同步完成");
-  } catch (error) {
-    resultRef.value = error instanceof Error ? error.message : "同步失败";
-    ElMessage.error(resultRef.value);
-  } finally {
-    syncing.value = false;
-  }
-}
-
-function generateGatewayToken() {
-  if (!xiaoai.value) return;
-  const bytes = crypto.getRandomValues(new Uint8Array(32));
-  xiaoai.value.gateway_token_secret_value = btoa(String.fromCharCode(...bytes))
-    .replaceAll("+", "-").replaceAll("/", "_").replaceAll("=", "");
-}
-
 async function load() {
   loading.value = true;
   try {
     current.value = await api.request<CurrentConfig>("/api/v1/admin/config/current");
     ha.value = normalizeConfig(clonePlain(current.value.config.integrations.home_assistant));
-    xiaoai.value = clonePlain(current.value.config.integrations.xiaoai ?? defaultXiaoAi());
-    calendar.value = clonePlain(current.value.config.integrations.calendar ?? defaultCalendar());
     if (ha.value?.enabled && ha.value.base_url && allEntities.value.length === 0) {
       await fetchAllEntities(true);
     }
@@ -459,14 +303,15 @@ async function fetchAllEntities(silent = false) {
 }
 
 async function testConnection() {
-  if (!ha.value) return;
+  const cleanedHa = submittableHaConfig();
+  if (!cleanedHa) return;
   testing.value = true;
   testResult.value = null;
   selected.value = [];
   try {
     const result = await api.request<ConnectionResult>(
       "/api/v1/admin/config/integrations/home-assistant/test",
-      { method: "POST", body: JSON.stringify({ config: ha.value }) },
+      { method: "POST", body: JSON.stringify({ config: cleanedHa }) },
     );
     testResult.value = result;
     result.ok ? ElMessage.success(result.message) : ElMessage.error(result.message);
@@ -493,29 +338,41 @@ async function testProactive() {
   }
 }
 
+/** secret_mode 只是编辑态字段：按当前模式收敛 secret 字段后返回可提交的配置。 */
+function submittableHaConfig(): HaConfig | null {
+  if (!ha.value) return null;
+  const { secret_mode, ...rest } = ha.value;
+  const cleaned = rest as HaConfig;
+  if (secret_mode === "value" && cleaned.secret_value) cleaned.secret_ref = null;
+  else if (secret_mode === "ref" && cleaned.secret_ref) cleaned.secret_value = null;
+  else {
+    cleaned.secret_value = null;
+    cleaned.secret_ref = null;
+  }
+  return cleaned;
+}
+
 async function save() {
   if (!ha.value || !current.value) return;
   saving.value = true;
   try {
     const config = clonePlain(current.value.config);
+    const cleanedHa = submittableHaConfig();
+    if (!cleanedHa) return;
     config.integrations.home_assistant = {
-      ...ha.value,
-      entities: ha.value.entities.map((entity) => ({
+      ...cleanedHa,
+      entities: cleanedHa.entities.map((entity) => ({
         ...entity,
         confirmation_required_actions: entity.confirmation_required_actions.filter((action) =>
           entity.allowed_actions.includes(action),
         ),
       })),
     };
-    if (xiaoai.value) config.integrations.xiaoai = clonePlain(xiaoai.value);
-    if (calendar.value) config.integrations.calendar = clonePlain(calendar.value);
     current.value = await api.request<CurrentConfig>("/api/v1/admin/config/current", {
       method: "PUT",
       body: JSON.stringify(config),
     });
     ha.value = normalizeConfig(clonePlain(current.value.config.integrations.home_assistant));
-    xiaoai.value = clonePlain(current.value.config.integrations.xiaoai ?? defaultXiaoAi());
-    calendar.value = clonePlain(current.value.config.integrations.calendar ?? defaultCalendar());
     emit("status", `HA 设备授权已保存，配置版本 ${current.value.version}`);
     ElMessage.success("保存成功，已即时生效");
   } catch (error) {
@@ -687,11 +544,38 @@ onMounted(load);
 <template>
   <section v-loading="loading" class="ha-workspace">
     <div class="hero panel">
-      <div><div class="eyebrow">设备与感知 · Home Assistant</div><h2>HA 实体授权</h2><p>统一管理实体发现、读取、历史、控制、确认和主动感知。未授权能力默认拒绝。</p></div>
+      <div><div class="eyebrow">感知与守护 · Home Assistant</div><h2>HA 连接与实体授权</h2><p>连接参数、实体发现、读取、历史、控制、确认和主动感知统一在此管理。未授权能力默认拒绝。</p></div>
       <div class="actions"><el-button :loading="fetchingAll" @click="() => fetchAllEntities()">刷新设备列表</el-button><el-button type="primary" :loading="saving" @click="save">保存并生效</el-button></div>
     </div>
 
     <template v-if="ha">
+      <div class="panel connection-config">
+        <div class="panel-head">
+          <div><h2>Home Assistant 连接</h2><p>地址、令牌与运行参数。长期访问令牌仅在服务端使用，不下发到聊天端。</p></div>
+          <div class="actions">
+            <el-button :loading="testing" @click="testConnection">测试连接</el-button>
+            <el-switch v-model="ha.enabled" active-text="启用 HA" />
+          </div>
+        </div>
+        <div v-if="testResult" class="connection-note" :class="testResult.ok ? 'ok' : 'bad'">
+          {{ testResult.message }}<span v-if="testResult.ok"> · {{ Math.round(testResult.latency_ms) }} ms · 发现 {{ testResult.entities.length }} 个实体</span>
+        </div>
+        <div class="form-grid three">
+          <label><span>实例标识</span><el-input v-model="ha.instance_id" placeholder="home-main" /></label>
+          <label><span>Home Assistant 地址</span><el-input v-model="ha.base_url" placeholder="https://ha.example.com" /></label>
+          <label><span>令牌保存方式</span><el-select v-model="ha.secret_mode"><el-option label="后台直接保存" value="value" /><el-option label="环境变量引用" value="ref" /><el-option label="暂不配置" value="none" /></el-select></label>
+          <label v-if="ha.secret_mode === 'value'"><span>长期访问令牌</span><el-input v-model="ha.secret_value" type="password" show-password autocomplete="new-password" /></label>
+          <label v-else-if="ha.secret_mode === 'ref'"><span>环境变量引用</span><el-input v-model="ha.secret_ref" placeholder="env:ARIA_HA_TOKEN" /></label>
+          <label><span>TLS 证书校验</span><el-switch v-model="ha.verify_tls" /></label>
+          <label><span>允许本地 HTTP</span><el-switch v-model="ha.allow_insecure_local_http" /></label>
+          <label><span>连接超时（ms）</span><el-input-number v-model="ha.connect_timeout_ms" :min="500" :max="30000" /></label>
+          <label><span>请求超时（ms）</span><el-input-number v-model="ha.request_timeout_ms" :min="500" :max="30000" /></label>
+          <label><span>状态缓存有效期（秒）</span><el-input-number v-model="ha.state_cache_ttl_seconds" :min="5" :max="86400" /></label>
+          <label><span>重连最短等待（秒）</span><el-input-number v-model="ha.reconnect_min_seconds" :min="0.1" :max="30" :step="0.5" /></label>
+          <label><span>重连最长等待（秒）</span><el-input-number v-model="ha.reconnect_max_seconds" :min="1" :max="300" /></label>
+        </div>
+      </div>
+
       <div v-if="ha.enabled" class="panel discovery">
         <div class="panel-head"><div><h2>HA 设备总览</h2><p>共 {{ allEntities.length }} 个实体 · 已授权 {{ ha.entities.length }} 个</p></div><el-button type="primary" :disabled="!selected.length" @click="addSelected">加入授权（{{ selected.length }}）</el-button></div>
         <div class="filter-bar">
@@ -743,61 +627,6 @@ onMounted(load);
         </div>
       </div>
 
-      <div v-if="xiaoai" class="panel xiaoai-config">
-        <div class="panel-head">
-          <div><h2>小爱音箱网关</h2><p>账号、音箱和密钥由配置中心保存；音箱型号直接来自 HA，不再写入环境变量。</p></div>
-          <el-switch v-model="xiaoai.enabled" active-text="启用小爱接入" />
-        </div>
-        <div class="form-grid three">
-          <label><span>目标音箱</span><el-select v-model="xiaoai.ha_device_id" filterable placeholder="请先刷新 HA 设备" @change="onSpeakerChange"><el-option v-for="speaker in speakerOptions" :key="speaker.device_id" :label="`${speaker.name} · ${speaker.model}`" :value="speaker.device_id" /></el-select></label>
-          <label><span>HA 型号</span><el-input :model-value="xiaoai.model || ''" disabled /></label>
-          <label><span>触发前缀</span><el-input v-model="xiaoai.trigger_prefix" placeholder="请阿莉娅" /></label>
-          <label><span>小米账号 ID</span><el-input v-model="xiaoai.xiaomi_user_id" autocomplete="off" /></label>
-          <label><span>小米账号密码</span><el-input v-model="xiaoai.xiaomi_password_secret_value" type="password" show-password autocomplete="new-password" /></label>
-          <label class="wide"><span>小米 passToken（触发验证码时填写）</span><el-input v-model="xiaoai.xiaomi_pass_token_secret_value" type="password" show-password autocomplete="new-password" /></label>
-          <label><span>中枢用户 UUID</span><el-input v-model="xiaoai.owner_user_id" placeholder="登录用户 UUID" /></label>
-          <label class="wide"><span>网关认证密钥</span><div class="secret-row"><el-input v-model="xiaoai.gateway_token_secret_value" type="password" show-password autocomplete="new-password" /><el-button @click="generateGatewayToken">随机生成</el-button></div></label>
-          <label><span>TTS SIID（通常留空）</span><el-input-number v-model="xiaoai.tts_siid" :min="1" :controls="false" /></label>
-          <label><span>TTS AIID（通常留空）</span><el-input-number v-model="xiaoai.tts_aiid" :min="1" :controls="false" /></label>
-        </div>
-        <p class="config-note">保存后 Hub 会把配置写入小爱网关的私有共享卷。首次启用或更换账号后重启 xiaoai-gateway 容器即可生效。</p>
-      </div>
-
-      <div v-if="calendar" class="panel calendar-config">
-        <div class="panel-head">
-          <div><h2>外部日历</h2><p>CalDAV / Google 日历只读镜像到本地时间线：查询、简报和通勤建议可用，镜像不产生本地提醒。</p></div>
-        </div>
-        <div class="cal-columns">
-          <div class="cal-block">
-            <div class="cal-head"><strong>CalDAV</strong><el-switch v-model="calendar.caldav.enabled" active-text="启用" /></div>
-            <div class="form-grid">
-              <label class="wide"><span>服务器地址</span><el-input v-model="calendar.caldav.url" placeholder="https://…/calendars/用户/" /></label>
-              <label><span>用户名</span><el-input v-model="calendar.caldav.username" autocomplete="off" /></label>
-              <label><span>应用密码</span><el-input v-model="calendar.caldav.secret_value" type="password" show-password autocomplete="new-password" /></label>
-              <label class="wide"><span>日历名单（逗号分隔，留空同步全部）</span><el-input :model-value="calendar.caldav.calendar_names.join(',')" @update:model-value="(v: string) => { if (calendar) calendar.caldav.calendar_names = parseCalendarNames(v); }" /></label>
-              <label><span>向前窗口（天）</span><el-input-number v-model="calendar.caldav.window_days_forward" :min="1" :max="365" /></label>
-              <label class="actions"><el-button :loading="caldavSyncing" @click="syncCalendar('caldav')">立即同步</el-button></label>
-            </div>
-            <p v-if="caldavSyncResult" class="config-note">{{ caldavSyncResult }}</p>
-          </div>
-          <div class="cal-block">
-            <div class="cal-head"><strong>Google 日历</strong><el-switch v-model="calendar.google.enabled" active-text="启用" /></div>
-            <div class="form-grid">
-              <label class="wide"><span>OAuth 客户端 ID</span><el-input v-model="calendar.google.client_id" placeholder="…apps.googleusercontent.com" /></label>
-              <label><span>客户端密钥</span><el-input v-model="calendar.google.secret_value" type="password" show-password autocomplete="new-password" /></label>
-              <label><span>回调地址</span><el-input v-model="calendar.google.redirect_uri" placeholder="http://hub:8000/api/v1/calendar/google/callback" /></label>
-              <label class="wide"><span>日历 ID（逗号分隔，留空用 primary）</span><el-input :model-value="calendar.google.calendar_ids.join(',')" @update:model-value="(v: string) => { if (calendar) calendar.google.calendar_ids = parseCalendarNames(v); }" /></label>
-              <label class="actions">
-                <el-button :loading="googleSyncing" @click="syncCalendar('google')">立即同步</el-button>
-                <el-button v-if="calendar.google.enabled && calendar.google.client_id" tag="a" target="_blank" :href="`/api/v1/calendar/google/authorize`">打开授权页</el-button>
-              </label>
-            </div>
-            <p class="config-note">先保存配置，再点「打开授权页」完成 Google 同意；刷新令牌只落库，不显示在页面上。</p>
-            <p v-if="googleSyncResult" class="config-note">{{ googleSyncResult }}</p>
-          </div>
-        </div>
-      </div>
-
       <div class="panel proactive-global">
         <div class="panel-head"><div><h2>主动感知总策略</h2><p>只主动发送建议和安全提醒，不会由 HA 事件自动控制设备。</p></div><div class="actions"><el-button :loading="testingProactive" @click="testProactive">发送测试提醒</el-button><el-switch v-model="ha.proactive_enabled" active-text="启用主动感知" /></div></div>
         <div class="form-grid">
@@ -846,10 +675,10 @@ onMounted(load);
 </template>
 
 <style scoped>
-.ha-workspace{padding:20px 24px 28px;display:grid;gap:16px;align-content:start}.panel{background:#fff;border:1px solid var(--line);border-radius:14px;padding:18px}.hero,.panel-head,.entity-head,.rules-head,.actions{display:flex;align-items:center;justify-content:space-between;gap:14px}.hero{background:linear-gradient(135deg,#fff,#f1f5ff)}h2,p{margin:0}.hero h2,.panel h2{font-size:16px}.hero p,.panel-head p{margin-top:7px;color:var(--muted);font-size:12px}.eyebrow{margin-bottom:7px;color:var(--accent);font-size:11px;font-weight:700}.actions{justify-content:flex-end}.form-grid{display:grid;grid-template-columns:repeat(4,minmax(160px,1fr));gap:14px}.form-grid.three{grid-template-columns:repeat(3,minmax(180px,1fr))}.form-grid label,.rule-row label{display:grid;gap:6px;color:var(--muted);font-size:11px}.form-grid small,.rule-row small,.rules-head small{color:var(--muted);font-size:10px}.wide{grid-column:1/-1}.secret-row{display:flex;gap:8px}.xiaoai-config{display:grid;gap:16px;background:linear-gradient(135deg,#fff,#f7f2ff)}.config-note{color:var(--muted);font-size:11px}.discovery{display:grid;gap:14px}.filter-bar{display:flex;gap:10px;flex-wrap:wrap;align-items:center}.pager{display:flex;justify-content:flex-end}.auth-badge{display:inline-block;margin-left:6px;padding:1px 6px;border-radius:4px;background:#e8f5e9;color:#2e7d32;font-size:10px;font-weight:600}.device-model{display:grid;gap:2px}.device-model small{color:var(--muted);font-size:10px}.muted{color:var(--muted);font-size:12px}.load-more{display:flex;justify-content:center;margin-top:14px}.entity-card{display:grid;gap:16px;margin-top:14px;padding:16px;border:1px solid #e5e9f2;border-radius:12px;background:#fbfcff}.entity-head>div:first-child{display:grid;gap:5px}.entity-head code{color:var(--muted);font-size:10px}.rules{display:grid;gap:10px;padding-top:14px;border-top:1px dashed #dfe4ee}.rules-head>div{display:grid;gap:4px}.rule-row{display:grid;grid-template-columns:auto minmax(150px,1fr) minmax(96px,auto) repeat(3,minmax(105px,auto)) minmax(200px,1.4fr) auto;gap:10px;align-items:end;padding:11px;border:1px solid #e7ebf3;border-radius:9px;background:#fff}.severity-select{width:100%}@media(max-width:1100px){.form-grid,.form-grid.three{grid-template-columns:repeat(2,minmax(160px,1fr))}.rule-row{grid-template-columns:repeat(2,minmax(0,1fr))}}@media(max-width:700px){.hero,.panel-head,.entity-head{align-items:flex-start;flex-direction:column}.form-grid,.form-grid.three,.rule-row{grid-template-columns:1fr}.wide{grid-column:auto}.filter-bar{flex-direction:column;align-items:stretch}}
-.cal-columns { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; }
-@media (max-width: 1100px) { .cal-columns { grid-template-columns: 1fr; } }
-.cal-block { border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px; display: grid; gap: 10px; }
-.cal-head { display: flex; justify-content: space-between; align-items: center; }
-.cal-block .actions { display: flex; align-items: flex-end; }
+.ha-workspace{padding:20px 24px 28px;display:grid;gap:16px;align-content:start}.panel{background:#fff;border:1px solid var(--line);border-radius:14px;padding:18px}.hero,.panel-head,.entity-head,.rules-head,.actions{display:flex;align-items:center;justify-content:space-between;gap:14px}.hero{background:linear-gradient(135deg,#fff,#f1f5ff)}h2,p{margin:0}.hero h2,.panel h2{font-size:16px}.hero p,.panel-head p{margin-top:7px;color:var(--muted);font-size:12px}.eyebrow{margin-bottom:7px;color:var(--accent);font-size:11px;font-weight:700}.actions{justify-content:flex-end}.form-grid{display:grid;grid-template-columns:repeat(4,minmax(160px,1fr));gap:14px}.form-grid.three{grid-template-columns:repeat(3,minmax(180px,1fr))}.form-grid label,.rule-row label{display:grid;gap:6px;color:var(--muted);font-size:11px}.form-grid small,.rule-row small,.rules-head small{color:var(--muted);font-size:10px}.wide{grid-column:1/-1}.secret-row{display:flex;gap:8px}.config-note{color:var(--muted);font-size:11px}.discovery{display:grid;gap:14px}.filter-bar{display:flex;gap:10px;flex-wrap:wrap;align-items:center}.pager{display:flex;justify-content:flex-end}.auth-badge{display:inline-block;margin-left:6px;padding:1px 6px;border-radius:4px;background:#e8f5e9;color:#2e7d32;font-size:10px;font-weight:600}.device-model{display:grid;gap:2px}.device-model small{color:var(--muted);font-size:10px}.muted{color:var(--muted);font-size:12px}.load-more{display:flex;justify-content:center;margin-top:14px}.entity-card{display:grid;gap:16px;margin-top:14px;padding:16px;border:1px solid #e5e9f2;border-radius:12px;background:#fbfcff}.entity-head>div:first-child{display:grid;gap:5px}.entity-head code{color:var(--muted);font-size:10px}.rules{display:grid;gap:10px;padding-top:14px;border-top:1px dashed #dfe4ee}.rules-head>div{display:grid;gap:4px}.rule-row{display:grid;grid-template-columns:auto minmax(150px,1fr) minmax(96px,auto) repeat(3,minmax(105px,auto)) minmax(200px,1.4fr) auto;gap:10px;align-items:end;padding:11px;border:1px solid #e7ebf3;border-radius:9px;background:#fff}.severity-select{width:100%}@media(max-width:1100px){.form-grid,.form-grid.three{grid-template-columns:repeat(2,minmax(160px,1fr))}.rule-row{grid-template-columns:repeat(2,minmax(0,1fr))}}@media(max-width:700px){.hero,.panel-head,.entity-head{align-items:flex-start;flex-direction:column}.form-grid,.form-grid.three,.rule-row{grid-template-columns:1fr}.wide{grid-column:auto}.filter-bar{flex-direction:column;align-items:stretch}}
+.connection-config { display: grid; gap: 14px; }
+.connection-note { padding: 10px 14px; border-radius: 9px; font-size: 12px; }
+.connection-note.ok { background: #e8f5e9; color: #2e7d32; }
+.connection-note.bad { background: #fdecea; color: #c0392b; }
+.connection-config .form-grid { margin-top: 0; }
 </style>

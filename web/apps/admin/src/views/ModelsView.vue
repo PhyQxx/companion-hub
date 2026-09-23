@@ -155,52 +155,6 @@ interface AmapConnectionTestResult {
   message: string;
 }
 
-interface HomeAssistantEntityConfig {
-  entity_id: string;
-  display_name: string;
-  aliases: string[];
-  read_allowed: boolean;
-  history_allowed: boolean;
-  history_max_hours: number;
-  allowed_actions: Array<"turn_on" | "turn_off" | "toggle" | "set_temperature" | "set_brightness" | "play" | "pause" | "volume_set">;
-  confirmation_required_actions: Array<"turn_on" | "turn_off" | "toggle" | "set_temperature" | "set_brightness" | "play" | "pause" | "volume_set">;
-  privacy_level: "L0" | "L1" | "L2" | "L3";
-  allowed_attributes: string[];
-}
-
-interface HomeAssistantConfig {
-  enabled: boolean;
-  instance_id: string;
-  base_url: string | null;
-  secret_ref?: string | null;
-  secret_value?: string | null;
-  verify_tls: boolean;
-  allow_insecure_local_http: boolean;
-  connect_timeout_ms: number;
-  request_timeout_ms: number;
-  reconnect_min_seconds: number;
-  reconnect_max_seconds: number;
-  state_cache_ttl_seconds: number;
-  entities: HomeAssistantEntityConfig[];
-}
-
-interface HomeAssistantDiscoveredEntity {
-  entity_id: string;
-  friendly_name: string;
-  domain: string;
-  state: string;
-  device_class?: string | null;
-  unit_of_measurement?: string | null;
-}
-
-interface HomeAssistantConnectionTestResult {
-  ok: boolean;
-  latency_ms: number;
-  message: string;
-  error_type?: string | null;
-  entities: HomeAssistantDiscoveredEntity[];
-}
-
 interface HubConfig {
   [key: string]: unknown;
   schema_version: number;
@@ -213,7 +167,6 @@ interface HubConfig {
   };
   voice?: HubVoiceConfig | null;
   tools?: HubToolsConfig;
-  integrations?: { home_assistant: HomeAssistantConfig };
   observability: { log_level: string; trace_sample_rate: number; retain_days: number };
 }
 
@@ -265,9 +218,24 @@ interface HubToolsConfig {
     max_concurrency: number;
     requests_per_minute: number;
   };
+  desktop_actions: {
+    enabled: boolean;
+    allowed_apps: string[];
+    allowed_url_schemes: string[];
+    allowed_url_hosts: string[];
+    allow_volume: boolean;
+    allow_clipboard: boolean;
+  };
+  browser_workflow: { enabled: boolean };
+  commute: {
+    enabled: boolean;
+    origin: string | null;
+    mode: "driving" | "transit" | "walking";
+    buffer_minutes: number;
+  };
 }
 interface HubVoiceAsr {
-  provider: "mimo" | "faster_whisper";
+  provider: "mimo" | "faster_whisper" | "sherpa_streaming";
   model: string;
   base_url?: string | null;
   language: "auto" | "zh" | "en";
@@ -321,7 +289,7 @@ interface DraftRoute {
 
 interface DraftVoiceAsr {
   enabled: boolean;
-  provider: "mimo" | "faster_whisper";
+  provider: "mimo" | "faster_whisper" | "sherpa_streaming";
   model: string;
   base_url: string;
   language: "auto" | "zh" | "en";
@@ -359,9 +327,6 @@ interface DraftState {
   };
   voice: DraftVoice;
   tools: HubToolsConfig;
-  integrations: {
-    home_assistant: HomeAssistantConfig & { secret_mode: "value" | "ref" | "none" };
-  };
   observability: { log_level: string; trace_sample_rate: number; retain_days: number };
 }
 
@@ -379,17 +344,13 @@ const testingVoiceAsr = ref(false);
 const voiceAsrCheck = ref<VoiceAsrEnvironmentCheckResult | null>(null);
 const testingAmap = ref(false);
 const amapTestResult = ref<AmapConnectionTestResult | null>(null);
-const testingHomeAssistant = ref(false);
-const homeAssistantTestResult = ref<HomeAssistantConnectionTestResult | null>(null);
-const homeAssistantSearch = ref("");
-const selectedDiscoveredEntityIds = ref<string[]>([]);
 const activeModelTab = ref(0);
 const activeMainTab = ref("routes");
 const route = useRoute();
 watch(
   () => route.query.tab,
   (tab) => {
-    const mapping: Record<string, string> = { services: "models", routing: "routes", tools: "tools", voice: "voice", home_assistant: "home_assistant" };
+    const mapping: Record<string, string> = { services: "models", routing: "routes", tools: "tools", voice: "voice" };
     activeMainTab.value = mapping[String(tab ?? "services")] ?? "models";
   },
   { immediate: true },
@@ -443,23 +404,21 @@ const defaultTools = (): HubToolsConfig => ({
     max_concurrency: 2,
     requests_per_minute: 30,
   },
-});
-
-const defaultHomeAssistant = (): DraftState["integrations"]["home_assistant"] => ({
-  enabled: false,
-  instance_id: "home-main",
-  base_url: "https://ha.pnkx.top:8",
-  secret_mode: "value",
-  secret_ref: null,
-  secret_value: null,
-  verify_tls: true,
-  allow_insecure_local_http: false,
-  connect_timeout_ms: 5000,
-  request_timeout_ms: 8000,
-  reconnect_min_seconds: 1,
-  reconnect_max_seconds: 30,
-  state_cache_ttl_seconds: 300,
-  entities: [],
+  desktop_actions: {
+    enabled: false,
+    allowed_apps: [],
+    allowed_url_schemes: ["http", "https"],
+    allowed_url_hosts: [],
+    allow_volume: false,
+    allow_clipboard: false,
+  },
+  browser_workflow: { enabled: false },
+  commute: {
+    enabled: false,
+    origin: null,
+    mode: "driving",
+    buffer_minutes: 10,
+  },
 });
 
 const defaultVoiceAsr = (): DraftVoiceAsr => ({
@@ -489,7 +448,7 @@ const defaultVoiceTts = (provider: "mimo" | "edge_tts" | "senseaudio" = "mimo"):
 
 const defaultVoice = (): DraftVoice => ({ asr: defaultVoiceAsr(), tts: [] });
 
-function onAsrProviderChange(provider: "mimo" | "faster_whisper") {
+function onAsrProviderChange(provider: "mimo" | "faster_whisper" | "sherpa_streaming") {
   voiceAsrCheck.value = null;
   const asr = draft.value.voice.asr;
   asr.provider = provider;
@@ -502,7 +461,20 @@ function onAsrProviderChange(provider: "mimo" | "faster_whisper") {
     asr.secret_value = "";
     return;
   }
-  if (!asr.model || ["tiny", "base", "small", "medium", "large-v3"].includes(asr.model)) {
+  if (provider === "sherpa_streaming") {
+    if (!asr.model || asr.model.startsWith("mimo-") || ["tiny", "base", "small", "medium", "large-v3"].includes(asr.model)) {
+      asr.model = "models/sherpa-streaming-zipformer";
+    }
+    asr.base_url = "";
+    asr.secret_mode = "none";
+    asr.secret_value = "";
+    return;
+  }
+  if (
+    !asr.model
+    || ["tiny", "base", "small", "medium", "large-v3"].includes(asr.model)
+    || asr.model.startsWith("models/")
+  ) {
     asr.model = "mimo-v2.5-asr";
   }
   asr.base_url = "https://api.xiaomimimo.com/v1";
@@ -591,90 +563,19 @@ async function testAmapConnection() {
   }
 }
 
-async function testHomeAssistantConnection() {
-  const config = draftToHubConfig(draft.value).integrations?.home_assistant;
-  if (!config?.base_url) {
-    ElMessage.warning("请先填写 Home Assistant 地址");
-    return;
-  }
-  if (!config.secret_value && !config.secret_ref) {
-    ElMessage.warning("请先填写长期访问令牌");
-    return;
-  }
-  testingHomeAssistant.value = true;
-  homeAssistantTestResult.value = null;
-  selectedDiscoveredEntityIds.value = [];
-  try {
-    const result = await api.request<HomeAssistantConnectionTestResult>(
-      "/api/v1/admin/config/integrations/home-assistant/test",
-      { method: "POST", body: JSON.stringify({ config }) },
-    );
-    homeAssistantTestResult.value = result;
-    if (result.ok) ElMessage.success(result.message);
-    else ElMessage.error(result.message);
-  } catch (error) {
-    const message = error instanceof Error ? error.message : "Home Assistant 连接测试失败";
-    ElMessage.error(message);
-  } finally {
-    testingHomeAssistant.value = false;
-  }
-}
-
-const filteredHomeAssistantEntities = computed(() => {
-  const keyword = homeAssistantSearch.value.trim().toLocaleLowerCase();
-  const rows = homeAssistantTestResult.value?.entities ?? [];
-  if (!keyword) return rows;
-  return rows.filter((item) =>
-    [item.entity_id, item.friendly_name, item.domain, item.device_class ?? ""]
-      .some((value) => value.toLocaleLowerCase().includes(keyword)),
-  );
-});
-
-function addSelectedHomeAssistantEntities() {
-  const rows = homeAssistantTestResult.value?.entities ?? [];
-  const selected = new Set(selectedDiscoveredEntityIds.value);
-  const policies = draft.value.integrations.home_assistant.entities;
-  const existing = new Set(policies.map((item) => item.entity_id));
-  for (const item of rows) {
-    if (!selected.has(item.entity_id) || existing.has(item.entity_id)) continue;
-    policies.push({
-      entity_id: item.entity_id,
-      display_name: item.friendly_name,
-      aliases: [],
-      read_allowed: true,
-      history_allowed: false,
-      history_max_hours: 24,
-      allowed_actions: [],
-      confirmation_required_actions: [],
-      privacy_level: "L1",
-      allowed_attributes: ["friendly_name", "device_class", "unit_of_measurement"],
-    });
-  }
-  selectedDiscoveredEntityIds.value = [];
-}
-
-function removeHomeAssistantEntity(index: number) {
-  draft.value.integrations.home_assistant.entities.splice(index, 1);
-}
-
-const homeAssistantActionLabels: Record<string, string> = {
-  turn_on: "打开",
-  turn_off: "关闭",
-  toggle: "切换",
-  set_temperature: "设置温度",
-  set_brightness: "设置亮度",
-  play: "播放",
-  pause: "暂停",
-  volume_set: "设置音量",
-};
-
-function homeAssistantActions(entityId: string): string[] {
-  const domain = entityId.split(".", 1)[0];
-  if (domain === "light") return ["turn_on", "turn_off", "toggle", "set_brightness"];
-  if (domain === "switch") return ["turn_on", "turn_off", "toggle"];
-  if (domain === "climate") return ["turn_on", "turn_off", "set_temperature"];
-  if (domain === "media_player") return ["turn_on", "turn_off", "play", "pause", "volume_set"];
-  return [];
+/** 旧配置可能缺少后续版本新增的 tools 子键，合并默认值保证模板绑定安全。 */
+function normalizeTools(tools: HubToolsConfig | undefined | null): HubToolsConfig {
+  const base = defaultTools();
+  if (!tools) return base;
+  return {
+    ...base,
+    ...tools,
+    query: { ...base.query, ...tools.query },
+    amap: { ...base.amap, ...tools.amap },
+    desktop_actions: { ...base.desktop_actions, ...tools.desktop_actions },
+    browser_workflow: { ...base.browser_workflow, ...tools.browser_workflow },
+    commute: { ...base.commute, ...tools.commute },
+  };
 }
 
 const draft = ref<DraftState>({
@@ -684,7 +585,6 @@ const draft = ref<DraftState>({
   capability_models: defaultCapabilityModels(),
   voice: defaultVoice(),
   tools: defaultTools(),
-  integrations: { home_assistant: defaultHomeAssistant() },
   observability: defaultObservability(),
 });
 
@@ -697,7 +597,6 @@ function hubConfigToDraft(config: HubConfig | undefined | null): DraftState {
       capability_models: defaultCapabilityModels(),
       voice: defaultVoice(),
       tools: defaultTools(),
-      integrations: { home_assistant: defaultHomeAssistant() },
       observability: defaultObservability(),
     };
   }
@@ -738,12 +637,18 @@ function hubConfigToDraft(config: HubConfig | undefined | null): DraftState {
   }
   const asr = config.voice?.asr;
   const asrSecretMode = asr?.secret_value ? "value" : asr?.secret_ref ? "ref" : "none";
+  const asrDefaultModel =
+    asr?.provider === "faster_whisper"
+      ? "small"
+      : asr?.provider === "sherpa_streaming"
+        ? "models/sherpa-streaming-zipformer"
+        : "mimo-v2.5-asr";
   const draftAsr: DraftVoiceAsr = asr
     ? {
         enabled: true,
         provider: asr.provider ?? "mimo",
-        model: asr.model ?? (asr.provider === "faster_whisper" ? "small" : "mimo-v2.5-asr"),
-        base_url: asr.base_url ?? "",
+        model: asr.model ?? asrDefaultModel,
+        base_url: asr.provider === "sherpa_streaming" ? "" : asr.base_url ?? "",
         language: asr.language ?? "auto",
         device: asr.device ?? "auto",
         compute_type: asr.compute_type ?? "default",
@@ -770,14 +675,6 @@ function hubConfigToDraft(config: HubConfig | undefined | null): DraftState {
       secret_ref: p.secret_ref ?? "env:MIMO_API_KEY",
     };
   });
-  const homeAssistant = config.integrations?.home_assistant;
-  const draftHomeAssistant = homeAssistant
-    ? {
-        ...homeAssistant,
-        base_url: homeAssistant.base_url ?? "",
-        secret_mode: homeAssistant.secret_value ? "value" as const : homeAssistant.secret_ref ? "ref" as const : "none" as const,
-      }
-    : defaultHomeAssistant();
   return {
     schema_version: config.schema_version ?? 1,
     models,
@@ -788,8 +685,7 @@ function hubConfigToDraft(config: HubConfig | undefined | null): DraftState {
       video_generation: config.capability_models?.video_generation ?? "",
     },
     voice: { asr: draftAsr, tts: draftTts },
-    tools: config.tools ?? defaultTools(),
-    integrations: { home_assistant: draftHomeAssistant },
+    tools: normalizeTools(config.tools),
     observability: config.observability ?? defaultObservability(),
   };
 }
@@ -844,6 +740,18 @@ function draftToHubConfig(d: DraftState): HubConfig {
           secret_ref: null,
           secret_value: null,
         }
+    : d.voice.asr.provider === "sherpa_streaming"
+      ? {
+          provider: "sherpa_streaming",
+          model: d.voice.asr.model,
+          base_url: null,
+          language: "auto",
+          device: "cpu",
+          compute_type: "default",
+          runs_local: true,
+          secret_ref: null,
+          secret_value: null,
+        }
       : {
           provider: "mimo",
           model: d.voice.asr.model,
@@ -863,18 +771,6 @@ function draftToHubConfig(d: DraftState): HubConfig {
     enabled: p.enabled,
     ...(p.provider !== "edge_tts" ? assembleSecret(p) : { secret_ref: null, secret_value: null }),
   }));
-  const { secret_mode: _homeAssistantSecretMode, ...homeAssistantBase } = d.integrations.home_assistant;
-  const homeAssistant: HomeAssistantConfig = {
-    ...homeAssistantBase,
-    base_url: homeAssistantBase.base_url || null,
-    entities: homeAssistantBase.entities.map((entity) => ({
-      ...entity,
-      confirmation_required_actions: entity.confirmation_required_actions.filter((action) =>
-        entity.allowed_actions.includes(action),
-      ),
-    })),
-    ...assembleSecret(d.integrations.home_assistant),
-  };
   return {
     schema_version: d.schema_version,
     models,
@@ -886,7 +782,6 @@ function draftToHubConfig(d: DraftState): HubConfig {
     },
     voice: { asr: voiceAsr, tts: voiceTts },
     tools: d.tools,
-    integrations: { home_assistant: homeAssistant },
     observability: d.observability,
   };
 }
@@ -1092,29 +987,8 @@ function validateCandidate(config: HubConfig): string | null {
       return "至少需要一个启用的文本模型声明支持 Function Calling";
     }
   }
-  const homeAssistant = config.integrations?.home_assistant;
-  if (homeAssistant?.enabled) {
-    if (!/^https?:\/\//.test((homeAssistant.base_url ?? "").trim())) {
-      return "Home Assistant 地址需以 http:// 或 https:// 开头";
-    }
-    if (!homeAssistant.secret_value && !homeAssistant.secret_ref) {
-      return "启用 Home Assistant 前必须填写长期访问令牌";
-    }
-    if (homeAssistant.secret_ref && !SECRET_REF_PATTERN.test(homeAssistant.secret_ref)) {
-      return "Home Assistant 令牌环境变量引用格式应为 env:ARIA_HA_TOKEN";
-    }
-    if (!homeAssistant.entities.some((item) => item.read_allowed)) {
-      return "启用 Home Assistant 前至少授权一个可读实体";
-    }
-    for (const entity of homeAssistant.entities) {
-      const validActions = homeAssistantActions(entity.entity_id);
-      const invalidAction = entity.allowed_actions.find((action) => !validActions.includes(action));
-      if (invalidAction) return `实体「${entity.display_name}」不支持动作 ${invalidAction}`;
-      const invalidConfirmation = entity.confirmation_required_actions.find(
-        (action) => !entity.allowed_actions.includes(action),
-      );
-      if (invalidConfirmation) return `实体「${entity.display_name}」的确认动作尚未允许`;
-    }
+  if (config.tools?.commute.enabled && !(config.tools.commute.origin ?? "").trim()) {
+    return "启用出行管家时必须填写出发点地址";
   }
   return null;
 }
@@ -1360,6 +1234,49 @@ onActivated(() => {
             </el-table>
           </div>
         </div>
+
+        <div class="global-card" style="margin-top: 16px;">
+          <div class="global-head">
+            <div>
+              <h2>桌面动作白名单（PC-01）</h2>
+              <p>只放行显式列出的应用与 URL 主机，精确匹配、大小写不敏感；不挂载为聊天工具，仅经行动计划触发。默认完全关闭。</p>
+            </div>
+            <el-switch v-model="draft.tools.desktop_actions.enabled" active-text="启用" />
+          </div>
+          <div class="form-grid three global-fields">
+            <label class="field"><span>白名单应用</span><el-select v-model="draft.tools.desktop_actions.allowed_apps" multiple filterable allow-create default-first-option placeholder="如 Safari、Terminal" /></label>
+            <label class="field"><span>URL Scheme</span><el-select v-model="draft.tools.desktop_actions.allowed_url_schemes" multiple filterable allow-create default-first-option placeholder="http / https" /></label>
+            <label class="field"><span>URL 主机白名单</span><el-select v-model="draft.tools.desktop_actions.allowed_url_hosts" multiple filterable allow-create default-first-option placeholder="留空表示不限主机" /></label>
+            <label class="field"><span>音量控制</span><el-switch v-model="draft.tools.desktop_actions.allow_volume" /></label>
+            <label class="field"><span>剪贴板写入（A2 每次确认）</span><el-switch v-model="draft.tools.desktop_actions.allow_clipboard" /></label>
+          </div>
+          <div class="capability-hint">动作仍需设备在线并声明能力；锁屏或隐私暂停时设备端直接拒绝。</div>
+        </div>
+
+        <div class="global-card" style="margin-top: 16px;">
+          <div class="global-head">
+            <div>
+              <h2>浏览器工作流（WEB-01）</h2>
+              <p>打开页面、读取表单、填写与提交四命令的总闸门；提交类动作恒为 A2 每次确认。默认关闭。</p>
+            </div>
+            <el-switch v-model="draft.tools.browser_workflow.enabled" active-text="启用" />
+          </div>
+        </div>
+
+        <div class="global-card" style="margin-top: 16px;">
+          <div class="global-head">
+            <div>
+              <h2>出行管家（COMMUTE-01）</h2>
+              <p>以常驻出发点计算当日首个带地点日程的建议出发时刻；启用必须填写出发点地址。依赖地图与日历就绪。</p>
+            </div>
+            <el-switch v-model="draft.tools.commute.enabled" active-text="启用" />
+          </div>
+          <div class="form-grid three global-fields">
+            <label class="field"><span>出发点地址</span><el-input v-model="draft.tools.commute.origin" placeholder="如 济南市历下区…" :disabled="!draft.tools.commute.enabled" /></label>
+            <label class="field"><span>出行方式</span><el-select v-model="draft.tools.commute.mode" :disabled="!draft.tools.commute.enabled"><el-option label="驾车" value="driving" /><el-option label="公交" value="transit" /><el-option label="步行" value="walking" /></el-select></label>
+            <label class="field"><span>缓冲分钟</span><el-input-number v-model="draft.tools.commute.buffer_minutes" :min="0" :max="180" :disabled="!draft.tools.commute.enabled" /></label>
+          </div>
+        </div>
       </el-tab-pane>
 
       <el-tab-pane label="语音服务" name="voice" class="scroll-pane">
@@ -1378,9 +1295,10 @@ onActivated(() => {
                 <el-select v-model="draft.voice.asr.provider" @change="onAsrProviderChange">
                   <el-option label="小米 MiMo · 云端" value="mimo" />
                   <el-option label="faster-whisper · 本地" value="faster_whisper" />
+                  <el-option label="sherpa-onnx 流式 · 本地" value="sherpa_streaming" />
                 </el-select>
               </label>
-              <label class="field"><span>模型</span><el-input v-model="draft.voice.asr.model" :placeholder="draft.voice.asr.provider === 'mimo' ? 'mimo-v2.5-asr' : 'small / large-v3'" /></label>
+              <label class="field"><span>模型</span><el-input v-model="draft.voice.asr.model" :placeholder="draft.voice.asr.provider === 'mimo' ? 'mimo-v2.5-asr' : draft.voice.asr.provider === 'sherpa_streaming' ? '流式模型目录，如 models/sherpa-streaming-zipformer' : 'small / large-v3'" /></label>
               <label class="field"><span>识别语种</span><el-select v-model="draft.voice.asr.language"><el-option label="自动检测" value="auto" /><el-option label="中文" value="zh" /><el-option label="英文" value="en" /></el-select></label>
             </div>
             <div v-if="draft.voice.asr.provider === 'mimo'" class="form-grid three global-fields">
@@ -1398,6 +1316,11 @@ onActivated(() => {
                 <el-input v-else-if="draft.voice.asr.secret_mode === 'ref'" v-model="draft.voice.asr.secret_ref" placeholder="env:MIMO_API_KEY" />
                 <el-input v-else model-value="—" disabled />
               </label>
+            </div>
+            <div v-else-if="draft.voice.asr.provider === 'sherpa_streaming'" class="form-grid three global-fields">
+              <div class="capability-hint">
+                <span>流式 Zipformer：说话期间逐帧识别、断句即出终稿（docs/04 §6.4 P1）。模型目录需含 encoder/decoder/joiner ONNX 与 tokens.txt，用 scripts/download_sherpa_model.sh 获取；pip 安装 sherpa-onnx（voice 可选依赖组）。L1/L2 均为本地识别。</span>
+              </div>
             </div>
             <div v-else class="form-grid three global-fields">
               <label class="field">
@@ -1491,41 +1414,6 @@ onActivated(() => {
           </div>
           <div class="capability-hint">
             隐私约束：MiMo 与 edge-tts 均为云端服务，不会接收 L2（私密）内容——L2 语音需要本地提供方（后续批次接入）。
-          </div>
-        </div>
-      </el-tab-pane>
-
-      <el-tab-pane label="Home Assistant" name="home_assistant" class="scroll-pane">
-        <div class="global-card">
-          <div class="global-head">
-            <div>
-              <h2>Home Assistant 连接</h2>
-              <p>所有设置保存在配置中心。长期访问令牌仅在服务端使用，不会下发到聊天端。</p>
-            </div>
-            <el-switch v-model="draft.integrations.home_assistant.enabled" active-text="启用" />
-          </div>
-          <div class="form-grid three global-fields">
-            <label class="field"><span>实例标识</span><el-input v-model="draft.integrations.home_assistant.instance_id" placeholder="home-main" /></label>
-            <label class="field"><span>Home Assistant 地址</span><el-input v-model="draft.integrations.home_assistant.base_url" placeholder="https://ha.example.com" /></label>
-            <label class="field"><span>令牌保存方式</span><el-select v-model="draft.integrations.home_assistant.secret_mode"><el-option label="后台直接保存" value="value" /><el-option label="环境变量引用" value="ref" /><el-option label="暂不配置" value="none" /></el-select></label>
-            <label v-if="draft.integrations.home_assistant.secret_mode === 'value'" class="field"><span>长期访问令牌</span><el-input v-model="draft.integrations.home_assistant.secret_value" type="password" show-password placeholder="粘贴 Home Assistant 长期访问令牌" /></label>
-            <label v-else-if="draft.integrations.home_assistant.secret_mode === 'ref'" class="field"><span>环境变量引用</span><el-input v-model="draft.integrations.home_assistant.secret_ref" placeholder="env:ARIA_HA_TOKEN" /></label>
-            <label class="field"><span>TLS 证书校验</span><el-switch v-model="draft.integrations.home_assistant.verify_tls" /></label>
-            <label class="field"><span>允许本地 HTTP</span><el-switch v-model="draft.integrations.home_assistant.allow_insecure_local_http" /></label>
-          </div>
-          <div class="form-grid three global-fields">
-            <label class="field"><span>连接超时（ms）</span><el-input-number v-model="draft.integrations.home_assistant.connect_timeout_ms" :min="500" :max="30000" /></label>
-            <label class="field"><span>请求超时（ms）</span><el-input-number v-model="draft.integrations.home_assistant.request_timeout_ms" :min="500" :max="30000" /></label>
-            <label class="field"><span>状态缓存有效期（秒）</span><el-input-number v-model="draft.integrations.home_assistant.state_cache_ttl_seconds" :min="5" :max="86400" /></label>
-            <label class="field"><span>重连最短等待（秒）</span><el-input-number v-model="draft.integrations.home_assistant.reconnect_min_seconds" :min="0.1" :max="30" :step="0.5" /></label>
-            <label class="field"><span>重连最长等待（秒）</span><el-input-number v-model="draft.integrations.home_assistant.reconnect_max_seconds" :min="1" :max="300" /></label>
-          </div>
-          <div class="form-actions">
-            <el-button type="primary" plain :loading="testingHomeAssistant" @click="testHomeAssistantConnection">测试连接并读取实体</el-button>
-          </div>
-          <div v-if="homeAssistantTestResult" class="connection-result" :class="homeAssistantTestResult.ok ? 'success' : 'error'">
-            <div class="connection-result-head"><strong>{{ homeAssistantTestResult.message }}</strong><span>{{ Math.round(homeAssistantTestResult.latency_ms) }} ms</span></div>
-            <div v-if="homeAssistantTestResult.error_type" class="connection-result-meta"><span>错误：{{ homeAssistantTestResult.error_type }}</span></div>
           </div>
         </div>
       </el-tab-pane>

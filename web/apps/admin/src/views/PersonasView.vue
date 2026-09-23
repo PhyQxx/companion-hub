@@ -3,6 +3,7 @@ import { computed, inject, onMounted, reactive, ref } from "vue";
 import { AdminApi } from "@aria/shared";
 import { ElMessageBox } from "element-plus";
 import { useRoute } from "vue-router";
+import ProactiveTopicsView from "./ProactiveTopicsView.vue";
 
 interface PersonaConfig {
   schema_version: number;
@@ -330,6 +331,8 @@ onMounted(load);
       </div>
       <div class="row"><el-button type="primary" @click="saveDraft">校验并保存草稿</el-button></div>
     </div>
+
+    <ProactiveTopicsView v-if="activeTab === 'boundaries'" @status="(text: string, error?: boolean) => emit('status', text, error)" />
 
     <div v-if="activeTab === 'versions'" class="panel">
       <h2>版本历史</h2>

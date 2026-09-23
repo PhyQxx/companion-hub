@@ -98,7 +98,7 @@ if (api.token) void connect(api.token);
         <span class="status" :class="{ error: statusError }">{{ statusText }}</span>
       </header>
       <div class="module-navigation">
-        <div class="module-tabs" role="tablist" :aria-label="`${heading}子功能`">
+        <div v-if="activeModule.tabs.length > 1" class="module-tabs" role="tablist" :aria-label="`${heading}子功能`">
           <button
             v-for="tab in activeModule.tabs"
             :key="tab.key"

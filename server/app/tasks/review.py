@@ -133,6 +133,16 @@ class DailyReviewService:
             )
         return _to_view(record) if record is not None else None
 
+    async def recent_reviews(self, user_id: UUID, *, limit: int = 30) -> list[ReviewView]:
+        async with self._database.sessions() as session:
+            records = await session.scalars(
+                select(DailyReviewRecord)
+                .where(DailyReviewRecord.user_id == user_id)
+                .order_by(DailyReviewRecord.review_date.desc())
+                .limit(limit)
+            )
+        return [_to_view(record) for record in records]
+
     async def build(self, user_id: UUID, *, review_date: date | None = None) -> ReviewView:
         """采集当日事实并落库；同日已存在直接返回（幂等，不覆盖修正）。"""
         day = review_date or self._clock().astimezone(self._tz).date()

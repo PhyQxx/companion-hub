@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { inject, onActivated, ref } from "vue";
+import { inject, onActivated, onMounted, ref } from "vue";
 import { AdminApi } from "@aria/shared";
 import { ElMessage } from "element-plus";
 
@@ -21,8 +21,8 @@ const loading = ref(false);
 const saving = ref<SourceKey | null>(null);
 const errorMessage = ref("");
 const sources: Array<{ key: SourceKey; name: string; description: string; tab: string }> = [
-  { key: "screen_awareness", name: "根据屏幕内容发起话题", description: "发现屏幕上值得交流的内容时，允许主动分享、建议或提问。", tab: "status" },
-  { key: "browser_awareness", name: "根据浏览内容发起话题", description: "发现当前网页中值得交流的内容时，允许主动分享、建议或提问。", tab: "browser_status" },
+  { key: "screen_awareness", name: "根据屏幕内容发起话题", description: "发现屏幕上值得交流的内容时，允许主动分享、建议或提问。", tab: "screen" },
+  { key: "browser_awareness", name: "根据浏览内容发起话题", description: "发现当前网页中值得交流的内容时，允许主动分享、建议或提问。", tab: "browser" },
 ];
 
 async function load() {
@@ -64,6 +64,7 @@ async function updateSource(key: SourceKey, enabled: boolean) {
   }
 }
 
+onMounted(load);
 onActivated(load);
 </script>
 
@@ -93,18 +94,18 @@ onActivated(load);
       </div>
       <div v-if="current?.config[source.key]" class="source-status">
         <span>{{ current.config[source.key]?.enabled ? '观察已开启' : '观察尚未开启，开启观察后才能触发话题' }}</span>
-        <RouterLink :to="{ path: '/devices', query: { tab: source.tab } }">查看观察设置</RouterLink>
+        <RouterLink :to="{ path: '/perception', query: { tab: source.tab } }">查看观察设置</RouterLink>
       </div>
     </div>
     <div class="panel">
       <p>开启后，中枢会判断内容是否值得交流，并遵守免打扰、安静时段和消息预算。</p>
-      <RouterLink :to="{ path: '/devices', query: { tab: 'channels' } }">配置主动输出通道</RouterLink>
+      <RouterLink :to="{ path: '/output', query: { tab: 'channels' } }">配置主动输出通道</RouterLink>
     </div>
   </section>
 </template>
 
 <style scoped>
-.content { padding: 20px 24px; display: grid; gap: 16px; align-content: start; overflow-y: auto; }
+.content { padding: 0; display: grid; gap: 16px; align-content: start; }
 .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 16px; display: grid; gap: 12px; }
 .heading { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
 h2, h3 { margin: 0; font-size: 15px; }

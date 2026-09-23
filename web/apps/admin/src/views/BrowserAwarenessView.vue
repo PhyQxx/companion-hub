@@ -1,11 +1,25 @@
 <script setup lang="ts">
 import { inject, onActivated, onDeactivated, ref, watch } from "vue";
+import { useRoute, useRouter } from "vue-router";
 import { AdminApi } from "@aria/shared";
 import { ElMessage } from "element-plus";
 
 const api = inject("adminApi") as AdminApi;
 const emit = defineEmits<{ status: [text: string, error?: boolean] }>();
-const props = withDefaults(defineProps<{ mode?: string }>(), { mode: "browser_status" });
+
+const route = useRoute();
+const router = useRouter();
+// 单 Tab 内的「运行状态 / 观察记录」切换，section 持久化在 URL 上
+type BrowserSection = "status" | "records";
+const section = ref<BrowserSection>(route.query.section === "records" ? "records" : "status");
+
+function switchSection(next: string | number | boolean | undefined) {
+  section.value = next === "records" ? "records" : "status";
+}
+
+watch(section, (value) => {
+  void router.replace({ query: { ...route.query, section: value === "records" ? "records" : undefined } });
+});
 
 interface StatusResponse {
   configured_enabled: boolean;
@@ -126,7 +140,7 @@ async function saveBlockedHosts() {
 }
 
 async function refresh() {
-  if (props.mode === "browser_observations") {
+  if (section.value === "records") {
     observationPage.value = 1;
     await loadObservations();
   } else {
@@ -134,11 +148,12 @@ async function refresh() {
   }
 }
 
-watch(() => props.mode, refresh);
+// KeepAlive 缓存组件：切 Tab 不重挂载，按 section 变化拉取对应数据
+watch(section, refresh);
 onActivated(() => {
   void refresh();
   timer = window.setInterval(() => {
-    if (props.mode !== "browser_observations") void loadStatus();
+    if (section.value !== "records") void loadStatus();
   }, 15_000);
 });
 onDeactivated(() => {
@@ -149,16 +164,22 @@ onDeactivated(() => {
 
 <template>
   <section class="content">
-    <template v-if="props.mode !== 'browser_observations'">
-      <div class="hero panel">
-        <div>
-          <div class="eyebrow">浏览感知 · BROWSER AWARENESS</div>
-          <h2>周期标签页观察</h2>
-          <p>Hub 拉取已授权浏览器的当前标签页，页面变化时生成摘要。正文即焚，只保存 origin、截断标题和摘要。</p>
-        </div>
+    <div class="hero panel">
+      <div>
+        <div class="eyebrow">浏览感知 · BROWSER AWARENESS</div>
+        <h2>周期标签页观察</h2>
+        <p>Hub 拉取已授权浏览器的当前标签页，页面变化时生成摘要。正文即焚，只保存 origin、截断标题和摘要。</p>
+      </div>
+      <div class="hero-actions">
+        <el-radio-group :model-value="section" size="small" @change="switchSection">
+          <el-radio-button value="status">运行状态</el-radio-button>
+          <el-radio-button value="records">观察记录</el-radio-button>
+        </el-radio-group>
         <el-button :loading="loading" @click="refresh">刷新</el-button>
       </div>
+    </div>
 
+    <template v-if="section === 'status'">
       <div class="stats">
         <article>
           <div class="switch-row"><span>配置开关</span><el-switch :model-value="status?.configured_enabled ?? false" :loading="saving" @change="(value: string | number | boolean) => updateConfig({ enabled: Boolean(value) }, Boolean(value) ? '浏览感知已开启' : '浏览感知已关闭')" /></div>
@@ -221,6 +242,7 @@ onDeactivated(() => {
 .content { padding: 20px 24px 28px; display: grid; gap: 16px; align-content: start; overflow-y: auto; }
 .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 14px; padding: 18px; }
 .hero { display: flex; justify-content: space-between; align-items: center; gap: 24px; background: linear-gradient(135deg, #fff 0%, #f1f5ff 100%); }
+.hero-actions { display: flex; align-items: center; gap: 10px; flex: none; }
 .hero h2, .panel h2 { margin: 0; font-size: 16px; }
 .hero p, .panel-head p { margin: 7px 0 0; color: var(--muted); font-size: 12px; line-height: 1.6; }
 .eyebrow { color: var(--accent); font-size: 11px; font-weight: 700; letter-spacing: .08em; margin-bottom: 7px; }

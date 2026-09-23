@@ -1,11 +1,25 @@
 <script setup lang="ts">
 import { computed, inject, onActivated, onDeactivated, ref, watch } from "vue";
+import { useRoute, useRouter } from "vue-router";
 import { AdminApi } from "@aria/shared";
 import { ElMessage } from "element-plus";
 
 const api = inject("adminApi") as AdminApi;
 const emit = defineEmits<{ status: [text: string, error?: boolean] }>();
-const props = withDefaults(defineProps<{ mode?: string }>(), { mode: "status" });
+
+const route = useRoute();
+const router = useRouter();
+// 单 Tab 内的「运行状态 / 观察记录」切换，section 持久化在 URL 上
+type ScreenSection = "status" | "records";
+const section = ref<ScreenSection>(route.query.section === "records" ? "records" : "status");
+
+function switchSection(next: string | number | boolean | undefined) {
+  section.value = next === "records" ? "records" : "status";
+}
+
+watch(section, (value) => {
+  void router.replace({ query: { ...route.query, section: value === "records" ? "records" : undefined } });
+});
 
 interface DisplayState {
   display: number;
@@ -206,7 +220,7 @@ async function updateDisplays(value: unknown) {
 }
 
 async function refresh() {
-  if (props.mode === "observations") {
+  if (section.value === "records") {
     observationPage.value = 1;
     await loadObservations();
   } else {
@@ -215,23 +229,20 @@ async function refresh() {
   emit("status", "屏幕感知状态已刷新");
 }
 
-// KeepAlive 缓存组件：切 Tab 不重挂载，按 mode 变化拉取对应数据
-watch(
-  () => props.mode,
-  async (mode) => {
-    if (mode === "observations") {
-      observationPage.value = 1;
-      await loadObservations();
-    } else {
-      await Promise.all([loadStatus(), loadDevices()]);
-    }
-  },
-);
+// KeepAlive 缓存组件：切 Tab 不重挂载，按 section 变化拉取对应数据
+watch(section, async () => {
+  if (section.value === "records") {
+    observationPage.value = 1;
+    await loadObservations();
+  } else {
+    await Promise.all([loadStatus(), loadDevices()]);
+  }
+});
 
 onActivated(() => {
   void refresh();
   statusRefreshTimer = window.setInterval(() => {
-    if (props.mode !== "observations") void Promise.all([loadStatus(), loadDevices()]);
+    if (section.value !== "records") void Promise.all([loadStatus(), loadDevices()]);
   }, 15_000);
 });
 
@@ -243,7 +254,6 @@ onDeactivated(() => {
 
 <template>
   <section class="content">
-    <template v-if="props.mode !== 'observations'">
     <div class="hero panel">
       <div>
         <div class="eyebrow">屏幕感知 · SCREEN AWARENESS</div>
@@ -253,9 +263,16 @@ onDeactivated(() => {
           原图即焚不落盘；设备端 TCC / 锁屏 / 隐私暂停随时可停。
         </p>
       </div>
-      <el-button :loading="loading || deviceLoading" @click="refresh">刷新</el-button>
+      <div class="hero-actions">
+        <el-radio-group :model-value="section" size="small" @change="switchSection">
+          <el-radio-button value="status">运行状态</el-radio-button>
+          <el-radio-button value="records">观察记录</el-radio-button>
+        </el-radio-group>
+        <el-button :loading="loading || deviceLoading" @click="refresh">刷新</el-button>
+      </div>
     </div>
 
+    <template v-if="section === 'status'">
     <div class="stats">
       <article class="switch-stat">
         <div><span>配置开关</span><el-switch :model-value="status?.configured_enabled ?? false" :loading="savingConfig" :disabled="!status || savingConfig" @change="toggleEnabled" /></div>
@@ -345,6 +362,7 @@ onDeactivated(() => {
 .content { padding: 20px 24px 28px; display: grid; gap: 16px; align-content: start; overflow-y: auto; }
 .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 14px; padding: 18px; }
 .hero { display: flex; justify-content: space-between; align-items: center; gap: 24px; background: linear-gradient(135deg, #fff 0%, #f1f5ff 100%); }
+.hero-actions { display: flex; align-items: center; gap: 10px; flex: none; }
 .hero h2 { margin: 0; font-size: 16px; }
 .hero p { margin: 7px 0 0; color: var(--muted); font-size: 12px; line-height: 1.6; max-width: 640px; }
 .eyebrow { color: var(--accent); font-size: 11px; font-weight: 700; letter-spacing: .08em; margin-bottom: 7px; }
