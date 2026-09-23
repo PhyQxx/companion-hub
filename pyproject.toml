@@ -29,6 +29,7 @@ dependencies = [
 [project.optional-dependencies]
 voice = [
     "faster-whisper>=1.2,<2",
+    "sherpa-onnx>=1.10,<2",
 ]
 
 [dependency-groups]
@@ -51,6 +52,10 @@ addopts = "-q"
 pythonpath = ["server", "integrations/open_llm_vtuber/src"]
 testpaths = ["server/tests"]
 asyncio_mode = "auto"
+# 用例超过 120s 即转储全部线程栈：历史上出现过一次全量跑完进程不退出的
+# 0% CPU 卡住（未复现），此配置保证下次发生时立刻可定位（pytest 内置
+# faulthandler 插件，不新增依赖）。
+faulthandler_timeout = 120
 
 [tool.ruff]
 target-version = "py311"

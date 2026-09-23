@@ -27,6 +27,7 @@ from .senseaudio import (
     SENSEAUDIO_TTS_DEFAULT_VOICE,
     SenseAudioTtsSynthesizer,
 )
+from .sherpa_streaming import SherpaStreamingRecognizer
 from .tts import EdgeTtsSynthesizer
 
 logger = logging.getLogger(__name__)
@@ -120,6 +121,8 @@ def build_voice_providers(
                 ),
                 hotwords=asr.hotwords or FASTER_WHISPER_DEFAULT_HOTWORDS,
             )
+        elif asr.provider == "sherpa_streaming":
+            recognizer = SherpaStreamingRecognizer(model_dir=asr.model)
         else:
             api_key = _resolve_secret(asr.secret_value, asr.secret_ref)
             if api_key is None or asr.base_url is None:

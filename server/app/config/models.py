@@ -28,9 +28,10 @@ class CapabilityModelRoutes(StrictModel):
 
 
 class VoiceAsrConfig(StrictModel):
-    """语音识别提供方（docs/04）：MiMo 云端或 faster-whisper 本地转写。"""
+    """语音识别提供方（docs/04）：MiMo 云端、faster-whisper 本地整段，或
+    sherpa-onnx 本地流式（model 填流式 Zipformer 模型目录路径）。"""
 
-    provider: Literal["mimo", "faster_whisper"] = "mimo"
+    provider: Literal["mimo", "faster_whisper", "sherpa_streaming"] = "mimo"
     model: Annotated[str, Field(min_length=1, max_length=200)] = "mimo-v2.5-asr"
     base_url: AnyHttpUrl | None = AnyHttpUrl("https://api.xiaomimimo.com/v1")
     secret_ref: Annotated[str, Field(pattern=r"^env:[A-Z][A-Z0-9_]{2,127}$")] | None = None

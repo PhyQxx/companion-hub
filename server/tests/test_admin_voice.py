@@ -76,3 +76,47 @@ async def test_reset_endpoint_absent_without_resetter() -> None:
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         response = await client.post("/api/v1/admin/voice/latency/reset", headers=AUTH)
     assert response.status_code in (404, 405)
+
+
+async def test_latency_report_includes_speculation_feasibility() -> None:
+    """P2 前置测量：稳定停顿与 partial 匹配关系进入判卷报表。"""
+    from app.voice.metrics import VoiceLatencySample
+
+    metrics = VoiceLatencyMetrics()
+    metrics.record(
+        VoiceLatencySample(
+            asr_ms=50,
+            first_token_ms=1500,
+            first_audio_ms=2500,
+            total_ms=3000,
+            stable_partial_ms=850,
+            partial_match="exact",
+        )
+    )
+    metrics.record(
+        VoiceLatencySample(
+            asr_ms=60,
+            first_token_ms=1600,
+            first_audio_ms=2600,
+            total_ms=3200,
+            stable_partial_ms=250,
+            partial_match="prefix",
+        )
+    )
+    metrics.record(
+        VoiceLatencySample(
+            asr_ms=70, first_token_ms=1700, first_audio_ms=2700, total_ms=3400
+        )
+    )
+    snapshot = metrics.snapshot()
+    speculation = snapshot["speculation"]
+    assert isinstance(speculation, dict)
+    assert speculation["streamed_turns"] == 2
+    assert speculation["pause_ge_300ms"] == 1
+    assert speculation["pause_ge_600ms"] == 1
+    assert speculation["partial_exact_match"] == 1
+    assert speculation["partial_prefix"] == 1
+    assert speculation["partial_diverged"] == 0
+    stable = speculation["stable_partial_ms"]
+    assert isinstance(stable, dict)
+    assert stable["count"] == 2

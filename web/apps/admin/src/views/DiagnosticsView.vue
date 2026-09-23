@@ -127,7 +127,16 @@ onMounted(refresh);
           <div><dt>首音频 P90</dt><dd>{{ latencyText(voiceLatency?.first_audio_ms.p90 ?? null) }}</dd></div>
           <div><dt>打断 P90</dt><dd>{{ latencyText(voiceLatency?.interrupt_ms.p90 ?? null) }}</dd></div>
           <div><dt>总耗时 P90</dt><dd>{{ latencyText(voiceLatency?.total_ms.p90 ?? null) }}</dd></div>
+          <div v-if="voiceLatency?.speculation">
+            <dt>句中停顿 ≥600ms</dt>
+            <dd>{{ voiceLatency.speculation.pause_ge_600ms }} / {{ voiceLatency.speculation.streamed_turns }} 流式回合</dd>
+          </div>
+          <div v-if="voiceLatency?.speculation">
+            <dt>partial 精确匹配</dt>
+            <dd>{{ voiceLatency.speculation.partial_exact_match }}（前缀 {{ voiceLatency.speculation.partial_prefix }} / 漂移 {{ voiceLatency.speculation.partial_diverged }}）</dd>
+          </div>
         </div>
+        <p v-if="voiceLatency?.speculation" class="hint">投机启动（P2）前置测量：停顿≥600ms 的回合越多、精确匹配率越高，投机首 token 的收益越大（docs/04 §6.4）。</p>
       </el-card>
 
       <el-card shadow="never">
@@ -147,6 +156,7 @@ onMounted(refresh);
 
 <style scoped>
 .content { padding: 16px 22px 28px; overflow-y: auto; display: grid; gap: 14px; align-content: start; }
+.hint { margin: 10px 0 0; color: var(--muted); font-size: 12px; line-height: 1.6; }
 .toolbar { display: flex; gap: 8px; }
 .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; }
 .stats :deep(.el-card__body) { padding: 14px; display: grid; gap: 4px; }

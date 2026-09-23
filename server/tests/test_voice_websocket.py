@@ -1144,3 +1144,221 @@ def test_voice_websocket_ptt_utterance_during_pending_turn_still_dropped(
     assert "voice.interrupted" not in types
     assert types.count("turn.accepted") == 1
     assert types[-1] == "reply.committed"
+
+
+class FakeStreamingRecognizer:
+    """流式识别器替身：逐帧记录 feed，partial 按帧数推进，finalize 出终稿。"""
+
+    runs_local = True
+
+    def __init__(
+        self,
+        *,
+        final: str = "流式终稿：今天适合穿外套",
+        partials: tuple[str, ...] = ("今天", "今天适合"),
+        finalize_error: bool = False,
+    ) -> None:
+        self._final = final
+        self._partials = list(partials)
+        self._finalize_error = finalize_error
+        self.fed_frames = 0
+        self.fed_bytes = 0
+        self.finalize_calls = 0
+        self.transcribe_calls = 0
+
+    def feed(self, pcm: bytes) -> str | None:
+        self.fed_frames += 1
+        self.fed_bytes += len(pcm)
+        if self._partials and self.fed_frames % 3 == 0:
+            return self._partials.pop(0)
+        return None
+
+    def finalize(self) -> str:
+        self.finalize_calls += 1
+        if self._finalize_error:
+            raise RuntimeError("stream collapsed")
+        return self._final
+
+    async def transcribe(
+        self, pcm: bytes, *, sample_rate: int, language: str | None
+    ) -> str:
+        self.transcribe_calls += 1
+        return "整段兜底"
+
+
+def test_voice_websocket_streaming_asr_finalizes_without_full_transcription(
+    tmp_path: Path,
+) -> None:
+    recognizer = FakeStreamingRecognizer()
+    app, token, conversation_id = _build(tmp_path, recognizer=recognizer)
+
+    with TestClient(app) as client, client.websocket_connect("/ws/voice") as websocket:
+        websocket.send_json({"type": "authenticate", "access_token": token})
+        websocket.send_json(
+            {
+                "type": "voice.hello",
+                "conversation_id": conversation_id,
+                "privacy_level": "L1",
+                "format": "pcm_s16le",
+                "sample_rate": 16000,
+                "channels": 1,
+            }
+        )
+        _receive_until(websocket, "voice.ready")
+        websocket.send_json({"type": "utterance.begin"})
+        for _ in range(6):
+            websocket.send_bytes(loud_frames(2))
+        websocket.send_json({"type": "utterance.end"})
+        events, _audio = _receive_until(websocket, "reply.committed")
+
+    # 说话期间按二进制消息逐块喂入，断句 finalize 直接出终稿，整段转写零调用
+    assert recognizer.fed_frames == 6
+    assert recognizer.fed_bytes == 6 * len(loud_frames(2))
+    assert recognizer.finalize_calls == 1
+    assert recognizer.transcribe_calls == 0
+    transcript = next(event for event in events if event["type"] == "voice.transcript")
+    assert transcript["text"] == "流式终稿：今天适合穿外套"
+    # partial 在断句前就已下发（前端实时字幕 / P2 投机启动的输入）
+    partials = [event for event in events if event["type"] == "voice.partial_transcript"]
+    assert [event["text"] for event in partials] == ["今天", "今天适合"]
+
+
+def test_voice_websocket_streaming_asr_auto_vad_path(tmp_path: Path) -> None:
+    recognizer = FakeStreamingRecognizer(partials=("查天气",))
+    app, token, conversation_id = _build(tmp_path, recognizer=recognizer)
+
+    with TestClient(app) as client, client.websocket_connect("/ws/voice") as websocket:
+        websocket.send_json({"type": "authenticate", "access_token": token})
+        websocket.send_json(
+            {
+                "type": "voice.hello",
+                "conversation_id": conversation_id,
+                "privacy_level": "L1",
+                "format": "pcm_s16le",
+                "sample_rate": 16000,
+                "channels": 1,
+            }
+        )
+        _receive_until(websocket, "voice.ready")
+        # 首个响块触发 utterance_started（首帧经 _start_streamer 喂入），
+        # 第二块在采集中喂入，静音块触发 hangover 断句（尾部静音同样喂入）
+        websocket.send_bytes(loud_frames(6))
+        websocket.send_bytes(loud_frames(6))
+        websocket.send_bytes(silent_frames(25))
+        events, _audio = _receive_until(websocket, "reply.committed")
+
+    assert recognizer.finalize_calls == 1
+    assert recognizer.transcribe_calls == 0
+    assert recognizer.fed_frames == 3
+    transcript = next(event for event in events if event["type"] == "voice.transcript")
+    assert transcript["text"] == "流式终稿：今天适合穿外套"
+    partials = [event for event in events if event["type"] == "voice.partial_transcript"]
+    assert [event["text"] for event in partials] == ["查天气"]
+
+
+def test_voice_websocket_streaming_finalize_failure_falls_back_to_full_transcription(
+    tmp_path: Path,
+) -> None:
+    recognizer = FakeStreamingRecognizer(finalize_error=True)
+    app, token, conversation_id = _build(tmp_path, recognizer=recognizer)
+
+    with TestClient(app) as client, client.websocket_connect("/ws/voice") as websocket:
+        websocket.send_json({"type": "authenticate", "access_token": token})
+        websocket.send_json(
+            {
+                "type": "voice.hello",
+                "conversation_id": conversation_id,
+                "privacy_level": "L1",
+                "format": "pcm_s16le",
+                "sample_rate": 16000,
+                "channels": 1,
+            }
+        )
+        _receive_until(websocket, "voice.ready")
+        websocket.send_json({"type": "utterance.begin"})
+        websocket.send_bytes(loud_frames(10))
+        websocket.send_json({"type": "utterance.end"})
+        events, _audio = _receive_until(websocket, "reply.committed")
+
+    assert recognizer.finalize_calls == 1
+    assert recognizer.transcribe_calls == 1
+    transcript = next(event for event in events if event["type"] == "voice.transcript")
+    assert transcript["text"] == "整段兜底"
+
+
+async def test_utterance_streamer_tracks_pause_and_match_for_speculation_metrics() -> None:
+    """P2 前置测量：断句前 partial 稳定时长与终稿匹配关系可从句柄读取。"""
+    from app.api import voice_ws
+
+    recognizer = FakeStreamingRecognizer(
+        final="今天天气怎么样",
+        partials=("今天", "今天天气"),
+    )
+    streamer = voice_ws.UtteranceStreamer(recognizer)
+    assert streamer.active is True
+    assert streamer.last_partial is None
+
+    for _ in range(6):
+        assert await streamer.feed(b"\x01\x00" * 480) is not None or True
+    assert streamer.last_partial == "今天天气"
+    assert streamer.last_change_monotonic is not None
+
+    final = await streamer.finalize()
+    assert final == "今天天气怎么样"
+    assert streamer.last_change_monotonic is not None
+
+
+async def test_finalize_streamer_reports_exact_prefix_and_diverged() -> None:
+    """_finalize_streamer 三元组：终稿、稳定毫秒、匹配关系。"""
+    from app.api import voice_ws
+
+    def _session_with(
+        stream_recognizer: FakeStreamingRecognizer,
+    ) -> VoiceSession:
+        session = VoiceSession(
+            websocket=cast(WebSocket, RecordingWebSocket()),
+            principal=ChatPrincipal(
+                session_id=uuid7(),
+                user_id=uuid7(),
+                display_name="Owner",
+                expires_at=datetime.now(UTC) + timedelta(hours=1),
+            ),
+            conversation_id=uuid7(),
+        )
+        session.utterance_streamer = voice_ws.UtteranceStreamer(stream_recognizer)
+        return session
+
+    async def _run(
+        stream_recognizer: FakeStreamingRecognizer,
+    ) -> tuple[str | None, int | None, str | None]:
+        manager = VoiceWebSocketManager(
+            cast(ChatService, object()),
+            voice_source=StaticVoiceSource(None, None),
+        )
+        session = _session_with(stream_recognizer)
+        streamer = session.utterance_streamer
+        assert streamer is not None
+        for _ in range(3):
+            await streamer.feed(b"\x01\x00" * 480)
+        await asyncio.sleep(0.01)
+        return await manager._finalize_streamer(session)
+
+    # exact：partial 与终稿一致（第 3 帧恰好给出完整 partial）
+    final, stable_ms, match = await _run(
+        FakeStreamingRecognizer(final="今天天气", partials=("今天天气",))
+    )
+    assert final == "今天天气"
+    assert isinstance(stable_ms, int) and stable_ms >= 10
+    assert match == "exact"
+
+    # prefix：终稿比 partial 长（用户最后补了词）
+    _final, _stable, match = await _run(
+        FakeStreamingRecognizer(final="今天天气怎么样", partials=("今天天气",))
+    )
+    assert match == "prefix"
+
+    # diverged：终稿与 partial 不一致
+    _final, _stable, match = await _run(
+        FakeStreamingRecognizer(final="完全不同", partials=("今天天气",))
+    )
+    assert match == "diverged"

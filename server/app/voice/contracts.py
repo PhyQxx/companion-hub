@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
-from typing import Protocol
+from typing import Protocol, runtime_checkable
 
 from app.schemas import PrivacyLevel
 
@@ -63,6 +63,22 @@ class SpeechRecognizer(Protocol):
     async def transcribe(
         self, pcm: bytes, *, sample_rate: int, language: str | None
     ) -> str: ...
+
+
+@runtime_checkable
+class StreamingSpeechRecognizer(Protocol):
+    """流式话语转写（docs/04 §6.4 P1）：说话期间逐帧喂入，断句时 finalize。
+
+    feed 返回新的部分转写（无更新返回 None）；finalize 返回终稿并复位内部
+    状态供下一话语复用。实现方同时应满足 SpeechRecognizer（transcribe 作为
+    降级路径）。runs_local=False 的实现同样禁止接收 L2 音频。
+    """
+
+    runs_local: bool
+
+    def feed(self, pcm: bytes) -> str | None: ...
+
+    def finalize(self) -> str: ...
 
 
 class SpeechRecognitionUnavailable(RuntimeError):

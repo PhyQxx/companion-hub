@@ -39,6 +39,7 @@ from app.voice import (
     SentenceBuffer,
     SpeechRecognitionUnavailable,
     SpeechRecognizer,
+    StreamingSpeechRecognizer,
     TtsProviderChain,
     VoiceActivityDetector,
     VoiceLatencyMetrics,
@@ -82,6 +83,72 @@ class AsrPrefetch:
 
     recognizer: SpeechRecognizer
     task: asyncio.Task[str]
+
+
+class UtteranceStreamer:
+    """话语级流式 ASR 句柄（docs/04 §6.4 P1）。
+
+    说话期间逐帧 feed（同步推理经 to_thread），部分转写经
+    voice.partial_transcript 下发；断句时 finalize 直接得到终稿，
+    免去整段收尾等待。识别器不支持流式或 feed 阶段出错时自动停用，
+    断句后回退整段转写（安全边界与 fallback 语义不变）。
+    """
+
+    def __init__(self, recognizer: SpeechRecognizer) -> None:
+        self._recognizer: StreamingSpeechRecognizer | None = (
+            recognizer if isinstance(recognizer, StreamingSpeechRecognizer) else None
+        )
+        self._last_partial = ""
+        # P2 前置测量（docs/04 §6.4）：最后一段 partial 稳定（无变化）的起算点
+        self.last_change_monotonic: float | None = None
+
+    @property
+    def last_partial(self) -> str | None:
+        return self._last_partial or None
+
+    @property
+    def active(self) -> bool:
+        return self._recognizer is not None
+
+    async def feed(self, pcm: bytes) -> str | None:
+        recognizer = self._recognizer
+        if recognizer is None:
+            return None
+        try:
+            partial = await asyncio.to_thread(recognizer.feed, pcm)
+        except Exception:
+            logger.warning(
+                "voice streaming asr feed failed provider=%s; falling back to full transcription",
+                type(recognizer).__name__,
+                exc_info=True,
+            )
+            self._recognizer = None
+            return None
+        if partial is None:
+            return None
+        stripped = partial.strip()
+        if not stripped or stripped == self._last_partial:
+            return None
+        self._last_partial = stripped
+        self.last_change_monotonic = time.monotonic()
+        return stripped
+
+    async def finalize(self) -> str | None:
+        """断句收尾：返回终稿；失败或未激活返回 None（回退整段转写）。"""
+
+        recognizer, self._recognizer = self._recognizer, None
+        if recognizer is None:
+            return None
+        try:
+            final = await asyncio.to_thread(recognizer.finalize)
+        except Exception:
+            logger.warning(
+                "voice streaming asr finalize failed provider=%s; falling back",
+                type(recognizer).__name__,
+                exc_info=True,
+            )
+            return None
+        return final.strip() or None
 
 
 class SubmittedTextRecognizer:
@@ -164,6 +231,9 @@ class VoiceSession:
     turn_committed: bool = False
     turn_task: asyncio.Task[None] | None = None
     asr_prefetch: AsrPrefetch | None = None
+    # 流式 ASR 句柄（docs/04 §6.4 P1）：话语开始时绑定识别器，逐帧喂入；
+    # 识别器不具备流式能力时为 None，走原整段转写路径。
+    utterance_streamer: UtteranceStreamer | None = None
     tts_unavailable_notified: bool = False
     last_transcript: str | None = None
     last_transcript_at: float | None = None
@@ -266,6 +336,7 @@ class VoiceWebSocketManager:
         other.ptt_active = False
         other.wake_armed = False
         other.utterance.clear()
+        other.utterance_streamer = None
         self._discard_asr_prefetch(other)
         try:
             await self._send(
@@ -577,6 +648,7 @@ class VoiceWebSocketManager:
                 session.wake_armed = True
                 session.collecting = True
                 session.utterance.clear()
+                await self._start_streamer(session, None)
                 await self._acquire_microphone(session)
             case "utterance.end":
                 session.ptt_active = False
@@ -698,6 +770,7 @@ class VoiceWebSocketManager:
         voiced = session.vad.is_voiced(pcm)
         if session.collecting:
             session.utterance.extend(pcm)
+            await self._feed_streamer(session, pcm)
         if session.ptt_active:
             return
         if session.wake_word is not None and not session.continuous and not session.wake_armed:
@@ -730,8 +803,13 @@ class VoiceWebSocketManager:
                 return
         # 自动断句会等待约 450ms 静音。首个静音帧到达后立刻预取 ASR，
         # 把这段本来纯等待的 hangover 与识别耗时重叠起来；若用户继续说，
-        # 预取结果立即作废，最终仍走完整音频转写。
-        if session.collecting and was_speaking:
+        # 预取结果立即作废，最终仍走完整音频转写。流式识别器说话期间
+        # 已在逐帧喂入，无需（也不会）整段预取。
+        if (
+            session.collecting
+            and was_speaking
+            and not (session.utterance_streamer and session.utterance_streamer.active)
+        ):
             if voiced:
                 self._discard_asr_prefetch(session)
             elif session.asr_prefetch is None:
@@ -744,9 +822,66 @@ class VoiceWebSocketManager:
             session.collecting = True
             session.utterance.clear()
             session.utterance.extend(pcm)
+            await self._start_streamer(session, pcm)
             await self._acquire_microphone(session)
         elif event.kind == "utterance_ended":
             await self._finalize_utterance(session, explicit=False)
+
+    async def _start_streamer(self, session: VoiceSession, first_pcm: bytes | None) -> None:
+        """话语开始时绑定流式识别器并喂入首帧；不具备流式能力则保持 None。"""
+
+        session.utterance_streamer = None
+        try:
+            recognizer, _tts = await self._voice_source.resolve()
+        except Exception:
+            logger.warning("voice streamer resolve failed", exc_info=True)
+            return
+        if recognizer is None or not isinstance(recognizer, StreamingSpeechRecognizer):
+            return
+        streamer = UtteranceStreamer(recognizer)
+        if not streamer.active:
+            return
+        session.utterance_streamer = streamer
+        if first_pcm is not None:
+            await self._feed_streamer(session, first_pcm)
+
+    async def _feed_streamer(self, session: VoiceSession, pcm: bytes) -> None:
+        streamer = session.utterance_streamer
+        if streamer is None or not streamer.active:
+            return
+        partial = await streamer.feed(pcm)
+        if partial is not None:
+            await self._send(session, "voice.partial_transcript", {"text": partial})
+
+    async def _finalize_streamer(
+        self, session: VoiceSession
+    ) -> tuple[str | None, int | None, str | None]:
+        """断句时收尾流式识别。
+
+        返回 (终稿, 断句前最后一段 partial 的稳定毫秒数, partial 与终稿的
+        关系)。终稿为 None 表示未激活/失败（回退整段转写）；停顿与匹配统计
+        独立于终稿成败，供 P2 投机可行性测量使用。
+        """
+
+        streamer, session.utterance_streamer = session.utterance_streamer, None
+        if streamer is None:
+            return None, None, None
+        final = await streamer.finalize()
+        stable_ms: int | None = None
+        if streamer.last_change_monotonic is not None:
+            stable_ms = max(
+                0, int((time.monotonic() - streamer.last_change_monotonic) * 1000)
+            )
+        match: str | None = None
+        last_partial = streamer.last_partial
+        if final and last_partial:
+            if final == last_partial:
+                match = "exact"
+            elif final.startswith(last_partial):
+                match = "prefix"
+            else:
+                match = "diverged"
+        return final, stable_ms, match
 
     async def _finalize_utterance(self, session: VoiceSession, *, explicit: bool) -> None:
         session.collecting = False
@@ -761,7 +896,12 @@ class VoiceWebSocketManager:
         min_bytes = MIN_UTTERANCE_BYTES if explicit else MIN_AUTO_UTTERANCE_BYTES
         if len(pcm) < min_bytes:
             self._discard_asr_prefetch(session)
+            session.utterance_streamer = None
             return
+        # 流式识别：断句前逐帧喂入已完成转写，finalize 直接取终稿
+        streamed_transcript, streaming_pause_ms, partial_match = (
+            await self._finalize_streamer(session)
+        )
         # 每条话语解析一次提供方：管理端改语音配置即时生效，无需重启
         recognizer, tts_chain = await self._voice_source.resolve()
         if recognizer is None:
@@ -782,7 +922,9 @@ class VoiceWebSocketManager:
                 self._discard_asr_prefetch(session)
                 return
             await self._interrupt(session, reason="barge_in")
-        prefetched_transcript = await self._consume_asr_prefetch(session, recognizer)
+        prefetched_transcript = streamed_transcript
+        if prefetched_transcript is None:
+            prefetched_transcript = await self._consume_asr_prefetch(session, recognizer)
         session.turn_task = asyncio.create_task(
             self._run_utterance(
                 session,
@@ -790,6 +932,8 @@ class VoiceWebSocketManager:
                 recognizer,
                 tts_chain,
                 prefetched_transcript=prefetched_transcript,
+                streaming_pause_ms=streaming_pause_ms,
+                partial_match=partial_match,
             ),
             name="voice-utterance",
         )
@@ -851,6 +995,8 @@ class VoiceWebSocketManager:
         tts_chain: TtsProviderChain | None,
         *,
         prefetched_transcript: str | None = None,
+        streaming_pause_ms: int | None = None,
+        partial_match: str | None = None,
     ) -> None:
         if session.conversation_id is None:
             return
@@ -1113,6 +1259,8 @@ class VoiceWebSocketManager:
                 first_token_at,
                 first_audio_at,
                 prefetched_transcript is not None,
+                streaming_pause_ms=streaming_pause_ms,
+                partial_match=partial_match,
             )
         except (TurnCancelled, asyncio.CancelledError):
             if pending is not None:
@@ -1313,8 +1461,16 @@ class VoiceWebSocketManager:
         first_token_at: float,
         first_audio_at: float,
         asr_prefetched: bool,
+        *,
+        streaming_pause_ms: int | None = None,
+        partial_match: str | None = None,
     ) -> None:
-        """docs/00 M2.7 打点：ASR / 首 token / 首音频分段耗时（毫秒）。"""
+        """docs/00 M2.7 打点：ASR / 首 token / 首音频分段耗时（毫秒）。
+
+        streaming_pause_ms / partial_match 是 docs/04 §6.4 P2 的前置测量：
+        断句前最后一段流式 partial 的稳定时长（句中停顿）与终稿匹配关系，
+        用于以真实说话模式评估投机启动的可行提前量与采用率。
+        """
 
         def ms(until: float) -> int | None:
             return int((until - started) * 1000) if until > 0 else None
@@ -1330,17 +1486,22 @@ class VoiceWebSocketManager:
                 first_audio_ms=first_audio_ms,
                 total_ms=total_ms,
                 asr_prefetched=asr_prefetched,
+                stable_partial_ms=streaming_pause_ms,
+                partial_match=partial_match,
             )
         )
         logger.info(
             "voice turn metrics generation_id=%s asr_ms=%s first_token_ms=%s "
-            "first_audio_ms=%s total_ms=%s asr_prefetched=%s",
+            "first_audio_ms=%s total_ms=%s asr_prefetched=%s "
+            "stable_partial_ms=%s partial_match=%s",
             generation_id,
             asr_ms,
             first_token_ms,
             first_audio_ms,
             total_ms,
             asr_prefetched,
+            streaming_pause_ms,
+            partial_match,
         )
 
 

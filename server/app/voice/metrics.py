@@ -14,6 +14,11 @@ class VoiceLatencySample:
     first_audio_ms: int | None
     total_ms: int
     asr_prefetched: bool = False
+    # ---- 投机可行性测量（docs/04 §6.4 P2 前置）----
+    # 断句前最长「partial 稳定」时长（句中停顿；0 = 无 partial 或一直变化）
+    stable_partial_ms: int | None = None
+    # 流式 partial 与终稿的前缀关系：exact = 完全一致（P2 可采用）
+    partial_match: str | None = None  # "exact" | "prefix" | "diverged" | None
 
 
 class VoiceLatencyMetrics:
@@ -65,6 +70,30 @@ class VoiceLatencyMetrics:
             "total_ms": _summary(sample.total_ms for sample in samples),
             "interrupt_ms": interrupt,
             "asr_prefetched_count": sum(sample.asr_prefetched for sample in samples),
+            # ---- 投机可行性（P2 前置测量）：按候选稳定窗口统计可提前量 ----
+            "speculation": {
+                "streamed_turns": sum(
+                    sample.stable_partial_ms is not None for sample in samples
+                ),
+                "stable_partial_ms": _summary(
+                    sample.stable_partial_ms for sample in samples
+                ),
+                "pause_ge_300ms": sum(
+                    (sample.stable_partial_ms or 0) >= 300 for sample in samples
+                ),
+                "pause_ge_600ms": sum(
+                    (sample.stable_partial_ms or 0) >= 600 for sample in samples
+                ),
+                "partial_exact_match": sum(
+                    sample.partial_match == "exact" for sample in samples
+                ),
+                "partial_prefix": sum(
+                    sample.partial_match == "prefix" for sample in samples
+                ),
+                "partial_diverged": sum(
+                    sample.partial_match == "diverged" for sample in samples
+                ),
+            },
             "targets": {
                 "completed_turns": 20,
                 "first_audio_samples": 20,
