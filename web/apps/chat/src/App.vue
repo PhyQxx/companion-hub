@@ -45,6 +45,12 @@ import {
   enablePushNotifications,
   pushSubscriptionState,
 } from "./push";
+import {
+  copyMarkdown,
+  downloadMarkdown,
+  exportFileName,
+  formatConversationMarkdown,
+} from "./export";
 
 // 聊天前端主组件：登录 → 会话侧栏 → 流式消息区 → 发送区。
 // 普通 Web 保留既有本地会话；安装后的 PWA 只在当前会话存储令牌。
@@ -988,6 +994,9 @@ async function loadConversations() {
 
 async function openConversation(id: string) {
   if (activeId.value !== id) await closeVoice();
+  // 切换会话后勾选集合不再有意义，退出选择模式。
+  selectMode.value = false;
+  selectedMessageIds.value = new Set();
   activeId.value = id;
   mobileConversationsOpen.value = false;
   if (!messagesByConversation.has(id)) {
@@ -1087,6 +1096,78 @@ async function restoreConversation(id: string) {
   }
 }
 
+// 会话导出：整会话下载 .md；选择模式下勾选若干条，复制或下载节选，
+// 方便把对话粘贴给外部 AI / 协作者分析。
+const selectMode = ref(false);
+const selectedMessageIds = ref(new Set<string>());
+
+const selectableMessages = computed(() =>
+  activeMessages.value.filter((message) => message.role !== "system"),
+);
+const selectedMessages = computed(() =>
+  selectableMessages.value.filter((message) => selectedMessageIds.value.has(message.id)),
+);
+
+function toggleSelectMode() {
+  selectMode.value = !selectMode.value;
+  selectedMessageIds.value = new Set();
+}
+
+function toggleMessageSelected(id: string) {
+  const next = new Set(selectedMessageIds.value);
+  if (next.has(id)) next.delete(id);
+  else next.add(id);
+  selectedMessageIds.value = next;
+}
+
+function selectAllMessages() {
+  selectedMessageIds.value = new Set(selectableMessages.value.map((message) => message.id));
+}
+
+function conversationTitleOf(id: string | null): string {
+  const conversation = [...conversations.value, ...archivedConversations.value]
+    .find((item) => item.id === id);
+  return conversation?.title || "未命名会话";
+}
+
+async function exportFullConversation(id: string) {
+  try {
+    setStatus("正在导出会话…");
+    // 从头分页拉全量，避免只导出当前已加载的部分。
+    await pullMessagesAfter(id, 0);
+    const messages = (messagesByConversation.get(id) ?? []).filter((message) => message.role !== "system");
+    if (!messages.length) {
+      setStatus("该会话还没有可导出的消息", true);
+      return;
+    }
+    const title = conversationTitleOf(id);
+    downloadMarkdown(exportFileName(title), formatConversationMarkdown({ conversationTitle: title, messages }));
+    setStatus(`已导出 ${messages.length} 条消息`);
+  } catch (error) {
+    setStatus(error instanceof Error ? error.message : "导出失败", true);
+  }
+}
+
+async function exportSelected(action: "copy" | "download") {
+  const messages = selectedMessages.value;
+  if (!messages.length) {
+    setStatus("请先勾选要导出的消息", true);
+    return;
+  }
+  const title = conversationTitleOf(activeId.value);
+  const markdown = formatConversationMarkdown({ conversationTitle: title, messages, excerptOnly: true });
+  if (action === "copy") {
+    const ok = await copyMarkdown(markdown);
+    setStatus(
+      ok ? `已复制 ${messages.length} 条消息的 Markdown，可直接粘贴` : "复制失败，请改用下载",
+      !ok,
+    );
+  } else {
+    downloadMarkdown(exportFileName(title, true), markdown);
+    setStatus(`已下载 ${messages.length} 条消息的节选`);
+  }
+}
+
 /** 建立实时连接；失败时保留基础 REST 可用性并提示 */
 function connectSocket() {
   closeSocket();
@@ -1158,7 +1239,10 @@ async function resumeSession() {
 
 function handleVisibilityChange() {
   if (document.hidden) {
-    if (voiceRecording.value || voiceBusy.value || voiceReady.value) void closeVoice();
+    // 后台页面必须停止麦克风采集，但纯文字回复播报不应因切换浏览器
+    // Tab 而中断。closeVoice() 会清空播放队列并停止当前音频，因此这里只在
+    // PTT 正在录音或连续通话仍占用麦克风时关闭整条语音链路。
+    if (voiceRecording.value || voiceLive.value) void closeVoice();
     return;
   }
   void resumeSession();
@@ -1412,6 +1496,7 @@ async function installPwa() {
             <small>{{ conversation.last_seq }} 条消息</small>
           </button>
           <div class="conversation-actions">
+            <button type="button" title="导出会话为 Markdown" @click="exportFullConversation(conversation.id)">⇩</button>
             <button v-if="showArchivedConversations" type="button" title="恢复会话" @click="restoreConversation(conversation.id)">↥</button>
             <button v-else type="button" title="归档会话" @click="archiveConversation(conversation.id)">↧</button>
             <button class="danger-text" type="button" title="永久删除会话" @click="removeConversation(conversation.id)">✕</button>
@@ -1442,10 +1527,36 @@ async function installPwa() {
         </button>
       </header>
       <div ref="messagesRoot" class="messages">
+        <div v-if="selectMode" class="select-bar">
+          <strong>已选 {{ selectedMessageIds.size }} 条</strong>
+          <button type="button" @click="selectAllMessages">全选</button>
+          <button type="button" :disabled="!selectedMessageIds.size" @click="exportSelected('copy')">复制 Markdown</button>
+          <button type="button" :disabled="!selectedMessageIds.size" @click="exportSelected('download')">下载 .md</button>
+          <button class="ghost" type="button" @click="toggleSelectMode">退出选择</button>
+        </div>
         <div v-if="!activeMessages.length && activeId" class="empty">这个会话还没有消息。</div>
         <template v-for="message in activeMessages" :key="message.id">
-          <div v-if="message.role !== 'system'" class="message" :class="message.role">
-            <div class="bubble">
+          <div
+            v-if="message.role !== 'system'"
+            class="message"
+            :class="[message.role, { selected: selectMode && selectedMessageIds.has(message.id) }]"
+          >
+            <label
+              v-if="selectMode"
+              class="select-check"
+              :title="selectedMessageIds.has(message.id) ? '取消选择' : '选择该消息'"
+            >
+              <input
+                type="checkbox"
+                :checked="selectedMessageIds.has(message.id)"
+                @change="toggleMessageSelected(message.id)"
+              />
+            </label>
+            <div
+              class="bubble"
+              :class="{ selecting: selectMode }"
+              @click="selectMode && toggleMessageSelected(message.id)"
+            >
               <MarkdownContent :content="message.content" />
               <ToolResultCard
                 v-if="message.role === 'assistant' && toolResultOf(message)"
@@ -1485,6 +1596,16 @@ async function installPwa() {
             <option value="L1">L1 · 常规</option>
             <option value="L2">L2 · 仅本地</option>
           </select>
+          <button
+            class="select-toggle"
+            :class="{ active: selectMode }"
+            type="button"
+            title="勾选若干条消息，导出为 Markdown（复制或下载），方便粘贴给外部 AI 分析"
+            :disabled="!activeId || !selectableMessages.length"
+            @click="toggleSelectMode"
+          >
+            {{ selectMode ? "退出选择" : "⇩ 选择导出" }}
+          </button>
           <label class="tts-toggle" title="开启后，文字输入也会播放 TTS 语音回复">
             <input
               v-model="textReplyVoice"
@@ -1643,7 +1764,7 @@ aside header strong { font-size:16px; }
 .conversation small { display: block; overflow:hidden; text-overflow:ellipsis; color: var(--muted); margin-top: 3px; font-size: 11px; font-weight:400; }
 .conversation-actions { position:absolute; right:4px; display:flex; align-items:center; }
 .conversation-actions button { padding:2px 5px; border:0; background:transparent; }
-.conversation-item .conversation { padding-right:56px; }
+.conversation-item .conversation { padding-right:74px; }
 .debug-link { color: var(--muted); font-size: 12px; text-decoration: none; }
 .aside-footer { display:flex; align-items:end; gap:8px; min-width:0; padding-top:10px; border-top:1px solid var(--line); }
 .theme-field { display:grid; flex:1; min-width:0; gap:5px; color:var(--muted); font-size:10px; }
@@ -1654,8 +1775,17 @@ main { grid-area:chat; display:grid; grid-template-rows:minmax(0,1fr) auto; min-
 .mobile-topbar,.mobile-backdrop { display:none; }
 .messages { overflow-y: auto; padding: 20px; }
 .empty { height: 100%; display: grid; place-items: center; color: var(--muted); }
-.message { max-width: 80%; margin-bottom: 14px; }
+.message { max-width: 80%; margin-bottom: 14px; display: flex; align-items: flex-start; gap: 8px; }
 .message.user { margin-left: auto; }
+.select-check { display: flex; padding: 12px 0 0 2px; cursor: pointer; accent-color: var(--accent); }
+.select-check input { cursor: pointer; }
+.message.selected .bubble { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
+.bubble.selecting { cursor: pointer; }
+.bubble.selecting :deep(a), .bubble.selecting :deep(button) { pointer-events: none; }
+.select-bar { position: sticky; top: 0; z-index: 2; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 12px; padding: 8px 10px; border: 1px solid var(--accent); border-radius: 10px; background: color-mix(in srgb, var(--panel) 92%, transparent); backdrop-filter: blur(8px); }
+.select-bar strong { color: var(--accent); font-size: 12px; }
+.select-bar button { padding: 5px 10px; font-size: 12px; }
+.select-toggle.active { border-color: var(--accent); color: var(--accent); background: var(--accent-soft); }
 .bubble { line-height: 1.55; padding: 10px 14px; border:1px solid var(--line); border-radius: 14px; background: var(--panel); box-shadow:0 3px 12px color-mix(in srgb,var(--text) 4%,transparent); position: relative; }
 .user .bubble { background: var(--message-user-bg); border-color:var(--message-user-bg); color: #fff; }
 .user .bubble :deep(.markdown-content a) { color:inherit; }
