@@ -1,6 +1,22 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref } from "vue";
 import {
+  PhArchive,
+  PhArrowCounterClockwise,
+  PhBell,
+  PhDownloadSimple,
+  PhExport,
+  PhMapPin,
+  PhMicrophone,
+  PhPaperPlaneRight,
+  PhPhone,
+  PhPhoneDisconnect,
+  PhPlus,
+  PhSpeakerHigh,
+  PhStopCircle,
+  PhTrash,
+} from "@phosphor-icons/vue";
+import {
   ApiError,
   ChatApi,
   ChatSocket,
@@ -1482,7 +1498,10 @@ async function installPwa() {
         <button type="button" :class="{ active: !showArchivedConversations }" @click="selectConversationGroup(false)">会话</button>
         <button type="button" :class="{ active: showArchivedConversations }" @click="selectConversationGroup(true)">归档 {{ archivedConversations.length }}</button>
       </div>
-      <button v-if="!showArchivedConversations" class="primary new-chat" type="button" @click="createConversation">新会话</button>
+      <button v-if="!showArchivedConversations" class="primary new-chat" type="button" @click="createConversation">
+        <PhPlus :size="17" weight="bold" aria-hidden="true" />
+        <span>新会话</span>
+      </button>
       <div class="conversation-list">
         <p v-if="!visibleConversations.length" class="conversation-empty">{{ showArchivedConversations ? '还没有归档会话' : '还没有会话' }}</p>
         <div
@@ -1496,10 +1515,18 @@ async function installPwa() {
             <small>{{ conversation.last_seq }} 条消息</small>
           </button>
           <div class="conversation-actions">
-            <button type="button" title="导出会话为 Markdown" @click="exportFullConversation(conversation.id)">⇩</button>
-            <button v-if="showArchivedConversations" type="button" title="恢复会话" @click="restoreConversation(conversation.id)">↥</button>
-            <button v-else type="button" title="归档会话" @click="archiveConversation(conversation.id)">↧</button>
-            <button class="danger-text" type="button" title="永久删除会话" @click="removeConversation(conversation.id)">✕</button>
+            <button class="conversation-action export-action" type="button" title="导出会话为 Markdown" aria-label="导出会话为 Markdown" @click="exportFullConversation(conversation.id)">
+              <PhDownloadSimple :size="16" weight="bold" aria-hidden="true" />
+            </button>
+            <button v-if="showArchivedConversations" class="conversation-action" type="button" title="恢复会话" aria-label="恢复会话" @click="restoreConversation(conversation.id)">
+              <PhArrowCounterClockwise :size="16" weight="bold" aria-hidden="true" />
+            </button>
+            <button v-else class="conversation-action" type="button" title="归档会话" aria-label="归档会话" @click="archiveConversation(conversation.id)">
+              <PhArchive :size="16" weight="bold" aria-hidden="true" />
+            </button>
+            <button class="conversation-action danger-action" type="button" title="永久删除会话" aria-label="永久删除会话" @click="removeConversation(conversation.id)">
+              <PhTrash :size="16" weight="bold" aria-hidden="true" />
+            </button>
           </div>
         </div>
       </div>
@@ -1590,60 +1617,7 @@ async function installPwa() {
 
       <footer class="composer">
         <p v-if="activeConversationArchived" class="archived-notice">此会话已归档。恢复后可以继续发送消息。</p>
-        <div class="composer-meta">
-          <select v-model="privacy" :disabled="!!streaming || voiceRecording || voiceLive || voiceBusy" @change="onPrivacyChanged">
-            <option value="L0">L0 · 可上云</option>
-            <option value="L1">L1 · 常规</option>
-            <option value="L2">L2 · 仅本地</option>
-          </select>
-          <button
-            class="select-toggle"
-            :class="{ active: selectMode }"
-            type="button"
-            title="勾选若干条消息，导出为 Markdown（复制或下载），方便粘贴给外部 AI 分析"
-            :disabled="!activeId || !selectableMessages.length"
-            @click="toggleSelectMode"
-          >
-            {{ selectMode ? "退出选择" : "⇩ 选择导出" }}
-          </button>
-          <label class="tts-toggle" title="开启后，文字输入也会播放 TTS 语音回复">
-            <input
-              v-model="textReplyVoice"
-              type="checkbox"
-              :disabled="!!streaming || voiceRecording || voiceLive || voiceBusy"
-              @change="onTextReplyVoiceChanged"
-            />
-            <span>文字回复播报</span>
-          </label>
-          <label
-            v-if="locationSupported"
-            class="tts-toggle"
-            title="天气/附近/路线查询时自动附带本机定位（首次使用会请求浏览器授权，拒绝后回落默认城市）"
-          >
-            <input
-              v-model="locationEnabled"
-              type="checkbox"
-              :disabled="!!streaming || voiceRecording || voiceLive || voiceBusy"
-              @change="onLocationEnabledChanged"
-            />
-            <span>📍自动定位</span>
-          </label>
-          <label
-            v-if="pushSupported"
-            class="tts-toggle"
-            title="开启后，主动提醒/简报等会以系统通知推送到本机（PWA 关闭页面也能收到）"
-          >
-            <input
-              v-model="notificationsEnabled"
-              type="checkbox"
-              :disabled="!token || !!streaming || voiceRecording || voiceLive || voiceBusy"
-              @change="onNotificationsChanged"
-            />
-            <span>🔔移动通知</span>
-          </label>
-          <span class="status" :class="{ error: statusError }">{{ statusText }}</span>
-        </div>
-        <div class="voice-row">
+        <div class="composer-toolbar">
           <button
             class="voice-button"
             :class="{ recording: voiceLive }"
@@ -1651,7 +1625,9 @@ async function installPwa() {
             :disabled="!activeId || activeConversationArchived || !!streaming || voiceRecording || (voiceBusy && !voiceLive)"
             @click="toggleVoiceCall"
           >
-            {{ voiceLive ? "📞 挂断通话" : "📞 连续对话" }}
+            <PhPhoneDisconnect v-if="voiceLive" :size="17" weight="fill" aria-hidden="true" />
+            <PhPhone v-else :size="17" weight="fill" aria-hidden="true" />
+            <span>{{ voiceLive ? "挂断通话" : "连续对话" }}</span>
           </button>
           <button
             v-if="!voiceLive"
@@ -1661,14 +1637,76 @@ async function installPwa() {
             :disabled="!activeId || activeConversationArchived || !!streaming || (voiceBusy && !voiceRecording)"
             @click="toggleVoiceRecording"
           >
-            {{ voiceRecording ? "结束并发送" : "🎙 说一句" }}
+            <PhStopCircle v-if="voiceRecording" :size="17" weight="fill" aria-hidden="true" />
+            <PhMicrophone v-else :size="17" weight="fill" aria-hidden="true" />
+            <span>{{ voiceRecording ? "结束并发送" : "说一句" }}</span>
           </button>
-          <button v-if="voiceBusy && !voiceRecording" type="button" @click="interruptVoice">打断/停止播报</button>
-          <span class="voice-status">{{ voiceStatus }}</span>
-          <span class="viseme-meter" title="实时口型幅度">
-            <span class="viseme-fill" :style="{ transform: `scaleX(${voiceViseme})` }"></span>
+          <button v-if="voiceBusy && !voiceRecording" class="interrupt-button" type="button" @click="interruptVoice">打断播报</button>
+          <select v-model="privacy" :disabled="!!streaming || voiceRecording || voiceLive || voiceBusy" @change="onPrivacyChanged">
+            <option value="L0">L0 · 可上云</option>
+            <option value="L1">L1 · 常规</option>
+            <option value="L2">L2 · 仅本地</option>
+          </select>
+          <label class="feature-toggle" title="开启后，文字输入也会播放 TTS 语音回复">
+            <input
+              v-model="textReplyVoice"
+              type="checkbox"
+              :disabled="!!streaming || voiceRecording || voiceLive || voiceBusy"
+              @change="onTextReplyVoiceChanged"
+            />
+            <span class="toggle-track" aria-hidden="true"><span></span></span>
+            <PhSpeakerHigh :size="16" weight="bold" aria-hidden="true" />
+            <span>回复播报</span>
+          </label>
+          <label
+            v-if="locationSupported"
+            class="feature-toggle"
+            title="天气/附近/路线查询时自动附带本机定位（首次使用会请求浏览器授权，拒绝后回落默认城市）"
+          >
+            <input
+              v-model="locationEnabled"
+              type="checkbox"
+              :disabled="!!streaming || voiceRecording || voiceLive || voiceBusy"
+              @change="onLocationEnabledChanged"
+            />
+            <span class="toggle-track" aria-hidden="true"><span></span></span>
+            <PhMapPin :size="16" weight="bold" aria-hidden="true" />
+            <span>自动定位</span>
+          </label>
+          <label
+            v-if="pushSupported"
+            class="feature-toggle"
+            title="开启后，主动提醒/简报等会以系统通知推送到本机（PWA 关闭页面也能收到）"
+          >
+            <input
+              v-model="notificationsEnabled"
+              type="checkbox"
+              :disabled="!token || !!streaming || voiceRecording || voiceLive || voiceBusy"
+              @change="onNotificationsChanged"
+            />
+            <span class="toggle-track" aria-hidden="true"><span></span></span>
+            <PhBell :size="16" weight="bold" aria-hidden="true" />
+            <span>移动通知</span>
+          </label>
+          <button
+            class="select-toggle"
+            :class="{ active: selectMode }"
+            type="button"
+            title="勾选若干条消息，导出为 Markdown（复制或下载），方便粘贴给外部 AI 分析"
+            :disabled="!activeId || !selectableMessages.length"
+            @click="toggleSelectMode"
+          >
+            <PhExport :size="16" weight="bold" aria-hidden="true" />
+            <span>{{ selectMode ? "退出选择" : "选择导出" }}</span>
+          </button>
+          <span class="toolbar-status">
+            <span class="status" :class="{ error: statusError }">{{ statusText }}</span>
+            <span class="voice-status">{{ voiceStatus }}</span>
+            <span class="viseme-meter" title="实时口型幅度">
+              <span class="viseme-fill" :style="{ transform: `scaleX(${voiceViseme})` }"></span>
+            </span>
+            <span v-if="voiceTranscript" class="voice-transcript">识别：{{ voiceTranscript }}</span>
           </span>
-          <span v-if="voiceTranscript" class="voice-transcript">识别：{{ voiceTranscript }}</span>
         </div>
         <div class="composer-row">
           <textarea
@@ -1678,7 +1716,10 @@ async function installPwa() {
             :disabled="!socketReady || activeConversationArchived"
             @keydown.enter.exact.prevent="send"
           />
-          <button v-if="!streaming" class="primary" type="button" :disabled="!canSend" @click="send">发送</button>
+          <button v-if="!streaming" class="primary send-button" type="button" :disabled="!canSend" @click="send">
+            <span>发送</span>
+            <PhPaperPlaneRight :size="18" weight="fill" aria-hidden="true" />
+          </button>
           <button v-else type="button" @click="cancelStreaming">停止</button>
         </div>
       </footer>
@@ -1752,19 +1793,22 @@ aside header strong { font-size:16px; }
 .avatar-caption { position:absolute; inset:auto 12px 10px; display:flex; justify-content:space-between; align-items:end; gap:8px; }.avatar-caption strong { max-width:78%; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:11px; }.avatar-caption small { color:var(--muted); font-size:9px; }
 .avatar-switcher{display:grid;flex:none;gap:6px;color:var(--muted);font-size:10px}.avatar-switcher select{min-width:0;width:100%;padding:9px 10px;font-size:12px}
 @keyframes avatar-pulse { 50% { transform:scale(1.06); filter:brightness(1.12); } }
-.new-chat { width: 100%; }
+.new-chat { display:flex; align-items:center; justify-content:center; gap:7px; width:100%; box-shadow:0 5px 14px color-mix(in srgb,var(--accent) 20%,transparent); }
 .conversation-tabs { display:grid; grid-template-columns:1fr 1fr; gap:6px; }
 .conversation-tabs button { padding:7px 8px; color:var(--muted); background:var(--panel2); }
 .conversation-tabs button.active { border-color:var(--accent); color:var(--accent); background:var(--accent-soft); }
 .conversation-list { flex: 1; min-width:0; min-height: 0; overflow-x:hidden; overflow-y: auto; display: grid; align-content: start; gap: 6px; }
 .conversation-empty { margin:10px 4px; color:var(--muted); font-size:12px; text-align:center; }
-.conversation-item { position: relative; display: flex; align-items: center; min-width:0; max-width:100%; }
-.conversation { flex: 1 1 auto; min-width:0; max-width:100%; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; text-align: left; border: 1px solid var(--line); background: var(--panel); padding: 8px 30px 8px 10px; border-radius: 8px; }
+.conversation-item { position:relative; display:flex; align-items:center; min-width:0; max-width:100%; border-radius:10px; }
+.conversation { flex:1 1 auto; min-width:0; max-width:100%; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; text-align:left; border:1px solid var(--line); background:var(--panel); padding:9px 12px; border-radius:10px; transition:padding-right 160ms ease, background-color 160ms ease, border-color 160ms ease, box-shadow 160ms ease; }
+.conversation-item:hover .conversation,.conversation-item:focus-within .conversation { padding-right:98px; border-color:color-mix(in srgb,var(--accent) 28%,var(--line)); box-shadow:0 5px 16px color-mix(in srgb,var(--text) 6%,transparent); }
 .conversation-item.active .conversation { border-color: var(--accent); background: var(--accent-soft); color:var(--accent); font-weight:600; }
 .conversation small { display: block; overflow:hidden; text-overflow:ellipsis; color: var(--muted); margin-top: 3px; font-size: 11px; font-weight:400; }
-.conversation-actions { position:absolute; right:4px; display:flex; align-items:center; }
-.conversation-actions button { padding:2px 5px; border:0; background:transparent; }
-.conversation-item .conversation { padding-right:74px; }
+.conversation-actions { position:absolute; right:6px; display:flex; align-items:center; gap:2px; opacity:0; transform:translateX(4px); pointer-events:none; transition:opacity 150ms ease,transform 150ms ease; }
+.conversation-item:hover .conversation-actions,.conversation-item:focus-within .conversation-actions,.conversation-item.active .conversation-actions { opacity:1; transform:translateX(0); pointer-events:auto; }
+.conversation-action { display:grid; place-items:center; width:27px; height:27px; padding:0; border:0; border-radius:7px; background:color-mix(in srgb,var(--panel) 86%,transparent); color:var(--muted); }
+.conversation-action:hover:not(:disabled),.conversation-action:focus-visible { border-color:transparent; background:var(--accent-soft); color:var(--accent); outline:none; }
+.conversation-action.danger-action:hover:not(:disabled),.conversation-action.danger-action:focus-visible { background:color-mix(in srgb,var(--danger) 10%,var(--panel)); color:var(--danger); }
 .debug-link { color: var(--muted); font-size: 12px; text-decoration: none; }
 .aside-footer { display:flex; align-items:end; gap:8px; min-width:0; padding-top:10px; border-top:1px solid var(--line); }
 .theme-field { display:grid; flex:1; min-width:0; gap:5px; color:var(--muted); font-size:10px; }
@@ -1773,10 +1817,10 @@ aside header strong { font-size:16px; }
 
 main { grid-area:chat; display:grid; grid-template-rows:minmax(0,1fr) auto; min-width:0; min-height:0; background:var(--bg); }
 .mobile-topbar,.mobile-backdrop { display:none; }
-.messages { overflow-y: auto; padding: 20px; }
+.messages { overflow-y:auto; padding:20px clamp(20px,3vw,42px); }
 .empty { height: 100%; display: grid; place-items: center; color: var(--muted); }
-.message { max-width: 80%; margin-bottom: 14px; display: flex; align-items: flex-start; gap: 8px; }
-.message.user { margin-left: auto; }
+.message { width:fit-content; max-width:min(78%,820px); margin:0 auto 14px 0; display:flex; align-items:flex-start; gap:8px; }
+.message.user { margin-right:0; margin-left:auto; justify-content:flex-end; }
 .select-check { display: flex; padding: 12px 0 0 2px; cursor: pointer; accent-color: var(--accent); }
 .select-check input { cursor: pointer; }
 .message.selected .bubble { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
@@ -1786,8 +1830,8 @@ main { grid-area:chat; display:grid; grid-template-rows:minmax(0,1fr) auto; min-
 .select-bar strong { color: var(--accent); font-size: 12px; }
 .select-bar button { padding: 5px 10px; font-size: 12px; }
 .select-toggle.active { border-color: var(--accent); color: var(--accent); background: var(--accent-soft); }
-.bubble { line-height: 1.55; padding: 10px 14px; border:1px solid var(--line); border-radius: 14px; background: var(--panel); box-shadow:0 3px 12px color-mix(in srgb,var(--text) 4%,transparent); position: relative; }
-.user .bubble { background: var(--message-user-bg); border-color:var(--message-user-bg); color: #fff; }
+.bubble { min-width:0; line-height:1.55; padding:10px 14px; border:1px solid var(--line); border-radius:6px 16px 16px 16px; background:var(--panel); box-shadow:0 4px 14px color-mix(in srgb,var(--text) 5%,transparent); position:relative; overflow-wrap:anywhere; }
+.user .bubble { border-radius:16px 6px 16px 16px; background:var(--message-user-bg); border-color:var(--message-user-bg); color:#fff; box-shadow:0 7px 18px color-mix(in srgb,var(--message-user-bg) 22%,transparent); }
 .user .bubble :deep(.markdown-content a) { color:inherit; }
 .bubble.streaming { white-space:pre-wrap; }
 .bubble.streaming::after { content: ""; }
@@ -1795,22 +1839,40 @@ main { grid-area:chat; display:grid; grid-template-rows:minmax(0,1fr) auto; min-
 .persona-badge { display:inline-block; margin-left:6px; font-size:10px; color:var(--muted); opacity:.75; }
 .recall-badge { display:inline-block; margin-left:6px; font-size:10px; color:var(--muted); border:1px solid var(--line); border-radius:999px; padding:0 7px; opacity:.8; }
 
-.composer { border-top: 1px solid var(--line); padding: 12px 16px; display: grid; gap: 8px; background:var(--panel); }
+.composer { border-top:1px solid var(--line); padding:12px clamp(16px,2vw,26px) 14px; display:grid; gap:10px; background:color-mix(in srgb,var(--panel) 97%,var(--bg)); box-shadow:0 -8px 24px color-mix(in srgb,var(--text) 3%,transparent); }
 .archived-notice { margin:0; color:var(--muted); font-size:12px; }
-.composer-meta { display: flex; align-items: center; gap: 12px; }
-.tts-toggle { display:flex; align-items:center; gap:6px; color:var(--muted); font-size:12px; cursor:pointer; user-select:none; }
-.tts-toggle input { accent-color:var(--accent); cursor:pointer; }
-.tts-toggle input:disabled { cursor:not-allowed; }
-.voice-row { display: flex; align-items: center; gap: 8px; min-width: 0; flex-wrap: wrap; }
-.voice-button.recording { border-color: var(--danger); color: var(--danger); }
+.composer-toolbar { display:flex; align-items:center; gap:7px; min-width:0; overflow-x:auto; overflow-y:hidden; padding-bottom:1px; scrollbar-width:none; }
+.composer-toolbar::-webkit-scrollbar { display:none; }
+.composer-toolbar > * { flex:none; }
+.composer-toolbar select { min-width:112px; padding:7px 9px; border-radius:10px; font-size:12px; font-weight:600; }
+.select-toggle,.feature-toggle { min-height:34px; border:1px solid var(--line); border-radius:10px; background:var(--panel); }
+.select-toggle { display:inline-flex; align-items:center; gap:6px; padding:7px 10px; color:var(--muted); font-size:12px; }
+.feature-toggle { position:relative; display:inline-flex; align-items:center; gap:6px; padding:6px 9px 6px 7px; color:var(--muted); font-size:12px; cursor:pointer; user-select:none; transition:background-color 160ms ease,border-color 160ms ease,color 160ms ease; }
+.feature-toggle:hover { border-color:color-mix(in srgb,var(--accent) 38%,var(--line)); color:var(--text); }
+.feature-toggle:has(input:checked) { border-color:color-mix(in srgb,var(--accent) 35%,var(--line)); background:var(--accent-soft); color:var(--accent); }
+.feature-toggle input { position:absolute; width:1px; height:1px; opacity:0; pointer-events:none; }
+.toggle-track { display:flex; align-items:center; width:26px; height:16px; padding:2px; border-radius:999px; background:color-mix(in srgb,var(--muted) 30%,var(--panel)); transition:background-color 160ms ease; }
+.toggle-track span { width:12px; height:12px; border-radius:50%; background:#fff; box-shadow:0 1px 3px rgba(17,24,39,.2); transition:transform 160ms ease; }
+.feature-toggle input:checked + .toggle-track { background:var(--accent); }
+.feature-toggle input:checked + .toggle-track span { transform:translateX(10px); }
+.feature-toggle:has(input:focus-visible) { outline:3px solid color-mix(in srgb,var(--accent) 16%,transparent); outline-offset:1px; }
+.feature-toggle:has(input:disabled) { opacity:.5; cursor:not-allowed; }
+.voice-button { display:inline-flex; align-items:center; gap:7px; min-height:36px; padding:8px 12px; border-radius:10px; font-size:12px; font-weight:600; }
+.composer-toolbar > .voice-button:first-child { border-color:color-mix(in srgb,var(--accent) 30%,var(--line)); color:var(--accent); background:var(--accent-soft); }
+.voice-button.recording { border-color:var(--danger); color:var(--danger); background:color-mix(in srgb,var(--danger) 8%,var(--panel)); }
+.interrupt-button { min-height:34px; padding:7px 10px; border-color:color-mix(in srgb,var(--danger) 28%,var(--line)); color:var(--danger); font-size:12px; }
+.toolbar-status { display:flex; flex:1 1 auto; align-items:center; justify-content:flex-end; gap:8px; min-width:140px; overflow:hidden; white-space:nowrap; }
+.toolbar-status .status,.toolbar-status .voice-status { min-width:0; overflow:hidden; text-overflow:ellipsis; }
+.toolbar-status .status:empty { display:none; }
 .voice-status { color: var(--muted); font-size: 12px; }
 .viseme-meter { width:44px; height:8px; border:1px solid var(--line); border-radius:999px; overflow:hidden; background:var(--panel2); }
 .viseme-fill { display:block; width:100%; height:100%; transform-origin:left center; background:var(--accent); transition:transform 50ms linear; }
 .message-time { margin-left:6px; color:var(--muted); font-size:11px; white-space:nowrap; }
 .user .message-time { color:#fff; font-weight:500; }
 .voice-transcript { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); font-size: 12px; }
-.composer-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 10px; align-items: end; }
-.composer textarea { resize: none; }
+.composer-row { display:grid; grid-template-columns:minmax(0,1fr) auto; gap:10px; align-items:stretch; }
+.composer textarea { min-height:56px; resize:none; padding:12px 14px; border-radius:12px; line-height:1.45; }
+.send-button { display:inline-flex; align-items:center; justify-content:center; gap:7px; min-width:82px; border-radius:12px; font-weight:600; box-shadow:0 6px 16px color-mix(in srgb,var(--accent) 22%,transparent); }
 
 @media (max-width:1100px) {
   .shell { grid-template-columns:220px minmax(0,1fr) 280px; }
@@ -1844,14 +1906,10 @@ main { grid-area:chat; display:grid; grid-template-rows:minmax(0,1fr) auto; min-
   .message { max-width:92%; margin-bottom:10px; }
   .bubble { padding:10px 12px; border-radius:16px; }
   .composer { gap:7px; padding:9px 10px calc(9px + env(safe-area-inset-bottom)); }
-  .composer-meta { gap:8px; overflow-x:auto; padding-bottom:1px; scrollbar-width:none; }
-  .composer-meta::-webkit-scrollbar { display:none; }
-  .composer-meta > * { flex:none; }
-  .composer-meta .status { flex:1 0 100%; }
-  .tts-toggle { white-space:nowrap; }
-  .voice-row { flex-wrap:nowrap; overflow-x:auto; scrollbar-width:none; }
-  .voice-row::-webkit-scrollbar { display:none; }
-  .voice-row > * { flex:none; }
+  .composer-toolbar { gap:7px; }
+  .composer-toolbar select { min-width:108px; }
+  .toolbar-status { flex:none; min-width:auto; }
+  .feature-toggle { white-space:nowrap; }
   .voice-transcript { flex:1 0 160px; }
   .composer-row { grid-template-columns:minmax(0,1fr) 56px; gap:8px; }
   .composer textarea { min-height:44px; max-height:112px; padding:10px 11px; }

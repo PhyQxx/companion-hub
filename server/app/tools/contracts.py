@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Any, Literal, Protocol
 from uuid import UUID
 
@@ -18,6 +19,9 @@ class ToolContext(StrictModel):
     turn_id: UUID | None = None
     # 原始当前用户消息, 仅供服务端执行策略判断; 工具不得把它写入结果或日志。
     user_text: str | None = None
+    # 本轮可信时钟与用户时区；供需要解析“今天/明天”等相对时间的工具使用。
+    current_time: datetime | None = None
+    timezone_name: str | None = None
     default_city: str | None = None
     # 持久化动作步骤提供的幂等键；有副作用的工具只能复用，不能自行生成替代键。
     idempotency_key: str | None = None

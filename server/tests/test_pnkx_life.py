@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import AsyncIterator
-from datetime import date
+from datetime import UTC, date, datetime
 from typing import Any
 from uuid import UUID
 
@@ -577,6 +577,49 @@ async def test_pnkx_chat_tools_read_and_create_with_turn_idempotency() -> None:
     assert create_result.data == {"resource": "todo", "remote_id": "90"}
     assert fake.todo_operations[0]["clientUuid"] == turn_id.hex
     assert fake.todo_operations[0]["planStartTime"] == "2026-09-04 09:00:00"
+
+
+async def test_pnkx_create_todo_falls_back_to_name_or_title() -> None:
+    fake = FakePnkxLife()
+    client = _client(fake)
+    create_tool = PnkxCreateTool(client, runs_local=True)
+    context = ToolContext(
+        privacy_level=PrivacyLevel.L1, turn_id=UUID("018f7f44-89d2-7cc8-bc19-8f51f522a4db")
+    )
+
+    # 模型把待办正文填进 title 而漏掉 content 时不再报 pnkx_content_required
+    result = await create_tool.execute(
+        PnkxCreateArgs(resource="todo", title="明天去潍坊"),
+        context,
+    )
+
+    assert result.ok is True
+    assert fake.todo_operations[0]["content"] == "明天去潍坊"
+
+
+async def test_pnkx_create_todo_backfills_relative_date_label_and_remark() -> None:
+    fake = FakePnkxLife()
+    client = _client(fake)
+    create_tool = PnkxCreateTool(client, runs_local=True)
+    context = ToolContext(
+        privacy_level=PrivacyLevel.L1,
+        turn_id=UUID("018f7f44-89d2-7cc8-bc19-8f51f522a4dc"),
+        user_text="加个待办，明天去潍坊",
+        current_time=datetime(2026, 9, 24, 13, 16, 52, tzinfo=UTC),
+        timezone_name="Asia/Shanghai",
+    )
+
+    result = await create_tool.execute(
+        PnkxCreateArgs(resource="todo", content="去潍坊"),
+        context,
+    )
+
+    assert result.ok is True
+    operation = fake.todo_operations[0]
+    assert operation["planStartTime"] == "2026-09-25 00:00:00"
+    assert operation["planEndTime"] == "2026-09-25 23:59:59"
+    assert operation["label"] == "出行"
+    assert operation["remark"] == "加个待办，明天去潍坊"
 
 
 async def test_pnkx_chat_read_requires_list_id_for_shopping_items() -> None:

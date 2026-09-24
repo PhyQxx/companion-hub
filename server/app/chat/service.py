@@ -289,6 +289,7 @@ class PendingTurn:
     config_version: int
     persona: PersonaConfig
     persona_version: int
+    user_timezone: str
     memory_retrieval: RetrievalResult | None = None
     history_recall: HistoryRecallResult | None = None
     screen_activity_recall: ScreenActivityRecallResult | None = None
@@ -894,6 +895,7 @@ class ChatService:
             config_version=snapshot.version,
             persona=persona,
             persona_version=persona_snapshot.version if persona_snapshot else 0,
+            user_timezone=user_timezone,
             memory_retrieval=memory_retrieval,
             history_recall=history_recall,
             screen_activity_recall=screen_activity_recall,
@@ -1082,6 +1084,8 @@ class ChatService:
             user_id=pending.user_id,
             turn_id=pending.turn_id,
             user_text=pending.user_message.content,
+            current_time=pending.user_message.created_at,
+            timezone_name=pending.user_timezone,
             default_city=pending.config.tools.query.default_city,
             ephemeral_location=pending.client_location,
         )

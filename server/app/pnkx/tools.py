@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
-from datetime import date, datetime
+import re
+from datetime import UTC, date, datetime, time, timedelta
 from decimal import Decimal
 from time import perf_counter
 from typing import Annotated, Any, Literal, TypeVar, cast
 from urllib.parse import urlparse
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -95,8 +97,24 @@ class PnkxCreateArgs(BaseModel):
     plan_date: date | None = None
     pay_time: datetime | None = None
     next_payment_date: date | None = None
-    plan_start_time: datetime | None = None
-    plan_end_time: datetime | None = None
+    plan_start_time: Annotated[
+        datetime,
+        Field(
+            description=(
+                "待办计划开始时间。用户提到今天、明天、后天或具体日期时必须填写绝对时间；"
+                "只有日期没有钟点时填当天 00:00:00。"
+            )
+        ),
+    ] | None = None
+    plan_end_time: Annotated[
+        datetime,
+        Field(
+            description=(
+                "待办计划结束时间。用户给出日期时必须填写；"
+                "只有日期没有钟点时填当天 23:59:59。"
+            )
+        ),
+    ] | None = None
     repeat: bool = True
     amount: Annotated[Decimal, Field(gt=0, max_digits=18, decimal_places=2)] | None = None
     account_id: Annotated[int, Field(gt=0)] | None = None
@@ -116,7 +134,14 @@ class PnkxCreateArgs(BaseModel):
     enabled: bool = True
     checked: bool = False
     completed: bool = False
-    label: Annotated[str, Field(min_length=1, max_length=255)] | None = None
+    label: Annotated[
+        str,
+        Field(
+            min_length=1,
+            max_length=255,
+            description="待办分类标签；创建待办时根据内容填写简短标签，例如工作、学习、出行或生活。",
+        ),
+    ] | None = None
     priority: Annotated[int, Field(ge=0, le=4)] = 0
     kanban_status: Annotated[int, Field(ge=0, le=2)] = 0
     sort_order: Annotated[int, Field(ge=0)] | None = None
@@ -125,7 +150,14 @@ class PnkxCreateArgs(BaseModel):
     weather: Annotated[str, Field(min_length=1, max_length=100)] | None = None
     url: Annotated[str, Field(min_length=1, max_length=2000)] | None = None
     notes: Annotated[str, Field(max_length=10_000)] | None = None
-    remark: Annotated[str, Field(min_length=1, max_length=1000)] | None = None
+    remark: Annotated[
+        str,
+        Field(
+            min_length=1,
+            max_length=1000,
+            description="待办备注；优先保留用户原始创建指令或未进入正文的补充信息。",
+        ),
+    ] | None = None
 
 
 class PnkxReadTool:
@@ -294,8 +326,11 @@ class PnkxCreateTool:
     name = "pnkx_create_life"
     description = (
         "仅在用户明确要求新增时，向 pnkx 创建生活数据。resource 支持待办、菜谱、餐食计划、"
-        "购物清单/条目、订阅、账本、笔记、日记和纪念日。根据资源填写对应字段；不要猜测"
-        "账户、分类、清单或菜谱 ID，缺少这些 ID 时先用 pnkx_read_life 查询。"
+        "购物清单/条目、订阅、账本、笔记、日记和纪念日。各资源正文必填字段：待办=content"
+        "（待办正文，不要填 name/title）；笔记/日记=title+content；菜谱/餐食计划=title；"
+        "纪念日/购物清单/购物项/订阅=name。不要猜测账户、分类、清单或菜谱 ID，缺少这些 ID"
+        "时先用 pnkx_read_life 查询。创建待办时：只要用户提到日期或相对日期，就必须把它转换为"
+        "plan_start_time 和 plan_end_time；同时填写简短 label，并把用户原始指令放入 remark。"
     )
     arguments_model: type[BaseModel] = PnkxCreateArgs
     max_privacy_level = PrivacyLevel.L2
@@ -317,7 +352,7 @@ class PnkxCreateTool:
         if context.turn_id is None:
             return _failure(self.name, "pnkx_idempotency_key_missing", started)
         try:
-            remote_id = await self._create(args, context.turn_id.hex)
+            remote_id = await self._create(args, context.turn_id.hex, context)
         except PnkxApiError as error:
             return _failure(self.name, error.reason_code, started)
         except ValueError as error:
@@ -330,27 +365,44 @@ class PnkxCreateTool:
             latency_ms=(perf_counter() - started) * 1_000,
         )
 
-    async def _create(self, args: PnkxCreateArgs, client_uuid: str) -> str:
+    async def _create(
+        self, args: PnkxCreateArgs, client_uuid: str, context: ToolContext
+    ) -> str:
         if args.resource == "todo":
+            content = _first_required(
+                "pnkx_content_required", args.content, args.name, args.title
+            )
+            fallback_window = _todo_relative_date_window(
+                context.user_text or content,
+                now=context.current_time,
+                timezone_name=context.timezone_name,
+            )
+            plan_start_time = args.plan_start_time or (
+                fallback_window[0] if fallback_window is not None else None
+            )
+            plan_end_time = args.plan_end_time or (
+                fallback_window[1] if fallback_window is not None else None
+            )
             return await self._client.create_todo(
                 client_uuid=client_uuid,
-                content=_required(args.content, "pnkx_content_required"),
+                # 模型偶发把待办正文填进 name/title，回退避免直接失败
+                content=content,
                 plan_start_time=(
-                    _format_datetime(args.plan_start_time)
-                    if args.plan_start_time is not None
+                    _format_datetime(plan_start_time)
+                    if plan_start_time is not None
                     else None
                 ),
                 plan_end_time=(
-                    _format_datetime(args.plan_end_time)
-                    if args.plan_end_time is not None
+                    _format_datetime(plan_end_time)
+                    if plan_end_time is not None
                     else None
                 ),
                 completed=args.completed,
-                label=args.label,
+                label=args.label or _infer_todo_label(context.user_text or content),
                 priority=args.priority,
                 kanban_status=args.kanban_status,
                 sort_order=args.sort_order,
-                remark=args.remark,
+                remark=args.remark or _todo_remark(context.user_text, content),
             )
         if args.resource == "recipe":
             return await self._client.create_recipe(
@@ -472,6 +524,59 @@ def _required(value: T | None, reason_code: str) -> T:
     if value is None:
         raise ValueError(reason_code)
     return value
+
+
+def _first_required(reason_code: str, *values: T | None) -> T:
+    for value in values:
+        if value is not None:
+            return value
+    raise ValueError(reason_code)
+
+
+def _todo_relative_date_window(
+    text_value: str,
+    *,
+    now: datetime | None,
+    timezone_name: str | None,
+) -> tuple[datetime, datetime] | None:
+    offsets = (("后天", 2), ("明天", 1), ("今天", 0))
+    offset = next((days for marker, days in offsets if marker in text_value), None)
+    if offset is None:
+        return None
+    try:
+        timezone = ZoneInfo(timezone_name or "Asia/Shanghai")
+    except (ZoneInfoNotFoundError, ValueError):
+        timezone = ZoneInfo("Asia/Shanghai")
+    moment = now or datetime.now(UTC)
+    local_moment = (
+        moment.replace(tzinfo=timezone)
+        if moment.tzinfo is None
+        else moment.astimezone(timezone)
+    )
+    target_date = local_moment.date() + timedelta(days=offset)
+    return (
+        datetime.combine(target_date, time.min, timezone),
+        datetime.combine(target_date, time(23, 59, 59), timezone),
+    )
+
+
+_TODO_LABEL_RULES: tuple[tuple[str, re.Pattern[str]], ...] = (
+    ("出行", re.compile(r"(去|出发|出差|旅行|旅游|机场|车站|高铁|航班)")),
+    ("工作", re.compile(r"(工作|项目|会议|报告|客户|提交|联调|开发|上线)")),
+    ("学习", re.compile(r"(学习|考试|课程|作业|复习|读书|论文)")),
+)
+
+
+def _infer_todo_label(text_value: str) -> str:
+    for label, pattern in _TODO_LABEL_RULES:
+        if pattern.search(text_value):
+            return label
+    return "生活"
+
+
+def _todo_remark(user_text: str | None, content: str) -> str:
+    value = (user_text or content).strip()
+    return value[:1000] or content[:1000]
 
 
 def _format_datetime(value: datetime) -> str:
