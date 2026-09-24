@@ -22,11 +22,13 @@ class TodoSyncScheduler:
         service: TodoSyncService,
         *,
         interval_seconds: float = 300.0,
+        interval_provider: Callable[[], float] | None = None,
         clock: Callable[[], datetime] | None = None,
         sleeper: Callable[[float], Awaitable[None]] | None = None,
     ) -> None:
         self._service = service
         self._interval = interval_seconds
+        self._interval_provider = interval_provider
         self._clock = clock or (lambda: datetime.now(UTC))
         self._sleep = sleeper or asyncio.sleep
         self._stop = asyncio.Event()
@@ -47,12 +49,17 @@ class TodoSyncScheduler:
                 await task
 
     async def _run(self) -> None:
+        def interval() -> float:
+            return (
+                self._interval_provider() if self._interval_provider is not None else self._interval
+            )
+
         with contextlib.suppress(asyncio.TimeoutError):
-            await asyncio.wait_for(self._stop.wait(), timeout=self._interval)
+            await asyncio.wait_for(self._stop.wait(), timeout=interval())
         while not self._stop.is_set():
             try:
                 self.last_stats = await self._service.sync_once()
             except Exception:
                 logger.exception("todo sync tick failed")
             with contextlib.suppress(asyncio.TimeoutError):
-                await asyncio.wait_for(self._stop.wait(), timeout=self._interval)
+                await asyncio.wait_for(self._stop.wait(), timeout=interval())

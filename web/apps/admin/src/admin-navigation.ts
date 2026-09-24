@@ -96,6 +96,7 @@ export const adminModules: AdminModule[] = [
     tabs: [
       { key: "mail", label: "邮件", description: "SMTP/IMAP 账号与授权码（MAIL-01）。", state: "ready" },
       { key: "calendar", label: "外部日历", description: "CalDAV / Google 只读镜像同步（CAL-01）。", state: "ready" },
+      { key: "pnkx", label: "PNKX", description: "PNKX 生活服务地址、令牌和写入权限。", state: "ready" },
       { key: "xiaoai", label: "小爱音箱", description: "小爱网关账号、音箱与密钥。", state: "ready" },
     ],
   },

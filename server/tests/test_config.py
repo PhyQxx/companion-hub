@@ -142,9 +142,10 @@ async def test_app_exposes_payload_free_config_metadata(tmp_path: Path) -> None:
     path.write_text(yaml_config(), encoding="utf-8")
     app = create_app(config_store=ConfigStore(path), watch_config=False)
 
-    async with app.router.lifespan_context(app), AsyncClient(
-        transport=ASGITransport(app=app), base_url="http://test"
-    ) as client:
+    async with (
+        app.router.lifespan_context(app),
+        AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client,
+    ):
         response = await client.get("/api/v1/meta/config")
         health = await client.get("/healthz")
 
@@ -210,11 +211,17 @@ def test_redacted_config_masks_push_secret_and_still_validates() -> None:
                 "private": {"primary": "local"},
             },
             "integrations": {
+                "pnkx": {
+                    "enabled": True,
+                    "base_url": "https://pnkx.example",
+                    "secret_value": "pnkx-secret",
+                    "writes_enabled": True,
+                },
                 "push": {
                     "enabled": True,
                     "vapid_public_key": "B" * 87,
                     "vapid_private_key_secret_value": "H" * 43,
-                }
+                },
             },
             "mcp": {
                 "enabled": True,
@@ -232,10 +239,12 @@ def test_redacted_config_masks_push_secret_and_still_validates() -> None:
 
     redacted = _redact_config(base)
     assert redacted.integrations.push.vapid_private_key_secret_value == _SECRET_MASK
+    assert redacted.integrations.pnkx.secret_value == _SECRET_MASK
     assert redacted.integrations.push.vapid_public_key == "B" * 87
     assert redacted.mcp.servers[0].secret_value == _SECRET_MASK
     assert str(redacted.mcp.servers[0].endpoint) == "https://mcp.context7.com/mcp"
 
     restored = _restore_secret_masks(redacted, base)
     assert restored.integrations.push.vapid_private_key_secret_value == "H" * 43
+    assert restored.integrations.pnkx.secret_value == "pnkx-secret"
     assert restored.mcp.servers[0].secret_value == "K" * 40

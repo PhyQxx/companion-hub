@@ -12,6 +12,7 @@ pnkx（Spring Boot/RuoYi 系）契约：
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
@@ -67,11 +68,13 @@ class PnkxTodoClient:
         *,
         base_url: str,
         integration_token: str,
+        settings_provider: Callable[[], tuple[str, str, bool]] | None = None,
         timezone_name: str = "Asia/Shanghai",
         client: httpx.AsyncClient | None = None,
     ) -> None:
         self._base_url = base_url.rstrip("/")
         self._token = integration_token
+        self._settings_provider = settings_provider
         self._tz = ZoneInfo(timezone_name)
         self._owns_client = client is None
         self._client = client or httpx.AsyncClient(timeout=DEFAULT_TIMEOUT_SECONDS)
@@ -88,12 +91,21 @@ class PnkxTodoClient:
         json: dict[str, Any] | None = None,
         params: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
+        base_url = self._base_url
+        token = self._token
+        if self._settings_provider is not None:
+            base_url, token, writes_enabled = self._settings_provider()
+            base_url = base_url.rstrip("/")
+            if method != "GET" and not writes_enabled:
+                raise PnkxTodoError("writes_disabled")
+        if not base_url or not token:
+            raise PnkxTodoError("pnkx_not_configured")
         response = await self._client.request(
             method,
-            f"{self._base_url}{path}",
+            f"{base_url}{path}",
             json=json,
             params=params,
-            headers={INTEGRATION_TOKEN_HEADER: self._token},
+            headers={INTEGRATION_TOKEN_HEADER: token},
         )
         if response.status_code == 401:
             raise PnkxTodoError("integration_token_rejected")

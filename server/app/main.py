@@ -518,6 +518,7 @@ def create_app(
         )
 
     calendar_store = CalendarStore(runtime_database) if runtime_database is not None else None
+
     async def fetch_brief_commute(user_id: UUID) -> BriefCommute | None:
         """当日首个带地点日程的出行建议；只读计算（不建提醒），失败静默降级。"""
         service = build_commute_service()
@@ -528,9 +529,7 @@ def create_app(
             event = await service.next_outing(user_id, within_hours=24)
             if event is None:
                 return None
-            if event.starts_at.astimezone(brief_tz).date() != datetime.now(
-                brief_tz
-            ).date():
+            if event.starts_at.astimezone(brief_tz).date() != datetime.now(brief_tz).date():
                 return None  # 今天没有带地点的日程，不为明天建议（简报无日期字段）
             plan = await service.plan_commute(user_id, event, reminder=False)
             return BriefCommute(
@@ -605,33 +604,65 @@ def create_app(
         and runtime_config is not None
         else None
     )
-    # TODO-01：pnkx 为任务单一真源；BASE_URL + 集成令牌齐备才启用，缺省完全关闭
-    pnkx_base_url = os.getenv("ARIA_PNKX_BASE_URL")
-    pnkx_integration_token = os.getenv("ARIA_PNKX_TOKEN")
+
+    # TODO-01：pnkx 为任务单一真源。请求时动态读取配置中心，环境变量仅作旧部署回退。
+    def pnkx_settings() -> tuple[str, str, bool]:
+        if runtime_config is not None:
+            try:
+                config = runtime_config.current.config.integrations.pnkx
+            except RuntimeError:
+                config = None
+            if config is not None and config.enabled and config.base_url is not None:
+                token = config.secret_value
+                if token is None and config.secret_ref is not None:
+                    token = EnvSecretProvider().resolve(config.secret_ref)
+                if token:
+                    return str(config.base_url).rstrip("/"), token, config.writes_enabled
+        return (
+            (os.getenv("ARIA_PNKX_BASE_URL") or "").rstrip("/"),
+            os.getenv("ARIA_PNKX_TOKEN") or "",
+            os.getenv("ARIA_PNKX_WRITES_ENABLED", "false").lower() == "true",
+        )
+
+    pnkx_base_url, pnkx_integration_token, _ = pnkx_settings()
+
+    def pnkx_sync_interval() -> float:
+        if runtime_config is not None:
+            try:
+                config = runtime_config.current.config.integrations.pnkx
+            except RuntimeError:
+                config = None
+            if config is not None and config.enabled:
+                return float(config.sync_interval_seconds)
+        return float(os.getenv("ARIA_TODO_SYNC_INTERVAL", "300"))
+
     todo_sync_service = (
         TodoSyncService(
             runtime_database,
             PnkxTodoClient(
                 base_url=pnkx_base_url or "",
                 integration_token=pnkx_integration_token or "",
+                settings_provider=pnkx_settings,
                 timezone_name=os.getenv("ARIA_DEFAULT_TIMEZONE", "Asia/Shanghai"),
             ),
         )
-        if runtime_database is not None and pnkx_base_url and pnkx_integration_token
+        if runtime_database is not None
+        and (runtime_config is not None or (pnkx_base_url and pnkx_integration_token))
         else None
     )
     pnkx_life_client = (
         PnkxLifeClient(
             base_url=pnkx_base_url or "",
             integration_token=pnkx_integration_token or "",
+            settings_provider=pnkx_settings,
         )
-        if pnkx_base_url and pnkx_integration_token
+        if runtime_config is not None or (pnkx_base_url and pnkx_integration_token)
         else None
     )
     todo_sync_scheduler = (
         TodoSyncScheduler(
             todo_sync_service,
-            interval_seconds=float(os.getenv("ARIA_TODO_SYNC_INTERVAL", "300")),
+            interval_provider=pnkx_sync_interval,
         )
         if todo_sync_service is not None
         else None
@@ -1132,9 +1163,7 @@ def create_app(
 
         async def trigger_calendar_sync(provider: str) -> dict[str, object]:
             """Admin 手动同步外部日历；两个镜像服务等价，读各自配置门控。"""
-            service = (
-                caldav_sync_service if provider == "caldav" else google_calendar_sync_service
-            )
+            service = caldav_sync_service if provider == "caldav" else google_calendar_sync_service
             if service is None:
                 raise RuntimeError("calendar sync service unavailable")
             if provider == "caldav":
@@ -1173,9 +1202,7 @@ def create_app(
         app.state.mcp_manager = mcp_manager
         if mcp_manager is not None:
             # MCP-D：目录刷新后把白名单写工具同步进动作注册表（A2 每次确认）
-            mcp_manager.set_catalog_listener(
-                lambda: sync_mcp_actions(action_registry, mcp_manager)
-            )
+            mcp_manager.set_catalog_listener(lambda: sync_mcp_actions(action_registry, mcp_manager))
         if persona_store is not None:
             app.include_router(
                 create_admin_persona_router(
@@ -1417,10 +1444,12 @@ def create_app(
                     )
                 )
             if pnkx_life_client is not None:
-                pnkx_is_local = pnkx_runs_local(pnkx_base_url or "")
+                current_pnkx_base_url, _, _ = pnkx_settings()
+                pnkx_is_local = pnkx_runs_local(current_pnkx_base_url)
                 device_tools.append(PnkxReadTool(pnkx_life_client, runs_local=pnkx_is_local))
-                if os.getenv("ARIA_PNKX_WRITES_ENABLED", "false").lower() == "true":
-                    device_tools.append(PnkxCreateTool(pnkx_life_client, runs_local=pnkx_is_local))
+                # 写权限由动态客户端在每次请求时按当前数据库配置执行；始终注册工具，
+                # 后台启用/停用后无需重建 ChatService。
+                device_tools.append(PnkxCreateTool(pnkx_life_client, runs_local=pnkx_is_local))
             if action_plan_service is not None:
                 if device_target_resolver is not None and device_command_gateway is not None:
                     device_tools.append(
@@ -1508,9 +1537,7 @@ def create_app(
                 history_recall_service=history_recall,
                 capability_provider=capability_provider,
                 device_tools=device_tools,
-                mcp_tools=(
-                    McpChatToolProvider(mcp_manager) if mcp_manager is not None else None
-                ),
+                mcp_tools=(McpChatToolProvider(mcp_manager) if mcp_manager is not None else None),
                 cognitive_cycle=cognitive_cycle,
                 avatar_store=avatar_store,
                 goal_tracker=goal_tracker,
@@ -1522,9 +1549,7 @@ def create_app(
             for device_tool in device_tools:
                 if isinstance(device_tool, MailSendTool):
                     app.include_router(
-                        create_mail_router(
-                            device_tool, auth_service, attachments=mail_attachments
-                        )
+                        create_mail_router(device_tool, auth_service, attachments=mail_attachments)
                     )
             if avatar_store is not None and persona_store is not None:
                 app.include_router(create_avatar_router(avatar_store, persona_store, auth_service))
@@ -1575,9 +1600,7 @@ def create_app(
             if contact_store is not None:
                 app.include_router(create_contacts_router(contact_store, auth_service))
                 if safety_alert_service is not None:
-                    app.include_router(
-                        create_safety_router(safety_alert_service, auth_service)
-                    )
+                    app.include_router(create_safety_router(safety_alert_service, auth_service))
                 app.state.contact_store = contact_store
             if home_scene_service is not None:
                 app.include_router(create_home_scenes_router(home_scene_service, auth_service))
@@ -1596,8 +1619,7 @@ def create_app(
                     create_pnkx_router(
                         pnkx_life_client,
                         auth_service,
-                        writes_enabled=os.getenv("ARIA_PNKX_WRITES_ENABLED", "false").lower()
-                        == "true",
+                        writes_enabled=True,
                     )
                 )
                 app.state.pnkx_life_client = pnkx_life_client
@@ -1863,9 +1885,7 @@ def create_app(
                     database=runtime_database,
                     resolver=cast(BrowserAwarenessResolver, device_target_resolver),
                     gateway=cast(BrowserAwarenessGateway, device_command_gateway),
-                    analyzer=cast(
-                        BrowserAwarenessAnalyzer, LlmBrowserAnalyzer(runtime_config)
-                    ),
+                    analyzer=cast(BrowserAwarenessAnalyzer, LlmBrowserAnalyzer(runtime_config)),
                     timeline=timeline_store,
                     memory_ingester=(
                         MemoryIngester(memory_store) if memory_store is not None else None

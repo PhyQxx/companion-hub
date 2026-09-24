@@ -15,6 +15,7 @@ import HealthView from "./HealthView.vue";
 import HomeAssistantDevicesView from "./HomeAssistantDevicesView.vue";
 import IntegrationsCalendarView from "./IntegrationsCalendarView.vue";
 import IntegrationsMailView from "./IntegrationsMailView.vue";
+import IntegrationsPnkxView from "./IntegrationsPnkxView.vue";
 import IntegrationsXiaoaiView from "./IntegrationsXiaoaiView.vue";
 import JobsView from "./JobsView.vue";
 import LiveLogsView from "./LiveLogsView.vue";
@@ -51,6 +52,7 @@ const currentView = computed(() => {
   if (props.module === "models") return ModelsView;
   if (props.module === "integrations" && activeTab.value === "mail") return IntegrationsMailView;
   if (props.module === "integrations" && activeTab.value === "calendar") return IntegrationsCalendarView;
+  if (props.module === "integrations" && activeTab.value === "pnkx") return IntegrationsPnkxView;
   if (props.module === "integrations") return IntegrationsXiaoaiView;
   if (props.module === "persona") return PersonasView;
   if (props.module === "memory" && activeTab.value === "library") return MemoryView;

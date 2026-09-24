@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import date
 from typing import Any
@@ -44,10 +45,12 @@ class PnkxLifeClient:
         *,
         base_url: str,
         integration_token: str,
+        settings_provider: Callable[[], tuple[str, str, bool]] | None = None,
         client: httpx.AsyncClient | None = None,
     ) -> None:
         self._base_url = base_url.rstrip("/")
         self._token = integration_token
+        self._settings_provider = settings_provider
         self._owns_client = client is None
         self._client = client or httpx.AsyncClient(timeout=DEFAULT_TIMEOUT_SECONDS)
 
@@ -63,12 +66,21 @@ class PnkxLifeClient:
         params: dict[str, str | int] | None = None,
         json: Any = None,
     ) -> dict[str, Any]:
+        base_url = self._base_url
+        token = self._token
+        if self._settings_provider is not None:
+            base_url, token, writes_enabled = self._settings_provider()
+            base_url = base_url.rstrip("/")
+            if method != "GET" and not writes_enabled:
+                raise PnkxApiError("writes_disabled")
+        if not base_url or not token:
+            raise PnkxApiError("pnkx_not_configured")
         response = await self._client.request(
             method,
-            f"{self._base_url}{path}",
+            f"{base_url}{path}",
             params=params,
             json=json,
-            headers={INTEGRATION_TOKEN_HEADER: self._token},
+            headers={INTEGRATION_TOKEN_HEADER: token},
         )
         if response.status_code == 401:
             raise PnkxApiError("integration_token_rejected")
@@ -82,9 +94,7 @@ class PnkxLifeClient:
             raise PnkxApiError("pnkx_rejected", str(payload.get("msg") or ""))
         return payload
 
-    async def _get_data(
-        self, path: str, *, params: dict[str, str | int] | None = None
-    ) -> Any:
+    async def _get_data(self, path: str, *, params: dict[str, str | int] | None = None) -> Any:
         return (await self._request_payload("GET", path, params=params)).get("data")
 
     async def _post_data(self, path: str, *, json: dict[str, Any]) -> Any:
@@ -140,12 +150,8 @@ class PnkxLifeClient:
         params: dict[str, str | int] = {"pageNum": page, "pageSize": page_size}
         if name is not None:
             params["name"] = name
-        payload = await self._request_payload(
-            "GET", "/commemorationDay/list", params=params
-        )
-        items = self._object_list(
-            payload.get("rows"), "commemoration_days_invalid"
-        )
+        payload = await self._request_payload("GET", "/commemorationDay/list", params=params)
+        items = self._object_list(payload.get("rows"), "commemoration_days_invalid")
         total = payload.get("total")
         if isinstance(total, bool) or not isinstance(total, int):
             raise PnkxApiError("commemoration_total_invalid")
@@ -193,9 +199,7 @@ class PnkxLifeClient:
             params["title"] = title
         if folder_id is not None:
             params["folder"] = folder_id
-        return await self._content_page(
-            "/note/list", params=params, reason_prefix="notes"
-        )
+        return await self._content_page("/note/list", params=params, reason_prefix="notes")
 
     async def note_folders(self) -> list[dict[str, Any]]:
         data = await self._get_data("/note/folder/treeList")
@@ -247,9 +251,7 @@ class PnkxLifeClient:
             params["weather"] = weather
         if month is not None:
             params["date"] = f"{month}-01"
-        return await self._content_page(
-            "/admin/diary/list", params=params, reason_prefix="diaries"
-        )
+        return await self._content_page("/admin/diary/list", params=params, reason_prefix="diaries")
 
     async def create_diary(
         self,
@@ -448,9 +450,7 @@ class PnkxLifeClient:
             params["title"] = title
         if servings is not None:
             params["servings"] = servings
-        return await self._content_page(
-            "/recipe/list", params=params, reason_prefix="recipes"
-        )
+        return await self._content_page("/recipe/list", params=params, reason_prefix="recipes")
 
     async def create_recipe(
         self,
@@ -493,9 +493,7 @@ class PnkxLifeClient:
             params["planDate"] = plan_date
         if meal_type is not None:
             params["mealType"] = meal_type
-        return await self._content_page(
-            "/mealPlan/list", params=params, reason_prefix="meal_plans"
-        )
+        return await self._content_page("/mealPlan/list", params=params, reason_prefix="meal_plans")
 
     async def create_meal_plan(
         self,
@@ -550,9 +548,7 @@ class PnkxLifeClient:
             params["priority"] = priority
         if kanban_status is not None:
             params["kanbanStatus"] = kanban_status
-        return await self._content_page(
-            "/admin/toDo/list", params=params, reason_prefix="todos"
-        )
+        return await self._content_page("/admin/toDo/list", params=params, reason_prefix="todos")
 
     async def todo_kanban(self) -> dict[str, Any]:
         data = await self._get_data("/admin/toDo/kanban")
@@ -647,9 +643,7 @@ class PnkxLifeClient:
             params["payTime"] = month
         if search is not None:
             params["searchValue"] = search
-        payload = await self._request_payload(
-            "GET", "/bookkeeping/record/list", params=params
-        )
+        payload = await self._request_payload("GET", "/bookkeeping/record/list", params=params)
         items = self._object_list(payload.get("rows"), "bookkeeping_records_invalid")
         total = payload.get("total")
         if isinstance(total, bool) or not isinstance(total, int):
@@ -657,9 +651,7 @@ class PnkxLifeClient:
         raw_totals = str(payload.get("msg") or "").split(",", maxsplit=1)
         inflow = raw_totals[0] if raw_totals and raw_totals[0] else None
         outflow = raw_totals[1] if len(raw_totals) == 2 and raw_totals[1] else None
-        return PnkxBookkeepingPage(
-            items=items, total=total, inflow=inflow, outflow=outflow
-        )
+        return PnkxBookkeepingPage(items=items, total=total, inflow=inflow, outflow=outflow)
 
     async def create_bookkeeping_record(
         self,

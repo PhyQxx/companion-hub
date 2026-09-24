@@ -568,9 +568,9 @@ class XiaoAiConfig(StrictModel):
     xiaomi_pass_token_secret_ref: (
         Annotated[str, Field(pattern=r"^env:[A-Z][A-Z0-9_]{2,127}$")] | None
     ) = None
-    xiaomi_pass_token_secret_value: (
-        Annotated[str, Field(min_length=1, max_length=8192)] | None
-    ) = None
+    xiaomi_pass_token_secret_value: Annotated[str, Field(min_length=1, max_length=8192)] | None = (
+        None
+    )
     speaker_name: Annotated[str, Field(min_length=1, max_length=160)] | None = None
     ha_device_id: Annotated[str, Field(min_length=1, max_length=160)] | None = None
     model: Annotated[str, Field(min_length=1, max_length=160)] | None = None
@@ -664,6 +664,29 @@ class MailConfig(StrictModel):
         return self
 
 
+class PnkxConfig(StrictModel):
+    """PNKX 生活服务集成。
+
+    集成令牌默认由配置中心写入数据库；secret_ref 只用于兼容需要由外部
+    secret manager 注入的部署。管理 API 返回配置时会对 secret_value 脱敏。
+    """
+
+    enabled: bool = False
+    base_url: AnyHttpUrl | None = None
+    secret_ref: Annotated[str, Field(pattern=r"^env:[A-Z][A-Z0-9_]{2,127}$")] | None = None
+    secret_value: Annotated[str, Field(min_length=1, max_length=4096)] | None = None
+    writes_enabled: bool = False
+    sync_interval_seconds: Annotated[int, Field(ge=30, le=86_400)] = 300
+
+    @model_validator(mode="after")
+    def require_endpoint_when_enabled(self) -> PnkxConfig:
+        if self.enabled and (
+            self.base_url is None or (self.secret_value is None and self.secret_ref is None)
+        ):
+            raise ValueError("enabled pnkx requires base_url and integration token")
+        return self
+
+
 class CalDavConfig(StrictModel):
     """CAL-01 CalDAV 外部日历：只读镜像同步（不回写远端）。
 
@@ -730,6 +753,7 @@ class IntegrationsConfig(StrictModel):
     xiaoai: XiaoAiConfig = Field(default_factory=XiaoAiConfig)
     push: WebPushConfig = Field(default_factory=WebPushConfig)
     mail: MailConfig = Field(default_factory=MailConfig)
+    pnkx: PnkxConfig = Field(default_factory=PnkxConfig)
     calendar: CalendarIntegrationsConfig = Field(default_factory=CalendarIntegrationsConfig)
 
 
