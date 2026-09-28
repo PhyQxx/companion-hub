@@ -12,6 +12,29 @@ import httpx
 INTEGRATION_TOKEN_HEADER = "X-Integration-Token"
 DEFAULT_TIMEOUT_SECONDS = 15.0
 
+# 单数资源名 → 控制器路径。RuoYi 契约：PUT /{controller} 编辑、
+# DELETE /{controller}/{ids} 删除（/admin/toDo 已通过 pnkx_livecheck 真机验证）。
+_REST_WRITE_PATHS: dict[str, str] = {
+    "todo": "/admin/toDo",
+    "subscription": "/subscription",
+    "shopping_list": "/shoppingList",
+    "shopping_item": "/shoppingItem",
+    "recipe": "/recipe",
+    "meal_plan": "/mealPlan",
+    "note": "/note",
+    "diary": "/admin/diary",
+    "commemoration_day": "/commemorationDay",
+    "bookkeeping_record": "/bookkeeping/record",
+}
+
+# 创建走 /offline/batch 的资源，更新沿用同一离线同步通道（method=PUT）。
+_OFFLINE_WRITE_TABLES: dict[str, str] = {
+    "note": "px_note",
+    "diary": "px_diary",
+    "commemoration_day": "px_commemoration_day",
+    "bookkeeping_record": "px_bookkeeping_record",
+}
+
 
 class PnkxApiError(RuntimeError):
     def __init__(self, reason_code: str, detail: str = "") -> None:
@@ -96,6 +119,10 @@ class PnkxLifeClient:
 
     async def _get_data(self, path: str, *, params: dict[str, str | int] | None = None) -> Any:
         return (await self._request_payload("GET", path, params=params)).get("data")
+
+    async def skill_get(self, path: str, *, params: dict[str, str | int] | None = None) -> Any:
+        """Read-only declarative Skill operation; caller validates path and parameters."""
+        return await self._get_data(path, params=params)
 
     async def _post_data(self, path: str, *, json: dict[str, Any]) -> Any:
         return (await self._request_payload("POST", path, json=json)).get("data")
@@ -686,19 +713,34 @@ class PnkxLifeClient:
         payload: dict[str, Any],
         reason_prefix: str,
     ) -> str:
-        data = await self._post_data(
-            "/offline/batch",
-            json={
-                "operations": [
-                    {
-                        "tableName": table_name,
-                        "method": "POST",
-                        "clientUuid": client_uuid,
-                        "payload": payload,
-                    }
-                ]
-            },
+        remote_id = await self._offline_operation(
+            table_name=table_name,
+            method="POST",
+            payload=payload,
+            reason_prefix=reason_prefix,
+            client_uuid=client_uuid,
         )
+        if remote_id is None:
+            raise PnkxApiError(f"{reason_prefix}_no_id")
+        return remote_id
+
+    async def _offline_operation(
+        self,
+        *,
+        table_name: str,
+        method: str,
+        payload: dict[str, Any],
+        reason_prefix: str,
+        client_uuid: str | None = None,
+    ) -> str | None:
+        operation: dict[str, Any] = {
+            "tableName": table_name,
+            "method": method,
+            "payload": payload,
+        }
+        if client_uuid is not None:
+            operation["clientUuid"] = client_uuid
+        data = await self._post_data("/offline/batch", json={"operations": [operation]})
         if not isinstance(data, dict):
             raise PnkxApiError(f"{reason_prefix}_invalid")
         results = data.get("results")
@@ -707,10 +749,36 @@ class PnkxLifeClient:
         result = results[0]
         if not isinstance(result, dict) or result.get("status") not in {"success", "skip"}:
             raise PnkxApiError(f"{reason_prefix}_failed", str(result))
+        # PUT/DELETE 回执不保证携带 id；仅创建路径要求并校验。
         remote_id = result.get("id")
-        if remote_id is None:
-            raise PnkxApiError(f"{reason_prefix}_no_id")
-        return str(remote_id)
+        return None if remote_id is None else str(remote_id)
+
+    async def update_record(
+        self, *, resource: str, record_id: int, payload: dict[str, Any]
+    ) -> None:
+        """按资源写通道更新一条记录；payload 只含变更字段的 pnkx 原生键。"""
+        if not payload:
+            raise PnkxApiError("pnkx_no_changes")
+        body = {"id": record_id, **payload}
+        table_name = _OFFLINE_WRITE_TABLES.get(resource)
+        if table_name is not None:
+            await self._offline_operation(
+                table_name=table_name,
+                method="PUT",
+                payload=body,
+                reason_prefix=f"{resource}_update",
+            )
+            return
+        path = _REST_WRITE_PATHS.get(resource)
+        if path is None:
+            raise PnkxApiError("pnkx_resource_unsupported")
+        await self._request_payload("PUT", path, json=body)
+
+    async def delete_record(self, *, resource: str, record_id: int) -> None:
+        path = _REST_WRITE_PATHS.get(resource)
+        if path is None:
+            raise PnkxApiError("pnkx_resource_unsupported")
+        await self._request_payload("DELETE", f"{path}/{record_id}")
 
     async def bookkeeping_primary_statistics(
         self, *, month: str, type_difference: str

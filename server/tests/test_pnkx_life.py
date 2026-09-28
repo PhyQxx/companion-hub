@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from collections.abc import AsyncIterator
 from datetime import UTC, date, datetime
 from typing import Any
@@ -15,7 +16,16 @@ from app.api import create_pnkx_router
 from app.auth import AuthService
 from app.db import Base, Database, create_database
 from app.pnkx import PnkxApiError, PnkxLifeClient
-from app.pnkx.tools import PnkxCreateArgs, PnkxCreateTool, PnkxReadArgs, PnkxReadTool
+from app.pnkx.tools import (
+    PnkxCreateArgs,
+    PnkxCreateTool,
+    PnkxDeleteArgs,
+    PnkxDeleteTool,
+    PnkxReadArgs,
+    PnkxReadTool,
+    PnkxUpdateArgs,
+    PnkxUpdateTool,
+)
 from app.schemas import PrivacyLevel
 from app.tools import ToolContext
 
@@ -44,6 +54,12 @@ class FakePnkxLife:
         self.recipe_operations: list[dict[str, Any]] = []
         self.meal_plan_operations: list[dict[str, Any]] = []
         self.todo_operations: list[dict[str, Any]] = []
+        self.note_updates: list[dict[str, Any]] = []
+        self.diary_updates: list[dict[str, Any]] = []
+        self.bookkeeping_updates: list[dict[str, Any]] = []
+        self.commemoration_updates: list[dict[str, Any]] = []
+        self.rest_updates: list[tuple[str, dict[str, Any]]] = []
+        self.rest_deletes: list[str] = []
         self.bookkeeping_ids: dict[str, int] = {}
         self.commemoration_ids: dict[str, int] = {}
         self.note_ids: dict[str, int] = {}
@@ -157,9 +173,7 @@ class FakePnkxLife:
                 200,
                 json={
                     "code": 200,
-                    "rows": [
-                        {"id": 52, "listId": 51, "name": "纸巾", "checked": False}
-                    ],
+                    "rows": [{"id": 52, "listId": 51, "name": "纸巾", "checked": False}],
                     "total": 1,
                 },
             )
@@ -230,9 +244,53 @@ class FakePnkxLife:
             self.todo_operations.append(body)
             remote_id = self.todo_ids.setdefault(str(body["clientUuid"]), 90)
             return httpx.Response(200, json={"code": 200, "data": remote_id})
+        if request.method == "PUT" and path in {
+            "/admin/toDo",
+            "/subscription",
+            "/shoppingList",
+            "/shoppingItem",
+            "/recipe",
+            "/mealPlan",
+        }:
+            self.rest_updates.append((path, json.loads(request.content)))
+            return httpx.Response(200, json={"code": 200, "msg": "操作成功"})
+        if request.method == "DELETE" and re.fullmatch(
+            r"/(admin/toDo|subscription|shoppingList|shoppingItem|recipe|mealPlan"
+            r"|note|admin/diary|commemorationDay|bookkeeping/record)/\d+",
+            path,
+        ):
+            self.rest_deletes.append(path)
+            return httpx.Response(200, json={"code": 200, "msg": "操作成功"})
         if path == "/offline/batch" and request.method == "POST":
             body = json.loads(request.content)
             operation = body["operations"][0]
+            method = operation.get("method", "POST")
+            table_updates = {
+                "px_bookkeeping_record": self.bookkeeping_updates,
+                "px_commemoration_day": self.commemoration_updates,
+                "px_note": self.note_updates,
+            }
+            if method == "PUT":
+                updates = table_updates.get(operation["tableName"], self.diary_updates)
+                updates.append(operation)
+                return httpx.Response(
+                    200,
+                    json={
+                        "code": 200,
+                        "data": {
+                            "total": 1,
+                            "success": 1,
+                            "skip": 0,
+                            "fail": 0,
+                            "results": [
+                                {
+                                    "status": "success",
+                                    "id": operation["payload"]["id"],
+                                }
+                            ],
+                        },
+                    },
+                )
             client_uuid = str(operation["clientUuid"])
             if operation["tableName"] == "px_bookkeeping_record":
                 self.bookkeeping_operations.append(operation)
@@ -291,9 +349,7 @@ class FakePnkxLife:
             "/bookkeeping/statistics/getPrimaryStatistics": [
                 {"id": 3, "name": "餐饮", "value": 38}
             ],
-            "/bookkeeping/statistics/getMonthlyStatistics": [
-                {"name": "2026-09", "value": 38}
-            ],
+            "/bookkeeping/statistics/getMonthlyStatistics": [{"name": "2026-09", "value": 38}],
         }
         if path not in data_by_path:
             return httpx.Response(404, json={"code": 404, "msg": "not found"})
@@ -316,9 +372,7 @@ async def test_life_client_reads_dashboard_and_forwards_month_range() -> None:
     client = _client(fake)
 
     cockpit = await client.cockpit()
-    events = await client.month_events(
-        start_date=date(2026, 9, 1), end_date=date(2026, 9, 30)
-    )
+    events = await client.month_events(start_date=date(2026, 9, 1), end_date=date(2026, 9, 30))
     reminders = await client.today_reminders()
     notifications = await client.notifications()
     unread_count = await client.unread_count()
@@ -354,9 +408,7 @@ async def test_life_client_controls_notifications_and_commemorations() -> None:
     assert page.total == 1
     assert page.items[0]["name"] == "纪念日"
     list_request = next(
-        request
-        for request in fake.requests
-        if request.url.path.endswith("/commemorationDay/list")
+        request for request in fake.requests if request.url.path.endswith("/commemorationDay/list")
     )
     assert list_request.url.params["pageNum"] == "2"
     assert list_request.url.params["name"] == "纪念"
@@ -407,9 +459,7 @@ async def test_life_client_reads_and_creates_notes_and_diaries() -> None:
     assert note["payload"]["order"] == 2
     assert diary["payload"]["date"] == "2026-09-03"
     diary_request = next(
-        request
-        for request in fake.requests
-        if request.url.path.endswith("/admin/diary/list")
+        request for request in fake.requests if request.url.path.endswith("/admin/diary/list")
     )
     assert diary_request.url.params["date"] == "2026-09-01"
 
@@ -438,11 +488,7 @@ async def test_life_client_reads_forecasts_and_creates_subscriptions() -> None:
     assert page.total == 1
     assert forecast["yearlyTotal"] == 240
     assert remote_id == "85"
-    request = next(
-        item
-        for item in fake.requests
-        if item.url.path.endswith("/subscription/list")
-    )
+    request = next(item for item in fake.requests if item.url.path.endswith("/subscription/list"))
     assert request.url.params["enabled"] == "true"
     operation = fake.subscription_operations[0]
     assert operation["clientUuid"] == "018f7f4489d27cc8bc198f51f522a4d5"
@@ -532,9 +578,7 @@ async def test_life_client_reads_and_creates_todos() -> None:
     assert kanban["todo"][0]["id"] == 71
     assert labels == ["工作", "生活"]
     assert todo_id == "90"
-    request = next(
-        item for item in fake.requests if item.url.path.endswith("/admin/toDo/list")
-    )
+    request = next(item for item in fake.requests if item.url.path.endswith("/admin/toDo/list"))
     assert request.url.params["status"] == "false"
     assert request.url.params["kanbanStatus"] == "0"
     operation = fake.todo_operations[0]
@@ -634,6 +678,119 @@ async def test_pnkx_chat_read_requires_list_id_for_shopping_items() -> None:
     assert result.reason_code == "pnkx_list_id_required"
 
 
+async def test_life_client_updates_rest_records_with_patch_payload() -> None:
+    fake = FakePnkxLife()
+    client = _client(fake)
+
+    await client.update_record(
+        resource="todo", record_id=71, payload={"status": True, "priority": 4}
+    )
+    await client.update_record(
+        resource="shopping_item",
+        record_id=52,
+        payload={"checked": True},
+    )
+    await client.delete_record(resource="todo", record_id=71)
+    await client.delete_record(resource="note", record_id=21)
+
+    assert fake.rest_updates == [
+        ("/admin/toDo", {"id": 71, "status": True, "priority": 4}),
+        ("/shoppingItem", {"id": 52, "checked": True}),
+    ]
+    assert fake.rest_deletes == ["/admin/toDo/71", "/note/21"]
+
+
+async def test_life_client_updates_offline_records_via_batch() -> None:
+    fake = FakePnkxLife()
+    client = _client(fake)
+
+    await client.update_record(resource="note", record_id=21, payload={"title": "旅行清单（更新）"})
+
+    operation = fake.note_updates[0]
+    assert operation["method"] == "PUT"
+    assert operation["tableName"] == "px_note"
+    assert operation["payload"] == {"id": 21, "title": "旅行清单（更新）"}
+    assert fake.rest_updates == []
+
+
+async def test_life_client_rejects_empty_update_and_unknown_resource() -> None:
+    fake = FakePnkxLife()
+    client = _client(fake)
+
+    with pytest.raises(PnkxApiError) as empty:
+        await client.update_record(resource="todo", record_id=71, payload={})
+    with pytest.raises(PnkxApiError) as unknown:
+        await client.delete_record(resource="cockpit", record_id=1)
+
+    assert empty.value.reason_code == "pnkx_no_changes"
+    assert unknown.value.reason_code == "pnkx_resource_unsupported"
+    assert fake.requests == []
+
+
+async def test_pnkx_chat_tools_update_and_delete_life_records() -> None:
+    fake = FakePnkxLife()
+    client = _client(fake)
+    update_tool = PnkxUpdateTool(client, runs_local=True)
+    delete_tool = PnkxDeleteTool(client, runs_local=True)
+    context = ToolContext(privacy_level=PrivacyLevel.L1)
+
+    todo_update = await update_tool.execute(
+        PnkxUpdateArgs(
+            resource="todo",
+            resource_id=71,
+            content="整理联调清单（更新）",
+            plan_start_time=datetime(2026, 9, 26, 9, 0, 0),
+            completed=True,
+            priority=4,
+        ),
+        context,
+    )
+    note_update = await update_tool.execute(
+        PnkxUpdateArgs(resource="note", resource_id=21, title="旅行清单（更新）"),
+        context,
+    )
+    todo_delete = await delete_tool.execute(
+        PnkxDeleteArgs(resource="todo", resource_id=71), context
+    )
+    subscription_delete = await delete_tool.execute(
+        PnkxDeleteArgs(resource="subscription", resource_id=41), context
+    )
+
+    assert todo_update.ok is True
+    assert todo_update.data == {"resource": "todo", "remote_id": "71"}
+    assert note_update.ok is True
+    assert todo_delete.ok is True
+    assert subscription_delete.ok is True
+    assert fake.rest_updates == [
+        (
+            "/admin/toDo",
+            {
+                "id": 71,
+                "content": "整理联调清单（更新）",
+                "planStartTime": "2026-09-26 09:00:00",
+                "status": True,
+                "priority": 4,
+            },
+        )
+    ]
+    assert fake.note_updates[0]["payload"] == {"id": 21, "title": "旅行清单（更新）"}
+    assert fake.rest_deletes == ["/admin/toDo/71", "/subscription/41"]
+
+
+async def test_pnkx_update_without_changes_fails_closed() -> None:
+    fake = FakePnkxLife()
+    tool = PnkxUpdateTool(_client(fake), runs_local=True)
+
+    result = await tool.execute(
+        PnkxUpdateArgs(resource="todo", resource_id=71),
+        ToolContext(privacy_level=PrivacyLevel.L1),
+    )
+
+    assert result.ok is False
+    assert result.reason_code == "pnkx_no_changes"
+    assert fake.requests == []
+
+
 async def test_life_client_recognizes_pnkx_business_401() -> None:
     fake = FakePnkxLife()
     client = _client(fake, token="wrong")
@@ -659,9 +816,7 @@ async def test_bookkeeping_client_reads_and_creates_idempotently() -> None:
         pay_time="2026-09-02 12:30:00",
         remark="午饭",
     )
-    categories = await client.bookkeeping_primary_statistics(
-        month="2026-09", type_difference="1"
-    )
+    categories = await client.bookkeeping_primary_statistics(month="2026-09", type_difference="1")
 
     assert accounts[0]["children"][0]["id"] == 2
     assert classifications[0]["children"][0]["id"] == 3
@@ -721,9 +876,7 @@ async def test_bookkeeping_api_validates_and_creates(database: Database) -> None
         records = await client.get(
             "/api/v1/pnkx/bookkeeping/records?month=2026-09", headers=headers
         )
-        created = await client.post(
-            "/api/v1/pnkx/bookkeeping/records", headers=headers, json=body
-        )
+        created = await client.post("/api/v1/pnkx/bookkeeping/records", headers=headers, json=body)
         invalid = await client.post(
             "/api/v1/pnkx/bookkeeping/records",
             headers=headers,
@@ -834,9 +987,7 @@ async def test_commemoration_and_notification_api_controls(database: Database) -
     assert created.status_code == 201
     assert created.json()["remote_id"] == "82"
     assert created.json()["client_uuid"] == "018f7f4489d27cc8bc198f51f522a4d2"
-    assert fake.commemoration_operations[0]["payload"]["date"] == (
-        "2026-09-02 18:30:00"
-    )
+    assert fake.commemoration_operations[0]["payload"]["date"] == ("2026-09-02 18:30:00")
     assert marked.status_code == 200
     assert marked.json() == {"success": True}
 
@@ -852,9 +1003,7 @@ async def test_note_and_diary_api_reads_and_creates(database: Database) -> None:
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         notes = await client.get("/api/v1/pnkx/notes?folder_id=4", headers=headers)
         folders = await client.get("/api/v1/pnkx/notes/folders", headers=headers)
-        diaries = await client.get(
-            "/api/v1/pnkx/diaries?month=2026-09", headers=headers
-        )
+        diaries = await client.get("/api/v1/pnkx/diaries?month=2026-09", headers=headers)
         note = await client.post(
             "/api/v1/pnkx/notes",
             headers=headers,
@@ -899,12 +1048,8 @@ async def test_subscription_api_reads_forecast_and_creates(database: Database) -
     headers = {"Authorization": f"Bearer {owner.access_token}"}
 
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
-        subscriptions = await client.get(
-            "/api/v1/pnkx/subscriptions?enabled=true", headers=headers
-        )
-        forecast = await client.get(
-            "/api/v1/pnkx/subscriptions/forecast", headers=headers
-        )
+        subscriptions = await client.get("/api/v1/pnkx/subscriptions?enabled=true", headers=headers)
+        forecast = await client.get("/api/v1/pnkx/subscriptions/forecast", headers=headers)
         created = await client.post(
             "/api/v1/pnkx/subscriptions",
             headers=headers,

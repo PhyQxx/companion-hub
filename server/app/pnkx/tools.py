@@ -97,24 +97,29 @@ class PnkxCreateArgs(BaseModel):
     plan_date: date | None = None
     pay_time: datetime | None = None
     next_payment_date: date | None = None
-    plan_start_time: Annotated[
-        datetime,
-        Field(
-            description=(
-                "待办计划开始时间。用户提到今天、明天、后天或具体日期时必须填写绝对时间；"
-                "只有日期没有钟点时填当天 00:00:00。"
-            )
-        ),
-    ] | None = None
-    plan_end_time: Annotated[
-        datetime,
-        Field(
-            description=(
-                "待办计划结束时间。用户给出日期时必须填写；"
-                "只有日期没有钟点时填当天 23:59:59。"
-            )
-        ),
-    ] | None = None
+    plan_start_time: (
+        Annotated[
+            datetime,
+            Field(
+                description=(
+                    "待办计划开始时间。用户提到今天、明天、后天或具体日期时必须填写绝对时间；"
+                    "只有日期没有钟点时填当天 00:00:00。"
+                )
+            ),
+        ]
+        | None
+    ) = None
+    plan_end_time: (
+        Annotated[
+            datetime,
+            Field(
+                description=(
+                    "待办计划结束时间。用户给出日期时必须填写；只有日期没有钟点时填当天 23:59:59。"
+                )
+            ),
+        ]
+        | None
+    ) = None
     repeat: bool = True
     amount: Annotated[Decimal, Field(gt=0, max_digits=18, decimal_places=2)] | None = None
     account_id: Annotated[int, Field(gt=0)] | None = None
@@ -134,14 +139,17 @@ class PnkxCreateArgs(BaseModel):
     enabled: bool = True
     checked: bool = False
     completed: bool = False
-    label: Annotated[
-        str,
-        Field(
-            min_length=1,
-            max_length=255,
-            description="待办分类标签；创建待办时根据内容填写简短标签，例如工作、学习、出行或生活。",
-        ),
-    ] | None = None
+    label: (
+        Annotated[
+            str,
+            Field(
+                min_length=1,
+                max_length=255,
+                description="待办分类标签；创建待办时根据内容填写简短标签，例如工作、学习、出行或生活。",
+            ),
+        ]
+        | None
+    ) = None
     priority: Annotated[int, Field(ge=0, le=4)] = 0
     kanban_status: Annotated[int, Field(ge=0, le=2)] = 0
     sort_order: Annotated[int, Field(ge=0)] | None = None
@@ -150,14 +158,17 @@ class PnkxCreateArgs(BaseModel):
     weather: Annotated[str, Field(min_length=1, max_length=100)] | None = None
     url: Annotated[str, Field(min_length=1, max_length=2000)] | None = None
     notes: Annotated[str, Field(max_length=10_000)] | None = None
-    remark: Annotated[
-        str,
-        Field(
-            min_length=1,
-            max_length=1000,
-            description="待办备注；优先保留用户原始创建指令或未进入正文的补充信息。",
-        ),
-    ] | None = None
+    remark: (
+        Annotated[
+            str,
+            Field(
+                min_length=1,
+                max_length=1000,
+                description="待办备注；优先保留用户原始创建指令或未进入正文的补充信息。",
+            ),
+        ]
+        | None
+    ) = None
 
 
 class PnkxReadTool:
@@ -365,13 +376,9 @@ class PnkxCreateTool:
             latency_ms=(perf_counter() - started) * 1_000,
         )
 
-    async def _create(
-        self, args: PnkxCreateArgs, client_uuid: str, context: ToolContext
-    ) -> str:
+    async def _create(self, args: PnkxCreateArgs, client_uuid: str, context: ToolContext) -> str:
         if args.resource == "todo":
-            content = _first_required(
-                "pnkx_content_required", args.content, args.name, args.title
-            )
+            content = _first_required("pnkx_content_required", args.content, args.name, args.title)
             fallback_window = _todo_relative_date_window(
                 context.user_text or content,
                 now=context.current_time,
@@ -388,14 +395,10 @@ class PnkxCreateTool:
                 # 模型偶发把待办正文填进 name/title，回退避免直接失败
                 content=content,
                 plan_start_time=(
-                    _format_datetime(plan_start_time)
-                    if plan_start_time is not None
-                    else None
+                    _format_datetime(plan_start_time) if plan_start_time is not None else None
                 ),
                 plan_end_time=(
-                    _format_datetime(plan_end_time)
-                    if plan_end_time is not None
-                    else None
+                    _format_datetime(plan_end_time) if plan_end_time is not None else None
                 ),
                 completed=args.completed,
                 label=args.label or _infer_todo_label(context.user_text or content),
@@ -494,9 +497,7 @@ class PnkxCreateTool:
             return await self._client.create_commemoration_day(
                 client_uuid=client_uuid,
                 name=_required(args.name, "pnkx_name_required"),
-                event_time=_format_datetime(
-                    _required(args.event_time, "pnkx_event_time_required")
-                ),
+                event_time=_format_datetime(_required(args.event_time, "pnkx_event_time_required")),
                 repeat=args.repeat,
                 order_num=args.order_num,
                 remark=args.remark,
@@ -513,6 +514,275 @@ class PnkxCreateTool:
                 remark=args.remark,
             )
         raise ValueError("pnkx_resource_unsupported")
+
+
+class PnkxUpdateArgs(BaseModel):
+    """修改已有记录：resource_id 必填，其余字段全部可选，只传需要变更的。"""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    resource: PnkxCreateResource
+    resource_id: Annotated[
+        int,
+        Field(
+            gt=0,
+            description="目标记录在 pnkx 中的远端 id，先用 pnkx_read_life 查询获得。",
+        ),
+    ]
+    name: Annotated[str, Field(min_length=1, max_length=255)] | None = None
+    title: Annotated[str, Field(min_length=1, max_length=255)] | None = None
+    content: Annotated[str, Field(min_length=1, max_length=100_000)] | None = None
+    event_time: datetime | None = None
+    entry_date: date | None = None
+    plan_date: date | None = None
+    pay_time: datetime | None = None
+    next_payment_date: date | None = None
+    plan_start_time: datetime | None = None
+    plan_end_time: datetime | None = None
+    repeat: bool | None = None
+    amount: Decimal | None = Field(default=None, gt=0, max_digits=18, decimal_places=2)
+    account_id: Annotated[int, Field(gt=0)] | None = None
+    classification_id: Annotated[int, Field(gt=0)] | None = None
+    folder_id: Annotated[int, Field(gt=0)] | None = None
+    list_id: Annotated[int, Field(gt=0)] | None = None
+    recipe_id: Annotated[int, Field(gt=0)] | None = None
+    meal_type: Annotated[int, Field(ge=1, le=4)] | None = None
+    servings: Annotated[int, Field(gt=0, le=100)] | None = None
+    ingredients: list[PnkxIngredientArgs] | None = Field(default=None, max_length=100)
+    quantity: Annotated[str, Field(min_length=1, max_length=100)] | None = None
+    cycle: Literal["daily", "weekly", "monthly", "yearly"] | None = None
+    cycle_interval: Annotated[int, Field(gt=0, le=365)] | None = None
+    reminder_lead_days: Annotated[int, Field(ge=0, le=365)] | None = None
+    enabled: bool | None = None
+    checked: bool | None = None
+    completed: bool | None = None
+    label: Annotated[str, Field(min_length=1, max_length=255)] | None = None
+    priority: Annotated[int, Field(ge=0, le=4)] | None = None
+    kanban_status: Annotated[int, Field(ge=0, le=2)] | None = None
+    sort_order: Annotated[int, Field(ge=0)] | None = None
+    order_num: Annotated[int, Field(ge=0)] | None = None
+    mood: Annotated[str, Field(min_length=1, max_length=100)] | None = None
+    weather: Annotated[str, Field(min_length=1, max_length=100)] | None = None
+    url: Annotated[str, Field(min_length=1, max_length=2000)] | None = None
+    notes: Annotated[str, Field(max_length=10_000)] | None = None
+    remark: Annotated[str, Field(min_length=1, max_length=1000)] | None = None
+
+
+class PnkxDeleteArgs(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    resource: PnkxCreateResource
+    resource_id: Annotated[
+        int,
+        Field(
+            gt=0,
+            description="目标记录在 pnkx 中的远端 id，先用 pnkx_read_life 查询获得。",
+        ),
+    ]
+
+
+# 各资源可修改字段：模型参数名 → pnkx 原生键。值为 None 的字段不发送（patch 语义）。
+_PNKX_UPDATE_FIELD_MAPS: dict[str, dict[str, str]] = {
+    "todo": {
+        "content": "content",
+        "plan_start_time": "planStartTime",
+        "plan_end_time": "planEndTime",
+        "completed": "status",
+        "label": "label",
+        "priority": "priority",
+        "kanban_status": "kanbanStatus",
+        "sort_order": "sortOrder",
+        "remark": "remark",
+    },
+    "subscription": {
+        "name": "name",
+        "amount": "amount",
+        "cycle": "cycle",
+        "cycle_interval": "cycleInterval",
+        "next_payment_date": "nextPaymentDate",
+        "account_id": "accountId",
+        "classification_id": "classificationId",
+        "reminder_lead_days": "reminderLeadDays",
+        "enabled": "enabled",
+        "remark": "remark",
+    },
+    "shopping_list": {"name": "name", "order_num": "orderNum", "remark": "remark"},
+    "shopping_item": {
+        "list_id": "listId",
+        "name": "name",
+        "quantity": "quantity",
+        "classification_id": "classificationId",
+        "checked": "checked",
+        "sort_order": "sortOrder",
+        "remark": "remark",
+    },
+    "recipe": {
+        "title": "title",
+        "servings": "servings",
+        "url": "url",
+        "notes": "notes",
+        "remark": "remark",
+    },
+    "meal_plan": {
+        "plan_date": "planDate",
+        "meal_type": "mealType",
+        "title": "title",
+        "recipe_id": "recipeId",
+        "notes": "notes",
+        "sort_order": "sortOrder",
+        "remark": "remark",
+    },
+    "note": {
+        "title": "title",
+        "content": "content",
+        "folder_id": "folder",
+        "remark": "remark",
+    },
+    "diary": {
+        "title": "title",
+        "content": "content",
+        "entry_date": "date",
+        "mood": "mood",
+        "weather": "weather",
+        "remark": "remark",
+    },
+    "commemoration_day": {
+        "name": "name",
+        "event_time": "date",
+        "repeat": "isRepeat",
+        "order_num": "orderNum",
+        "remark": "remark",
+    },
+    "bookkeeping_record": {
+        "account_id": "account",
+        "classification_id": "type",
+        "amount": "money",
+        "pay_time": "payTime",
+        "remark": "remark",
+    },
+}
+
+
+def _serialize_update_value(value: Any) -> Any:
+    if isinstance(value, datetime):
+        return _format_datetime(value)
+    if isinstance(value, date):
+        return value.isoformat()
+    if isinstance(value, Decimal):
+        return str(value)
+    return value
+
+
+class PnkxUpdateTool:
+    name = "pnkx_update_life"
+    description = (
+        "仅在用户明确要求修改时，更新 pnkx 中已有的一条生活数据。resource 与新增一致，"
+        "支持待办、菜谱、餐食计划、购物清单/条目、订阅、账本、笔记、日记和纪念日。"
+        "必须提供 resource_id：先用 pnkx_read_life 查到目标记录的 id 再修改。"
+        "只填需要变更的字段，未填写的字段保持不变；待办的完成状态用 completed 表达；"
+        "调整待办时间时填绝对时间的 plan_start_time 和 plan_end_time。"
+        "菜谱的 ingredients 会整体替换。"
+    )
+    arguments_model: type[BaseModel] = PnkxUpdateArgs
+    max_privacy_level = PrivacyLevel.L2
+
+    def __init__(self, client: PnkxLifeClient, *, runs_local: bool) -> None:
+        self._client = client
+        self.runs_local = runs_local
+
+    def definition(self) -> ToolDefinition:
+        return ToolDefinition(
+            name=self.name,
+            description=self.description,
+            parameters=PnkxUpdateArgs.model_json_schema(),
+        )
+
+    async def execute(self, arguments: BaseModel, context: ToolContext) -> ToolResult:
+        del context
+        started = perf_counter()
+        args = cast(PnkxUpdateArgs, arguments)
+        try:
+            await self._update(args)
+        except PnkxApiError as error:
+            return _failure(self.name, error.reason_code, started)
+        except ValueError as error:
+            return _failure(self.name, str(error), started)
+        return ToolResult(
+            ok=True,
+            tool_name=self.name,
+            provider="pnkx",
+            data={"resource": args.resource, "remote_id": str(args.resource_id)},
+            latency_ms=(perf_counter() - started) * 1_000,
+        )
+
+    async def _update(self, args: PnkxUpdateArgs) -> None:
+        field_map = _PNKX_UPDATE_FIELD_MAPS.get(args.resource)
+        if field_map is None:
+            raise ValueError("pnkx_resource_unsupported")
+        values = args.model_dump()
+        payload = {
+            field_map[key]: _serialize_update_value(values[key])
+            for key in field_map
+            if values[key] is not None
+        }
+        if args.ingredients is not None:
+            payload["ingredients"] = [
+                {
+                    key: value
+                    for key, value in {
+                        "name": item.name,
+                        "quantity": item.quantity,
+                        "classificationId": item.classification_id,
+                    }.items()
+                    if value is not None
+                }
+                for item in args.ingredients
+            ]
+        if not payload:
+            raise ValueError("pnkx_no_changes")
+        await self._client.update_record(
+            resource=args.resource, record_id=args.resource_id, payload=payload
+        )
+
+
+class PnkxDeleteTool:
+    name = "pnkx_delete_life"
+    description = (
+        "仅在用户明确要求删除时，删除 pnkx 中已有的一条生活数据，删除不可恢复。"
+        "必须提供 resource_id：先用 pnkx_read_life 查到目标记录的 id。"
+        "用户只描述了条件（如“删掉某条待办”）时，先读取并向用户确认具体记录，再执行删除。"
+    )
+    arguments_model: type[BaseModel] = PnkxDeleteArgs
+    max_privacy_level = PrivacyLevel.L2
+
+    def __init__(self, client: PnkxLifeClient, *, runs_local: bool) -> None:
+        self._client = client
+        self.runs_local = runs_local
+
+    def definition(self) -> ToolDefinition:
+        return ToolDefinition(
+            name=self.name,
+            description=self.description,
+            parameters=PnkxDeleteArgs.model_json_schema(),
+        )
+
+    async def execute(self, arguments: BaseModel, context: ToolContext) -> ToolResult:
+        del context
+        started = perf_counter()
+        args = cast(PnkxDeleteArgs, arguments)
+        try:
+            await self._client.delete_record(resource=args.resource, record_id=args.resource_id)
+        except PnkxApiError as error:
+            return _failure(self.name, error.reason_code, started)
+        except ValueError as error:
+            return _failure(self.name, str(error), started)
+        return ToolResult(
+            ok=True,
+            tool_name=self.name,
+            provider="pnkx",
+            data={"resource": args.resource, "remote_id": str(args.resource_id)},
+            latency_ms=(perf_counter() - started) * 1_000,
+        )
 
 
 def pnkx_runs_local(base_url: str) -> bool:
@@ -549,9 +819,7 @@ def _todo_relative_date_window(
         timezone = ZoneInfo("Asia/Shanghai")
     moment = now or datetime.now(UTC)
     local_moment = (
-        moment.replace(tzinfo=timezone)
-        if moment.tzinfo is None
-        else moment.astimezone(timezone)
+        moment.replace(tzinfo=timezone) if moment.tzinfo is None else moment.astimezone(timezone)
     )
     target_date = local_moment.date() + timedelta(days=offset)
     return (

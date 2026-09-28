@@ -7,7 +7,13 @@ from .client import (
     PnkxContentPage,
     PnkxLifeClient,
 )
-from .tools import PnkxCreateTool, PnkxReadTool, pnkx_runs_local
+from .tools import (
+    PnkxCreateTool,
+    PnkxDeleteTool,
+    PnkxReadTool,
+    PnkxUpdateTool,
+    pnkx_runs_local,
+)
 
 __all__ = [
     "PnkxApiError",
@@ -15,7 +21,9 @@ __all__ = [
     "PnkxCommemorationPage",
     "PnkxContentPage",
     "PnkxCreateTool",
+    "PnkxDeleteTool",
     "PnkxLifeClient",
     "PnkxReadTool",
+    "PnkxUpdateTool",
     "pnkx_runs_local",
 ]
