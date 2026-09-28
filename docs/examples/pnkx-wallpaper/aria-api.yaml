@@ -1,0 +1,103 @@
+schema_version: 1
+connection: pnkx-media
+auth:
+  type: login_bearer
+  path: /clientLogin
+  username_field: userName
+  password_field: password
+  token_field: token
+operations:
+- name: wallpaper_list
+  description: 分页查询壁纸
+  method: GET
+  path: /client/wallpaper/list
+  risk: read
+  parameters:
+    name:
+      type: string
+      required: false
+      location: query
+    folder:
+      type: string
+      required: false
+      location: query
+    pageNum:
+      type: integer
+      required: false
+      location: query
+    pageSize:
+      type: integer
+      required: false
+      location: query
+- name: wallpaper_detail
+  description: 壁纸详情
+  method: GET
+  path: /client/wallpaper/{id}
+  risk: read
+  parameters:
+    id:
+      type: integer
+      required: true
+      location: path
+- name: wallpaper_folder_list
+  description: 分页查询壁纸文件夹
+  method: GET
+  path: /client/wallpaper/folder/list
+  risk: read
+  parameters:
+    pageNum:
+      type: integer
+      required: false
+      location: query
+    pageSize:
+      type: integer
+      required: false
+      location: query
+- name: wallpaper_collect_check
+  description: 当前用户对某壁纸的点赞/收藏状态
+  method: GET
+  path: /client/wallpaper/collectCheck/{id}
+  risk: read
+  parameters:
+    id:
+      type: integer
+      required: true
+      location: path
+- name: wallpaper_my_likes
+  description: 当前用户点赞记录
+  method: GET
+  path: /client/wallpaper/myLikes
+  risk: read
+  parameters:
+    pageNum:
+      type: integer
+      required: false
+      location: query
+    pageSize:
+      type: integer
+      required: false
+      location: query
+- name: wallpaper_my_downloads
+  description: 当前用户下载记录
+  method: GET
+  path: /client/wallpaper/myDownloads
+  risk: read
+  parameters:
+    pageNum:
+      type: integer
+      required: false
+      location: query
+    pageSize:
+      type: integer
+      required: false
+      location: query
+- name: wallpaper_like_toggle
+  description: 点赞切换（待接入确认链）
+  method: POST
+  path: /client/wallpaper/like/{id}
+  risk: confirm
+  parameters:
+    id:
+      type: integer
+      required: true
+      location: path

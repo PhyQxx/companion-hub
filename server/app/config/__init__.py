@@ -16,6 +16,7 @@ from .models import (
     ProactiveOutputConfig,
     QueryToolConfig,
     ToolsConfig,
+    WebFetchConfig,
     XiaoAiConfig,
 )
 from .store import ConfigAudit, ConfigSnapshot, ConfigStore, ConfigWatcher
@@ -43,5 +44,6 @@ __all__ = [
     "ProactiveOutputConfig",
     "QueryToolConfig",
     "ToolsConfig",
+    "WebFetchConfig",
     "XiaoAiConfig",
 ]

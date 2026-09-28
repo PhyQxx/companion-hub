@@ -1,0 +1,29 @@
+schema_version: 1
+connection: pnkx-life
+auth:
+  type: login_bearer
+  path: /clientLogin
+  username_field: userName
+  password_field: password
+  token_field: token
+operations:
+- name: calendar_cockpit
+  description: 今日概览：紧迫任务与下一个纪念日
+  method: GET
+  path: /calendar/cockpit
+  risk: read
+  parameters: {}
+- name: calendar_month
+  description: 按月范围查询聚合日历事件
+  method: GET
+  path: /calendar/month
+  risk: read
+  parameters:
+    startDate:
+      type: string
+      required: false
+      location: query
+    endDate:
+      type: string
+      required: false
+      location: query

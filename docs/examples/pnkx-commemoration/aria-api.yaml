@@ -1,0 +1,63 @@
+schema_version: 1
+connection: pnkx-life
+auth:
+  type: login_bearer
+  path: /clientLogin
+  username_field: userName
+  password_field: password
+  token_field: token
+operations:
+- name: commemoration_list
+  description: 分页查询纪念日
+  method: GET
+  path: /commemorationDay/list
+  risk: read
+  parameters:
+    name:
+      type: string
+      required: false
+      location: query
+    repeat:
+      type: string
+      required: false
+      location: query
+    pageNum:
+      type: integer
+      required: false
+      location: query
+    pageSize:
+      type: integer
+      required: false
+      location: query
+- name: commemoration_detail
+  description: 纪念日详情
+  method: GET
+  path: /commemorationDay/{id}
+  risk: read
+  parameters:
+    id:
+      type: integer
+      required: true
+      location: path
+- name: commemoration_add
+  description: 新增纪念日（待接入确认链）
+  method: POST
+  path: /commemorationDay
+  risk: confirm
+  parameters: {}
+- name: commemoration_edit
+  description: 修改纪念日（待接入确认链）
+  method: PUT
+  path: /commemorationDay
+  risk: confirm
+  parameters: {}
+- name: commemoration_remove
+  description: 批量删除纪念日（待接入确认链）
+  method: DELETE
+  path: /commemorationDay/{ids}
+  risk: confirm
+  parameters:
+    ids:
+      type: string
+      required: true
+      location: path

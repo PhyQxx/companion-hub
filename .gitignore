@@ -20,6 +20,9 @@ desktop/src-tauri/gen/
 .pnpm-store/
 docs/history-session/
 
+# 仅供本机使用的说明（可包含部署地址、账号、运维备注等）
+*.local.md
+
 # 本地设计 QA 产物与 agent 会话状态
 .design-qa/
 .zcode/

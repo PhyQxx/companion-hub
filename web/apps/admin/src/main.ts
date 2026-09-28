@@ -11,6 +11,7 @@ const router = createRouter({
     { path: "/", component: () => import("./views/ModuleWorkspaceView.vue"), props: { module: "overview" } },
     { path: "/models", component: () => import("./views/ModuleWorkspaceView.vue"), props: { module: "models" } },
     { path: "/integrations", component: () => import("./views/ModuleWorkspaceView.vue"), props: { module: "integrations" } },
+    { path: "/skills", component: () => import("./views/ModuleWorkspaceView.vue"), props: { module: "skills" } },
     { path: "/personas", component: () => import("./views/ModuleWorkspaceView.vue"), props: { module: "persona" } },
     { path: "/memory", component: () => import("./views/ModuleWorkspaceView.vue"), props: { module: "memory" } },
     { path: "/tasks", component: () => import("./views/ModuleWorkspaceView.vue"), props: { module: "tasks" } },

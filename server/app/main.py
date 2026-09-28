@@ -34,6 +34,7 @@ from app.api import (
     create_admin_screen_awareness_router,
     create_admin_security_router,
     create_admin_senseaudio_router,
+    create_admin_skills_router,
     create_admin_tasks_router,
     create_admin_theme_router,
     create_admin_timeline_router,
@@ -159,7 +160,14 @@ from app.output.proactive import DesktopCommandGateway
 from app.perception import PerceptionPipeline, PerceptionStore, ProactivePolicy
 from app.perception.pipeline import EventObserver
 from app.persona import PersonaStore
-from app.pnkx import PnkxCreateTool, PnkxLifeClient, PnkxReadTool, pnkx_runs_local
+from app.pnkx import (
+    PnkxCreateTool,
+    PnkxDeleteTool,
+    PnkxLifeClient,
+    PnkxReadTool,
+    PnkxUpdateTool,
+    pnkx_runs_local,
+)
 from app.push import PushSubscriptionStore, WebPushAdapter
 from app.runtime import TurnCoordinator
 from app.safety import ActivityTracker, SafetyActivityScheduler, SafetyAlertService
@@ -170,6 +178,12 @@ from app.screen_awareness import (
     ScreenAwarenessLoop,
     ScreenAwarenessResolver,
 )
+from app.skills.connections import SkillConnectionStore, SkillHttpClient
+from app.skills.credentials import SkillCredentialStore
+from app.skills.drafts import SkillDraftAssistant
+from app.skills.generator import SkillDraftGenerator
+from app.skills.runtime import SkillToolProvider
+from app.skills.store import SkillStore
 from app.tasks import ReminderCreateTool, TaskScheduler, TaskStore
 from app.tasks.brief import BriefCommute, BriefWeather, DailyBriefService
 from app.tasks.brief_scheduler import DailyBriefScheduler
@@ -181,6 +195,7 @@ from app.todo import PnkxTodoClient, TodoSyncService
 from app.todo.sync_scheduler import TodoSyncScheduler
 from app.tools import (
     DesktopNotifyTool,
+    FetchWebpageTool,
     ToolExecutor,
     ToolHandler,
     ToolRegistry,
@@ -285,6 +300,18 @@ def create_app(
     screen_awareness_loop: ScreenAwarenessLoop | None = None
     browser_awareness_loop: BrowserAwarenessLoop | None = None
     mcp_manager = McpManager(runtime_config) if runtime_config is not None else None
+    skill_store = SkillStore(runtime_database) if runtime_database is not None else None
+    skill_connections = (
+        SkillConnectionStore(runtime_database) if runtime_database is not None else None
+    )
+    skill_credentials = (
+        SkillCredentialStore(runtime_database) if runtime_database is not None else None
+    )
+    skill_http_client = (
+        SkillHttpClient(skill_connections, credentials=skill_credentials)
+        if skill_connections is not None
+        else None
+    )
     safety_alert_service: SafetyAlertService | None = None
     activity_tracker = ActivityTracker()
     activity_scheduler: SafetyActivityScheduler | None = None
@@ -659,6 +686,29 @@ def create_app(
         if runtime_config is not None or (pnkx_base_url and pnkx_integration_token)
         else None
     )
+    skill_tool_provider = (
+        SkillToolProvider(
+            skill_store,
+            connections=skill_connections,
+            http_client=skill_http_client,
+        )
+        if skill_store is not None
+        else None
+    )
+    skill_generator = SkillDraftGenerator(runtime_config) if runtime_config is not None else None
+    # 只读网页抓取工具：配置实时读取，挂载与隐私门在 ChatService 内按回合判定
+    web_fetch_tool = (
+        FetchWebpageTool(lambda: runtime_config.current.config.tools.web_fetch)
+        if runtime_config is not None
+        else None
+    )
+    # 对话内 propose_skill 工具 + 回合后草稿收割，共用生成器与草稿存储；
+    # url 文档链接由服务端复用 web_fetch 抓取，避免模型转述正文
+    skill_draft_assistant = (
+        SkillDraftAssistant(skill_store, skill_generator, web_fetch=web_fetch_tool)
+        if skill_store is not None and skill_generator is not None
+        else None
+    )
     todo_sync_scheduler = (
         TodoSyncScheduler(
             todo_sync_service,
@@ -828,6 +878,8 @@ def create_app(
         try:
             yield
         finally:
+            if skill_http_client is not None:
+                await skill_http_client.close()
             if pnkx_life_client is not None:
                 await pnkx_life_client.close()
             if todo_sync_scheduler is not None:
@@ -897,6 +949,8 @@ def create_app(
     app.state.theme_store = theme_store
     app.state.action_registry = action_registry
     app.state.action_plan_service = action_plan_service
+    app.state.skill_store = skill_store
+    app.state.skill_connections = skill_connections
 
     admin_root = Path(__file__).parent / "admin"
     app.mount("/admin/legacy", StaticFiles(directory=admin_root), name="admin-legacy")
@@ -1199,6 +1253,17 @@ def create_app(
                 admin_token=runtime_admin_token,
             )
         )
+        if skill_store is not None:
+            app.include_router(
+                create_admin_skills_router(
+                    skill_store,
+                    admin_token=runtime_admin_token,
+                    generator=skill_generator,
+                    tool_provider=skill_tool_provider,
+                    connections=skill_connections,
+                    credentials=skill_credentials,
+                )
+            )
         app.state.mcp_manager = mcp_manager
         if mcp_manager is not None:
             # MCP-D：目录刷新后把白名单写工具同步进动作注册表（A2 每次确认）
@@ -1450,6 +1515,8 @@ def create_app(
                 # 写权限由动态客户端在每次请求时按当前数据库配置执行；始终注册工具，
                 # 后台启用/停用后无需重建 ChatService。
                 device_tools.append(PnkxCreateTool(pnkx_life_client, runs_local=pnkx_is_local))
+                device_tools.append(PnkxUpdateTool(pnkx_life_client, runs_local=pnkx_is_local))
+                device_tools.append(PnkxDeleteTool(pnkx_life_client, runs_local=pnkx_is_local))
             if action_plan_service is not None:
                 if device_target_resolver is not None and device_command_gateway is not None:
                     device_tools.append(
@@ -1538,6 +1605,9 @@ def create_app(
                 capability_provider=capability_provider,
                 device_tools=device_tools,
                 mcp_tools=(McpChatToolProvider(mcp_manager) if mcp_manager is not None else None),
+                skill_tools=skill_tool_provider,
+                skill_drafts=skill_draft_assistant,
+                web_fetch=web_fetch_tool,
                 cognitive_cycle=cognitive_cycle,
                 avatar_store=avatar_store,
                 goal_tracker=goal_tracker,

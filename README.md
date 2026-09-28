@@ -114,6 +114,7 @@ curl http://localhost:8000/healthz
 | [docs/05-工具与感知](docs/05-工具与感知.md) | 工具使用与主动感知、地图天气、屏幕与浏览感知 |
 | [docs/06-集成与认知](docs/06-集成与认知.md) | Home Assistant、认知调度闭环、MCP |
 | [docs/07-安全与管理后台](docs/07-安全与管理后台.md) | 安全边界、家庭守护 SAFE、管理后台与可观测性 |
+| [docs/08-技能中心](docs/08-技能中心.md) | Skill 导入、创建、声明式 API、运行与自主学习方案 |
 | [docs/TASKS.md](docs/TASKS.md) | 当前任务与进度（唯一进度真源） |
 | [docs/history/历史阶段归档](docs/history/历史阶段归档.md) | 已冻结的阶段记录与视觉原型 |
 

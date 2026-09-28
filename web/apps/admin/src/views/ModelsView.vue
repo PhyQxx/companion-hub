@@ -233,6 +233,13 @@ interface HubToolsConfig {
     mode: "driving" | "transit" | "walking";
     buffer_minutes: number;
   };
+  web_fetch: {
+    enabled: boolean;
+    timeout_ms: number;
+    max_bytes: number;
+    max_chars: number;
+    max_redirects: number;
+  };
 }
 interface HubVoiceAsr {
   provider: "mimo" | "faster_whisper" | "sherpa_streaming";
@@ -419,6 +426,13 @@ const defaultTools = (): HubToolsConfig => ({
     mode: "driving",
     buffer_minutes: 10,
   },
+  web_fetch: {
+    enabled: false,
+    timeout_ms: 8000,
+    max_bytes: 1048576,
+    max_chars: 12000,
+    max_redirects: 3,
+  },
 });
 
 const defaultVoiceAsr = (): DraftVoiceAsr => ({
@@ -575,6 +589,7 @@ function normalizeTools(tools: HubToolsConfig | undefined | null): HubToolsConfi
     desktop_actions: { ...base.desktop_actions, ...tools.desktop_actions },
     browser_workflow: { ...base.browser_workflow, ...tools.browser_workflow },
     commute: { ...base.commute, ...tools.commute },
+    web_fetch: { ...base.web_fetch, ...tools.web_fetch },
   };
 }
 
@@ -1275,6 +1290,22 @@ onActivated(() => {
             <label class="field"><span>出发点地址</span><el-input v-model="draft.tools.commute.origin" placeholder="如 济南市历下区…" :disabled="!draft.tools.commute.enabled" /></label>
             <label class="field"><span>出行方式</span><el-select v-model="draft.tools.commute.mode" :disabled="!draft.tools.commute.enabled"><el-option label="驾车" value="driving" /><el-option label="公交" value="transit" /><el-option label="步行" value="walking" /></el-select></label>
             <label class="field"><span>缓冲分钟</span><el-input-number v-model="draft.tools.commute.buffer_minutes" :min="0" :max="180" :disabled="!draft.tools.commute.enabled" /></label>
+          </div>
+        </div>
+
+        <div class="global-card" style="margin-top: 16px;">
+          <div class="global-head">
+            <div>
+              <h2>网页读取（fetch_webpage）</h2>
+              <p>允许对话读取用户贴出的 http/https 链接正文（有界截断）。仅 L0/L1 会话生效，出站前做 DNS 解析并阻断内网地址，防 SSRF。默认关闭。</p>
+            </div>
+            <el-switch v-model="draft.tools.web_fetch.enabled" active-text="启用" />
+          </div>
+          <div class="form-grid three global-fields">
+            <label class="field"><span>超时（ms）</span><el-input-number v-model="draft.tools.web_fetch.timeout_ms" :min="500" :max="30000" :step="500" :disabled="!draft.tools.web_fetch.enabled" /></label>
+            <label class="field"><span>响应体上限（字节）</span><el-input-number v-model="draft.tools.web_fetch.max_bytes" :min="1024" :max="4194304" :step="65536" :disabled="!draft.tools.web_fetch.enabled" /></label>
+            <label class="field"><span>正文上限（字符）</span><el-input-number v-model="draft.tools.web_fetch.max_chars" :min="500" :max="40000" :step="500" :disabled="!draft.tools.web_fetch.enabled" /></label>
+            <label class="field"><span>最大重定向</span><el-input-number v-model="draft.tools.web_fetch.max_redirects" :min="0" :max="5" :disabled="!draft.tools.web_fetch.enabled" /></label>
           </div>
         </div>
       </el-tab-pane>

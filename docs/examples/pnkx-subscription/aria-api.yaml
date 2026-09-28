@@ -1,0 +1,73 @@
+schema_version: 1
+connection: pnkx-life
+auth:
+  type: login_bearer
+  path: /clientLogin
+  username_field: userName
+  password_field: password
+  token_field: token
+operations:
+- name: subscription_list
+  description: 分页查询订阅列表
+  method: GET
+  path: /subscription/list
+  risk: read
+  parameters:
+    name:
+      type: string
+      required: false
+      location: query
+    cycle:
+      type: string
+      required: false
+      location: query
+    enabled:
+      type: string
+      required: false
+      location: query
+    pageNum:
+      type: integer
+      required: false
+      location: query
+    pageSize:
+      type: integer
+      required: false
+      location: query
+- name: subscription_detail
+  description: 订阅详情
+  method: GET
+  path: /subscription/{id}
+  risk: read
+  parameters:
+    id:
+      type: integer
+      required: true
+      location: path
+- name: subscription_forecast
+  description: 月度/年度订阅费用预测汇总
+  method: GET
+  path: /subscription/forecast
+  risk: read
+  parameters: {}
+- name: subscription_add
+  description: 新增订阅（待接入确认链）
+  method: POST
+  path: /subscription
+  risk: confirm
+  parameters: {}
+- name: subscription_edit
+  description: 修改订阅（待接入确认链）
+  method: PUT
+  path: /subscription
+  risk: confirm
+  parameters: {}
+- name: subscription_remove
+  description: 批量删除订阅（待接入确认链）
+  method: DELETE
+  path: /subscription/{ids}
+  risk: confirm
+  parameters:
+    ids:
+      type: string
+      required: true
+      location: path

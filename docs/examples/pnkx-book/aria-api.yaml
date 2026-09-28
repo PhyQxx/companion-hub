@@ -1,0 +1,109 @@
+schema_version: 1
+connection: pnkx-food
+auth:
+  type: login_bearer
+  path: /clientLogin
+  username_field: userName
+  password_field: password
+  token_field: token
+operations:
+- name: book_list
+  description: 分页查询我的书籍
+  method: GET
+  path: /myBook/list
+  risk: read
+  parameters:
+    title:
+      type: string
+      required: false
+      location: query
+    author:
+      type: string
+      required: false
+      location: query
+    status:
+      type: string
+      required: false
+      location: query
+    pageNum:
+      type: integer
+      required: false
+      location: query
+    pageSize:
+      type: integer
+      required: false
+      location: query
+- name: book_detail
+  description: 书籍详情
+  method: GET
+  path: /myBook/{id}
+  risk: read
+  parameters:
+    id:
+      type: integer
+      required: true
+      location: path
+- name: book_chapter_list
+  description: 分页查询书籍章节
+  method: GET
+  path: /myBook/chapter/list
+  risk: read
+  parameters:
+    bookId:
+      type: string
+      required: false
+      location: query
+    chapterName:
+      type: string
+      required: false
+      location: query
+    pageNum:
+      type: integer
+      required: false
+      location: query
+    pageSize:
+      type: integer
+      required: false
+      location: query
+- name: book_chapter_detail
+  description: 章节详情
+  method: GET
+  path: /myBook/chapter/{id}
+  risk: read
+  parameters:
+    id:
+      type: integer
+      required: true
+      location: path
+- name: book_chapter_reader
+  description: 章节阅读数据（正文+进度）
+  method: GET
+  path: /myBook/chapter/{id}/reader
+  risk: read
+  parameters:
+    id:
+      type: integer
+      required: true
+      location: path
+- name: book_add
+  description: 新增书籍（待接入确认链）
+  method: POST
+  path: /myBook
+  risk: confirm
+  parameters: {}
+- name: book_edit
+  description: 修改书籍（待接入确认链）
+  method: PUT
+  path: /myBook
+  risk: confirm
+  parameters: {}
+- name: book_progress_update
+  description: 更新阅读进度（待接入确认链）
+  method: PUT
+  path: /myBook/progress/{chapterId}
+  risk: confirm
+  parameters:
+    chapterId:
+      type: integer
+      required: true
+      location: path

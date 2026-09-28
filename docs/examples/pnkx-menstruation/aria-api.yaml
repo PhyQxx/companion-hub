@@ -1,0 +1,73 @@
+schema_version: 1
+connection: pnkx-life
+auth:
+  type: login_bearer
+  path: /clientLogin
+  username_field: userName
+  password_field: password
+  token_field: token
+operations:
+- name: menstruation_list
+  description: 分页查询生理期记录
+  method: GET
+  path: /myTool/menstruationRecord/list
+  risk: read
+  parameters:
+    date:
+      type: string
+      required: false
+      location: query
+    type:
+      type: string
+      required: false
+      location: query
+    state:
+      type: string
+      required: false
+      location: query
+    pageNum:
+      type: integer
+      required: false
+      location: query
+    pageSize:
+      type: integer
+      required: false
+      location: query
+- name: menstruation_list_extended
+  description: 分页查询生理期记录（扩展查询）
+  method: GET
+  path: /myTool/menstruationRecord/getPxMenstruationRecordList
+  risk: read
+  parameters:
+    date:
+      type: string
+      required: false
+      location: query
+    type:
+      type: string
+      required: false
+      location: query
+    pageNum:
+      type: integer
+      required: false
+      location: query
+    pageSize:
+      type: integer
+      required: false
+      location: query
+- name: menstruation_last_start
+  description: 最后一次经期开始的记录
+  method: GET
+  path: /myTool/menstruationRecord/getLastStartDate
+  risk: read
+  parameters: {}
+- name: menstruation_detail
+  description: 记录详情
+  method: GET
+  path: /myTool/menstruationRecord/{id}
+  risk: read
+  parameters:
+    id:
+      type: integer
+      required: true
+      location: path

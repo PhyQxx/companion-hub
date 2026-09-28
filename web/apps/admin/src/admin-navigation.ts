@@ -89,6 +89,21 @@ export const adminModules: AdminModule[] = [
     ],
   },
   {
+    key: "skills",
+    path: "/skills",
+    label: "技能中心",
+    group: "能力接入",
+    tabs: [
+      { key: "library", label: "技能库", description: "导入、创建、查看和启停 Skill。", state: "ready" },
+      { key: "create", label: "创建技能", description: "编写说明与声明式 API 契约。", state: "ready" },
+      { key: "generate", label: "智能创建", description: "从 API 文档或使用文档生成可审核的技能草稿。", state: "ready" },
+      { key: "drafts", label: "待审草稿", description: "审阅对话中主动沉淀或后台收割生成的技能草稿。", state: "ready" },
+      { key: "connections", label: "API 连接", description: "配置新系统地址、密钥引用和只读路径白名单。", state: "ready" },
+      { key: "suggestions", label: "学习建议", description: "查看重复失败形成的待审核建议与运行证据。", state: "ready" },
+      { key: "test", label: "匹配测试", description: "查看示例任务会加载哪些技能和只读工具。", state: "ready" },
+    ],
+  },
+  {
     key: "integrations",
     path: "/integrations",
     label: "集成与连接",

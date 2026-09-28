@@ -1,0 +1,119 @@
+schema_version: 1
+connection: pnkx-life
+auth:
+  type: login_bearer
+  path: /clientLogin
+  username_field: userName
+  password_field: password
+  token_field: token
+operations:
+- name: bill_list
+  description: 分页查询账单流水
+  method: GET
+  path: /bookkeeping/record/list
+  risk: read
+  parameters:
+    payTime:
+      type: string
+      required: false
+      location: query
+    type:
+      type: string
+      required: false
+      location: query
+    account:
+      type: string
+      required: false
+      location: query
+    money:
+      type: string
+      required: false
+      location: query
+    pageNum:
+      type: integer
+      required: false
+      location: query
+    pageSize:
+      type: integer
+      required: false
+      location: query
+- name: bill_detail
+  description: 账单详情
+  method: GET
+  path: /bookkeeping/record/{id}
+  risk: read
+  parameters:
+    id:
+      type: integer
+      required: true
+      location: path
+- name: classification_tree
+  description: 一二级分类树与最近使用
+  method: GET
+  path: /bookkeeping/classification/getClassificationList
+  risk: read
+  parameters: {}
+- name: account_list
+  description: 账户列表（含最近使用分组）
+  method: GET
+  path: /bookkeeping/account/getAccountList
+  risk: read
+  parameters: {}
+- name: budget_status
+  description: 某月预算使用状态
+  method: GET
+  path: /bookkeeping/budget/status
+  risk: read
+  parameters:
+    month:
+      type: string
+      required: true
+      location: query
+- name: budget_list
+  description: 某月预算配置列表
+  method: GET
+  path: /bookkeeping/budget/list
+  risk: read
+  parameters:
+    month:
+      type: string
+      required: true
+      location: query
+- name: recurring_list
+  description: 周期记账规则列表
+  method: GET
+  path: /bookkeeping/recurring/list
+  risk: read
+  parameters: {}
+- name: record_model_list
+  description: 账单模板列表
+  method: GET
+  path: /bookkeeping/recordModel/list
+  risk: read
+  parameters:
+    pageNum:
+      type: integer
+      required: false
+      location: query
+    pageSize:
+      type: integer
+      required: false
+      location: query
+- name: assets_statistics
+  description: 资产总览统计
+  method: POST
+  path: /bookkeeping/statistics/getAssetsStatistics
+  risk: confirm
+  parameters: {}
+- name: bill_add
+  description: 新增账单（待接入确认链）
+  method: POST
+  path: /bookkeeping/record
+  risk: confirm
+  parameters: {}
+- name: bill_edit
+  description: 修改账单（待接入确认链）
+  method: PUT
+  path: /bookkeeping/record
+  risk: confirm
+  parameters: {}

@@ -41,6 +41,8 @@ from app.memory import (
 )
 from app.persona import PersonaConfig, PersonaStore
 from app.schemas import PrivacyLevel
+from app.skills.drafts import SkillDraftAssistant
+from app.skills.runtime import SkillReadToolHandler, SkillToolProvider
 from app.timeline import (
     BrowserActivityRecallResult,
     BrowserActivityRecallService,
@@ -54,6 +56,7 @@ from app.timeline import (
 )
 from app.tools import (
     ClientLocation,
+    FetchWebpageTool,
     ToolContext,
     ToolExecution,
     ToolExecutor,
@@ -186,7 +189,12 @@ def _device_tool_ready(
         # 邮件是云端账号操作（读摘要/出站发送），L2 私密会话禁止外发，仅 L1 开放；
         # 未配置账号时工具自身 available=False。
         return privacy_level is PrivacyLevel.L1 and _cloud_tool_model_ready(config, llm_route)
-    if name in {"pnkx_read_life", "pnkx_create_life"}:
+    if name in {
+        "pnkx_read_life",
+        "pnkx_create_life",
+        "pnkx_update_life",
+        "pnkx_delete_life",
+    }:
         if privacy_level is PrivacyLevel.L1:
             return _cloud_tool_model_ready(config, llm_route)
         if privacy_level is PrivacyLevel.L2:
@@ -297,6 +305,7 @@ class PendingTurn:
     runtime_capabilities: tuple[RuntimeActionCapability, ...] = ()
     tool_names: tuple[str, ...] = ()
     mcp_handlers: tuple[McpReadToolHandler, ...] = ()
+    skill_handlers: tuple[SkillReadToolHandler, ...] = ()
     # 连接级临时位置(L2 原始信号): 仅随轮次存活于内存, 不写入任何持久化记录。
     client_location: ClientLocation | None = None
     cognitive_decision: CognitiveDecision | None = None
@@ -333,6 +342,9 @@ class ChatService:
         device_tool: ToolHandler | None = None,
         device_tools: Iterable[ToolHandler] = (),
         mcp_tools: McpChatToolProvider | None = None,
+        skill_tools: SkillToolProvider | None = None,
+        skill_drafts: SkillDraftAssistant | None = None,
+        web_fetch: FetchWebpageTool | None = None,
         safety: Any | None = None,
         cognitive_cycle: CognitiveCycle | None = None,
         avatar_store: Any | None = None,
@@ -361,6 +373,9 @@ class ChatService:
             handlers.append(device_tool)
         self._device_tools = ToolRegistry(handlers)
         self._mcp_tools = mcp_tools
+        self._skill_tools = skill_tools
+        self._skill_drafts = skill_drafts
+        self._web_fetch = web_fetch
         # SAFE-02 SafetyAlertService：聊天确认意图入口（可选依赖，无则跳过）。
         # main.py 中投递服务晚于 ChatService 构造，装配后经 set_safety 注入。
         self._safety = safety
@@ -569,8 +584,7 @@ class ChatService:
                 query = query.where(ConversationRecord.user_id == target_user_id)
             row = (
                 await session.execute(
-                    query
-                    .order_by(ConversationRecord.last_active_at.desc())
+                    query.order_by(ConversationRecord.last_active_at.desc())
                     .limit(1)
                     .with_for_update()
                 )
@@ -735,6 +749,11 @@ class ChatService:
             candidate_device_tools = tuple(
                 name for name in candidate_device_tools if name.startswith("pnkx_")
             )
+        if _has_pnkx_card_intent(text):
+            # 情侣卡券走登录态 Bearer Skill；旧生活工具没有卡券资源。
+            candidate_device_tools = tuple(
+                name for name in candidate_device_tools if not name.startswith("pnkx_")
+            )
         device_tool_names = tuple(
             name
             for name in candidate_device_tools
@@ -794,9 +813,7 @@ class ChatService:
                         timezone_name=user_timezone,
                     )
             except Exception:
-                logger.warning(
-                    "screen activity recall failed for turn %s", turn_id, exc_info=True
-                )
+                logger.warning("screen activity recall failed for turn %s", turn_id, exc_info=True)
         if self._browser_activity_recall is not None:
             try:
                 browser_activity_recall = await self._browser_activity_recall.recall(
@@ -812,9 +829,7 @@ class ChatService:
                         timezone_name=user_timezone,
                     )
             except Exception:
-                logger.warning(
-                    "browser activity recall failed for turn %s", turn_id, exc_info=True
-                )
+                logger.warning("browser activity recall failed for turn %s", turn_id, exc_info=True)
         if (
             screen_activity_recall is None
             and browser_activity_recall is None
@@ -834,9 +849,7 @@ class ChatService:
             except Exception:
                 # 历史索引是增强路径，故障不能让普通聊天不可用。
                 logger.warning("history recall failed for turn %s", turn_id, exc_info=True)
-        query_tool_names = _enabled_query_tools(
-            snapshot.config, privacy_level, llm_route
-        )
+        query_tool_names = _enabled_query_tools(snapshot.config, privacy_level, llm_route)
         tool_names = (*query_tool_names, *device_tool_names)
         definition_builders = {
             "get_weather": weather_tool_definition,
@@ -857,6 +870,44 @@ class ChatService:
         if mcp_handlers:
             tool_names = (*tool_names, *(handler.name for handler in mcp_handlers))
             tool_definitions.extend(handler.definition() for handler in mcp_handlers)
+        skill_handlers: tuple[SkillReadToolHandler, ...] = ()
+        skill_guidance = ""
+        if self._skill_tools is not None:
+            try:
+                skill_guidance = await self._skill_tools.guidance(text)
+            except Exception:
+                logger.warning(
+                    "skill guidance selection failed for turn %s", turn_id, exc_info=True
+                )
+        if (
+            self._skill_tools is not None
+            and _cloud_tool_model_ready(snapshot.config, llm_route)
+        ):
+            try:
+                skill_handlers = await self._skill_tools.select(text, privacy_level=privacy_level)
+            except Exception:
+                logger.warning("skill selection failed for turn %s", turn_id, exc_info=True)
+        if skill_handlers:
+            tool_names = (*tool_names, *(handler.name for handler in skill_handlers))
+            tool_definitions.extend(handler.definition() for handler in skill_handlers)
+        if (
+            self._skill_drafts is not None
+            and _cloud_tool_model_ready(snapshot.config, llm_route)
+        ):
+            # propose_skill 只产出待审阅草稿，不外发数据；跟随工具模型可用性挂载
+            tool_names = (*tool_names, self._skill_drafts.name)
+            tool_definitions.append(self._skill_drafts.definition())
+        if (
+            self._web_fetch is not None
+            and snapshot.config.tools.enabled
+            and snapshot.config.tools.web_fetch.enabled
+            and privacy_level in {PrivacyLevel.L0, PrivacyLevel.L1}
+            and _cloud_tool_model_ready(snapshot.config, llm_route)
+        ):
+            # 只读网页抓取：仅 L0/L1，出站前做 SSRF 校验（工具内自守 L2）
+            tool_names = (*tool_names, self._web_fetch.name)
+            tool_definitions.append(self._web_fetch.definition())
+        card_skill_unavailable = _has_pnkx_card_intent(text) and not skill_handlers
         request = CompletionRequest(
             trace_id=turn_id,
             messages=[
@@ -870,7 +921,14 @@ class ChatService:
                     + (f"\n\n{memory_block}" if memory_block else "")
                     + (f"\n\n{screen_activity_block}" if screen_activity_block else "")
                     + (f"\n\n{browser_activity_block}" if browser_activity_block else "")
-                    + (f"\n\n{history_block}" if history_block else ""),
+                    + (f"\n\n{history_block}" if history_block else "")
+                    + (f"\n\n{skill_guidance}" if skill_guidance else "")
+                    + (
+                        "\n\n【情侣卡券】本轮没有可用的卡券查询工具。请如实说明暂时无法读取卡券，"
+                        "需要在技能中心配置并启用对应的 Bearer API 连接，且使用 L1 会话；"
+                        "不得改用 PNKX 生活工具或猜测卡券数据。"
+                        if card_skill_unavailable else ""
+                    ),
                 ),
                 *[
                     LLMMessage(role=message.role, content=message.content)
@@ -903,6 +961,7 @@ class ChatService:
             runtime_capabilities=runtime_capabilities,
             tool_names=tool_names,
             mcp_handlers=mcp_handlers,
+            skill_handlers=skill_handlers,
             client_location=client_location,
             cognitive_decision=cognitive_decision,
         )
@@ -1140,6 +1199,23 @@ class ChatService:
                         latency_ms=0,
                     ),
                 )
+        skill_handler = next(
+            (item for item in pending.skill_handlers if item.name == call.function.name), None
+        )
+        if skill_handler is not None:
+            return await ToolExecutor(ToolRegistry([skill_handler])).execute(call, context)
+        if (
+            self._skill_drafts is not None
+            and call.function.name == self._skill_drafts.name
+            and self._skill_drafts.name in pending.tool_names
+        ):
+            return await ToolExecutor(ToolRegistry([self._skill_drafts])).execute(call, context)
+        if (
+            self._web_fetch is not None
+            and call.function.name == self._web_fetch.name
+            and self._web_fetch.name in pending.tool_names
+        ):
+            return await ToolExecutor(ToolRegistry([self._web_fetch])).execute(call, context)
         runtime = None
         try:
             runtime = build_query_tool_runtime(pending.config, EnvSecretProvider())
@@ -1598,7 +1674,23 @@ class ChatService:
                 backend=backend,
             )
         )
+        # 技能沉淀收割：后台检测文档型需求并生成待审阅草稿，失败静默
+        self._spawn_background(self._harvest_skill_draft(pending))
         return turn_result
+
+    async def _harvest_skill_draft(self, pending: PendingTurn) -> None:
+        if self._skill_drafts is None:
+            return
+        try:
+            await self._skill_drafts.harvest(
+                text=pending.user_message.content,
+                turn_id=pending.turn_id,
+                backend=self._router_builder(pending.config),
+            )
+        except Exception:
+            logger.warning(
+                "skill draft harvest failed for turn %s", pending.turn_id, exc_info=True
+            )
 
     async def _extract_commitments(
         self,
@@ -1822,7 +1914,16 @@ _PNKX_INTENT_TERMS = (
     "笔记",
     "日记",
     "纪念日",
+    "情侣卡券",
+    "情侣券",
+    "卡券",
 )
+
+_PNKX_CARD_TERMS = ("情侣卡券", "情侣券", "卡券")
+
+
+def _has_pnkx_card_intent(text: str) -> bool:
+    return any(term in text for term in _PNKX_CARD_TERMS)
 
 
 def _has_pnkx_intent(text: str) -> bool:
@@ -1957,11 +2058,17 @@ _PNKX_RESOURCE_LABELS = {
 def _render_pnkx_tool_reply(result: ToolResult) -> str:
     """Render pnkx results locally so L2 data never needs a second model pass."""
     if not result.ok:
+        if result.reason_code == "integration_token_rejected":
+            return "PNKX 生活服务拒绝了集成令牌。请在管理端检查 PNKX 连接的令牌与授权。"
         return f"PNKX 操作没有完成（{result.reason_code or 'unknown_error'}）。"
     resource = str(result.data.get("resource") or "data")
     label = _PNKX_RESOURCE_LABELS.get(resource, "数据")
     if result.tool_name == "pnkx_create_life":
         return f"已在 PNKX 创建{label}。"
+    if result.tool_name == "pnkx_update_life":
+        return f"已更新 PNKX {label}。"
+    if result.tool_name == "pnkx_delete_life":
+        return f"已删除 PNKX {label}。"
 
     items = result.data.get("items")
     if isinstance(items, list):
@@ -1971,8 +2078,7 @@ def _render_pnkx_tool_reply(result: ToolResult) -> str:
             return f"PNKX 中没有找到{label}。"
         lines = [f"PNKX 中共有 {total} 条{label}，前 {min(len(items), 5)} 条是："]
         lines.extend(
-            f"{index}. {_pnkx_item_summary(item)}"
-            for index, item in enumerate(items[:5], start=1)
+            f"{index}. {_pnkx_item_summary(item)}" for index, item in enumerate(items[:5], start=1)
         )
         return "\n".join(lines)
 
@@ -2112,11 +2218,14 @@ def _tool_label(tool_name: str) -> str:
         "plan_route": "正在规划路线…",
         "capture_screen": "正在读取电脑屏幕…",
         "inspect_webpage": "正在读取当前网页…",
+        "fetch_webpage": "正在读取网页…",
         "home_get_state": "正在读取设备状态…",
         "home_get_history": "正在读取设备历史…",
         "home_control": "正在执行设备控制…",
         "pnkx_read_life": "正在读取 pnkx 生活数据…",
         "pnkx_create_life": "正在写入 pnkx 生活数据…",
+        "pnkx_update_life": "正在更新 pnkx 生活数据…",
+        "pnkx_delete_life": "正在删除 pnkx 生活数据…",
         "reminder_create": "正在创建提醒…",
         "calendar_create": "正在创建日程…",
         "contact_save": "正在保存联系人…",

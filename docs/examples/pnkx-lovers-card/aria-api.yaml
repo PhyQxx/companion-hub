@@ -1,0 +1,21 @@
+schema_version: 1
+connection: pnkx-admin
+auth:
+  type: login_bearer
+  path: /clientLogin
+  username_field: userName
+  password_field: password
+  token_field: token
+operations:
+  - name: my_cards
+    description: 当前用户持有的有效情侣卡券
+    method: GET
+    path: /px/card/getCardByUserId
+    risk: read
+    parameters: {}
+  - name: pending_cards
+    description: 待我处理的情侣卡券
+    method: GET
+    path: /px/card/getToDoCard
+    risk: read
+    parameters: {}

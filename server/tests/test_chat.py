@@ -37,7 +37,12 @@ from app.llm import (
 )
 from app.main import create_app
 from app.persona import PersonaConfig, PersonaStore
-from app.pnkx import PnkxCreateTool, PnkxReadTool
+from app.pnkx import (
+    PnkxCreateTool,
+    PnkxDeleteTool,
+    PnkxReadTool,
+    PnkxUpdateTool,
+)
 from app.schemas import PrivacyLevel
 from app.tools import ToolExecution, ToolResult
 from app.tools.browser import InspectWebpageTool
@@ -162,6 +167,8 @@ async def test_pnkx_tools_are_exposed_to_tool_capable_chat_model(
         device_tools=(
             PnkxReadTool.__new__(PnkxReadTool),
             PnkxCreateTool.__new__(PnkxCreateTool),
+            PnkxUpdateTool.__new__(PnkxUpdateTool),
+            PnkxDeleteTool.__new__(PnkxDeleteTool),
         ),
     )
     user = await create_user(database)
@@ -174,10 +181,17 @@ async def test_pnkx_tools_are_exposed_to_tool_capable_chat_model(
         privacy_level=PrivacyLevel.L1,
     )
 
-    assert pending.tool_names == ("pnkx_read_life", "pnkx_create_life")
+    assert pending.tool_names == (
+        "pnkx_read_life",
+        "pnkx_create_life",
+        "pnkx_update_life",
+        "pnkx_delete_life",
+    )
     assert {tool.name for tool in pending.request.tools} == {
         "pnkx_read_life",
         "pnkx_create_life",
+        "pnkx_update_life",
+        "pnkx_delete_life",
     }
     assert "device:test:screen.capture" not in pending.request.messages[0].content
 
@@ -204,6 +218,44 @@ def test_pnkx_tool_result_is_rendered_locally() -> None:
     assert "1. 待办 1 · 2026-09-04 09:00:00" in reply
     assert "5. 待办 5" in reply
     assert "待办 6" not in reply
+
+
+def test_pnkx_auth_failure_has_actionable_message() -> None:
+    reply = _render_pnkx_tool_reply(
+        ToolResult(
+            ok=False,
+            tool_name="pnkx_read_life",
+            provider="pnkx",
+            latency_ms=12,
+            reason_code="integration_token_rejected",
+        )
+    )
+    assert "集成令牌" in reply
+    assert "管理端" in reply
+
+
+def test_pnkx_update_and_delete_results_are_rendered_locally() -> None:
+    updated = _render_pnkx_tool_reply(
+        ToolResult(
+            ok=True,
+            tool_name="pnkx_update_life",
+            provider="pnkx",
+            latency_ms=12,
+            data={"resource": "todo", "remote_id": "71"},
+        )
+    )
+    deleted = _render_pnkx_tool_reply(
+        ToolResult(
+            ok=True,
+            tool_name="pnkx_delete_life",
+            provider="pnkx",
+            latency_ms=9,
+            data={"resource": "note", "remote_id": "21"},
+        )
+    )
+
+    assert updated == "已更新 PNKX 待办。"
+    assert deleted == "已删除 PNKX 笔记。"
 
 
 class FakeBrowserCapabilityProvider:

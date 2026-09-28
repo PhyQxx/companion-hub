@@ -162,6 +162,7 @@ async def test_export_contains_companion_data_only(source_db: Database, tmp_path
     # 凭据与机器状态绝不出现
     for forbidden in (
         "auth_credential",
+        "skill_credential",
         "auth_session",
         "device_client",
         "device_command",

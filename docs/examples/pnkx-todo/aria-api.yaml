@@ -1,0 +1,119 @@
+schema_version: 1
+connection: pnkx-life
+auth:
+  type: login_bearer
+  path: /clientLogin
+  username_field: userName
+  password_field: password
+  token_field: token
+operations:
+- name: todo_list
+  description: 分页查询当前用户的待办列表
+  method: GET
+  path: /admin/toDo/list
+  risk: read
+  parameters:
+    content:
+      type: string
+      required: false
+      location: query
+    performer:
+      type: string
+      required: false
+      location: query
+    status:
+      type: string
+      required: false
+      location: query
+    label:
+      type: string
+      required: false
+      location: query
+    priority:
+      type: string
+      required: false
+      location: query
+    kanbanStatus:
+      type: string
+      required: false
+      location: query
+    pageNum:
+      type: integer
+      required: false
+      location: query
+    pageSize:
+      type: integer
+      required: false
+      location: query
+- name: todo_detail
+  description: 按 ID 查询待办详情
+  method: GET
+  path: /admin/toDo/{id}
+  risk: read
+  parameters:
+    id:
+      type: integer
+      required: true
+      location: path
+- name: todo_label_list
+  description: 获取当前用户待办标签（去重）
+  method: GET
+  path: /admin/toDo/getLabelList
+  risk: read
+  parameters: {}
+- name: todo_kanban
+  description: 看板三栏（待办/进行中/已完成）查询
+  method: GET
+  path: /admin/toDo/kanban
+  risk: read
+  parameters:
+    label:
+      type: string
+      required: false
+      location: query
+    priority:
+      type: string
+      required: false
+      location: query
+    kanbanStatus:
+      type: string
+      required: false
+      location: query
+- name: todo_subtasks
+  description: 查询指定父任务的子任务
+  method: GET
+  path: /admin/toDo/subtask/{parentId}
+  risk: read
+  parameters:
+    parentId:
+      type: integer
+      required: true
+      location: path
+- name: todo_add
+  description: 新增待办（待接入确认链）
+  method: POST
+  path: /admin/toDo
+  risk: confirm
+  parameters: {}
+- name: todo_edit
+  description: 修改待办（待接入确认链）
+  method: PUT
+  path: /admin/toDo
+  risk: confirm
+  parameters: {}
+- name: todo_remove
+  description: 批量删除待办（待接入确认链）
+  method: DELETE
+  path: /admin/toDo/{ids}
+  risk: confirm
+  parameters:
+    ids:
+      type: string
+      required: true
+      location: path
+- name: todo_sort
+  description: 批量更新看板状态与排序（待接入确认链）
+  method: PUT
+  path: /admin/toDo/sort
+  risk: confirm
+  parameters: {}

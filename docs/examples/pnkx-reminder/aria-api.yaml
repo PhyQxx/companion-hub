@@ -1,0 +1,73 @@
+schema_version: 1
+connection: pnkx-life
+auth:
+  type: login_bearer
+  path: /clientLogin
+  username_field: userName
+  password_field: password
+  token_field: token
+operations:
+- name: reminder_today
+  description: 今日提醒聚合（首页数据源）
+  method: GET
+  path: /reminder/today
+  risk: read
+  parameters: {}
+- name: reminder_list
+  description: 分页查询当前用户提醒配置
+  method: GET
+  path: /reminder/list
+  risk: read
+  parameters:
+    sourceType:
+      type: string
+      required: false
+      location: query
+    enabled:
+      type: string
+      required: false
+      location: query
+    pageNum:
+      type: integer
+      required: false
+      location: query
+    pageSize:
+      type: integer
+      required: false
+      location: query
+- name: reminder_notifications
+  description: 当前用户通知列表
+  method: GET
+  path: /reminder/notifications
+  risk: read
+  parameters: {}
+- name: reminder_unread_count
+  description: 当前用户未读通知数
+  method: GET
+  path: /reminder/unread/count
+  risk: read
+  parameters: {}
+- name: reminder_preference
+  description: 当前用户提醒偏好
+  method: GET
+  path: /reminder/preference
+  risk: read
+  parameters: {}
+- name: reminder_wechat_subscription
+  description: 微信订阅消息选择状态
+  method: GET
+  path: /reminder/wechat-subscription
+  risk: read
+  parameters: {}
+- name: reminder_bind
+  description: 为来源实体绑定提醒（待接入确认链）
+  method: POST
+  path: /reminder/bind
+  risk: confirm
+  parameters: {}
+- name: reminder_save_preference
+  description: 保存提醒偏好（待接入确认链）
+  method: PUT
+  path: /reminder/preference
+  risk: confirm
+  parameters: {}

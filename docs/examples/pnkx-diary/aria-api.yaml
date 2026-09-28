@@ -1,0 +1,93 @@
+schema_version: 1
+connection: pnkx-life
+auth:
+  type: login_bearer
+  path: /clientLogin
+  username_field: userName
+  password_field: password
+  token_field: token
+operations:
+- name: diary_list
+  description: 分页查询日记
+  method: GET
+  path: /admin/diary/list
+  risk: read
+  parameters:
+    title:
+      type: string
+      required: false
+      location: query
+    mood:
+      type: string
+      required: false
+      location: query
+    weather:
+      type: string
+      required: false
+      location: query
+    date:
+      type: string
+      required: false
+      location: query
+    pageNum:
+      type: integer
+      required: false
+      location: query
+    pageSize:
+      type: integer
+      required: false
+      location: query
+- name: diary_detail
+  description: 日记详情
+  method: GET
+  path: /admin/diary/{id}
+  risk: read
+  parameters:
+    id:
+      type: integer
+      required: true
+      location: path
+- name: diary_retrieval
+  description: 按关键字检索日记（不分页）
+  method: GET
+  path: /admin/diary/retrieval
+  risk: read
+  parameters:
+    searchCode:
+      type: string
+      required: false
+      location: query
+- name: diary_analysis_data
+  description: 日记心情分析数据与时间线
+  method: GET
+  path: /diary/analysis/data
+  risk: read
+  parameters:
+    isAll:
+      type: string
+      required: false
+      location: query
+    pageNum:
+      type: string
+      required: false
+      location: query
+    pageSize:
+      type: string
+      required: false
+      location: query
+    timelineOnly:
+      type: string
+      required: false
+      location: query
+- name: diary_add
+  description: 新增日记（待接入确认链）
+  method: POST
+  path: /admin/diary
+  risk: confirm
+  parameters: {}
+- name: diary_edit
+  description: 修改日记（待接入确认链）
+  method: PUT
+  path: /admin/diary
+  risk: confirm
+  parameters: {}

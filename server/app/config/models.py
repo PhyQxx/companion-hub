@@ -321,6 +321,19 @@ class CommuteConfig(StrictModel):
         return self
 
 
+class WebFetchConfig(StrictModel):
+    """只读网页抓取工具：把用户贴的 URL 正文取回转为有界文本供模型阅读。
+
+    默认关闭；开启后仅在 L0/L1 挂载，出站前做 DNS 解析并阻断内网/回环地址。
+    """
+
+    enabled: bool = False
+    timeout_ms: Annotated[int, Field(ge=500, le=30_000)] = 8_000
+    max_bytes: Annotated[int, Field(ge=1024, le=4 * 1024 * 1024)] = 1_048_576
+    max_chars: Annotated[int, Field(ge=500, le=40_000)] = 12_000
+    max_redirects: Annotated[int, Field(ge=0, le=5)] = 3
+
+
 class ToolsConfig(StrictModel):
     enabled: bool = False
     max_tool_rounds: Literal[1] = 1
@@ -329,6 +342,7 @@ class ToolsConfig(StrictModel):
     desktop_actions: DesktopActionsConfig = Field(default_factory=DesktopActionsConfig)
     browser_workflow: BrowserWorkflowConfig = Field(default_factory=BrowserWorkflowConfig)
     commute: CommuteConfig = Field(default_factory=CommuteConfig)
+    web_fetch: WebFetchConfig = Field(default_factory=WebFetchConfig)
 
     @model_validator(mode="after")
     def validate_provider(self) -> ToolsConfig:

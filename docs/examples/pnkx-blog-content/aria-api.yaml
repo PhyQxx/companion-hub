@@ -1,0 +1,197 @@
+schema_version: 1
+connection: pnkx-media
+auth:
+  type: login_bearer
+  path: /clientLogin
+  username_field: userName
+  password_field: password
+  token_field: token
+operations:
+- name: article_list
+  description: 分页查询文章（含内容）
+  method: GET
+  path: /client/article/list
+  risk: read
+  parameters:
+    title:
+      type: string
+      required: false
+      location: query
+    tag:
+      type: string
+      required: false
+      location: query
+    type:
+      type: string
+      required: false
+      location: query
+    search:
+      type: string
+      required: false
+      location: query
+    pageNum:
+      type: integer
+      required: false
+      location: query
+    pageSize:
+      type: integer
+      required: false
+      location: query
+- name: article_list_not_content
+  description: 分页查询文章（不含正文）
+  method: GET
+  path: /client/article/listNotContent
+  risk: read
+  parameters:
+    title:
+      type: string
+      required: false
+      location: query
+    type:
+      type: string
+      required: false
+      location: query
+    pageNum:
+      type: integer
+      required: false
+      location: query
+    pageSize:
+      type: integer
+      required: false
+      location: query
+- name: article_hot
+  description: 推荐/热门文章
+  method: GET
+  path: /client/article/getHotArticle
+  risk: read
+  parameters: {}
+- name: article_group_by_type
+  description: 文章按类型分组
+  method: GET
+  path: /client/article/getArticleListGroupByType
+  risk: read
+  parameters: {}
+- name: article_detail
+  description: 文章详情
+  method: GET
+  path: /client/article/{id}
+  risk: read
+  parameters:
+    id:
+      type: string
+      required: true
+      location: path
+- name: photo_list
+  description: 分页查询相册
+  method: GET
+  path: /client/photo/list
+  risk: read
+  parameters:
+    name:
+      type: string
+      required: false
+      location: query
+    type:
+      type: string
+      required: false
+      location: query
+    pageNum:
+      type: integer
+      required: false
+      location: query
+    pageSize:
+      type: integer
+      required: false
+      location: query
+- name: photo_detail
+  description: 相册详情
+  method: GET
+  path: /client/photo/{id}
+  risk: read
+  parameters:
+    id:
+      type: string
+      required: true
+      location: path
+- name: video_list
+  description: 分页查询视频
+  method: GET
+  path: /client/video/list
+  risk: read
+  parameters:
+    title:
+      type: string
+      required: false
+      location: query
+    label:
+      type: string
+      required: false
+      location: query
+    pageNum:
+      type: integer
+      required: false
+      location: query
+    pageSize:
+      type: integer
+      required: false
+      location: query
+- name: video_detail
+  description: 视频详情
+  method: GET
+  path: /client/video/{id}
+  risk: read
+  parameters:
+    id:
+      type: integer
+      required: true
+      location: path
+- name: message_list
+  description: 分页查询留言板
+  method: GET
+  path: /client/message/getMessageList
+  risk: read
+  parameters:
+    authorName:
+      type: string
+      required: false
+      location: query
+    state:
+      type: string
+      required: false
+      location: query
+    pageNum:
+      type: integer
+      required: false
+      location: query
+    pageSize:
+      type: integer
+      required: false
+      location: query
+- name: friend_link_list
+  description: 友情链接列表（不分页）
+  method: GET
+  path: /client/link/list
+  risk: read
+  parameters: {}
+- name: share_resource_list
+  description: 分页查询分享资源
+  method: GET
+  path: /client/share/list
+  risk: read
+  parameters:
+    title:
+      type: string
+      required: false
+      location: query
+    resourceType:
+      type: string
+      required: false
+      location: query
+    pageNum:
+      type: integer
+      required: false
+      location: query
+    pageSize:
+      type: integer
+      required: false
+      location: query

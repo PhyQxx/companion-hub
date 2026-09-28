@@ -1,0 +1,121 @@
+schema_version: 1
+connection: pnkx-food
+auth:
+  type: login_bearer
+  path: /clientLogin
+  username_field: userName
+  password_field: password
+  token_field: token
+operations:
+- name: recipe_list
+  description: 分页查询菜谱
+  method: GET
+  path: /recipe/list
+  risk: read
+  parameters:
+    title:
+      type: string
+      required: false
+      location: query
+    pageNum:
+      type: integer
+      required: false
+      location: query
+    pageSize:
+      type: integer
+      required: false
+      location: query
+- name: recipe_detail
+  description: 菜谱详情
+  method: GET
+  path: /recipe/{id}
+  risk: read
+  parameters:
+    id:
+      type: integer
+      required: true
+      location: path
+- name: recipe_with_ingredients
+  description: 菜谱详情（含食材列表）
+  method: GET
+  path: /recipe/withIngredients/{id}
+  risk: read
+  parameters:
+    id:
+      type: integer
+      required: true
+      location: path
+- name: meal_plan_list
+  description: 分页查询餐饮计划
+  method: GET
+  path: /mealPlan/list
+  risk: read
+  parameters:
+    planDate:
+      type: string
+      required: false
+      location: query
+    mealType:
+      type: string
+      required: false
+      location: query
+    pageNum:
+      type: integer
+      required: false
+      location: query
+    pageSize:
+      type: integer
+      required: false
+      location: query
+- name: meal_plan_detail
+  description: 餐饮计划详情
+  method: GET
+  path: /mealPlan/{id}
+  risk: read
+  parameters:
+    id:
+      type: integer
+      required: true
+      location: path
+- name: meal_plan_week
+  description: 按日期范围查询周餐饮计划
+  method: GET
+  path: /mealPlan/week
+  risk: read
+  parameters:
+    startDate:
+      type: string
+      required: true
+      location: query
+    endDate:
+      type: string
+      required: true
+      location: query
+- name: recipe_add
+  description: 新增菜谱（待接入确认链）
+  method: POST
+  path: /recipe
+  risk: confirm
+  parameters: {}
+- name: meal_plan_add
+  description: 新增餐饮计划（待接入确认链）
+  method: POST
+  path: /mealPlan
+  risk: confirm
+  parameters: {}
+- name: meal_plan_edit
+  description: 修改餐饮计划（待接入确认链）
+  method: PUT
+  path: /mealPlan
+  risk: confirm
+  parameters: {}
+- name: meal_plan_remove
+  description: 批量删除餐饮计划（待接入确认链）
+  method: DELETE
+  path: /mealPlan/{ids}
+  risk: confirm
+  parameters:
+    ids:
+      type: string
+      required: true
+      location: path

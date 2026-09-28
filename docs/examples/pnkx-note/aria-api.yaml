@@ -1,0 +1,77 @@
+schema_version: 1
+connection: pnkx-life
+auth:
+  type: login_bearer
+  path: /clientLogin
+  username_field: userName
+  password_field: password
+  token_field: token
+operations:
+- name: note_list
+  description: 分页查询笔记
+  method: GET
+  path: /note/list
+  risk: read
+  parameters:
+    title:
+      type: string
+      required: false
+      location: query
+    folder:
+      type: string
+      required: false
+      location: query
+    pageNum:
+      type: integer
+      required: false
+      location: query
+    pageSize:
+      type: integer
+      required: false
+      location: query
+- name: note_detail
+  description: 笔记详情
+  method: GET
+  path: /note/{id}
+  risk: read
+  parameters:
+    id:
+      type: integer
+      required: true
+      location: path
+- name: note_folder_list
+  description: 分页查询笔记文件夹
+  method: GET
+  path: /note/folder/list
+  risk: read
+  parameters:
+    name:
+      type: string
+      required: false
+      location: query
+    pageNum:
+      type: integer
+      required: false
+      location: query
+    pageSize:
+      type: integer
+      required: false
+      location: query
+- name: note_folder_tree
+  description: 笔记文件夹树（不分页）
+  method: GET
+  path: /note/folder/treeList
+  risk: read
+  parameters: {}
+- name: note_add
+  description: 新增笔记（待接入确认链）
+  method: POST
+  path: /note
+  risk: confirm
+  parameters: {}
+- name: note_edit
+  description: 修改笔记（待接入确认链）
+  method: PUT
+  path: /note
+  risk: confirm
+  parameters: {}

@@ -1,0 +1,91 @@
+schema_version: 1
+connection: pnkx-food
+auth:
+  type: login_bearer
+  path: /clientLogin
+  username_field: userName
+  password_field: password
+  token_field: token
+operations:
+- name: shopping_list
+  description: 分页查询购物清单
+  method: GET
+  path: /shoppingList/list
+  risk: read
+  parameters:
+    name:
+      type: string
+      required: false
+      location: query
+    pageNum:
+      type: integer
+      required: false
+      location: query
+    pageSize:
+      type: integer
+      required: false
+      location: query
+- name: shopping_list_detail
+  description: 购物清单详情
+  method: GET
+  path: /shoppingList/{id}
+  risk: read
+  parameters:
+    id:
+      type: integer
+      required: true
+      location: path
+- name: shopping_item_list
+  description: 分页查询清单条目
+  method: GET
+  path: /shoppingItem/list
+  risk: read
+  parameters:
+    listId:
+      type: string
+      required: false
+      location: query
+    name:
+      type: string
+      required: false
+      location: query
+    checked:
+      type: string
+      required: false
+      location: query
+    pageNum:
+      type: integer
+      required: false
+      location: query
+    pageSize:
+      type: integer
+      required: false
+      location: query
+- name: shopping_item_detail
+  description: 条目详情
+  method: GET
+  path: /shoppingItem/{id}
+  risk: read
+  parameters:
+    id:
+      type: integer
+      required: true
+      location: path
+- name: shopping_item_add
+  description: 新增条目（待接入确认链）
+  method: POST
+  path: /shoppingItem
+  risk: confirm
+  parameters: {}
+- name: shopping_item_edit
+  description: 修改条目（待接入确认链）
+  method: PUT
+  path: /shoppingItem
+  risk: confirm
+  parameters: {}
+- name: shopping_list_add
+  description: 新增清单（待接入确认链）
+  method: POST
+  path: /shoppingList
+  risk: confirm
+  parameters: {}

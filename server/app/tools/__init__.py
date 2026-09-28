@@ -10,6 +10,7 @@ from .nearby import NearbyTool, SearchNearbyArgs, nearby_tool_definition
 from .registry import ToolRegistry
 from .route import PlanRouteArgs, RouteTool, route_tool_definition
 from .weather import GetWeatherArgs, WeatherTool, weather_tool_definition
+from .webfetch import FetchWebpageTool
 
 __all__ = [
     "AmapProvider",
@@ -18,6 +19,7 @@ __all__ = [
     "ClientLocationPayload",
     "DesktopNotifyArgs",
     "DesktopNotifyTool",
+    "FetchWebpageTool",
     "GetWeatherArgs",
     "LocationSource",
     "NearbyTool",

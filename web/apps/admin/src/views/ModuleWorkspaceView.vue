@@ -32,6 +32,7 @@ import ProactiveChannelsView from "./ProactiveChannelsView.vue";
 import SafetyAdminView from "./SafetyAdminView.vue";
 import ScreenAwarenessView from "./ScreenAwarenessView.vue";
 import SenseAudioView from "./SenseAudioView.vue";
+import SkillsView from "./SkillsView.vue";
 import SystemView from "./SystemView.vue";
 import TasksView from "./TasksView.vue";
 import TimelineView from "./TimelineView.vue";
@@ -48,6 +49,7 @@ const currentView = computed(() => {
   if (props.module === "overview" && activeTab.value === "usage") return UsageView;
   if (props.module === "overview" && activeTab.value === "activity") return ActivityView;
   if (props.module === "models" && activeTab.value === "mcp") return McpIntegrationView;
+  if (props.module === "skills") return SkillsView;
   if (props.module === "models" && activeTab.value === "sound") return SenseAudioView;
   if (props.module === "models") return ModelsView;
   if (props.module === "integrations" && activeTab.value === "mail") return IntegrationsMailView;

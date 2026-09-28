@@ -60,6 +60,9 @@ services:
       ARIA_CONFIG_PATH: ${ARIA_CONFIG_PATH:-config/hub.example.yaml}
       ARIA_WATCH_CONFIG: ${ARIA_WATCH_CONFIG:-true}
       ARIA_ADMIN_TOKEN: ${ARIA_ADMIN_TOKEN:-}
+      ARIA_PNKX_CARD_USERNAME: ${ARIA_PNKX_CARD_USERNAME:-}
+      ARIA_PNKX_CARD_PASSWORD: ${ARIA_PNKX_CARD_PASSWORD:-}
+      ARIA_SKILL_CREDENTIAL_KEY: ${ARIA_SKILL_CREDENTIAL_KEY:-}
       ARIA_VAPID_PRIVATE_KEY: ${ARIA_VAPID_PRIVATE_KEY:-}
       ARIA_XIAOAI_CONFIG_PATH: /var/lib/aria/xiaoai/config.json
       # BK-01 备份状态检视：只读挂载，转储仍由 backup profile 容器执行
