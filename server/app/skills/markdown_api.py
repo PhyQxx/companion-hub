@@ -166,8 +166,7 @@ def compile_markdown_api(
         name,
     )[:100]
     bearer_pnkx = system_name == "pnkx" and (
-        auth is not None
-        or bool(re.search(r"Authorization\s*:\s*Bearer", source, re.IGNORECASE))
+        auth is not None or bool(re.search(r"Authorization\s*:\s*Bearer", source, re.IGNORECASE))
     )
     connection = "pnkx-admin" if bearer_pnkx else system_name
     if bearer_pnkx:

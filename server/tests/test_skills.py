@@ -71,10 +71,11 @@ operations:
 
 def test_zip_import_and_path_guards() -> None:
     package = _zip({"pnkx-coupons/SKILL.md": SKILL_MD, "pnkx-coupons/aria-api.yaml": API_YAML})
-    document, digest = import_skill_zip(package)
+    document, digest, markdown = import_skill_zip(package)
     assert document.name == "pnkx-coupons"
     assert document.api is not None and len(document.api.operations) == 2
     assert len(digest) == 64
+    assert markdown.startswith("---\n")
     with pytest.raises(ValueError, match="unsafe"):
         import_skill_zip(_zip({"../SKILL.md": SKILL_MD}))
     with pytest.raises(ValueError, match="pnkx_connection_reserved"):

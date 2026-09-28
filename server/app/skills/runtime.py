@@ -30,7 +30,7 @@ _TYPES: dict[str, type[Any]] = {
 }
 
 
-def _arguments_model(operation: SkillOperation) -> type[BaseModel]:
+def arguments_model_for(operation: SkillOperation) -> type[BaseModel]:
     fields: dict[str, Any] = {}
     for name, parameter in operation.parameters.items():
         field_type = _TYPES[parameter.type]
@@ -88,7 +88,7 @@ class SkillReadToolHandler:
         self.description = (
             f"已安装技能 {skill.name}：{operation.description}。仅查询，不得修改远端数据。"
         )
-        self.arguments_model = _arguments_model(operation)
+        self.arguments_model = arguments_model_for(operation)
         self._skill_id: UUID = skill.id
         self._skill_version = skill.version
         self._connection_id = skill.api.connection if skill.api else ""

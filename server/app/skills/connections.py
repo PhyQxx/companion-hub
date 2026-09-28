@@ -34,6 +34,7 @@ class SkillConnection(BaseModel):
     username_ref: str | None = None
     header_name: str | None = None
     allowed_paths: list[str] = Field(min_length=1, max_length=50)
+    allowed_write_paths: list[str] = Field(default_factory=list, max_length=50)
     allowed_auth_paths: list[str] = Field(default_factory=list, max_length=10)
     enabled: bool = False
 
@@ -49,12 +50,15 @@ class SkillConnection(BaseModel):
             or url.password
             or url.query
             or url.fragment
-            or (url.path not in {"", "/"} and (
-                not _PATH.fullmatch(url.path)
-                or "{" in url.path
-                or "}" in url.path
-                or any(part in {".", ".."} for part in url.path.split("/"))
-            ))
+            or (
+                url.path not in {"", "/"}
+                and (
+                    not _PATH.fullmatch(url.path)
+                    or "{" in url.path
+                    or "}" in url.path
+                    or any(part in {".", ".."} for part in url.path.split("/"))
+                )
+            )
         ):
             raise ValueError("connection_requires_https_base_url")
         if self.auth_type == "none":
@@ -80,11 +84,13 @@ class SkillConnection(BaseModel):
                 raise ValueError("invalid_auth_header_name")
         elif self.header_name is not None:
             raise ValueError("header_name_not_allowed")
-        if len(set(self.allowed_paths)) != len(self.allowed_paths) or len(
-            set(self.allowed_auth_paths)
-        ) != len(self.allowed_auth_paths):
+        if (
+            len(set(self.allowed_paths)) != len(self.allowed_paths)
+            or len(set(self.allowed_auth_paths)) != len(self.allowed_auth_paths)
+            or len(set(self.allowed_write_paths)) != len(self.allowed_write_paths)
+        ):
             raise ValueError("duplicate_allowed_path")
-        for path in [*self.allowed_paths, *self.allowed_auth_paths]:
+        for path in [*self.allowed_paths, *self.allowed_auth_paths, *self.allowed_write_paths]:
             if (
                 not _PATH.fullmatch(path)
                 or any(part in {".", ".."} for part in path.split("/"))
@@ -110,6 +116,7 @@ def _view(record: SkillConnectionRecord) -> SkillConnectionView:
         username_ref=record.username_ref,
         header_name=record.header_name,
         allowed_paths=record.allowed_paths,
+        allowed_write_paths=record.allowed_write_paths,
         allowed_auth_paths=record.allowed_auth_paths,
         enabled=record.enabled,
         updated_at=record.updated_at.replace(tzinfo=record.updated_at.tzinfo or UTC),
@@ -142,6 +149,7 @@ class SkillConnectionStore:
             record.username_ref = config.username_ref
             record.header_name = config.header_name
             record.allowed_paths = list(config.allowed_paths)
+            record.allowed_write_paths = list(config.allowed_write_paths)
             record.allowed_auth_paths = list(config.allowed_auth_paths)
             record.enabled = config.enabled
             record.updated_at = datetime.now(UTC)
@@ -178,9 +186,7 @@ class SkillHttpClient:
         if self._owns_client:
             await self._client.aclose()
 
-    async def credentials_ready(
-        self, skill_id: UUID | None, config: SkillConnectionView
-    ) -> bool:
+    async def credentials_ready(self, skill_id: UUID | None, config: SkillConnectionView) -> bool:
         # skill_id 为 None 表示技能尚不存在（如新技能草稿），走环境变量回退。
         if skill_id is not None and self._credentials is not None:
             status = await self._credentials.status(skill_id)
@@ -208,6 +214,63 @@ class SkillHttpClient:
         config = await self._store.get(connection_id)
         if config is None or not config.enabled or template not in config.allowed_paths:
             raise SkillConnectionError("connection_disabled_or_path_denied")
+        return await self._authorized_request(
+            config,
+            "GET",
+            path,
+            params=params,
+            json_body=None,
+            auth=auth,
+            skill_id=skill_id,
+            idempotency_key=None,
+        )
+
+    async def skill_write(
+        self,
+        connection_id: str,
+        template: str,
+        path: str,
+        *,
+        method: str,
+        json_body: dict[str, object] | None,
+        params: dict[str, str | int],
+        auth: SkillLoginAuth | None = None,
+        skill_id: UUID | None = None,
+        idempotency_key: str | None = None,
+    ) -> object:
+        """Execute a declarative write; only Admin-allowlisted write paths pass.
+
+        幂等键透传为 Idempotency-Key 头，供支持幂等的远端去重；本地重放
+        语义由计划步骤的唯一幂等键保证。
+        """
+        if method not in {"POST", "PUT", "PATCH", "DELETE"}:
+            raise SkillConnectionError("write_method_not_allowed")
+        config = await self._store.get(connection_id)
+        if config is None or not config.enabled or template not in config.allowed_write_paths:
+            raise SkillConnectionError("connection_disabled_or_write_path_denied")
+        return await self._authorized_request(
+            config,
+            method,
+            path,
+            params=params,
+            json_body=json_body,
+            auth=auth,
+            skill_id=skill_id,
+            idempotency_key=idempotency_key,
+        )
+
+    async def _authorized_request(
+        self,
+        config: SkillConnectionView,
+        method: str,
+        path: str,
+        *,
+        params: dict[str, str | int],
+        json_body: dict[str, object] | None,
+        auth: SkillLoginAuth | None,
+        skill_id: UUID | None,
+        idempotency_key: str | None,
+    ) -> object:
         headers: dict[str, str] = {}
         if config.auth_type == "login_bearer":
             if auth is None or auth.path not in config.allowed_auth_paths:
@@ -222,8 +285,10 @@ class SkillHttpClient:
                 headers["Authorization"] = f"Bearer {secret}"
             elif config.header_name:
                 headers[config.header_name] = secret
+        if idempotency_key:
+            headers["Idempotency-Key"] = idempotency_key
         try:
-            return await self._get(config, path, params, headers)
+            return await self._request(config, method, path, params, json_body, headers)
         except SkillConnectionError as error:
             if config.auth_type != "login_bearer" or error.reason_code != "connection_http_401":
                 raise
@@ -231,7 +296,37 @@ class SkillHttpClient:
         cache_key = f"{config.id}:{skill_id or ''}"
         self._tokens.pop(cache_key, None)
         headers["Authorization"] = f"Bearer {await self._login_token(config, auth, skill_id)}"
-        return await self._get(config, path, params, headers)
+        return await self._request(config, method, path, params, json_body, headers)
+
+    async def _request(
+        self,
+        config: SkillConnectionView,
+        method: str,
+        path: str,
+        params: dict[str, str | int],
+        json_body: dict[str, object] | None,
+        headers: dict[str, str],
+    ) -> object:
+        try:
+            async with self._client.stream(
+                method,
+                config.base_url + path,
+                params=params,
+                json=json_body,
+                headers=headers,
+                follow_redirects=False,
+            ) as response:
+                if response.is_redirect:
+                    raise SkillConnectionError("connection_redirect_denied")
+                response.raise_for_status()
+                payload = await self._read_json(response, max_bytes=64 * 1024)
+                if isinstance(payload, dict) and payload.get("code") == 401:
+                    raise SkillConnectionError("connection_http_401")
+                return payload
+        except httpx.HTTPStatusError as error:
+            raise SkillConnectionError(f"connection_http_{error.response.status_code}") from error
+        except (httpx.RequestError, ValueError) as error:
+            raise SkillConnectionError("connection_request_failed") from error
 
     async def _login_token(
         self, config: SkillConnectionView, auth: SkillLoginAuth, skill_id: UUID | None
@@ -275,39 +370,15 @@ class SkillHttpClient:
             if not isinstance(payload, dict) or payload.get("code") not in (None, 200):
                 raise SkillConnectionError("connection_login_rejected")
             token = payload.get(auth.token_field)
-            if not isinstance(token, str) or not token or len(token) > 4096 or any(
-                char.isspace() for char in token
+            if (
+                not isinstance(token, str)
+                or not token
+                or len(token) > 4096
+                or any(char.isspace() for char in token)
             ):
                 raise SkillConnectionError("connection_login_invalid_response")
             self._tokens[cache_key] = (signature, token)
             return token
-
-    async def _get(
-        self,
-        config: SkillConnectionView,
-        path: str,
-        params: dict[str, str | int],
-        headers: dict[str, str],
-    ) -> object:
-        try:
-            async with self._client.stream(
-                "GET",
-                config.base_url + path,
-                params=params,
-                headers=headers,
-                follow_redirects=False,
-            ) as response:
-                if response.is_redirect:
-                    raise SkillConnectionError("connection_redirect_denied")
-                response.raise_for_status()
-                payload = await self._read_json(response, max_bytes=64 * 1024)
-                if isinstance(payload, dict) and payload.get("code") == 401:
-                    raise SkillConnectionError("connection_http_401")
-                return payload
-        except httpx.HTTPStatusError as error:
-            raise SkillConnectionError(f"connection_http_{error.response.status_code}") from error
-        except (httpx.RequestError, ValueError) as error:
-            raise SkillConnectionError("connection_request_failed") from error
 
     @staticmethod
     async def _read_json(response: httpx.Response, *, max_bytes: int) -> object:

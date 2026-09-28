@@ -178,12 +178,14 @@ from app.screen_awareness import (
     ScreenAwarenessLoop,
     ScreenAwarenessResolver,
 )
+from app.skills.actions import sync_skill_actions
 from app.skills.connections import SkillConnectionStore, SkillHttpClient
 from app.skills.credentials import SkillCredentialStore
 from app.skills.drafts import SkillDraftAssistant
 from app.skills.generator import SkillDraftGenerator
 from app.skills.runtime import SkillToolProvider
 from app.skills.store import SkillStore
+from app.skills.writes import SkillWriteToolHandler
 from app.tasks import ReminderCreateTool, TaskScheduler, TaskStore
 from app.tasks.brief import BriefCommute, BriefWeather, DailyBriefService
 from app.tasks.brief_scheduler import DailyBriefScheduler
@@ -875,6 +877,14 @@ def create_app(
             caldav_sync_scheduler.start()
         if google_calendar_sync_scheduler is not None:
             google_calendar_sync_scheduler.start()
+        if skill_store is not None and action_registry is not None:
+            # 技能 S3：启动时把已启用技能的写操作同步进动作目录
+            try:
+                sync_skill_actions(action_registry, await skill_store.list())
+            except Exception:
+                logging.getLogger(__name__).warning(
+                    "skill write action sync failed on startup", exc_info=True
+                )
         try:
             yield
         finally:
@@ -1263,6 +1273,7 @@ def create_app(
                     connections=skill_connections,
                     credentials=skill_credentials,
                     http_client=skill_http_client,
+                    action_registry=action_registry,
                 )
             )
         app.state.mcp_manager = mcp_manager
@@ -1518,6 +1529,16 @@ def create_app(
                 device_tools.append(PnkxCreateTool(pnkx_life_client, runs_local=pnkx_is_local))
                 device_tools.append(PnkxUpdateTool(pnkx_life_client, runs_local=pnkx_is_local))
                 device_tools.append(PnkxDeleteTool(pnkx_life_client, runs_local=pnkx_is_local))
+            if (
+                skill_store is not None
+                and skill_connections is not None
+                and skill_http_client is not None
+            ):
+                # 技能 S3 写动作执行器：仅经 Action Registry 计划—确认—执行链触发，
+                # 不作为聊天工具挂载（chat 侧 _device_tool_ready 黑名单）。
+                device_tools.append(
+                    SkillWriteToolHandler(skill_store, skill_connections, skill_http_client)
+                )
             if action_plan_service is not None:
                 if device_target_resolver is not None and device_command_gateway is not None:
                     device_tools.append(

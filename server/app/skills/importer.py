@@ -48,7 +48,8 @@ def parse_skill_markdown(markdown: str, api_text: str | None = None) -> SkillDoc
         raise ValueError("invalid skill metadata or API contract") from error
 
 
-def import_skill_zip(data: bytes) -> tuple[SkillDocument, str]:
+def import_skill_zip(data: bytes) -> tuple[SkillDocument, str, str]:
+    """Return (document, archive digest, original SKILL.md text)."""
     if len(data) > MAX_ZIP_BYTES:
         raise ValueError("skill archive too large")
     try:
@@ -97,4 +98,4 @@ def import_skill_zip(data: bytes) -> tuple[SkillDocument, str]:
         document = parse_skill_markdown(markdown, api_text)
         if prefix and prefix.rstrip("/") != document.name:
             raise ValueError("skill directory must match skill name")
-        return document, hashlib.sha256(data).hexdigest()
+        return document, hashlib.sha256(data).hexdigest(), markdown

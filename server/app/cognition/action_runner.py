@@ -40,6 +40,9 @@ class ToolActionRunner:
         elif step.tool_name == "mcp_tool_call":
             # MCP-D：外部 MCP 服务不接收 L2 内容，动作定义已限 L1
             privacy_level = PrivacyLevel.L1
+        elif step.tool_name == "skill_write":
+            # 技能 S3：外部 HTTP 服务不接收 L2 内容，动作定义已限 L1
+            privacy_level = PrivacyLevel.L1
         execution = await self._executor.execute(
             ToolCall(
                 id=f"action-step-{step.id}",
@@ -64,6 +67,18 @@ class ToolActionRunner:
                     key: value
                     for key, value in execution.result.data.items()
                     if key in {"server_id", "tool_name", "ok"}
+                }
+                return ActionRunResult(
+                    execution=execution.result,
+                    verification_status=ActionVerificationStatus.VERIFIED,
+                    verification_result=evidence,
+                )
+            if step.verifier_id == "skill.write_receipt":
+                # 技能 S3：调用回执即证据，远端响应正文不进验证记录
+                evidence = {
+                    key: value
+                    for key, value in execution.result.data.items()
+                    if key in {"skill_name", "operation", "status"}
                 }
                 return ActionRunResult(
                     execution=execution.result,

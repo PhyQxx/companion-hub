@@ -35,6 +35,7 @@ interface SkillConnection {
   username_ref: string | null;
   header_name: string | null;
   allowed_paths: string[];
+  allowed_write_paths: string[];
   allowed_auth_paths: string[];
   enabled: boolean;
 }
@@ -126,6 +127,7 @@ const connectionSecretRef = ref("");
 const connectionUsernameRef = ref("");
 const connectionHeader = ref("");
 const connectionPaths = ref("");
+const connectionWritePaths = ref("");
 const connectionAuthPaths = ref("");
 const connectionEnabled = ref(false);
 const zipInput = ref<HTMLInputElement | null>(null);
@@ -153,6 +155,8 @@ function fail(error: unknown, fallback: string) {
   );
 }
 
+const sourceMarkdown = ref<string | null>(null);
+
 function selectItem(item: SkillItem) {
   selected.value = item;
   runs.value = [];
@@ -161,7 +165,20 @@ function selectItem(item: SkillItem) {
   apiEditText.value = item.api ? JSON.stringify(item.api, null, 2) : "";
   void loadVersions(item.id);
   void loadRuns(item.id);
+  void loadSourceMarkdown(item.id);
   if (item.api?.auth?.type === "login_bearer") void loadCredentialStatus(item.id);
+}
+
+async function loadSourceMarkdown(id: string) {
+  sourceMarkdown.value = null;
+  try {
+    const detail = await api.request<{ source_markdown: string | null }>(
+      `/api/v1/admin/skills/${id}`,
+    );
+    if (selected.value?.id === id) sourceMarkdown.value = detail.source_markdown;
+  } catch {
+    sourceMarkdown.value = null;
+  }
 }
 
 async function loadCredentialStatus(id: string) {
@@ -311,6 +328,38 @@ function draftTargetName(draft: SkillDraft): string {
   return items.value.find((item) => item.id === draft.target_skill_id)?.name ?? "未知技能";
 }
 
+interface DraftOperation {
+  name: string;
+  method: string;
+  path: string;
+  risk: string;
+  parameters?: Record<string, unknown>;
+}
+
+/** 修订草稿与现有技能当前版本的差异摘要（docs/08 §5「与当前版本比较」）。 */
+function revisionDiff(draft: SkillDraft): string[] {
+  const target = items.value.find((item) => item.id === draft.target_skill_id);
+  if (!target) return ["找不到目标技能的当前版本，请刷新技能库。"];
+  const changes: string[] = [];
+  if (draft.document.description !== target.description) changes.push("用途描述有修改");
+  if (draft.document.instructions !== target.instructions) changes.push("使用说明有修改");
+  const draftOps = (draft.document.api as { operations?: DraftOperation[] } | null)?.operations ?? [];
+  const targetOps = (target.api?.operations ?? []) as DraftOperation[];
+  const signature = (op: DraftOperation) =>
+    JSON.stringify([op.method, op.path, op.risk, op.parameters ?? {}]);
+  const draftByName = new Map(draftOps.map((op) => [op.name, op]));
+  const targetByName = new Map(targetOps.map((op) => [op.name, op]));
+  const added = draftOps.filter((op) => !targetByName.has(op.name)).map((op) => op.name);
+  const removed = targetOps.filter((op) => !draftByName.has(op.name)).map((op) => op.name);
+  const changed = draftOps
+    .filter((op) => targetByName.has(op.name) && signature(targetByName.get(op.name)!) !== signature(op))
+    .map((op) => op.name);
+  if (added.length) changes.push(`新增操作：${added.join("、")}`);
+  if (removed.length) changes.push(`移除操作：${removed.join("、")}`);
+  if (changed.length) changes.push(`修改操作：${changed.join("、")}`);
+  return changes.length ? changes : ["与当前版本内容一致"];
+}
+
 async function dismissDraft(id: string) {
   busy.value = true;
   try {
@@ -331,6 +380,7 @@ function editConnection(item: SkillConnection) {
   connectionUsernameRef.value = item.username_ref ?? "";
   connectionHeader.value = item.header_name ?? "";
   connectionPaths.value = item.allowed_paths.join("\n");
+  connectionWritePaths.value = item.allowed_write_paths.join("\n");
   connectionAuthPaths.value = item.allowed_auth_paths.join("\n");
   connectionEnabled.value = item.enabled;
 }
@@ -373,6 +423,7 @@ async function toggleSelectedConnection() {
         username_ref: connection.username_ref,
         header_name: connection.header_name,
         allowed_paths: connection.allowed_paths,
+        allowed_write_paths: connection.allowed_write_paths,
         allowed_auth_paths: connection.allowed_auth_paths,
         enabled: !connection.enabled,
       }),
@@ -400,6 +451,7 @@ async function saveConnection() {
         username_ref: connectionAuth.value === "login_bearer" && connectionUsernameRef.value.trim() ? connectionUsernameRef.value.trim() : null,
         header_name: connectionAuth.value === "header" ? connectionHeader.value.trim() : null,
         allowed_paths: connectionPaths.value.split("\n").map((path) => path.trim()).filter(Boolean),
+        allowed_write_paths: connectionWritePaths.value.split("\n").map((path) => path.trim()).filter(Boolean),
         allowed_auth_paths: connectionAuth.value === "login_bearer" ? connectionAuthPaths.value.split("\n").map((path) => path.trim()).filter(Boolean) : [],
         enabled: connectionEnabled.value,
       }),
@@ -679,11 +731,15 @@ onUnmounted(() => {
               </el-table-column>
               <el-table-column label="说明" min-width="200">
                 <template #default="{ row }">
-                  <small>{{ row.description }} · {{ row.risk === "read" ? (selected.api?.connection === "pnkx" ? "PNKX 只读可执行" : "需启用对应 API 连接并配置路径") : "写操作待接入确认链" }}</small>
+                  <small>{{ row.description }} · {{ row.risk === "read" ? (selected.api?.connection === "pnkx" ? "PNKX 只读可执行" : "需启用对应 API 连接并配置路径") : "写入 · A2 确认后经连接写白名单执行" }}</small>
                 </template>
               </el-table-column>
             </el-table>
             <el-empty v-else description="此技能没有声明式 API" :image-size="60" />
+          </div>
+          <div v-if="sourceMarkdown">
+            <h3>原始文档（导入的 SKILL.md）</h3>
+            <pre class="hint" style="white-space: pre-wrap; max-height: 320px; overflow: auto; background: var(--el-fill-color-light); padding: 12px; border-radius: 6px;">{{ sourceMarkdown }}</pre>
           </div>
           <div>
             <h3>配置 API 契约</h3>
@@ -811,7 +867,7 @@ onUnmounted(() => {
         <div>
           <div class="eyebrow">技能中心 · API 连接</div>
           <h2>API 连接</h2>
-          <p>连接由管理员配置。只允许 HTTPS、GET 和列出的精确路径模板。用户名密码登录的账号在技能详情中加密保存；固定令牌或自定义头可使用服务端 env: 引用。</p>
+          <p>连接由管理员配置，只读与写入路径模板分开登记，且只允许 HTTPS。只读路径按相关性挂载进对话；写入路径仅服务 Action Registry 计划—确认—执行链，每次执行都需用户确认。用户名密码登录的账号在技能详情中加密保存；固定令牌或自定义头可使用服务端 env: 引用。</p>
         </div>
         <div class="hero-actions">
           <el-button :loading="busy" @click="loadConnections">刷新</el-button>
@@ -827,8 +883,11 @@ onUnmounted(() => {
           <el-table-column label="认证" width="110">
             <template #default="{ row }">{{ row.auth_type === "none" ? "无认证" : row.auth_type === "bearer" ? "Bearer" : row.auth_type === "login_bearer" ? "账号登录 Bearer" : "自定义请求头" }}</template>
           </el-table-column>
-          <el-table-column label="允许路径" min-width="180" show-overflow-tooltip>
+          <el-table-column label="只读路径" min-width="160" show-overflow-tooltip>
             <template #default="{ row }">{{ row.allowed_paths.join("、") }}</template>
+          </el-table-column>
+          <el-table-column label="写入路径" min-width="160" show-overflow-tooltip>
+            <template #default="{ row }">{{ row.allowed_write_paths.length ? row.allowed_write_paths.join("、") : "未放行写入" }}</template>
           </el-table-column>
           <el-table-column label="状态" width="90">
             <template #default="{ row }">
@@ -859,7 +918,8 @@ onUnmounted(() => {
           <label v-if="connectionAuth !== 'none'"><span>{{ connectionAuth === 'login_bearer' ? '密码环境变量回退（可选）' : '密钥环境变量引用' }}</span><el-input v-model="connectionSecretRef" placeholder="env:PARTNER_API_TOKEN" /></label>
           <label v-if="connectionAuth === 'header'"><span>请求头名称</span><el-input v-model="connectionHeader" placeholder="X-API-Key" /></label>
           <label v-if="connectionAuth === 'login_bearer'" class="wide"><span>允许登录路径（每行一条）</span><el-input v-model="connectionAuthPaths" type="textarea" :rows="2" placeholder="/clientLogin" /></label>
-          <label class="wide"><span>允许路径模板（每行一条，与技能契约完全一致）</span><el-input v-model="connectionPaths" type="textarea" :rows="5" placeholder="/coupons&#10;/coupons/{coupon_id}" /></label>
+          <label class="wide"><span>只读路径模板（每行一条，与技能契约完全一致）</span><el-input v-model="connectionPaths" type="textarea" :rows="5" placeholder="/coupons&#10;/coupons/{coupon_id}" /></label>
+          <label class="wide"><span>写入路径模板（每行一条；写操作需用户逐次确认后才会执行）</span><el-input v-model="connectionWritePaths" type="textarea" :rows="3" placeholder="/todos" /></label>
           <label class="wide"><span>启用连接</span><el-checkbox v-model="connectionEnabled">已启用的只读技能会按路径白名单挂载</el-checkbox></label>
           <div class="actions wide">
             <el-button type="primary" :loading="busy" @click="saveConnection">保存连接</el-button>
@@ -926,6 +986,12 @@ onUnmounted(() => {
           <el-table-column type="expand">
             <template #default="{ row }">
               <div style="padding: 4px 16px 12px">
+                <template v-if="row.target_skill_id">
+                  <h3>与当前版本的差异</h3>
+                  <ul class="hint">
+                    <li v-for="(change, index) in revisionDiff(row as SkillDraft)" :key="index">{{ change }}</li>
+                  </ul>
+                </template>
                 <h3>使用说明</h3>
                 <p class="hint" style="white-space: pre-wrap">{{ row.document.instructions }}</p>
                 <template v-if="row.warnings.length">

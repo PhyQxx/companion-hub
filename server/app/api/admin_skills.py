@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from typing import Annotated
 from uuid import UUID
 
@@ -9,9 +10,11 @@ from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 from pydantic import Field, SecretStr
 from sqlalchemy.exc import DBAPIError
 
+from app.cognition.action_registry import ActionRegistry
 from app.schemas import PrivacyLevel
 from app.schemas.common import StrictModel
 from app.skills import SkillApiManifest, SkillDocument, import_skill_zip
+from app.skills.actions import sync_skill_actions
 from app.skills.connections import (
     SkillConnection,
     SkillConnectionStore,
@@ -37,6 +40,8 @@ from app.skills.store import (
 
 from .admin_config import AdminTokenGuard
 
+logger = logging.getLogger(__name__)
+
 
 class SkillEnabledRequest(StrictModel):
     enabled: bool
@@ -61,6 +66,12 @@ class SkillGenerateRequest(StrictModel):
     source: str
 
 
+class SkillDetailResponse(SkillView):
+    """Skill detail with the original uploaded document (list endpoints omit it)."""
+
+    source_markdown: str | None = None
+
+
 class SkillCredentialRequest(StrictModel):
     username: SecretStr = Field(min_length=1, max_length=256)
     password: SecretStr = Field(min_length=1, max_length=4096)
@@ -82,12 +93,22 @@ def create_admin_skills_router(
     connections: SkillConnectionStore | None = None,
     credentials: SkillCredentialStore | None = None,
     http_client: SkillHttpClient | None = None,
+    action_registry: ActionRegistry | None = None,
 ) -> APIRouter:
     router = APIRouter(
         prefix="/api/v1/admin/skills",
         tags=["admin-skills"],
         dependencies=[Depends(AdminTokenGuard(admin_token))],
     )
+
+    async def _sync_write_actions() -> None:
+        """技能目录变更后重同步写动作；同步失败不影响管理操作本身。"""
+        if action_registry is None:
+            return
+        try:
+            sync_skill_actions(action_registry, await store.list())
+        except Exception:
+            logger.warning("skill write action sync failed", exc_info=True)
 
     @router.get("", response_model=list[SkillView])
     async def list_skills() -> list[SkillView]:
@@ -102,7 +123,7 @@ def create_admin_skills_router(
     @router.post("", response_model=SkillView, status_code=201)
     async def create_skill(body: SkillDocument) -> SkillView:
         try:
-            return await store.create(body, source="created")
+            skill = await store.create(body, source="created")
         except ValueError as error:
             raise HTTPException(status_code=409, detail=str(error)) from error
         except DBAPIError as error:
@@ -110,11 +131,13 @@ def create_admin_skills_router(
             if failure is not None:
                 raise failure from error
             raise
+        await _sync_write_actions()
+        return skill
 
     @router.post("/generated", response_model=SkillView, status_code=201)
     async def save_generated_skill(body: SkillDocument) -> SkillView:
         try:
-            return await store.create(body, source="generated")
+            skill = await store.create(body, source="generated")
         except ValueError as error:
             raise HTTPException(status_code=409, detail=str(error)) from error
         except DBAPIError as error:
@@ -122,13 +145,17 @@ def create_admin_skills_router(
             if failure is not None:
                 raise failure from error
             raise
+        await _sync_write_actions()
+        return skill
 
     @router.post("/import", response_model=SkillView, status_code=201)
     async def import_skill(file: Annotated[UploadFile, File()]) -> SkillView:
         data = await file.read(2 * 1024 * 1024 + 1)
         try:
-            document, digest = import_skill_zip(data)
-            return await store.create(document, source="uploaded", content_hash=digest)
+            document, digest, markdown = import_skill_zip(data)
+            skill = await store.create(
+                document, source="uploaded", content_hash=digest, source_markdown=markdown
+            )
         except (UnicodeError, ValueError) as error:
             code = 409 if str(error) == "skill_name_exists" else 422
             raise HTTPException(status_code=code, detail=str(error)) from error
@@ -137,6 +164,8 @@ def create_admin_skills_router(
             if failure is not None:
                 raise failure from error
             raise
+        await _sync_write_actions()
+        return skill
 
     @router.post("/preview", response_model=SkillPreviewResponse)
     async def preview(body: SkillPreviewRequest) -> SkillPreviewResponse:
@@ -254,11 +283,13 @@ def create_admin_skills_router(
     @router.post("/drafts/{draft_id}/approve", response_model=SkillView)
     async def approve_draft(draft_id: UUID) -> SkillView:
         try:
-            return await store.approve_draft(draft_id)
+            skill = await store.approve_draft(draft_id)
         except LookupError as error:
             raise HTTPException(status_code=404, detail=str(error)) from error
         except ValueError as error:
             raise HTTPException(status_code=409, detail=str(error)) from error
+        await _sync_write_actions()
+        return skill
 
     @router.post("/drafts/{draft_id}/dismiss", response_model=SkillDraftView)
     async def dismiss_draft(draft_id: UUID) -> SkillDraftView:
@@ -269,28 +300,35 @@ def create_admin_skills_router(
         except ValueError as error:
             raise HTTPException(status_code=409, detail=str(error)) from error
 
-    @router.get("/{skill_id}", response_model=SkillView)
-    async def get_skill(skill_id: UUID) -> SkillView:
+    @router.get("/{skill_id}", response_model=SkillDetailResponse)
+    async def get_skill(skill_id: UUID) -> SkillDetailResponse:
         item = await store.get(skill_id)
         if item is None:
             raise HTTPException(status_code=404, detail="skill_not_found")
-        return item
+        return SkillDetailResponse(
+            **item.model_dump(),
+            source_markdown=await store.get_source_markdown(skill_id),
+        )
 
     @router.put("/{skill_id}/enabled", response_model=SkillView)
     async def set_enabled(skill_id: UUID, body: SkillEnabledRequest) -> SkillView:
         try:
-            return await store.set_enabled(skill_id, body.enabled)
+            skill = await store.set_enabled(skill_id, body.enabled)
         except LookupError as error:
             raise HTTPException(status_code=404, detail="skill_not_found") from error
+        await _sync_write_actions()
+        return skill
 
     @router.put("/{skill_id}/api", response_model=SkillView)
     async def set_api(skill_id: UUID, body: SkillApiManifest) -> SkillView:
         try:
-            return await store.set_api(skill_id, body)
+            skill = await store.set_api(skill_id, body)
         except LookupError as error:
             raise HTTPException(status_code=404, detail="skill_not_found") from error
         except ValueError as error:
             raise HTTPException(status_code=409, detail=str(error)) from error
+        await _sync_write_actions()
+        return skill
 
     @router.get("/{skill_id}/versions", response_model=list[SkillVersionView])
     async def list_versions(skill_id: UUID) -> list[SkillVersionView]:
@@ -309,10 +347,12 @@ def create_admin_skills_router(
     @router.post("/{skill_id}/rollback", response_model=SkillView)
     async def rollback(skill_id: UUID, body: SkillRollbackRequest) -> SkillView:
         try:
-            return await store.rollback(skill_id, body.version)
+            skill = await store.rollback(skill_id, body.version)
         except LookupError as error:
             raise HTTPException(status_code=404, detail=str(error)) from error
         except ValueError as error:
             raise HTTPException(status_code=409, detail=str(error)) from error
+        await _sync_write_actions()
+        return skill
 
     return router

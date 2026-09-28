@@ -73,15 +73,17 @@ class SkillLoginAuth(BaseModel):
 
     @model_validator(mode="after")
     def validate_contract(self) -> SkillLoginAuth:
-        if (
-            not _LOGIN_PATH.fullmatch(self.path)
-            or any(part in {".", ".."} for part in self.path.split("/"))
+        if not _LOGIN_PATH.fullmatch(self.path) or any(
+            part in {".", ".."} for part in self.path.split("/")
         ):
             raise ValueError("invalid_login_path")
-        if not all(
-            _PARAM.fullmatch(field)
-            for field in (self.username_field, self.password_field, self.token_field)
-        ) or self.username_field == self.password_field:
+        if (
+            not all(
+                _PARAM.fullmatch(field)
+                for field in (self.username_field, self.password_field, self.token_field)
+            )
+            or self.username_field == self.password_field
+        ):
             raise ValueError("invalid_login_field")
         return self
 

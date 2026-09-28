@@ -208,6 +208,13 @@ class SkillStore:
             record = await session.scalar(select(SkillRecord).where(SkillRecord.name == name))
             return _view(record) if record is not None else None
 
+    async def get_source_markdown(self, skill_id: UUID) -> str | None:
+        async with self._database.sessions() as session:
+            record = await session.get(SkillRecord, skill_id)
+            if record is None:
+                raise LookupError("skill_not_found")
+            return record.source_markdown
+
     async def record_run(
         self,
         *,
@@ -521,7 +528,12 @@ class SkillStore:
             ]
 
     async def create(
-        self, document: SkillDocument, *, source: str, content_hash: str | None = None
+        self,
+        document: SkillDocument,
+        *,
+        source: str,
+        content_hash: str | None = None,
+        source_markdown: str | None = None,
     ) -> SkillView:
         moment = datetime.now(UTC)
         digest = (
@@ -534,6 +546,7 @@ class SkillStore:
             instructions=document.instructions,
             api_manifest=document.api.model_dump(mode="json") if document.api else None,
             source=source,
+            source_markdown=source_markdown,
             content_hash=digest,
             version=1,
             enabled=False,
