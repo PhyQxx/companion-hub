@@ -312,6 +312,55 @@ const activeMessages = computed(() =>
   activeId.value ? (messagesByConversation.get(activeId.value) ?? []) : [],
 );
 
+// 乐观显示：点击发送先落一条本地 user 占位消息，服务端 message.committed
+// 回显（或断线补拉）后按内容配对回收。占位 id/seq 与服务端空间隔离，
+// 避免污染 sync 游标（lastSeqOf 与会话 last_seq 都会跳过占位符）。
+const LOCAL_MESSAGE_PREFIX = "local:";
+const LOCAL_SEQ_BASE = Number.MAX_SAFE_INTEGER - 100_000;
+let localMessageCount = 0;
+// 同步收敛后回收占位消息的最小年龄：刚发出的消息可能仍在服务端处理中，
+// 立即回收会把已送达的消息误恢复到输入框。
+const PENDING_REVOKE_MIN_AGE_MS = 20_000;
+
+function isLocalMessage(message: ChatMessage): boolean {
+  return message.id.startsWith(LOCAL_MESSAGE_PREFIX);
+}
+
+function appendPendingUserMessage(conversationId: string, text: string): void {
+  localMessageCount += 1;
+  const placeholder: ChatMessage = {
+    id: `${LOCAL_MESSAGE_PREFIX}${Date.now().toString(36)}-${localMessageCount}`,
+    conversation_id: conversationId,
+    turn_id: "",
+    seq: LOCAL_SEQ_BASE + localMessageCount,
+    role: "user",
+    content: text,
+    privacy_level: privacy.value,
+    generation_id: null,
+    decision_meta: null,
+    created_at: new Date().toISOString(),
+  };
+  mergeMessages(conversationId, [placeholder]);
+  if (conversationId === activeId.value) void scrollToEnd();
+}
+
+/** 回收未被服务端确认的占位消息，返回最后一条的内容（便于恢复到输入框）。 */
+function revokePendingUserMessages(conversationId: string, minAgeMs = 0): string | null {
+  const messages = messagesByConversation.get(conversationId);
+  if (!messages?.some(isLocalMessage)) return null;
+  const now = Date.now();
+  let restored: string | null = null;
+  const kept = messages.filter((message) => {
+    if (!isLocalMessage(message)) return true;
+    if (minAgeMs > 0 && now - Date.parse(message.created_at) < minAgeMs) return true;
+    restored = message.content;
+    return false;
+  });
+  if (kept.length === messages.length) return null;
+  messagesByConversation.set(conversationId, kept);
+  return restored;
+}
+
 function mergeMessages(
   conversationId: string,
   incoming: ChatMessage[],
@@ -323,12 +372,27 @@ function mergeMessages(
       merged.set(message.id, message);
     }
   }
-  for (const message of incoming) merged.set(message.id, message);
+  // 真实 user 消息落定后，按内容配对移除最早的占位符，避免回显时重复显示。
+  const placeholders = [...merged.values()].filter((message) => isLocalMessage(message));
+  for (const message of incoming) {
+    if (message.role === "user" && !isLocalMessage(message)) {
+      const index = placeholders.findIndex((item) => item.content === message.content);
+      if (index >= 0) {
+        merged.delete(placeholders[index]!.id);
+        placeholders.splice(index, 1);
+      }
+    }
+    merged.set(message.id, message);
+  }
   const messages = [...merged.values()].sort((left, right) => left.seq - right.seq);
   messagesByConversation.set(conversationId, messages);
   const conversation = conversations.value.find((item) => item.id === conversationId);
   if (conversation && messages.length) {
-    conversation.last_seq = Math.max(conversation.last_seq, messages[messages.length - 1]!.seq);
+    const lastServerSeq = messages.reduce(
+      (latest, message) => (isLocalMessage(message) ? latest : Math.max(latest, message.seq)),
+      0,
+    );
+    if (lastServerSeq) conversation.last_seq = Math.max(conversation.last_seq, lastServerSeq);
   }
   return messages;
 }
@@ -640,6 +704,14 @@ function handleVoiceEvent(event: VoiceControlEvent) {
       voiceSentence = null;
       voiceViseme.value = 0;
       voiceStatus.value = `语音生成失败：${event.reason_code ?? "unknown"}`;
+      // 文字播报路径失败且没有回显时，回收占位消息并恢复到输入框。
+      if (activeId.value) {
+        const revoked = revokePendingUserMessages(activeId.value);
+        if (revoked && !draft.value) {
+          draft.value = revoked;
+          setStatus("语音提交失败，消息已恢复到输入框", true);
+        }
+      }
       break;
     case "voice.asr_unavailable":
       voiceBusy.value = false;
@@ -1035,7 +1107,11 @@ async function openConversation(id: string) {
 
 function lastSeqOf(id: string) {
   const messages = messagesByConversation.get(id) ?? [];
-  return messages.reduce((latest, message) => Math.max(latest, message.seq ?? 0), 0);
+  // 只统计服务端确认过的序列：占位符是隔离的高位 seq，计入会让 sync 游标跳过真实消息。
+  return messages.reduce(
+    (latest, message) => (isLocalMessage(message) ? latest : Math.max(latest, message.seq ?? 0)),
+    0,
+  );
 }
 
 async function createConversation() {
@@ -1278,6 +1354,7 @@ function handleOffline() {
 
 /** WS 事件分发：delta 流式拼接、control 情绪标签、committed 落定 */
 function handleEvent(event: SocketEvent) {
+  const conversationId = event.stream.replace("conversation:", "");
   if (event.type === "protocol.error") {
     setStatus(`协议错误：${String(event.payload.reason_code ?? "")}`, true);
     return;
@@ -1299,18 +1376,31 @@ function handleEvent(event: SocketEvent) {
     return;
   }
   if (event.type === "sync.completed") {
-    const conversationId = event.stream.replace("conversation:", "");
     const afterSeq = Number(event.payload.after_seq ?? 0);
     const nextAfterSeq = Number(event.payload.next_after_seq ?? event.seq ?? afterSeq);
     if (event.payload.has_more === true && nextAfterSeq > afterSeq) {
       socket?.sync(conversationId, nextAfterSeq);
+      return;
+    }
+    // 同步收敛后仍存在的占位消息（超过最小年龄）说明服务端从未落库，恢复到输入框。
+    const revoked = revokePendingUserMessages(conversationId, PENDING_REVOKE_MIN_AGE_MS);
+    if (revoked && conversationId === activeId.value && !draft.value) {
+      draft.value = revoked;
+      setStatus("有消息未送达，已恢复到输入框", true);
     }
     return;
   }
   if (!event.payload.message && event.type !== "reply.delta" && event.type !== "reply.control") {
     if (event.type === "turn.failed") {
       streaming.value = null;
-      setStatus(`生成失败：${String(event.payload.reason_code ?? "")}`, true);
+      // start_turn 阶段失败时不会有 message.committed 回显，占位消息需手动回收。
+      const revoked = revokePendingUserMessages(conversationId);
+      if (revoked && conversationId === activeId.value && !draft.value) {
+        draft.value = revoked;
+        setStatus(`生成失败：${String(event.payload.reason_code ?? "")}；消息已恢复到输入框`, true);
+      } else {
+        setStatus(`生成失败：${String(event.payload.reason_code ?? "")}`, true);
+      }
     } else if (event.type === "turn.cancelled") {
       streaming.value = null;
       setStatus("已取消");
@@ -1318,7 +1408,6 @@ function handleEvent(event: SocketEvent) {
     return;
   }
 
-  const conversationId = event.stream.replace("conversation:", "");
   if (event.type === "reply.delta") {
     if (streaming.value && streaming.value.generationId === event.generation_id) {
       streaming.value.text += event.payload.delta ?? "";
@@ -1360,9 +1449,12 @@ async function send() {
   if (!canSend.value || !activeId.value) return;
   // 已记住播报开关时，本次发送点击是恢复移动端音频权限的机会。
   if (textReplyVoice.value) unlockVoicePlayback();
+  const conversationId = activeId.value;
   const text = draft.value.trim();
   sendPending.value = true;
   draft.value = "";
+  // 乐观显示：立即落占位消息；定位等待与服务端管线期间消息始终可见。
+  appendPendingUserMessage(conversationId, text);
   setStatus(matchesLocationIntent(text) && locationEnabled.value && privacy.value !== "L2"
     ? "正在获取位置并发送…"
     : "正在发送…");
@@ -1375,14 +1467,14 @@ async function send() {
       current.submitText(text, location);
     } catch (error) {
       voiceBusy.value = false;
-      if (!draft.value) draft.value = text;
+      if (!draft.value) draft.value = revokePendingUserMessages(conversationId) ?? text;
       setStatus(error instanceof Error ? error.message : "语音连接失败", true);
     } finally {
       sendPending.value = false;
     }
     return;
   }
-  socket?.sendMessage(activeId.value, text, privacy.value, location);
+  socket?.sendMessage(conversationId, text, privacy.value, location);
   sendPending.value = false;
 }
 
@@ -1566,7 +1658,7 @@ async function installPwa() {
           <div
             v-if="message.role !== 'system'"
             class="message"
-            :class="[message.role, { selected: selectMode && selectedMessageIds.has(message.id) }]"
+            :class="[message.role, { selected: selectMode && selectedMessageIds.has(message.id), pending: isLocalMessage(message) }]"
           >
             <label
               v-if="selectMode"
@@ -1833,6 +1925,9 @@ main { grid-area:chat; display:grid; grid-template-rows:minmax(0,1fr) auto; min-
 .bubble { min-width:0; line-height:1.55; padding:10px 14px; border:1px solid var(--line); border-radius:6px 16px 16px 16px; background:var(--panel); box-shadow:0 4px 14px color-mix(in srgb,var(--text) 5%,transparent); position:relative; overflow-wrap:anywhere; }
 .user .bubble { border-radius:16px 6px 16px 16px; background:var(--message-user-bg); border-color:var(--message-user-bg); color:#fff; box-shadow:0 7px 18px color-mix(in srgb,var(--message-user-bg) 22%,transparent); }
 .user .bubble :deep(.markdown-content a) { color:inherit; }
+/* 本地占位消息：半透明表示尚未被服务端确认，回显后恢复 */
+.message.pending .bubble { opacity:.62; }
+.bubble { transition:opacity 180ms ease; }
 .bubble.streaming { white-space:pre-wrap; }
 .bubble.streaming::after { content: ""; }
 .emotion { display: inline-block; margin-left: 8px; font-size: 11px; color: var(--muted); border: 1px solid var(--line); border-radius: 999px; padding: 0 8px; vertical-align: 1px; }
