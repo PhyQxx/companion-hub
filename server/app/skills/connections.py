@@ -178,8 +178,11 @@ class SkillHttpClient:
         if self._owns_client:
             await self._client.aclose()
 
-    async def credentials_ready(self, skill_id: UUID, config: SkillConnectionView) -> bool:
-        if self._credentials is not None:
+    async def credentials_ready(
+        self, skill_id: UUID | None, config: SkillConnectionView
+    ) -> bool:
+        # skill_id 为 None 表示技能尚不存在（如新技能草稿），走环境变量回退。
+        if skill_id is not None and self._credentials is not None:
             status = await self._credentials.status(skill_id)
             if status.configured:
                 return status.key_ready

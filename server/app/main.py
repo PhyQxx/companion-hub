@@ -1262,6 +1262,7 @@ def create_app(
                     tool_provider=skill_tool_provider,
                     connections=skill_connections,
                     credentials=skill_credentials,
+                    http_client=skill_http_client,
                 )
             )
         app.state.mcp_manager = mcp_manager

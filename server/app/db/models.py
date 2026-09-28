@@ -1665,7 +1665,12 @@ class SkillSuggestionRecord(Base):
 
 
 class SkillDraftRecord(Base):
-    """Skill proposal awaiting admin review; not executable until approved."""
+    """Skill proposal awaiting admin review; not executable until approved.
+
+    target_skill_id 非空表示这是对现有技能的修订候选：审批通过后为该技能
+    创建新版本，而不是新建技能；base_version 记录起草时的版本基线。
+    verify_* 记录审批前对草稿只读操作的一次真实试跑结果。
+    """
 
     __tablename__ = "skill_draft"
     __table_args__ = (Index("ix_skill_draft_status_created", "status", "created_at"),)
@@ -1680,6 +1685,11 @@ class SkillDraftRecord(Base):
     dedupe_key: Mapped[str] = mapped_column(String(64), nullable=False, unique=True)
     status: Mapped[str] = mapped_column(String(16), nullable=False, default="pending")
     skill_id: Mapped[UUID | None] = mapped_column(Uuid(as_uuid=True))
+    target_skill_id: Mapped[UUID | None] = mapped_column(Uuid(as_uuid=True))
+    base_version: Mapped[int | None] = mapped_column(Integer)
+    verify_status: Mapped[str | None] = mapped_column(String(16))
+    verify_reason: Mapped[str | None] = mapped_column(String(64))
+    verified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     reviewed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 

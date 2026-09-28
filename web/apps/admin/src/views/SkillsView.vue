@@ -82,6 +82,11 @@ interface SkillDraft {
   turn_id: string | null;
   status: string;
   skill_id: string | null;
+  target_skill_id: string | null;
+  base_version: number | null;
+  verify_status: "passed" | "failed" | null;
+  verify_reason: string | null;
+  verified_at: string | null;
   created_at: string;
   reviewed_at: string | null;
 }
@@ -257,16 +262,53 @@ async function loadDrafts() {
 }
 
 async function approveDraft(id: string) {
+  const isRevision = drafts.value.some((item) => item.id === id && item.target_skill_id);
   busy.value = true;
   try {
-    await api.request(`/api/v1/admin/skills/drafts/${id}/approve`, { method: "POST" });
+    const skill = await api.request<SkillItem>(`/api/v1/admin/skills/drafts/${id}/approve`, {
+      method: "POST",
+    });
     await Promise.all([loadDrafts(), reload()]);
-    ok("草稿已通过审阅，落库为未启用技能；请在技能库核对连接后再启用。");
+    ok(
+      isRevision
+        ? `已为 ${skill.name} 创建新版本 v${skill.version}；技能保持停用，请核对后启用。`
+        : "草稿已通过审阅，落库为未启用技能；请在技能库核对连接后再启用。",
+    );
   } catch (error) {
     fail(error, "审阅草稿失败");
   } finally {
     busy.value = false;
   }
+}
+
+const verifyingId = ref("");
+
+async function verifyDraft(id: string) {
+  verifyingId.value = id;
+  try {
+    const updated = await api.request<SkillDraft>(
+      `/api/v1/admin/skills/drafts/${id}/verify`,
+      { method: "POST" },
+    );
+    const index = drafts.value.findIndex((item) => item.id === id);
+    if (index >= 0) drafts.value[index] = updated;
+    if (updated.verify_status === "passed") {
+      ok("试跑通过：草稿声明的只读接口在真实连接上返回成功。");
+    } else {
+      emit("status", `试跑未通过：${updated.verify_reason ?? "未知原因"}。请核对连接配置与接口路径。`, true);
+      ElMessage.warning(
+        `试跑未通过：${updated.verify_reason ?? "未知原因"}。请核对连接配置与接口路径。`,
+      );
+    }
+  } catch (error) {
+    fail(error, "试跑失败");
+  } finally {
+    verifyingId.value = "";
+  }
+}
+
+function draftTargetName(draft: SkillDraft): string {
+  return items.value.find((item) => item.id === draft.target_skill_id)?.name ?? "未知技能";
 }
 
 async function dismissDraft(id: string) {
@@ -872,7 +914,7 @@ onUnmounted(() => {
         <div>
           <div class="eyebrow">技能中心 · 待审草稿</div>
           <h2>待审草稿</h2>
-          <p>对话中通过 propose_skill 主动沉淀，或后台从含接口文档的消息中收割生成。草稿不会执行；审阅通过后落库为未启用技能，仍需在技能库启用。</p>
+          <p>对话中通过 propose_skill 主动沉淀，或后台从含接口文档的消息中收割生成。草稿不会执行；可先试跑校验只读接口，通过后新建技能或为现有技能创建新版本，均保持停用待启用。</p>
         </div>
         <div class="hero-actions">
           <el-button :loading="busy" @click="loadDrafts">刷新</el-button>
@@ -903,6 +945,9 @@ onUnmounted(() => {
           </el-table-column>
           <el-table-column label="技能" min-width="220">
             <template #default="{ row }">
+              <el-tag v-if="row.target_skill_id" size="small" type="warning" style="margin-right: 6px">
+                修订 {{ draftTargetName(row as SkillDraft) }}@v{{ row.base_version }}
+              </el-tag>
               <strong>{{ row.document.name }}</strong>
               <small>{{ row.document.description }}</small>
             </template>
@@ -915,12 +960,29 @@ onUnmounted(() => {
               <el-tag size="small" :type="row.source === 'chat' ? 'primary' : 'warning'">{{ row.source === "chat" ? "对话提案" : "后台收割" }}</el-tag>
             </template>
           </el-table-column>
+          <el-table-column label="试跑" width="150">
+            <template #default="{ row }">
+              <el-tag v-if="row.verify_status === 'passed'" size="small" type="success">通过</el-tag>
+              <el-tooltip v-else-if="row.verify_status === 'failed'" :content="row.verify_reason ?? ''" placement="top">
+                <el-tag size="small" type="danger">未通过</el-tag>
+              </el-tooltip>
+              <el-button
+                v-else
+                size="small"
+                plain
+                :loading="verifyingId === row.id"
+                @click="verifyDraft(row.id)"
+              >试跑</el-button>
+            </template>
+          </el-table-column>
           <el-table-column label="创建时间" min-width="150">
             <template #default="{ row }">{{ fmt(row.created_at) }}</template>
           </el-table-column>
-          <el-table-column label="操作" width="170" fixed="right">
+          <el-table-column label="操作" width="190" fixed="right">
             <template #default="{ row }">
-              <el-button size="small" type="primary" plain :disabled="busy" @click="approveDraft(row.id)">通过</el-button>
+              <el-button size="small" type="primary" plain :disabled="busy" @click="approveDraft(row.id)">
+                {{ row.target_skill_id ? "通过并建版本" : "通过" }}
+              </el-button>
               <el-button size="small" type="danger" plain :disabled="busy" @click="dismissDraft(row.id)">忽略</el-button>
             </template>
           </el-table-column>

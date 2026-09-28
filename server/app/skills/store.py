@@ -90,6 +90,11 @@ class SkillDraftView(BaseModel):
     turn_id: str | None
     status: str
     skill_id: UUID | None
+    target_skill_id: UUID | None = None
+    base_version: int | None = None
+    verify_status: str | None = None
+    verify_reason: str | None = None
+    verified_at: datetime | None = None
     created_at: datetime
     reviewed_at: datetime | None
 
@@ -105,6 +110,15 @@ def _draft_view(item: SkillDraftRecord) -> SkillDraftView:
         turn_id=item.turn_id,
         status=item.status,
         skill_id=item.skill_id,
+        target_skill_id=item.target_skill_id,
+        base_version=item.base_version,
+        verify_status=item.verify_status,
+        verify_reason=item.verify_reason,
+        verified_at=(
+            item.verified_at.replace(tzinfo=item.verified_at.tzinfo or UTC)
+            if item.verified_at
+            else None
+        ),
         created_at=item.created_at.replace(tzinfo=item.created_at.tzinfo or UTC),
         reviewed_at=(
             item.reviewed_at.replace(tzinfo=item.reviewed_at.tzinfo or UTC)
@@ -187,6 +201,11 @@ class SkillStore:
     async def get(self, skill_id: UUID) -> SkillView | None:
         async with self._database.sessions() as session:
             record = await session.get(SkillRecord, skill_id)
+            return _view(record) if record is not None else None
+
+    async def get_by_name(self, name: str) -> SkillView | None:
+        async with self._database.sessions() as session:
+            record = await session.scalar(select(SkillRecord).where(SkillRecord.name == name))
             return _view(record) if record is not None else None
 
     async def record_run(
@@ -277,9 +296,7 @@ class SkillStore:
         self, *, status: str | None = "pending", limit: int = 50
     ) -> builtin_list[SkillSuggestionView]:
         async with self._database.sessions() as session:
-            query = select(SkillSuggestionRecord).order_by(
-                SkillSuggestionRecord.created_at.desc()
-            )
+            query = select(SkillSuggestionRecord).order_by(SkillSuggestionRecord.created_at.desc())
             if status is not None:
                 query = query.where(SkillSuggestionRecord.status == status)
             query = query.limit(min(max(limit, 1), 100))
@@ -302,16 +319,19 @@ class SkillStore:
         system_name: str,
         source: str,
         turn_id: str | None = None,
+        target_skill_id: UUID | None = None,
+        base_version: int | None = None,
     ) -> SkillDraftView | None:
-        """Persist a proposal for admin review; returns None when already pending."""
+        """Persist a proposal for admin review; returns None when already pending.
+
+        target_skill_id 非空时这是对现有技能的修订候选，base_version 记录
+        起草基线，审批时校验防止覆盖更新的改动。
+        """
         dedupe_key = hashlib.sha256(
-            (
-                system_name
-                + ":"
-                + hashlib.sha256(
-                    proposal.document.model_dump_json().encode("utf-8")
-                ).hexdigest()
-            ).encode()
+            (f"rev:{target_skill_id}:" if target_skill_id else "new:").encode()
+            + hashlib.sha256(proposal.document.model_dump_json().encode("utf-8"))
+            .hexdigest()
+            .encode()
         ).hexdigest()
         moment = datetime.now(UTC)
         async with self._database.sessions() as session:
@@ -330,6 +350,11 @@ class SkillStore:
                 existing.warnings = proposal.warnings
                 existing.evidence = proposal.evidence
                 existing.skill_id = None
+                existing.target_skill_id = target_skill_id
+                existing.base_version = base_version
+                existing.verify_status = None
+                existing.verify_reason = None
+                existing.verified_at = None
                 existing.created_at = moment
                 existing.reviewed_at = None
                 await session.commit()
@@ -345,6 +370,8 @@ class SkillStore:
                 dedupe_key=dedupe_key,
                 status="pending",
                 skill_id=None,
+                target_skill_id=target_skill_id,
+                base_version=base_version,
                 created_at=moment,
                 reviewed_at=None,
             )
@@ -366,6 +393,11 @@ class SkillStore:
             query = query.limit(min(max(limit, 1), 100))
             return [_draft_view(item) for item in (await session.scalars(query)).all()]
 
+    async def get_draft(self, draft_id: UUID) -> SkillDraftView | None:
+        async with self._database.sessions() as session:
+            record = await session.get(SkillDraftRecord, draft_id)
+            return _draft_view(record) if record is not None else None
+
     async def dismiss_draft(self, draft_id: UUID) -> SkillDraftView:
         async with self._database.sessions() as session:
             item = await session.get(SkillDraftRecord, draft_id, with_for_update=True)
@@ -386,7 +418,12 @@ class SkillStore:
             if item.status != "pending":
                 raise ValueError("skill_draft_already_reviewed")
             document = SkillDocument.model_validate(item.document)
-        skill = await self.create(document, source="generated")
+            target_skill_id = item.target_skill_id
+            base_version = item.base_version
+        if target_skill_id is not None:
+            skill = await self.revise(target_skill_id, document, base_version=base_version)
+        else:
+            skill = await self.create(document, source="generated")
         async with self._database.sessions() as session:
             item = await session.get(SkillDraftRecord, draft_id, with_for_update=True)
             if item is not None and item.status == "pending":
@@ -395,6 +432,68 @@ class SkillStore:
                 item.reviewed_at = datetime.now(UTC)
                 await session.commit()
         return skill
+
+    async def revise(
+        self,
+        skill_id: UUID,
+        document: SkillDocument,
+        *,
+        base_version: int | None = None,
+    ) -> SkillView:
+        """Apply an approved revision as a new immutable version.
+
+        修订保持技能身份：名称沿用现有技能，其余内容以修订文档为准。
+        """
+        async with self._database.sessions() as session:
+            record = await session.get(SkillRecord, skill_id, with_for_update=True)
+            if record is None:
+                raise LookupError("skill_not_found")
+            if record.enabled:
+                raise ValueError("disable_skill_before_edit")
+            if base_version is not None and base_version != record.version:
+                raise ValueError("skill_version_changed")
+            record.description = document.description
+            record.instructions = document.instructions
+            record.api_manifest = document.api.model_dump(mode="json") if document.api else None
+            record.content_hash = hashlib.sha256(
+                (
+                    record.name
+                    + record.description
+                    + record.instructions
+                    + (document.api.model_dump_json() if document.api else "")
+                ).encode("utf-8")
+            ).hexdigest()
+            moment = datetime.now(UTC)
+            record.version += 1
+            record.updated_at = moment
+            session.add(
+                SkillVersionRecord(
+                    id=uuid7(),
+                    skill_id=record.id,
+                    version=record.version,
+                    description=record.description,
+                    instructions=record.instructions,
+                    api_manifest=record.api_manifest,
+                    content_hash=record.content_hash,
+                    created_at=moment,
+                )
+            )
+            await session.commit()
+            return _view(record)
+
+    async def mark_draft_verified(
+        self, draft_id: UUID, *, ok: bool, reason: str | None = None
+    ) -> SkillDraftView:
+        """Record the outcome of a pre-approval live verification run."""
+        async with self._database.sessions() as session:
+            item = await session.get(SkillDraftRecord, draft_id, with_for_update=True)
+            if item is None:
+                raise LookupError("skill_draft_not_found")
+            item.verify_status = "passed" if ok else "failed"
+            item.verify_reason = reason if not ok else None
+            item.verified_at = datetime.now(UTC)
+            await session.commit()
+            return _draft_view(item)
 
     async def runs(self, skill_id: UUID, *, limit: int = 50) -> builtin_list[SkillRunView]:
         if await self.get(skill_id) is None:

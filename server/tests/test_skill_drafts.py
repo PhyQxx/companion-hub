@@ -14,7 +14,9 @@ from app.config.models import WebFetchConfig
 from app.db import Base, Database, create_database
 from app.llm import CompletionRequest, CompletionResult, LLMRoute
 from app.schemas import PrivacyLevel
-from app.skills.drafts import SkillDraftAssistant, _ProposeSkillArgs
+from app.skills import SkillApiManifest, SkillDocument, SkillOperation
+from app.skills.connections import SkillConnection, SkillConnectionStore, SkillHttpClient
+from app.skills.drafts import SkillDraftAssistant, _ProposeSkillArgs, verify_skill_draft
 from app.skills.generator import SkillDraftGenerator
 from app.skills.store import SkillStore
 from app.tools import webfetch as webfetch_module
@@ -216,8 +218,6 @@ async def test_dismissed_draft_reopens_and_name_conflict_blocks_approval(
     reopened = await assistant.harvest(text=DOC_TEXT, turn_id=None, backend=extraction)
     assert reopened is not None and reopened.id == draft.id and reopened.status == "pending"
     # 与现有技能重名时审批失败，草稿保持待审
-    from app.skills import SkillDocument
-
     await store.create(
         SkillDocument(name="partner-coupons", description="占位", instructions="占位说明"),
         source="created",
@@ -318,3 +318,258 @@ async def test_chat_tool_url_refusals(database: Database, monkeypatch: pytest.Mo
     assert not failed.ok and failed.reason_code == "http_error"
     assert await store.drafts() == []
     assert backend.requests == []
+
+
+def _target_document() -> SkillDocument:
+    return SkillDocument(
+        name="partner-coupons",
+        description="查询情侣卡券",
+        instructions="用户询问卡券时，先读取列表。",
+        api=SkillApiManifest(
+            schema_version=1,
+            connection="partner-system",
+            operations=[
+                SkillOperation(
+                    name="coupon_list",
+                    description="查询情侣卡券",
+                    method="GET",
+                    path="/coupons",
+                    risk="read",
+                )
+            ],
+        ),
+    )
+
+
+_REVISION_ARGS = {
+    "system_name": "partner-system",
+    "target_skill": "partner-coupons",
+    "source": "GET /coupons",
+    "reason": "用户纠正了接口用法",
+}
+
+
+@pytest.mark.asyncio
+async def test_propose_skill_revision_flow(database: Database) -> None:
+    store = SkillStore(database)
+    target = await store.create(_target_document(), source="created")
+    assert target.version == 1
+    revised = _proposal_response()
+    revised["document"]["description"] = "查询情侣卡券（修订）"
+    assistant = _assistant(store, FakeBackend(revised))
+    result = await assistant.execute(
+        _ProposeSkillArgs.model_validate(_REVISION_ARGS),
+        ToolContext(privacy_level=PrivacyLevel.L1),
+    )
+    assert result.ok
+    assert result.data["revision_of"] == "partner-coupons"
+    assert result.data["base_version"] == 1
+    drafts = await store.drafts()
+    assert len(drafts) == 1
+    assert drafts[0].target_skill_id == target.id
+    assert drafts[0].base_version == 1
+    # 审批修订：为现有技能创建新版本，名称沿用、内容以草稿为准
+    updated = await store.approve_draft(drafts[0].id)
+    assert updated.id == target.id
+    assert updated.version == 2
+    assert updated.name == "partner-coupons"
+    assert updated.description == "查询情侣卡券（修订）"
+    assert [item.version for item in await store.versions(target.id)] == [2, 1]
+    rolled = await store.rollback(target.id, 1)
+    assert rolled.version == 3 and rolled.description == "查询情侣卡券"
+    reviewed = await store.get_draft(drafts[0].id)
+    assert reviewed is not None and reviewed.status == "approved"
+    assert reviewed.skill_id == target.id
+
+
+@pytest.mark.asyncio
+async def test_revision_guards(database: Database) -> None:
+    store = SkillStore(database)
+    target = await store.create(_target_document(), source="created")
+    assistant = _assistant(store, FakeBackend(_proposal_response()))
+    missing = await assistant.execute(
+        _ProposeSkillArgs.model_validate({**_REVISION_ARGS, "target_skill": "ghost"}),
+        ToolContext(privacy_level=PrivacyLevel.L1),
+    )
+    assert not missing.ok and missing.reason_code == "target_skill_not_found"
+    mismatch = await assistant.execute(
+        _ProposeSkillArgs.model_validate({**_REVISION_ARGS, "system_name": "other-system"}),
+        ToolContext(privacy_level=PrivacyLevel.L1),
+    )
+    # 修订不能悄悄切换连接：文档系统必须与现有技能一致
+    assert not mismatch.ok and mismatch.reason_code == "revision_connection_mismatch"
+    assert await store.drafts() == []
+    accepted = await assistant.execute(
+        _ProposeSkillArgs.model_validate(_REVISION_ARGS),
+        ToolContext(privacy_level=PrivacyLevel.L1),
+    )
+    assert accepted.ok
+    draft = (await store.drafts())[0]
+    # 启用中的技能不允许编辑：审批被拒，草稿保持待审
+    await store.set_enabled(target.id, True)
+    with pytest.raises(ValueError, match="disable_skill_before_edit"):
+        await store.approve_draft(draft.id)
+    await store.set_enabled(target.id, False)
+    # 起草基线过期：期间技能被改动，审批被拒
+    await store.set_api(
+        target.id,
+        _target_document().api
+        or SkillApiManifest(
+            schema_version=1,
+            connection="partner-system",
+            operations=[
+                SkillOperation(
+                    name="coupon_list",
+                    description="查询情侣卡券",
+                    method="GET",
+                    path="/coupons",
+                    risk="read",
+                )
+            ],
+        ),
+    )
+    with pytest.raises(ValueError, match="skill_version_changed"):
+        await store.approve_draft(draft.id)
+    assert (await store.drafts())[0].status == "pending"
+
+
+def _connection_handler(request: httpx.Request) -> httpx.Response:
+    assert request.url.path == "/coupons"
+    return httpx.Response(200, json={"code": 200, "data": []})
+
+
+@pytest.mark.asyncio
+async def test_draft_verification_lifecycle(database: Database) -> None:
+    store = SkillStore(database)
+    connections = SkillConnectionStore(database)
+    await connections.put(
+        SkillConnection(
+            id="partner-system",
+            base_url="https://partner.example",
+            auth_type="none",
+            allowed_paths=["/coupons"],
+            enabled=True,
+        )
+    )
+    client = httpx.AsyncClient(transport=httpx.MockTransport(_connection_handler))
+    http = SkillHttpClient(connections, client=client)
+    try:
+        assistant = _assistant(store, FakeBackend(_proposal_response()))
+        result = await assistant.execute(
+            _ProposeSkillArgs.model_validate(
+                {"system_name": "partner-system", "source": "GET /coupons", "reason": "r"}
+            ),
+            ToolContext(privacy_level=PrivacyLevel.L1),
+        )
+        assert result.ok
+        draft = (await store.drafts())[0]
+        # 试跑走真实连接闸门：通过后记录状态与时间
+        verified = await verify_skill_draft(
+            draft, store=store, connections=connections, http_client=http
+        )
+        assert verified.verify_status == "passed"
+        assert verified.verify_reason is None and verified.verified_at is not None
+        # 连接停用后：同内容草稿重新进入待审，试跑给出明确原因
+        await store.dismiss_draft(draft.id)
+        await connections.put(
+            SkillConnection(
+                id="partner-system",
+                base_url="https://partner.example",
+                auth_type="none",
+                allowed_paths=["/coupons"],
+                enabled=False,
+            )
+        )
+        reopened = await assistant.execute(
+            _ProposeSkillArgs.model_validate(
+                {"system_name": "partner-system", "source": "GET /coupons", "reason": "r"}
+            ),
+            ToolContext(privacy_level=PrivacyLevel.L1),
+        )
+        assert reopened.ok
+        failed = await verify_skill_draft(
+            (await store.drafts())[0],
+            store=store,
+            connections=connections,
+            http_client=http,
+        )
+        assert failed.verify_status == "failed"
+        assert failed.verify_reason == "connection_disabled"
+        # 说明型草稿（无 api 契约）无法试跑，原因可诊断
+        no_api = _proposal_response()
+        no_api["document"]["api"] = None
+        plain = SkillDraftAssistant(store, SkillDraftGenerator(backend=FakeBackend(no_api)))
+        plain_result = await plain.execute(
+            _ProposeSkillArgs.model_validate(
+                {"system_name": "partner-system", "source": "GET /coupons", "reason": "r"}
+            ),
+            ToolContext(privacy_level=PrivacyLevel.L1),
+        )
+        assert plain_result.ok
+        outcome = await verify_skill_draft(
+            (await store.drafts())[0],
+            store=store,
+            connections=connections,
+            http_client=http,
+        )
+        assert outcome.verify_status == "failed"
+        assert outcome.verify_reason == "draft_has_no_api"
+    finally:
+        await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_draft_verify_endpoint(database: Database) -> None:
+    store = SkillStore(database)
+    connections = SkillConnectionStore(database)
+    await connections.put(
+        SkillConnection(
+            id="partner-system",
+            base_url="https://partner.example",
+            auth_type="none",
+            allowed_paths=["/coupons"],
+            enabled=True,
+        )
+    )
+    client = httpx.AsyncClient(transport=httpx.MockTransport(_connection_handler))
+    http = SkillHttpClient(connections, client=client)
+    try:
+        assistant = _assistant(store, FakeBackend(_proposal_response()))
+        assert (
+            await assistant.execute(
+                _ProposeSkillArgs.model_validate(
+                    {"system_name": "partner-system", "source": "GET /coupons", "reason": "r"}
+                ),
+                ToolContext(privacy_level=PrivacyLevel.L1),
+            )
+        ).ok
+        draft = (await store.drafts())[0]
+        app = FastAPI()
+        app.include_router(
+            create_admin_skills_router(
+                store,
+                admin_token="secret",
+                connections=connections,
+                http_client=http,
+            )
+        )
+        headers = {"Authorization": "Bearer secret"}
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as admin:
+            assert (
+                await admin.post(f"/api/v1/admin/skills/drafts/{uuid4()}/verify", headers=headers)
+            ).status_code == 404
+            verified = await admin.post(
+                f"/api/v1/admin/skills/drafts/{draft.id}/verify", headers=headers
+            )
+            assert verified.status_code == 200
+            assert verified.json()["verify_status"] == "passed"
+            # 已审阅的草稿不能再试跑
+            approved = await admin.post(
+                f"/api/v1/admin/skills/drafts/{draft.id}/approve", headers=headers
+            )
+            assert approved.status_code == 200
+            assert (
+                await admin.post(f"/api/v1/admin/skills/drafts/{draft.id}/verify", headers=headers)
+            ).status_code == 409
+    finally:
+        await client.aclose()

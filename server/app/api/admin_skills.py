@@ -12,12 +12,18 @@ from sqlalchemy.exc import DBAPIError
 from app.schemas import PrivacyLevel
 from app.schemas.common import StrictModel
 from app.skills import SkillApiManifest, SkillDocument, import_skill_zip
-from app.skills.connections import SkillConnection, SkillConnectionStore, SkillConnectionView
+from app.skills.connections import (
+    SkillConnection,
+    SkillConnectionStore,
+    SkillConnectionView,
+    SkillHttpClient,
+)
 from app.skills.credentials import (
     SkillCredentialError,
     SkillCredentialStatus,
     SkillCredentialStore,
 )
+from app.skills.drafts import verify_skill_draft
 from app.skills.generator import SkillDraftGenerator, SkillProposal, extract_document
 from app.skills.runtime import SkillToolProvider
 from app.skills.store import (
@@ -75,6 +81,7 @@ def create_admin_skills_router(
     generator: SkillDraftGenerator | None = None,
     connections: SkillConnectionStore | None = None,
     credentials: SkillCredentialStore | None = None,
+    http_client: SkillHttpClient | None = None,
 ) -> APIRouter:
     router = APIRouter(
         prefix="/api/v1/admin/skills",
@@ -158,9 +165,7 @@ def create_admin_skills_router(
             raise HTTPException(status_code=503, detail="skill_generator_unconfigured")
         try:
             source = extract_document(file.filename or "", await file.read(256 * 1024 + 1))
-            return await generator.generate(
-                source, system_name=system_name, filename=file.filename
-            )
+            return await generator.generate(source, system_name=system_name, filename=file.filename)
         except ValueError as error:
             raise HTTPException(status_code=422, detail=str(error)) from error
 
@@ -232,6 +237,19 @@ def create_admin_skills_router(
             if failure is not None:
                 raise failure from error
             raise
+
+    @router.post("/drafts/{draft_id}/verify", response_model=SkillDraftView)
+    async def verify_draft(draft_id: UUID) -> SkillDraftView:
+        if connections is None or http_client is None:
+            raise HTTPException(status_code=503, detail="skill_verification_unconfigured")
+        draft = await store.get_draft(draft_id)
+        if draft is None:
+            raise HTTPException(status_code=404, detail="skill_draft_not_found")
+        if draft.status != "pending":
+            raise HTTPException(status_code=409, detail="skill_draft_already_reviewed")
+        return await verify_skill_draft(
+            draft, store=store, connections=connections, http_client=http_client
+        )
 
     @router.post("/drafts/{draft_id}/approve", response_model=SkillView)
     async def approve_draft(draft_id: UUID) -> SkillView:

@@ -29,6 +29,7 @@ from app.schemas import PrivacyLevel
 from app.tools.contracts import ToolContext, ToolResult
 from app.tools.webfetch import FetchWebpageArgs, FetchWebpageTool
 
+from .connections import SkillConnectionError, SkillConnectionStore, SkillHttpClient
 from .generator import MAX_SOURCE_CHARS, CompletionBackend, SkillDraftGenerator
 from .store import SkillDraftView, SkillStore
 
@@ -44,6 +45,12 @@ _HARVEST_SOURCE_CHARS = 8_000
 class _ProposeSkillArgs(BaseModel):
     model_config = ConfigDict(extra="forbid")
     system_name: str = Field(min_length=1, max_length=64, description="英文小写连字符系统标识")
+    target_skill: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=64,
+        description="要修订的现有技能名；用户纠正已有技能的用法/接口时传入",
+    )
     url: str | None = Field(
         default=None,
         min_length=1,
@@ -67,8 +74,9 @@ class SkillDraftAssistant:
         "把对话中提供的外部系统接口文档沉淀为待审阅的 Skill 草稿。"
         "用户给文档链接时把 url 原样传入（服务端自行抓取，勿转述正文）；"
         "用户直接粘贴文档文本时才把原文放入 source。"
-        "仅当用户明确希望新增/记住某个外部系统能力时调用。"
-        "草稿不会直接生效，需管理员审阅。"
+        "用户纠正某个已有技能的用法或接口时，把该技能名传入 target_skill，"
+        "草稿会成为该技能的新版本候选。"
+        "仅当用户明确希望新增/修订能力时调用。草稿不会直接生效，需管理员审阅。"
     )
     arguments_model: type[BaseModel] = _ProposeSkillArgs
     max_privacy_level = PrivacyLevel.L2
@@ -97,6 +105,14 @@ class SkillDraftAssistant:
         args: _ProposeSkillArgs = arguments  # type: ignore[assignment]
         if not _SLUG.fullmatch(args.system_name):
             return self._finish(False, started, "invalid_system_name")
+        target = None
+        if args.target_skill is not None:
+            target = await self._store.get_by_name(args.target_skill)
+            if target is None:
+                return self._finish(False, started, "target_skill_not_found")
+            # 修订不能悄悄切换连接：文档系统必须与现有技能的连接一致。
+            if target.api is not None and target.api.connection != args.system_name:
+                return self._finish(False, started, "revision_connection_mismatch")
         source = args.source
         if args.url is not None:
             # 链接由服务端原样抓取，避免模型转述正文造成校验失败或幻觉。
@@ -125,6 +141,8 @@ class SkillDraftAssistant:
             system_name=args.system_name,
             source="chat",
             turn_id=str(context.turn_id) if context.turn_id is not None else None,
+            target_skill_id=target.id if target is not None else None,
+            base_version=target.version if target is not None else None,
         )
         if draft is None:
             return self._finish(
@@ -134,6 +152,22 @@ class SkillDraftAssistant:
                     "status": "duplicate_pending",
                     "skill_name": proposal.document.name,
                     "message": "已有相同内容的待审阅草稿，无需重复提交。",
+                },
+            )
+        if target is not None:
+            return self._finish(
+                True,
+                started,
+                data={
+                    "status": draft.status,
+                    "skill_name": target.name,
+                    "revision_of": target.name,
+                    "base_version": target.version,
+                    "warnings": draft.warnings[:5],
+                    "message": (
+                        f"已生成 {target.name} 的修订草稿（基于 v{target.version}），"
+                        "管理员在技能中心确认后会创建新版本。"
+                    ),
                 },
             )
         return self._finish(
@@ -272,3 +306,68 @@ class SkillDraftAssistant:
             reason_code=reason_code,
             latency_ms=(perf_counter() - started) * 1_000,
         )
+
+
+async def verify_skill_draft(
+    draft: SkillDraftView,
+    *,
+    store: SkillStore,
+    connections: SkillConnectionStore,
+    http_client: SkillHttpClient,
+) -> SkillDraftView:
+    """Run one live read-only GET of the draft contract before admin review.
+
+    试跑走与运行时完全相同的连接白名单与认证闸门；结果只记录状态与
+    原因码，不落任何响应内容。
+    """
+    ok, reason = await _probe_draft(draft, connections=connections, http_client=http_client)
+    return await store.mark_draft_verified(draft.id, ok=ok, reason=reason)
+
+
+async def _probe_draft(
+    draft: SkillDraftView,
+    *,
+    connections: SkillConnectionStore,
+    http_client: SkillHttpClient,
+) -> tuple[bool, str | None]:
+    document = draft.document
+    api = document.api
+    if api is None:
+        return False, "draft_has_no_api"
+    reads = [item for item in api.operations if item.risk == "read"]
+    if not reads:
+        return False, "draft_has_no_read_operation"
+    # 只试跑无需调用方供参的操作；带必填 path 参数的操作无法安全代填。
+    operation = next(
+        (item for item in reads if not any(spec.required for spec in item.parameters.values())),
+        None,
+    )
+    if operation is None:
+        return False, "draft_operation_needs_path_values"
+    connection = await connections.get(api.connection)
+    if connection is None or not connection.enabled:
+        return False, "connection_disabled"
+    if operation.path not in connection.allowed_paths:
+        return False, "connection_path_denied"
+    if connection.auth_type == "login_bearer":
+        if api.auth is None or api.auth.path not in connection.allowed_auth_paths:
+            return False, "connection_auth_path_denied"
+        if not await http_client.credentials_ready(draft.target_skill_id, connection):
+            return False, "connection_credentials_missing"
+    elif api.auth is not None:
+        return False, "connection_auth_mismatch"
+    try:
+        await http_client.skill_get(
+            api.connection,
+            operation.path,
+            operation.path,
+            params={},
+            auth=api.auth,
+            skill_id=draft.target_skill_id,
+        )
+    except SkillConnectionError as error:
+        return False, error.reason_code
+    except Exception:
+        logger.warning("skill draft verification crashed draft=%s", draft.id, exc_info=True)
+        return False, "draft_verification_failed"
+    return True, None
