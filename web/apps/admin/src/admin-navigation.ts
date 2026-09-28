@@ -29,24 +29,16 @@ export const adminModules: AdminModule[] = [
   {
     key: "persona",
     path: "/personas",
-    label: "人格与表达",
+    label: "人格与形象",
     group: "伴侣核心",
     tabs: [
       { key: "profile", label: "基本设定", description: "身份、称呼、关系和档案基线。", state: "ready" },
       { key: "style", label: "表达风格", description: "语言风格、提示词和声音配置。", state: "ready" },
       { key: "boundaries", label: "边界与主动", description: "安全伦理边界与主动话题来源开关。", state: "ready" },
       { key: "motion", label: "动作映射", description: "情绪、表情和 Live2D 动作映射。", state: "ready" },
-      { key: "versions", label: "版本历史", description: "草稿、发布、比较和回滚。", state: "ready" },
-    ],
-  },
-  {
-    key: "appearance",
-    path: "/appearance",
-    label: "形象与外观",
-    group: "伴侣核心",
-    tabs: [
       { key: "gallery", label: "形象库", description: "形象包、实例管理和人格绑定。", state: "ready" },
       { key: "themes", label: "主题中心", description: "选择账户主题并同步到聊天端。", state: "ready" },
+      { key: "versions", label: "版本历史", description: "草稿、发布、比较和回滚。", state: "ready" },
     ],
   },
   {
@@ -95,10 +87,9 @@ export const adminModules: AdminModule[] = [
     group: "能力接入",
     tabs: [
       { key: "library", label: "技能库", description: "导入、创建、查看和启停 Skill。", state: "ready" },
-      { key: "create", label: "创建技能", description: "编写说明与声明式 API 契约。", state: "ready" },
-      { key: "generate", label: "智能创建", description: "从 API 文档或使用文档生成可审核的技能草稿。", state: "ready" },
+      { key: "create", label: "创建技能", description: "手动编写，或从 API/使用文档智能生成可审核草稿。", state: "ready" },
       { key: "drafts", label: "待审草稿", description: "审阅对话中主动沉淀或后台收割生成的技能草稿。", state: "ready" },
-      { key: "connections", label: "API 连接", description: "配置新系统地址、密钥引用和只读路径白名单。", state: "ready" },
+      { key: "connections", label: "API 连接", description: "配置新系统地址、密钥引用和只读/写入路径白名单。", state: "ready" },
       { key: "suggestions", label: "学习建议", description: "查看重复失败形成的待审核建议与运行证据。", state: "ready" },
       { key: "test", label: "匹配测试", description: "查看示例任务会加载哪些技能和只读工具。", state: "ready" },
     ],
@@ -136,15 +127,7 @@ export const adminModules: AdminModule[] = [
       { key: "screen", label: "屏幕感知", description: "周期截屏循环健康与观察记录检索。", state: "ready" },
       { key: "browser", label: "浏览感知", description: "浏览器标签页观察循环健康与观察记录。", state: "ready" },
       { key: "safety", label: "安全守护", description: "安全告警升级链、确认与紧急联系人预授权。", state: "ready" },
-    ],
-  },
-  {
-    key: "output",
-    path: "/output",
-    label: "主动输出",
-    group: "能力接入",
-    tabs: [
-      { key: "channels", label: "输出通道", description: "控制 Web、Desktop、语音与 Web Push 主动推送策略。", state: "ready" },
+      { key: "channels", label: "主动输出", description: "控制 Web、Desktop、语音与 Web Push 主动推送策略。", state: "ready" },
     ],
   },
   {

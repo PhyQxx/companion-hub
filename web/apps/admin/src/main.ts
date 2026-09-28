@@ -18,23 +18,25 @@ const router = createRouter({
     { path: "/timeline", redirect: { path: "/memory", query: { tab: "timeline" } } },
     { path: "/devices", component: () => import("./views/ModuleWorkspaceView.vue"), props: { module: "devices" } },
     { path: "/perception", component: () => import("./views/ModuleWorkspaceView.vue"), props: { module: "perception" } },
-    { path: "/output", component: () => import("./views/ModuleWorkspaceView.vue"), props: { module: "output" } },
     { path: "/logs", component: () => import("./views/ModuleWorkspaceView.vue"), props: { module: "logs" } },
     { path: "/privacy", component: () => import("./views/ModuleWorkspaceView.vue"), props: { module: "privacy" } },
     { path: "/settings", component: () => import("./views/ModuleWorkspaceView.vue"), props: { module: "system" } },
     { path: "/jobs", redirect: { path: "/settings", query: { tab: "jobs" } } },
     { path: "/screen-awareness", redirect: { path: "/perception", query: { tab: "screen" } } },
-    { path: "/avatars", redirect: { path: "/appearance", query: { tab: "gallery" } } },
-    { path: "/appearance", component: () => import("./views/ModuleWorkspaceView.vue"), props: { module: "appearance" } },
+    { path: "/avatars", redirect: { path: "/personas", query: { tab: "gallery" } } },
+    // 信息架构合并：形象与外观并入「人格与形象」；主动输出并入「感知与守护」。
+    { path: "/appearance", redirect: { path: "/personas", query: { tab: "gallery" } } },
+    { path: "/output", redirect: { path: "/perception", query: { tab: "channels" } } },
     { path: "/:pathMatch(.*)*", redirect: "/" },
   ],
 });
 
-// 「设备与感知」拆分为设备终端 / 感知与守护 / 主动输出、HA 连接并入感知模块后，
-// 旧 /devices 与 /models 深链按原 Tab 迁移到新模块。
+// 「设备与感知」拆分为设备终端 / 感知与守护、HA 连接并入感知模块后，
+// 旧 /devices 与 /models 深链按原 Tab 迁移到新模块；后续信息架构合并
+// 再把主动输出并入感知模块、形象与外观并入了人格模块。
 const movedDeviceTabs: Record<string, { path: string; tab: string; section?: string }> = {
   pairing: { path: "/devices", tab: "registry" },
-  channels: { path: "/output", tab: "channels" },
+  channels: { path: "/perception", tab: "channels" },
   home_assistant: { path: "/perception", tab: "home_assistant" },
   status: { path: "/perception", tab: "screen" },
   observations: { path: "/perception", tab: "screen", section: "records" },
@@ -57,11 +59,18 @@ router.beforeEach((to) => {
   if (to.path === "/models" && tab === "home_assistant") {
     return { path: "/perception", query: { ...to.query, tab: "home_assistant" } };
   }
+  if (to.path === "/models" && tab === "channels") {
+    return { path: "/perception", query: { ...to.query, tab: "channels" } };
+  }
   if (to.path === "/memory" && tab === "conflicts") {
     return { path: "/memory", query: { ...to.query, tab: "quality", section: "conflicts" } };
   }
   if (to.path === "/personas" && tab === "proactive") {
     return { path: "/personas", query: { ...to.query, tab: "boundaries" } };
+  }
+  if (to.path === "/skills" && tab === "generate") {
+    // 智能创建并入「创建技能」页内切换
+    return { path: "/skills", query: { ...to.query, tab: "create", section: "generate" } };
   }
   return true;
 });

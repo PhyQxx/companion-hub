@@ -56,6 +56,8 @@ const currentView = computed(() => {
   if (props.module === "integrations" && activeTab.value === "calendar") return IntegrationsCalendarView;
   if (props.module === "integrations" && activeTab.value === "pnkx") return IntegrationsPnkxView;
   if (props.module === "integrations") return IntegrationsXiaoaiView;
+  if (props.module === "persona" && activeTab.value === "gallery") return AvatarsView;
+  if (props.module === "persona" && activeTab.value === "themes") return AppearanceView;
   if (props.module === "persona") return PersonasView;
   if (props.module === "memory" && activeTab.value === "library") return MemoryView;
   if (props.module === "memory" && activeTab.value === "quality") return MemoryQualityView;
@@ -74,14 +76,12 @@ const currentView = computed(() => {
   if (props.module === "perception" && activeTab.value === "screen") return ScreenAwarenessView;
   if (props.module === "perception" && activeTab.value === "browser") return BrowserAwarenessView;
   if (props.module === "perception" && activeTab.value === "safety") return SafetyAdminView;
-  if (props.module === "output") return ProactiveChannelsView;
+  if (props.module === "perception" && activeTab.value === "channels") return ProactiveChannelsView;
   if (props.module === "logs" && activeTab.value === "live") return LiveLogsView;
   if (props.module === "logs") return LogsView;
   if (props.module === "privacy") return PrivacyView;
   if (props.module === "system" && activeTab.value === "jobs") return JobsView;
   if (props.module === "system") return SystemView;
-  if (props.module === "appearance" && activeTab.value === "gallery") return AvatarsView;
-  if (props.module === "appearance") return AppearanceView;
   return PlaceholderView;
 });
 </script>

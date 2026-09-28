@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { inject, nextTick, onMounted, onUnmounted, ref } from "vue";
+import { useRoute } from "vue-router";
 import { AdminApi } from "@aria/shared";
 import { ElMessage } from "element-plus";
 
@@ -95,6 +96,12 @@ interface SkillDraft {
 const props = withDefaults(defineProps<{ mode?: string }>(), { mode: "library" });
 const emit = defineEmits<{ status: [text: string, error?: boolean] }>();
 const api = inject<AdminApi>("adminApi")!;
+const route = useRoute();
+// 「创建技能」与「智能创建」合并为一个 Tab：手动编写 / 文档生成页内切换，
+// ?section=generate 深链（旧 tab=generate 重定向而来）默认落在文档生成。
+const createMode = ref<"manual" | "generate">(
+  route.query.section === "generate" ? "generate" : "manual",
+);
 const items = ref<SkillItem[]>([]);
 const selected = ref<SkillItem | null>(null);
 const busy = ref(false);
@@ -804,62 +811,62 @@ onUnmounted(() => {
         <div>
           <div class="eyebrow">技能中心 · 创建技能</div>
           <h2>创建技能</h2>
-          <p>填写 Skill 说明；可选填 aria-api.yaml 对应的 JSON 契约。API 写操作目前仅登记，不会在聊天中执行。</p>
+          <p>手动编写说明与声明式 API 契约，或从 API/使用文档智能生成可审核草稿；生成路径来自文档逐字校验。保存后默认停用。</p>
+        </div>
+        <div class="hero-actions">
+          <el-radio-group v-model="createMode">
+            <el-radio-button value="manual">手动编写</el-radio-button>
+            <el-radio-button value="generate">文档生成</el-radio-button>
+          </el-radio-group>
         </div>
       </div>
-      <div class="panel">
-        <div class="panel-head"><div><h2>技能草稿</h2><p>保存后默认停用，可在技能库中检查并启用。</p></div></div>
-        <form class="form-grid" @submit.prevent="create(false)">
-          <label><span>名称（英文小写与连字符）</span><el-input v-model="name" placeholder="pnkx-coupons" /></label>
-          <label class="wide"><span>用途与触发场景</span><el-input v-model="description" type="textarea" :rows="2" /></label>
-          <label class="wide"><span>执行说明</span><el-input v-model="instructions" type="textarea" :rows="6" /></label>
-          <label class="wide"><span>API 契约 JSON（可选）</span><el-input v-model="manifestText" type="textarea" :rows="8" placeholder='{"schema_version":1,"connection":"pnkx","operations":[...]}' /></label>
-          <div class="actions wide">
-            <el-button type="primary" native-type="submit" :loading="busy">保存草稿</el-button>
+      <template v-if="createMode === 'manual'">
+        <div class="panel">
+          <div class="panel-head"><div><h2>技能草稿</h2><p>保存后默认停用，可在技能库中检查并启用。</p></div></div>
+          <form class="form-grid" @submit.prevent="create(false)">
+            <label><span>名称（英文小写与连字符）</span><el-input v-model="name" placeholder="pnkx-coupons" /></label>
+            <label class="wide"><span>用途与触发场景</span><el-input v-model="description" type="textarea" :rows="2" /></label>
+            <label class="wide"><span>执行说明</span><el-input v-model="instructions" type="textarea" :rows="6" /></label>
+            <label class="wide"><span>API 契约 JSON（可选）</span><el-input v-model="manifestText" type="textarea" :rows="8" placeholder='{"schema_version":1,"connection":"pnkx","operations":[...]}' /></label>
+            <div class="actions wide">
+              <el-button type="primary" native-type="submit" :loading="busy">保存草稿</el-button>
+            </div>
+          </form>
+        </div>
+      </template>
+      <template v-else>
+        <div class="panel">
+          <div class="panel-head"><div><h2>文档输入</h2><p>需要先填写系统标识，再从文本或文档生成。</p></div></div>
+          <div class="form-grid">
+            <label><span>系统标识（英文小写与连字符）</span><el-input v-model="systemName" placeholder="pnkx 或 your-system" /></label>
+            <label class="wide"><span>API 文档或使用文档</span><el-input v-model="sourceText" type="textarea" :rows="10" placeholder="粘贴接口路径、方法、参数，或系统的使用说明" /></label>
+            <div class="actions wide">
+              <el-button type="primary" :disabled="!systemName.trim() || !sourceText.trim()" :loading="busy" @click="generate">从文本生成</el-button>
+              <el-button :disabled="busy || !systemName.trim()" :loading="busy" @click="docInput?.click()">上传文档生成</el-button>
+              <input ref="docInput" type="file" accept=".md,.txt,.json,.yaml,.yml,.html,.htm,.docx" class="hidden-input" :disabled="busy || !systemName.trim()" @change="generateUpload" />
+            </div>
+            <p v-if="generationStatus" class="wide" role="status">{{ generationStatus }}</p>
+            <el-alert v-if="generationError" class="wide" :title="generationError" type="error" show-icon :closable="false" />
           </div>
-        </form>
-      </div>
-    </template>
-
-    <template v-else-if="mode === 'generate'">
-      <div class="hero panel">
-        <div>
-          <div class="eyebrow">技能中心 · 智能创建</div>
-          <h2>从文档智能创建技能</h2>
-          <p>输入系统标识并粘贴文档，或上传 Markdown、TXT、JSON、YAML、HTML、DOCX。明确的接口表会直接解析，其余内容使用私密模型路由；生成后请核对路径和参数。</p>
         </div>
-      </div>
-      <div class="panel">
-        <div class="panel-head"><div><h2>文档输入</h2><p>需要先填写系统标识，再从文本或文档生成。</p></div></div>
-        <div class="form-grid">
-          <label><span>系统标识（英文小写与连字符）</span><el-input v-model="systemName" placeholder="pnkx 或 your-system" /></label>
-          <label class="wide"><span>API 文档或使用文档</span><el-input v-model="sourceText" type="textarea" :rows="10" placeholder="粘贴接口路径、方法、参数，或系统的使用说明" /></label>
-          <div class="actions wide">
-            <el-button type="primary" :disabled="!systemName.trim() || !sourceText.trim()" :loading="busy" @click="generate">从文本生成</el-button>
-            <el-button :disabled="busy || !systemName.trim()" :loading="busy" @click="docInput?.click()">上传文档生成</el-button>
-            <input ref="docInput" type="file" accept=".md,.txt,.json,.yaml,.yml,.html,.htm,.docx" class="hidden-input" :disabled="busy || !systemName.trim()" @change="generateUpload" />
+        <div v-if="proposal" id="generated-proposal" class="panel">
+          <div class="panel-head"><div><h2>审核生成草稿</h2><p>生成结果尚未保存，也不会调用外部 API。请逐项核对文档依据和必填参数。保存后默认停用。</p></div></div>
+          <el-alert v-for="warning in proposal.warnings" :key="warning" :title="warning" type="warning" show-icon :closable="false" class="warning-alert" />
+          <div v-if="proposal.evidence.length">
+            <h3>文档依据</h3>
+            <p v-for="quote in proposal.evidence" :key="quote" class="evidence">{{ quote }}</p>
           </div>
-          <p v-if="generationStatus" class="wide" role="status">{{ generationStatus }}</p>
-          <el-alert v-if="generationError" class="wide" :title="generationError" type="error" show-icon :closable="false" />
+          <form class="form-grid" @submit.prevent="create(true)">
+            <label><span>名称</span><el-input v-model="name" /></label>
+            <label class="wide"><span>用途与触发场景</span><el-input v-model="description" type="textarea" :rows="2" /></label>
+            <label class="wide"><span>执行说明</span><el-input v-model="instructions" type="textarea" :rows="6" /></label>
+            <label class="wide"><span>API 契约 JSON（无 API 可留空）</span><el-input v-model="manifestText" type="textarea" :rows="12" /></label>
+            <div class="actions wide">
+              <el-button type="primary" native-type="submit" :loading="busy">保存为停用草稿</el-button>
+            </div>
+          </form>
         </div>
-      </div>
-      <div v-if="proposal" id="generated-proposal" class="panel">
-        <div class="panel-head"><div><h2>审核生成草稿</h2><p>生成结果尚未保存，也不会调用外部 API。请逐项核对文档依据和必填参数。保存后默认停用。</p></div></div>
-        <el-alert v-for="warning in proposal.warnings" :key="warning" :title="warning" type="warning" show-icon :closable="false" class="warning-alert" />
-        <div v-if="proposal.evidence.length">
-          <h3>文档依据</h3>
-          <p v-for="quote in proposal.evidence" :key="quote" class="evidence">{{ quote }}</p>
-        </div>
-        <form class="form-grid" @submit.prevent="create(true)">
-          <label><span>名称</span><el-input v-model="name" /></label>
-          <label class="wide"><span>用途与触发场景</span><el-input v-model="description" type="textarea" :rows="2" /></label>
-          <label class="wide"><span>执行说明</span><el-input v-model="instructions" type="textarea" :rows="6" /></label>
-          <label class="wide"><span>API 契约 JSON（无 API 可留空）</span><el-input v-model="manifestText" type="textarea" :rows="12" /></label>
-          <div class="actions wide">
-            <el-button type="primary" native-type="submit" :loading="busy">保存为停用草稿</el-button>
-          </div>
-        </form>
-      </div>
+      </template>
     </template>
 
     <template v-else-if="mode === 'connections'">

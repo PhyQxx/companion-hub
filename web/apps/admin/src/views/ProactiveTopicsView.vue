@@ -99,7 +99,7 @@ onActivated(load);
     </div>
     <div class="panel">
       <p>开启后，中枢会判断内容是否值得交流，并遵守免打扰、安静时段和消息预算。</p>
-      <RouterLink :to="{ path: '/output', query: { tab: 'channels' } }">配置主动输出通道</RouterLink>
+      <RouterLink :to="{ path: '/perception', query: { tab: 'channels' } }">配置主动输出通道</RouterLink>
     </div>
   </section>
 </template>
