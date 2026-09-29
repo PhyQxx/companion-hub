@@ -72,6 +72,8 @@ jobs:
       MQTT_PASSWORD: ci-compose-mqtt
     steps:
       - uses: actions/checkout@v4
+      - name: Create empty compose env file
+        run: touch .env.docker
       - name: Start the complete authenticated stack
         run: docker compose up -d --build --wait
       - name: Verify Hub health
