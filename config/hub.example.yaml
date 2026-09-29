@@ -218,12 +218,23 @@ integrations:
     # display_name: Aria
     # secret_ref: env:ARIA_MAIL_SECRET
 
+# 屏幕感知默认关闭。启用后 Hub 周期截取已授权桌面端的屏幕（原图即焚），
+# 只持久化视觉模型产出的摘要；notable 时经认知决策主动开启话题。
+screen_awareness:
+  enabled: false
+  interval_seconds: 60
+  displays: [1]
+  analysis_prompt: 概括这块屏幕当前展示的主要内容，并判断是否值得主动向用户提起或记住。
+  memory_enabled: true
+  proactive_enabled: true
+  unchanged_skip_threshold: 6
+
 # 浏览器观察默认关闭。启用后 Hub 周期读取已配对浏览器的当前标签页，
 # 只持久化摘要、origin 和截断标题；页面原文在分析后即销毁。
 browser_awareness:
   enabled: false
   interval_seconds: 60
-  analysis_prompt: 概括用户当前浏览的网页内容，并判断是否值得记录或主动提醒。
+  analysis_prompt: 概括用户当前浏览的网页内容，并判断是否值得主动向用户提起或记住。
   memory_enabled: true
   proactive_enabled: true
   max_text_chars: 8000

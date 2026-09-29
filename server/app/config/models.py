@@ -160,7 +160,7 @@ class ScreenAwarenessConfig(StrictModel):
         default_factory=lambda: [1]
     )
     analysis_prompt: Annotated[str, Field(min_length=1, max_length=1_000)] = (
-        "概括这块屏幕当前展示的主要内容，并判断是否值得主动分享或记忆。"
+        "概括这块屏幕当前展示的主要内容，并判断是否值得主动向用户提起或记住。"
     )
     memory_enabled: bool = True
     proactive_enabled: bool = True
@@ -179,7 +179,7 @@ class BrowserAwarenessConfig(StrictModel):
     enabled: bool = False
     interval_seconds: Annotated[int, Field(ge=15, le=600)] = 60
     analysis_prompt: Annotated[str, Field(min_length=1, max_length=1_000)] = (
-        "概括用户当前浏览的网页内容，并判断是否值得记录或主动提醒。"
+        "概括用户当前浏览的网页内容，并判断是否值得主动向用户提起或记住。"
     )
     memory_enabled: bool = True
     proactive_enabled: bool = True
