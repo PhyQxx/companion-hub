@@ -1136,6 +1136,123 @@ async def test_weather_tool_round_hides_preamble_and_records_redacted_metadata(
     }
 
 
+class TextToolCallRouter:
+    """模拟只把工具目录注入 prompt、却不解析回 tool_calls 字段的网关。
+
+    模型把调用写成正文本 <get_weather>{...}</get_weather>，正好复现
+    「输出内容带着标签且工具从未执行」的线上故障形态。
+    """
+
+    def __init__(self) -> None:
+        self.requests: list[CompletionRequest] = []
+
+    async def complete(self, request: CompletionRequest) -> CompletionResult:
+        self.requests.append(request)
+        if request.tools:
+            return CompletionResult(
+                text=(
+                    "好嘞，我查一下天气。"
+                    '<get_weather>{"location": "济南市"}</get_weather>'
+                ),
+                provider="openai_compatible",
+                model="tool-model",
+                endpoint="cloud",
+                route=request.route,
+                finish_reason="stop",
+                latency_ms=10,
+            )
+        return CompletionResult(
+            text="济南现在多云，29℃。",
+            provider="openai_compatible",
+            model="tool-model",
+            endpoint="cloud",
+            route=request.route,
+            finish_reason="stop",
+            latency_ms=8,
+        )
+
+    async def stream(
+        self,
+        request: CompletionRequest,
+        on_delta: Callable[[str], Awaitable[None]],
+    ) -> CompletionResult:
+        result = await self.complete(request)
+        await on_delta(result.text)
+        return result
+
+
+async def test_text_form_tool_call_is_absorbed_executed_and_never_leaks(
+    database: Database,
+    store: DatabaseConfigStore,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    candidate = store.current.config.model_dump(mode="python")
+    candidate["models"]["cloud"]["supports_tool_calling"] = True
+    candidate["tools"] = {
+        "enabled": True,
+        "query": {"default_city": "济南市"},
+        "amap": {"enabled": True, "secret_value": "test-only-key"},
+    }
+    draft = await store.create_draft(HubConfig.model_validate(candidate), actor="test")
+    await store.publish(draft.version, actor="test")
+    backend = TextToolCallRouter()
+    monkeypatch.setattr(
+        "app.chat.service.build_query_tool_runtime",
+        lambda config, secrets: FakeToolRuntime(),
+    )
+    service = ChatService(database, store, router_builder=lambda config: backend)
+    user = await create_user(database)
+    conversation = await service.create_conversation(user_id=user.id, title="text tool")
+    deltas: list[str] = []
+    tool_events: list[dict[str, object]] = []
+
+    async def capture_tool_event(event: dict[str, object]) -> None:
+        tool_events.append(event)
+
+    pending = await service.start_turn(
+        conversation.id,
+        user_id=user.id,
+        text="济南今天天气怎么样？",
+        privacy_level=PrivacyLevel.L1,
+    )
+    result = await service.run_stream(
+        pending,
+        _append_chat_delta(deltas),
+        capture_tool_event,
+    )
+
+    # 正文标签既不流出给前端，也不沉淀进消息历史
+    assert deltas == ["济南现在多云，29℃。"]
+    assert "<get_weather>" not in result.assistant_message.content
+    assert [event["type"] for event in tool_events] == ["tool.started", "tool.finished"]
+    assert tool_events[1]["tool"] == "get_weather"
+    assert tool_events[1]["ok"] is True
+    # 工具真的执行了：follow-up 请求回注了还原出的原生调用与结果
+    assert len(backend.requests) == 2
+    followup = backend.requests[1]
+    assert followup.tools == []
+    assert followup.tool_choice == "none"
+    replayed_call = followup.messages[-2]
+    assert replayed_call.role == "assistant"
+    assert [call.function.name for call in replayed_call.tool_calls] == ["get_weather"]
+    assert followup.messages[-1].role == "tool"
+    meta = result.assistant_message.decision_meta or {}
+    calls = meta["tool_calls"]
+    assert isinstance(calls, list) and isinstance(calls[0], dict)
+    assert calls[0]["tool_name"] == "get_weather"
+    assert calls[0]["outcome"] == "success"
+
+    # 非流式路径同样兜底
+    turn = await service.send_message(
+        conversation.id, user_id=user.id, text="再查一次", privacy_level=PrivacyLevel.L1
+    )
+    assert "<get_weather>" not in turn.assistant_message.content
+    meta = turn.assistant_message.decision_meta or {}
+    calls = meta["tool_calls"]
+    assert isinstance(calls, list) and isinstance(calls[0], dict)
+    assert calls[0]["tool_name"] == "get_weather"
+
+
 async def test_published_database_config_is_used_on_next_turn(
     database: Database, store: DatabaseConfigStore
 ) -> None:

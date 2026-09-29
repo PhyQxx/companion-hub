@@ -26,7 +26,7 @@ from app.ids import uuid7
 from app.integrations.mcp.chat_tools import McpChatToolProvider, McpReadToolHandler
 from app.llm import CompletionRequest, CompletionResult, LLMMessage, LLMRoute, ToolCall
 from app.llm.factory import build_router
-from app.llm.provider import EnvSecretProvider
+from app.llm.provider import EnvSecretProvider, absorb_text_tool_calls
 from app.memory import (
     DeletionReceipt,
     ExtractionBackend,
@@ -522,6 +522,7 @@ class ChatService:
                 result = await backend.complete(consistency_request)
             else:
                 result = await backend.complete(pending.request)
+                result = absorb_text_tool_calls(pending.request, result)
             if deterministic_call is None and result.tool_calls:
                 execution = await self._execute_tool_call(pending, result.tool_calls)
                 tool_executions = (execution,)
@@ -980,7 +981,7 @@ class ChatService:
     ) -> ChatTurn:
         await self._transition(pending.turn_id, {"accepted"}, "thinking")
         emitted = False
-        stream_filter = ControlStreamFilter()
+        stream_filter = ControlStreamFilter(extra_tags=pending.tool_names)
         buffer_for_consistency = self._memory_consistency_guard.requires_buffering(
             pending.memory_retrieval
         )
@@ -1044,6 +1045,7 @@ class ChatService:
                         initial_chunks.append(delta)
 
                 result = await backend.stream(pending.request, buffer_delta)
+                result = absorb_text_tool_calls(pending.request, result)
                 if result.tool_calls:
                     if on_tool_event is not None:
                         await on_tool_event(
@@ -1113,7 +1115,9 @@ class ChatService:
             if buffer_for_consistency:
                 # 未校验的 delta 已被上面的 filter 消费但没有发送给前端；这里只
                 # 发布通过 Guard 的最终正文，避免错误事实先出现在页面再被修正。
-                safe_text = parse_agent_reply(consistency.result.text, pending.persona).text
+                safe_text = parse_agent_reply(
+                    consistency.result.text, pending.persona, tool_names=pending.tool_names
+                ).text
                 await guarded_delta(safe_text)
             return await self._commit_turn(
                 pending,
@@ -1490,7 +1494,9 @@ class ChatService:
                 backend=backend,
             )
             result = consistency.result
-        reply = parse_agent_reply(result.text, pending.persona)
+        reply = parse_agent_reply(
+            result.text, pending.persona, tool_names=pending.tool_names
+        )
         decision_meta: dict[str, object] = {
             "schema_version": 1,
             "config_version": pending.config_version,

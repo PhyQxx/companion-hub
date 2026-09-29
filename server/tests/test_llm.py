@@ -22,6 +22,7 @@ from app.llm import (
     ModelEndpoint,
     RoutePolicy,
     SecretNotFound,
+    ToolDefinition,
 )
 from app.observability import InMemorySpanSink, TraceRecorder
 from app.privacy import EgressBlocked
@@ -924,3 +925,138 @@ def test_completion_request_accepts_full_production_tool_catalog() -> None:
             route=LLMRoute.DIALOGUE,
             tools=[*tools, {"name": "tool_32", "description": "测试工具", "parameters": {}}],
         )
+
+
+def _tool_request() -> CompletionRequest:
+    return request("L1").model_copy(
+        update={
+            "tools": [
+                ToolDefinition(
+                    name="contact_save",
+                    description="保存或更新一位联系人",
+                    parameters={"type": "object", "properties": {}},
+                )
+            ]
+        }
+    )
+
+
+async def test_litellm_adapter_absorbs_text_form_tool_call(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """网关只注入工具目录、以正文标签回调用时，还原成原生 tool_calls。"""
+
+    async def fake_completion(**kwargs: Any) -> Any:
+        return SimpleNamespace(
+            id="text-call-request-id",
+            choices=[
+                SimpleNamespace(
+                    message=SimpleNamespace(
+                        content=(
+                            "好嘞，我来保存。"
+                            '<contact_save>{"display_name":"秦晓雪",'
+                            '"relationship":"媳妇（妻子）"}</contact_save>'
+                        ),
+                        tool_calls=None,
+                    ),
+                    finish_reason="stop",
+                )
+            ],
+            usage=SimpleNamespace(prompt_tokens=5, completion_tokens=9),
+        )
+
+    monkeypatch.setattr("app.llm.provider.litellm.acompletion", fake_completion)
+    provider = LiteLLMProvider(
+        "cloud", endpoint(local=False), EnvSecretProvider({"TEST_MODEL_KEY": "k"})
+    )
+
+    result = await provider.complete(_tool_request())
+
+    assert result.text == "好嘞，我来保存。"
+    assert len(result.tool_calls) == 1
+    call = result.tool_calls[0]
+    assert call.function.name == "contact_save"
+    assert call.function.arguments == {
+        "display_name": "秦晓雪",
+        "relationship": "媳妇（妻子）",
+    }
+    assert call.id
+    assert result.finish_reason == "tool_calls"
+
+
+async def test_litellm_adapter_absorbs_text_form_tool_call_from_stream(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def chunks() -> Any:
+        for piece in (
+            '我来保存。<contact_save>{"display_name":',
+            '"秦晓雪"}</contact_save>',
+        ):
+            yield SimpleNamespace(
+                id="stream-text-call",
+                choices=[
+                    SimpleNamespace(
+                        delta=SimpleNamespace(content=piece), finish_reason=None
+                    )
+                ],
+                usage=None,
+            )
+        yield SimpleNamespace(
+            id="stream-text-call",
+            choices=[SimpleNamespace(delta=SimpleNamespace(content=None), finish_reason="stop")],
+            usage=SimpleNamespace(prompt_tokens=4, completion_tokens=6),
+        )
+
+    async def fake_completion(**kwargs: Any) -> Any:
+        return chunks()
+
+    monkeypatch.setattr("app.llm.provider.litellm.acompletion", fake_completion)
+    provider = LiteLLMProvider(
+        "cloud", endpoint(local=False), EnvSecretProvider({"TEST_MODEL_KEY": "k"})
+    )
+    deltas: list[str] = []
+
+    result = await provider.stream(_tool_request(), _append(deltas))
+
+    assert [call.function.name for call in result.tool_calls] == ["contact_save"]
+    assert result.tool_calls[0].function.arguments == {"display_name": "秦晓雪"}
+    assert result.text == "我来保存。"
+    assert result.finish_reason == "tool_calls"
+
+
+async def test_litellm_adapter_leaves_unmounted_tags_and_native_calls_alone(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def fake_completion(**kwargs: Any) -> Any:
+        return SimpleNamespace(
+            id="plain-request-id",
+            choices=[
+                SimpleNamespace(
+                    message=SimpleNamespace(
+                        content='正文 <not_mounted>{"x":1}</not_mounted>',
+                        tool_calls=None,
+                    ),
+                    finish_reason="stop",
+                )
+            ],
+            usage=SimpleNamespace(prompt_tokens=2, completion_tokens=4),
+        )
+
+    monkeypatch.setattr("app.llm.provider.litellm.acompletion", fake_completion)
+    provider = LiteLLMProvider(
+        "cloud", endpoint(local=False), EnvSecretProvider({"TEST_MODEL_KEY": "k"})
+    )
+
+    result = await provider.complete(_tool_request())
+
+    assert result.tool_calls == []
+    assert result.text == '正文 <not_mounted>{"x":1}</not_mounted>'
+    assert result.finish_reason == "stop"
+
+
+def _append(target: list[str]) -> Callable[[str], Awaitable[None]]:
+    async def append(delta: str) -> None:
+        if delta:
+            target.append(delta)
+
+    return append

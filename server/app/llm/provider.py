@@ -20,6 +20,7 @@ from .contracts import (
     ToolCall,
     ToolDefinition,
 )
+from .text_tool_calls import MAX_TEXT_TOOL_CALLS, extract_text_tool_calls
 
 logger = logging.getLogger(__name__)
 
@@ -84,6 +85,7 @@ class LiteLLMProvider:
             started=started,
             tool_calls=tool_calls,
         )
+        result = absorb_text_tool_calls(request, result)
         self._log_result(result)
         return result
 
@@ -130,6 +132,10 @@ class LiteLLMProvider:
             started=started,
             tool_calls=tool_calls,
         )
+        # 流式下 delta 可能已外发；带工具的请求由 ChatService 先缓冲再回放，
+        # 因此这里晚到的吸收不会把标签漏到最终正文。其余直连调用方拿到
+        # 的 result.text 也已经是剥离后的文本。
+        result = absorb_text_tool_calls(request, result)
         self._log_result(result)
         return result
 
@@ -360,6 +366,36 @@ def _parse_tool_calls(raw_calls: Any) -> list[ToolCall]:
             )
         )
     return result
+
+
+def absorb_text_tool_calls(
+    request: CompletionRequest, result: CompletionResult
+) -> CompletionResult:
+    """把正文里的文本形态工具调用还原成原生 ToolCall。
+
+    兼容只注入工具目录却不解析回 tool_calls 字段的 OpenAI 兼容网关：
+    模型按 ``<tool_name>{"args": ...}</tool_name>`` 文本回调用时，没有
+    这层还原调用永远不会执行、标签还会漏进正文。仅当本轮确实挂载了
+    工具且原生 tool_calls 为空时才启用。
+    """
+    if not request.tools or result.tool_calls or not result.text:
+        return result
+    text, calls = extract_text_tool_calls(result.text, [tool.name for tool in request.tools])
+    if not calls:
+        return result
+    return result.model_copy(
+        update={
+            "text": text,
+            "tool_calls": [
+                ToolCall(
+                    id=f"call_{uuid7()}",
+                    function={"name": name, "arguments": arguments},
+                )
+                for name, arguments in calls[:MAX_TEXT_TOOL_CALLS]
+            ],
+            "finish_reason": "tool_calls",
+        }
+    )
 
 
 def _merge_stream_tool_calls(parts: dict[int, dict[str, str]], raw_calls: Any) -> None:
