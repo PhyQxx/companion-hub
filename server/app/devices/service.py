@@ -140,44 +140,79 @@ class DeviceRegistry:
         capabilities: tuple[str, ...],
     ) -> PairedDevice:
         now = datetime.now(UTC)
-        token = f"aria_device_{secrets.token_urlsafe(32)}"
-        device_id = uuid7()
-        try:
-            async with self._database.sessions.begin() as session:
-                pairing = await session.scalar(
-                    select(DevicePairingCodeRecord)
-                    .where(DevicePairingCodeRecord.code_hash == _hash_secret(pairing_code))
-                    .limit(1)
-                    .with_for_update()
-                )
-                if (
-                    pairing is None
-                    or pairing.claimed_at is not None
-                    or _aware(pairing.expires_at) <= now
-                ):
-                    raise PairingCodeInvalid("pairing code is invalid, expired, or already used")
-                record = DeviceClientRecord(
-                    id=device_id,
-                    owner_user_id=pairing.owner_user_id,
-                    name=_clean_name(name),
-                    alias=_clean_alias(alias),
-                    client_type=client_type,
-                    credential_hash=_hash_secret(token),
-                    capabilities=list(_normalized_capabilities(capabilities)),
-                    granted_capabilities=list(
-                        _normalized_capabilities(tuple(pairing.granted_capabilities))
-                    ),
-                    revision=1,
-                    paired_at=now,
-                    last_seen_at=now,
-                )
-                session.add(record)
-                await session.flush()
-                pairing.claimed_at = now
-                pairing.claimed_device_id = device_id
-        except IntegrityError as error:
-            raise DeviceAliasConflict("device alias is already in use for this owner") from error
-        return PairedDevice(access_token=token, device=_snapshot(record, now=now))
+        cleaned_alias = _clean_alias(alias)
+        last_conflict: IntegrityError | None = None
+        # 同别名重复配对是重新接管而非冲突：轮换凭据复用原设备，让客户端直接重连。
+        # 仅当并发配对在同一事务间隙插入同别名时才会走到兜底冲突，重试即可收敛到接管分支。
+        for _ in range(3):
+            token = f"aria_device_{secrets.token_urlsafe(32)}"
+            try:
+                async with self._database.sessions.begin() as session:
+                    pairing = await session.scalar(
+                        select(DevicePairingCodeRecord)
+                        .where(DevicePairingCodeRecord.code_hash == _hash_secret(pairing_code))
+                        .limit(1)
+                        .with_for_update()
+                    )
+                    if (
+                        pairing is None
+                        or pairing.claimed_at is not None
+                        or _aware(pairing.expires_at) <= now
+                    ):
+                        raise PairingCodeInvalid(
+                            "pairing code is invalid, expired, or already used"
+                        )
+                    existing: DeviceClientRecord | None = None
+                    if cleaned_alias is not None:
+                        existing = await session.scalar(
+                            select(DeviceClientRecord)
+                            .where(
+                                DeviceClientRecord.owner_user_id == pairing.owner_user_id,
+                                DeviceClientRecord.alias == cleaned_alias,
+                                DeviceClientRecord.revoked_at.is_(None),
+                            )
+                            .limit(1)
+                            .with_for_update()
+                        )
+                    if existing is None:
+                        record = DeviceClientRecord(
+                            id=uuid7(),
+                            owner_user_id=pairing.owner_user_id,
+                            name=_clean_name(name),
+                            alias=cleaned_alias,
+                            client_type=client_type,
+                            credential_hash=_hash_secret(token),
+                            capabilities=list(_normalized_capabilities(capabilities)),
+                            granted_capabilities=list(
+                                _normalized_capabilities(tuple(pairing.granted_capabilities))
+                            ),
+                            revision=1,
+                            paired_at=now,
+                            last_seen_at=now,
+                        )
+                        session.add(record)
+                        await session.flush()
+                    else:
+                        record = existing
+                        record.name = _clean_name(name)
+                        record.client_type = client_type
+                        record.credential_hash = _hash_secret(token)
+                        record.capabilities = list(_normalized_capabilities(capabilities))
+                        record.granted_capabilities = list(
+                            _normalized_capabilities(tuple(pairing.granted_capabilities))
+                        )
+                        record.revision += 1
+                        record.paired_at = now
+                        record.last_seen_at = now
+                    pairing.claimed_at = now
+                    pairing.claimed_device_id = record.id
+            except IntegrityError as error:
+                last_conflict = error
+                continue
+            return PairedDevice(access_token=token, device=_snapshot(record, now=now))
+        raise DeviceAliasConflict(
+            "device alias is already in use for this owner"
+        ) from last_conflict
 
     async def authenticate(self, access_token: str) -> DevicePrincipal:
         async with self._database.sessions() as session:

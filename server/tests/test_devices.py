@@ -189,27 +189,79 @@ async def test_revoked_device_frees_alias_for_repairing(database: Database) -> N
                 "capabilities": ["screen.capture"],
             },
         )
-        third_pairing = await client.post(
+        listed = await client.get("/api/v1/admin/devices", headers=admin_headers)
+
+    assert revoked.status_code == 200
+    assert repaired.status_code == 201
+    assert repaired.json()["device"]["alias"] == "我的电脑"
+    # 撤销设备让出别名：重新配对生成全新设备记录
+    assert repaired.json()["device"]["id"] != device_id
+    assert [item["revoked_at"] is not None for item in listed.json()] == [False, True]
+
+
+async def test_repairing_same_alias_takes_over_active_device(database: Database) -> None:
+    app, _registry = await _app_with_owner(database)
+    admin_headers = {"Authorization": "Bearer admin-token"}
+
+    async with AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        first_pairing = await client.post(
             "/api/v1/admin/devices/pairing-codes",
             headers=admin_headers,
             json={"granted_capabilities": ["screen.capture"]},
         )
-        active_conflict = await client.post(
+        first = await client.post(
             "/api/v1/devices/pair",
             json={
-                "pairing_code": third_pairing.json()["pairing_code"],
-                "name": "Another Mac",
+                "pairing_code": first_pairing.json()["pairing_code"],
+                "name": "我的 Mac",
                 "alias": "我的电脑",
                 "client_type": "desktop",
                 "capabilities": ["screen.capture"],
             },
         )
+        device_id = first.json()["device"]["id"]
+        stale_token = first.json()["access_token"]
+        second_pairing = await client.post(
+            "/api/v1/admin/devices/pairing-codes",
+            headers=admin_headers,
+            json={"granted_capabilities": ["screen.capture", "clipboard.write"]},
+        )
+        takeover = await client.post(
+            "/api/v1/devices/pair",
+            json={
+                "pairing_code": second_pairing.json()["pairing_code"],
+                "name": "重装后的 Mac",
+                "alias": "我的电脑",
+                "client_type": "desktop",
+                "capabilities": ["screen.capture", "clipboard.write"],
+            },
+        )
+        fresh_token = takeover.json()["access_token"]
+        stale_rejected = await client.post(
+            "/api/v1/devices/heartbeat",
+            headers={"Authorization": f"Bearer {stale_token}"},
+            json={"capabilities": []},
+        )
+        fresh_accepted = await client.post(
+            "/api/v1/devices/heartbeat",
+            headers={"Authorization": f"Bearer {fresh_token}"},
+            json={"capabilities": ["screen.capture"]},
+        )
+        listed = await client.get("/api/v1/admin/devices", headers=admin_headers)
 
-    assert revoked.status_code == 200
-    assert repaired.status_code == 201
-    assert repaired.json()["device"]["alias"] == "我的电脑"
-    # 活跃设备之间别名仍然唯一
-    assert active_conflict.status_code == 409
+    assert takeover.status_code == 201
+    # 同别名重配对是接管旧设备：ID 不变、旧凭据立即失效、不新增记录
+    assert takeover.json()["device"]["id"] == device_id
+    assert takeover.json()["device"]["name"] == "重装后的 Mac"
+    assert takeover.json()["device"]["granted_capabilities"] == [
+        "clipboard.write",
+        "screen.capture",
+    ]
+    assert stale_rejected.status_code == 401
+    assert fresh_accepted.status_code == 200
+    assert len(listed.json()) == 1
 
 
 async def test_expired_pairing_code_is_rejected(database: Database) -> None:
