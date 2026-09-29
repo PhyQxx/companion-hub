@@ -53,9 +53,9 @@
 - [x] MAILW 邮件感知 loop（Hub 侧 2026-09-29，待真实邮箱验收）：`mail_awareness` 配置段（默认关闭）+ `app/mail_awareness` 循环；BODY.PEEK 拉未读、片段即焚、UID 基线防重启重报、watermark 限流；`mail.received` SemanticEvent 进既有感知-认知-四通道链路；分析提示禁执行邮件指令。测试 `test_mail_awareness.py` 8 项。
 - [ ] DIST 技能蒸馏与回放晋级：验证通过的计划轨迹提炼 workflow/技能草稿，样例回放通过才可审批启用（衔接 Skill S4）。
 - [ ] DELEG 长任务委派：启用 JobEngine 承接耗时任务，完成经主动通道汇报，任意表面可取消。
-- [ ] CTX 滚动会话摘要：post-turn 异步维护摘要，上下文组装「原文 + 摘要 + 记忆」按 token 预算收缩。
-- [ ] RPT 透明度汇报：「你今天主动做了什么」从 CognitiveDecision+Timeline 确定性渲染；每日自体检异常才说话。
-- [ ] PERE-01 Router/Provider 跨轮缓存；PERE-02 流式热路径取消检查去 SQL 化；PERE-03 main.py 组合根拆分。
+- [x] CTX 滚动会话摘要（2026-09-29，Hub 侧）：迁移 0057；阈值 10 触发后台增量重写（≤500 字，L2 窗口强制 PRIVATE 路由），水位 FOR UPDATE 防并发覆盖；对话超出 20 条窗口后系统提示注入「此前对话要点」。测试三项（文件库时序无关）。
+- [x] RPT 透明度汇报（2026-09-29）：透明度问询短路模型链路，从近 24h CognitiveDecision 确定性渲染（开口次数/时间/决策类型/触发来源/安静计数），L1/L2 均可问。每日自体检留后续。
+- [x] PERE-01 Router 跨轮缓存（配置指纹 sha256，容量 4，发布自动失效）；PERE-02 流式取消检查改内存集合（cancel_turn 写入、回合收尾逐出）；PERE-03 main.py 拆分未实施。
 
 ### 0.0 核查后优先修复（2026-09-08）
 

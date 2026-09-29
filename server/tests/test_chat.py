@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from collections.abc import AsyncIterator, Awaitable, Callable
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import cast
 from uuid import UUID
@@ -28,6 +28,7 @@ from app.config import DatabaseConfigStore, HubConfig
 from app.db import (
     AppUserRecord,
     Base,
+    CognitiveDecisionRecord,
     ConversationRecord,
     Database,
     MessageRecord,
@@ -1937,7 +1938,7 @@ async def test_conversation_summary_updates_after_threshold(tmp_path: Path) -> N
             assert record.summary_text == "reply from sum-model"
             # 触发阈值 10；任务可能在轮内任一时序调度（10/11/12 均合法），
             # 未覆盖的尾部由下一次触发补齐
-            assert record.summary_until_seq >= 10
+            assert record.summary_until_seq is not None and record.summary_until_seq >= 10
     finally:
         await database.close()
 
@@ -1976,3 +1977,70 @@ async def test_conversation_summary_not_injected_within_window(tmp_path: Path) -
         assert "此前对话要点" not in requests[0].messages[0].content
     finally:
         await database.close()
+
+
+async def test_transparency_report_renders_deterministically(
+    database: Database,
+    store: DatabaseConfigStore,
+) -> None:
+    """RPT：透明度问询不经模型，直接从认知决策记录渲染。"""
+    requests: list[CompletionRequest] = []
+    service = ChatService(
+        database, store, router_builder=lambda config: FakeRouter("m", requests)
+    )
+    user = await create_user(database)
+    conversation = await service.create_conversation(user_id=user.id, title="rpt")
+    now = datetime.now(UTC)
+    async with database.sessions.begin() as session:
+        session.add(
+            CognitiveDecisionRecord(
+                id=uuid7(),
+                user_id=user.id,
+                event_id=uuid7(),
+                trigger_kind="mail.received",
+                decision="inform",
+                reason_codes=["notable"],
+                evidence_ids=[],
+                confidence=0.8,
+                urgency="normal",
+                attention_score=0.7,
+                policy_version="v1",
+                created_at=now - timedelta(hours=1),
+            )
+        )
+        session.add(
+            CognitiveDecisionRecord(
+                id=uuid7(),
+                user_id=user.id,
+                event_id=uuid7(),
+                trigger_kind="browser.observed",
+                decision="ignore",
+                reason_codes=[],
+                evidence_ids=[],
+                confidence=0.6,
+                urgency="low",
+                attention_score=0.3,
+                policy_version="v1",
+                created_at=now - timedelta(hours=2),
+            )
+        )
+
+    turn = await service.send_message(
+        conversation.id,
+        user_id=user.id,
+        text="你今天主动做了什么？",
+        privacy_level=PrivacyLevel.L1,
+    )
+
+    content = turn.assistant_message.content
+    assert "主动开口 1 次" in content
+    assert "mail.received" in content
+    assert "1 件事我注意到但选择了保持安静" in content
+    meta = turn.assistant_message.decision_meta or {}
+    assert meta["provider"] == "hub"
+    # 主链路没有经过模型：任何请求里都不该出现这条用户提问
+    assert not any(
+        "主动做了什么" in (message.content or "")
+        for request in requests
+        for message in request.messages
+    )

@@ -17,6 +17,7 @@ from app.cognition import CognitiveCycle, CognitiveDecision, SemanticEvent
 from app.config import ConfigStore, DatabaseConfigStore, HubConfig
 from app.db import (
     AppUserRecord,
+    CognitiveDecisionRecord,
     ConversationRecord,
     Database,
     InteractionTurnRecord,
@@ -528,6 +529,32 @@ class ChatService:
             backend = self._router_builder(pending.config)
             tool_executions: tuple[ToolExecution, ...] = ()
             consistency_request = pending.request
+            transparency_reply = await self._transparency_report(pending)
+            if transparency_reply is not None:
+                # RPT：确定性汇报短路整条模型链路，杜绝编造
+                result = CompletionResult(
+                    text=transparency_reply,
+                    provider="hub",
+                    model="transparency-report",
+                    endpoint="local",
+                    route=pending.request.route,
+                    finish_reason="stop",
+                    latency_ms=0.0,
+                )
+                consistency = await self._memory_consistency_guard.enforce(
+                    result=result,
+                    request=consistency_request,
+                    persona=pending.persona,
+                    retrieval=pending.memory_retrieval,
+                    backend=backend,
+                )
+                return await self._commit_turn(
+                    pending,
+                    consistency.result,
+                    backend=backend,
+                    consistency=consistency,
+                    tool_executions=tool_executions,
+                )
             deterministic_call = _deterministic_home_read_call(pending)
             if deterministic_call is not None:
                 execution = await self._execute_tool_call(pending, [deterministic_call])
@@ -1067,8 +1094,24 @@ class ChatService:
             backend = self._router_builder(pending.config)
             consistency_request = pending.request
             tool_executions: tuple[ToolExecution, ...] = ()
-            deterministic_call = _deterministic_home_read_call(pending)
-            if deterministic_call is not None:
+            transparency_reply = await self._transparency_report(pending)
+            deterministic_call = (
+                None if transparency_reply is not None else _deterministic_home_read_call(pending)
+            )
+            if transparency_reply is not None:
+                # RPT：确定性汇报短路模型链路；一致性缓冲模式下先过 Guard 再放行
+                result = CompletionResult(
+                    text=transparency_reply,
+                    provider="hub",
+                    model="transparency-report",
+                    endpoint="local",
+                    route=pending.request.route,
+                    finish_reason="stop",
+                    latency_ms=0.0,
+                )
+                if not buffer_for_consistency:
+                    await filtered_delta(transparency_reply)
+            elif deterministic_call is not None:
                 if on_tool_event is not None:
                     await on_tool_event(
                         {
@@ -1337,6 +1380,36 @@ class ChatService:
         finally:
             if runtime is not None:
                 await runtime.close()
+
+    async def _transparency_report(self, pending: PendingTurn) -> str | None:
+        """RPT（docs/09 §7）：透明度问询的确定性汇报，不经模型。"""
+        text = pending.user_message.content
+        if not any(term in text for term in _TRANSPARENCY_TERMS):
+            return None
+        since = _aware(pending.user_message.created_at) - timedelta(hours=24)
+        try:
+            async with self._database.sessions() as session:
+                rows = list(
+                    await session.scalars(
+                        select(CognitiveDecisionRecord)
+                        .where(
+                            CognitiveDecisionRecord.user_id == pending.user_id,
+                            CognitiveDecisionRecord.created_at >= since,
+                        )
+                        .order_by(CognitiveDecisionRecord.created_at.desc())
+                        .limit(100)
+                    )
+                )
+        except Exception:
+            logger.warning(
+                "transparency report lookup failed for turn %s", pending.turn_id, exc_info=True
+            )
+            return None
+        try:
+            zone = ZoneInfo(pending.user_timezone)
+        except ZoneInfoNotFoundError:
+            zone = ZoneInfo("Asia/Shanghai")
+        return render_transparency_report(rows, zone=zone)
 
     def _remember_device(self, pending: PendingTurn, result: ToolResult) -> None:
         if not result.ok or result.tool_name not in {
@@ -2135,6 +2208,52 @@ def _has_pnkx_card_intent(text: str) -> bool:
 def _has_pnkx_intent(text: str) -> bool:
     normalized = text.lower()
     return any(term in normalized for term in _PNKX_INTENT_TERMS)
+
+
+# RPT（docs/09 §7）：透明度问询的确定性意图词；命中后不经模型，
+# 直接从 CognitiveDecision 记录渲染汇报，杜绝编造。
+_TRANSPARENCY_TERMS = (
+    "主动做了什么",
+    "主动说了什么",
+    "主动提过什么",
+    "为什么提醒我",
+    "为什么打扰我",
+    "今天主动开口",
+)
+
+_TRANSPARENCY_LABELS = {
+    "inform": "告知",
+    "ask": "询问",
+    "suggest": "建议",
+    "escalate": "紧急升级",
+}
+
+
+def render_transparency_report(
+    rows: list[CognitiveDecisionRecord], *, zone: ZoneInfo
+) -> str:
+    """把近 24 小时的认知决策渲染为可问责的确定性汇报文本。"""
+    visible = [row for row in rows if row.decision in _TRANSPARENCY_LABELS]
+    silent_count = len(rows) - len(visible)
+    if not visible:
+        return (
+            "最近 24 小时我没有主动开过口"
+            + (f"，另有 {silent_count} 件事我注意到但选择了保持安静。" if silent_count else "。")
+            + "每次判断的完整依据都在时间线里，可随时追查。"
+        )
+    lines = [f"最近 24 小时我主动开口 {len(visible)} 次："]
+    for row in visible[:8]:
+        clock = _aware(row.created_at).astimezone(zone).strftime("%H:%M")
+        reasons = f"（{'、'.join(row.reason_codes[:2])}）" if row.reason_codes else ""
+        lines.append(
+            f"· {clock} {_TRANSPARENCY_LABELS[row.decision]}：{row.trigger_kind}{reasons}"
+        )
+    if len(visible) > 8:
+        lines.append(f"· ……以及另外 {len(visible) - 8} 次")
+    if silent_count:
+        lines.append(f"另有 {silent_count} 件事我注意到但选择了保持安静。")
+    lines.append("每次决定的完整依据都在时间线里，可随时追查。")
+    return "\n".join(lines)
 
 
 def _deterministic_home_read_call(pending: PendingTurn) -> ToolCall | None:
