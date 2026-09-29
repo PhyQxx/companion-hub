@@ -202,6 +202,7 @@ interface HubToolsConfig {
   enabled: boolean;
   max_tool_rounds: 1;
   query: {
+    location_enabled: boolean;
     weather_enabled: boolean;
     nearby_enabled: boolean;
     route_enabled: boolean;
@@ -395,6 +396,7 @@ const defaultTools = (): HubToolsConfig => ({
   enabled: false,
   max_tool_rounds: 1,
   query: {
+    location_enabled: true,
     weather_enabled: true,
     nearby_enabled: true,
     route_enabled: true,
@@ -1199,6 +1201,7 @@ onActivated(() => {
             <el-switch v-model="draft.tools.enabled" active-text="启用" />
           </div>
           <div class="option-row">
+            <el-checkbox v-model="draft.tools.query.location_enabled">当前位置</el-checkbox>
             <el-checkbox v-model="draft.tools.query.weather_enabled">天气</el-checkbox>
             <el-checkbox v-model="draft.tools.query.nearby_enabled">附近地点</el-checkbox>
             <el-checkbox v-model="draft.tools.query.route_enabled">路线规划</el-checkbox>

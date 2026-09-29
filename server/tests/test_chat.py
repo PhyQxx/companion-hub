@@ -1093,6 +1093,7 @@ async def test_weather_tool_round_hides_preamble_and_records_redacted_metadata(
     )
 
     assert [tool.name for tool in pending.request.tools] == [
+        "get_location",
         "get_weather",
         "search_nearby",
         "plan_route",

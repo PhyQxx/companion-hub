@@ -11,7 +11,9 @@ from app.tools import (
     AmapProvider,
     ClientLocation,
     ClientLocationPayload,
+    GetLocationArgs,
     GetWeatherArgs,
+    LocationTool,
     SearchNearbyArgs,
     ToolContext,
     WeatherTool,
@@ -275,3 +277,106 @@ async def test_current_location_literal_is_treated_as_unspecified() -> None:
     # "current_location" 字面量应走临时位置解析, 而不是拿去 geocode。
     assert result.location_source == "ephemeral"
     assert result.data["current"]["weather"] == "小雨"
+
+
+async def test_get_location_reports_city_district_without_coordinates() -> None:
+    provider, client = _provider()
+    tool = LocationTool(provider)
+    try:
+        result = await tool.execute(
+            GetLocationArgs(),
+            ToolContext(privacy_level="L1", ephemeral_location=_ephemeral()),
+        )
+    finally:
+        await client.aclose()
+
+    assert result.ok is True
+    assert result.location_source == "ephemeral"
+    assert result.data == {
+        "name": "山东省济南市历下区",
+        "adcode": "370102",
+        "source": "ephemeral",
+    }
+    serialized = json.dumps(result.data, ensure_ascii=False)
+    # 街道级地址与原始坐标不得回注给模型。
+    assert "经十路" not in serialized
+    assert str(_JINAN_WGS[0]) not in serialized
+    assert str(_JINAN_WGS[1]) not in serialized
+
+
+async def test_get_location_falls_back_to_default_city_and_marks_source() -> None:
+    provider, client = _provider()
+    tool = LocationTool(provider)
+    try:
+        result = await tool.execute(
+            GetLocationArgs(),
+            ToolContext(privacy_level="L1", default_city="济南市"),
+        )
+    finally:
+        await client.aclose()
+
+    assert result.ok is True
+    assert result.location_source == "default_city"
+    assert result.data["name"] == "山东省济南市"
+    assert result.data["source"] == "default_city"
+
+
+async def test_get_location_requires_any_location_signal() -> None:
+    provider, client = _provider()
+    tool = LocationTool(provider)
+    try:
+        result = await tool.execute(
+            GetLocationArgs(),
+            ToolContext(privacy_level="L1"),
+        )
+    finally:
+        await client.aclose()
+
+    assert result.ok is False
+    assert result.reason_code == "location_required"
+
+
+def test_location_intent_terms_select_get_location_tool() -> None:
+    from app.config import HubConfig
+    from app.tools import select_query_tools
+
+    config = HubConfig.model_validate(
+        {
+            "models": {
+                "cloud": {
+                    "provider": "openai_compatible",
+                    "model": "m",
+                    "base_url": "https://x.example/v1",
+                    "runs_local": False,
+                    "max_privacy_level": "L1",
+                    "max_context_tokens": 8192,
+                    "input_cost_per_million": 0,
+                    "output_cost_per_million": 0,
+                },
+                "local": {
+                    "provider": "openai_compatible",
+                    "model": "lm",
+                    "base_url": "http://127.0.0.1:1/v1",
+                    "runs_local": True,
+                    "max_privacy_level": "L2",
+                    "max_context_tokens": 8192,
+                    "input_cost_per_million": 0,
+                    "output_cost_per_million": 0,
+                },
+            },
+            "routes": {
+                "dialogue": {"primary": "cloud"},
+                "utility": {"primary": "cloud"},
+                "private": {"primary": "local"},
+            },
+            "tools": {
+                "enabled": True,
+                "amap": {"enabled": True, "secret_value": "test-only-key"},
+            },
+        }
+    )
+    # 与前端 LOCATION_INTENT_TERMS 保持同步: “位置/在哪/定位”命中即挂 get_location。
+    assert select_query_tools("你能获取我现在的位置吗", config) == ("get_location",)
+    assert select_query_tools("我现在在哪", config) == ("get_location",)
+    assert select_query_tools("帮我定位一下", config) == ("get_location",)
+    assert select_query_tools("今天心情不错", config) == ()

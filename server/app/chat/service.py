@@ -64,6 +64,7 @@ from app.tools import (
     ToolRegistry,
     ToolResult,
     build_query_tool_runtime,
+    location_tool_definition,
     nearby_tool_definition,
     route_tool_definition,
     select_device_tools,
@@ -141,6 +142,8 @@ def _enabled_query_tools(
         return ()
     query = config.tools.query
     selected: list[str] = []
+    if query.location_enabled:
+        selected.append("get_location")
     if query.weather_enabled:
         selected.append("get_weather")
     if query.nearby_enabled:
@@ -868,6 +871,7 @@ class ChatService:
         query_tool_names = _enabled_query_tools(snapshot.config, privacy_level, llm_route)
         tool_names = (*query_tool_names, *device_tool_names)
         definition_builders = {
+            "get_location": location_tool_definition,
             "get_weather": weather_tool_definition,
             "search_nearby": nearby_tool_definition,
             "plan_route": route_tool_definition,
@@ -2228,6 +2232,7 @@ def _tool_presentation(result: ToolResult) -> dict[str, object] | None:
 
 def _tool_label(tool_name: str) -> str:
     return {
+        "get_location": "正在确认当前位置…",
         "get_weather": "正在查询天气…",
         "search_nearby": "正在查找附近地点…",
         "plan_route": "正在规划路线…",

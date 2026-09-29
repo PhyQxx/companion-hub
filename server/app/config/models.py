@@ -124,6 +124,7 @@ class VoiceConfig(StrictModel):
 
 class QueryToolConfig(StrictModel):
     enabled: bool = True
+    location_enabled: bool = True
     weather_enabled: bool = True
     nearby_enabled: bool = True
     route_enabled: bool = True

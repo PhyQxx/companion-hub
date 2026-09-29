@@ -8,6 +8,7 @@ from app.llm.provider import EnvSecretProvider
 from .amap import AmapProvider
 from .contracts import ToolHandler
 from .executor import ToolExecutor
+from .locate import LocationTool
 from .nearby import NearbyTool
 from .registry import ToolRegistry
 from .route import RouteTool
@@ -45,6 +46,8 @@ def build_query_tool_runtime(
         requests_per_minute=amap.requests_per_minute,
     )
     handlers: list[ToolHandler] = []
+    if config.tools.query.location_enabled:
+        handlers.append(LocationTool(provider))
     if config.tools.query.weather_enabled:
         handlers.append(WeatherTool(provider))
     if config.tools.query.nearby_enabled:

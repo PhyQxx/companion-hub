@@ -5,6 +5,7 @@ from .executor import ToolExecutor
 from .factory import QueryToolRuntime, build_query_tool_runtime
 from .intent import select_device_tools, select_query_tools, supports_device_capability
 from .ledger import ToolLedger, ToolLedgerEntry
+from .locate import GetLocationArgs, LocationTool, location_tool_definition
 from .location import ClientLocation, ClientLocationPayload, LocationSource, ResolvedLocation
 from .nearby import NearbyTool, SearchNearbyArgs, nearby_tool_definition
 from .registry import ToolRegistry
@@ -20,8 +21,10 @@ __all__ = [
     "DesktopNotifyArgs",
     "DesktopNotifyTool",
     "FetchWebpageTool",
+    "GetLocationArgs",
     "GetWeatherArgs",
     "LocationSource",
+    "LocationTool",
     "NearbyTool",
     "PlanRouteArgs",
     "QueryToolRuntime",
@@ -38,6 +41,7 @@ __all__ = [
     "ToolResult",
     "WeatherTool",
     "build_query_tool_runtime",
+    "location_tool_definition",
     "nearby_tool_definition",
     "route_tool_definition",
     "select_device_tools",
