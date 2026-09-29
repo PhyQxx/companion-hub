@@ -356,6 +356,9 @@ class ConversationRecord(Base):
     )
     title: Mapped[str | None] = mapped_column(String(240))
     status: Mapped[str] = mapped_column(String(16), nullable=False, server_default="active")
+    # CTX 滚动会话摘要（docs/09 §6）：要点文本 + 覆盖到的消息 seq 水位
+    summary_text: Mapped[str | None] = mapped_column(Text)
+    summary_until_seq: Mapped[int | None] = mapped_column(BigInteger)
     last_seq: Mapped[int] = mapped_column(BigInteger, nullable=False, server_default="0")
     last_turn_seq: Mapped[int] = mapped_column(BigInteger, nullable=False, server_default="0")
     created_at: Mapped[datetime] = mapped_column(

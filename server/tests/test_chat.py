@@ -25,7 +25,14 @@ from app.cognition import (
     WorldStateBuilder,
 )
 from app.config import DatabaseConfigStore, HubConfig
-from app.db import AppUserRecord, Base, Database, MessageRecord, create_database
+from app.db import (
+    AppUserRecord,
+    Base,
+    ConversationRecord,
+    Database,
+    MessageRecord,
+    create_database,
+)
 from app.home_assistant import HomeAssistantState, HomeGetStateTool
 from app.ids import uuid7
 from app.llm import (
@@ -1886,3 +1893,86 @@ async def test_l2_assistant_profile_override_never_enters_public_prompt(
 
     assert "月见" not in requests[0].messages[0].content
     assert "月见" in requests[1].messages[0].content
+
+
+async def _summary_service(
+    tmp_path: Path,
+) -> tuple[ChatService, Database, list[CompletionRequest]]:
+    """CTX 测试脚手架：文件库（并发会话各自连接），随测随建随关。"""
+    requests: list[CompletionRequest] = []
+    database = create_database(f"sqlite+aiosqlite:///{tmp_path}/ctx-summary.db")
+    async with database.engine.begin() as connection:
+        await connection.run_sync(Base.metadata.create_all)
+    config_path = tmp_path / "hub.yaml"
+    config_path.write_text(config_yaml(), encoding="utf-8")
+    store = DatabaseConfigStore(database, config_path)
+    await store.load()
+    service = ChatService(
+        database, store, router_builder=lambda config: FakeRouter("sum-model", requests)
+    )
+    return service, database, requests
+
+
+async def _send_turns(
+    service: ChatService, conversation_id: UUID, user_id: UUID, count: int
+) -> None:
+    for index in range(count):
+        await service.send_message(
+            conversation_id, user_id=user_id, text=f"消息{index}", privacy_level=PrivacyLevel.L1
+        )
+    await service.drain_background_work()
+
+
+async def test_conversation_summary_updates_after_threshold(tmp_path: Path) -> None:
+    """CTX：新消息累计到阈值后，后台把窗口内容压缩为滚动摘要。"""
+    service, database, _ = await _summary_service(tmp_path)
+    try:
+        user = await create_user(database)
+        conversation = await service.create_conversation(user_id=user.id, title="ctx")
+        await _send_turns(service, conversation.id, user.id, 6)
+
+        async with database.sessions() as session:
+            record = await session.get(ConversationRecord, conversation.id)
+            assert record is not None
+            assert record.summary_text == "reply from sum-model"
+            # 触发阈值 10；任务可能在轮内任一时序调度（10/11/12 均合法），
+            # 未覆盖的尾部由下一次触发补齐
+            assert record.summary_until_seq >= 10
+    finally:
+        await database.close()
+
+
+async def test_conversation_summary_injected_beyond_context_window(tmp_path: Path) -> None:
+    """CTX：对话超出 20 条窗口后，系统提示注入「此前对话要点」。"""
+    service, database, requests = await _summary_service(tmp_path)
+    try:
+        user = await create_user(database)
+        conversation = await service.create_conversation(user_id=user.id, title="ctx-long")
+        await _send_turns(service, conversation.id, user.id, 13)
+
+        requests.clear()
+        await service.send_message(
+            conversation.id, user_id=user.id, text="最后一问", privacy_level=PrivacyLevel.L1
+        )
+        system_prompt = requests[0].messages[0].content
+        assert "【此前对话要点" in system_prompt
+        assert "reply from sum-model" in system_prompt
+    finally:
+        await database.close()
+
+
+async def test_conversation_summary_not_injected_within_window(tmp_path: Path) -> None:
+    """CTX：对话仍在 20 条窗口内时不注入摘要，避免与原文重复。"""
+    service, database, requests = await _summary_service(tmp_path)
+    try:
+        user = await create_user(database)
+        conversation = await service.create_conversation(user_id=user.id, title="ctx-short")
+        await _send_turns(service, conversation.id, user.id, 4)
+
+        requests.clear()
+        await service.send_message(
+            conversation.id, user_id=user.id, text="再聊一句", privacy_level=PrivacyLevel.L1
+        )
+        assert "此前对话要点" not in requests[0].messages[0].content
+    finally:
+        await database.close()
