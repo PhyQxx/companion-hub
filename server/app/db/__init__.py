@@ -67,6 +67,7 @@ from .models import (
     UiPreferenceRecord,
     UiThemeRecord,
     UserModeRecord,
+    WorkflowDraftRecord,
     WorkflowRecord,
 )
 from .session import Database, create_database
@@ -141,6 +142,7 @@ __all__ = [
     "UiPreferenceRecord",
     "UiThemeRecord",
     "UserModeRecord",
+    "WorkflowDraftRecord",
     "WorkflowRecord",
     "create_database",
 ]

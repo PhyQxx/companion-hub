@@ -9,8 +9,8 @@
 
 from __future__ import annotations
 
-from datetime import date
-from typing import Annotated
+from datetime import date, datetime
+from typing import Annotated, Any
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
@@ -24,7 +24,8 @@ from app.meetings.service import MeetingService
 from app.schemas.common import StrictModel
 from app.tasks.brief import BriefView, DailyBriefService
 from app.tasks.review import DailyReviewService, ReviewView
-from app.workflows.models import WorkflowView
+from app.workflows.drafts import PlanDistiller, WorkflowDraftStore, replay_pending_draft
+from app.workflows.models import WorkflowStep, WorkflowView
 from app.workflows.service import WorkflowService
 
 from .admin_config import AdminTokenGuard
@@ -42,6 +43,38 @@ class AdminButlerSummary(StrictModel):
     latest_review_date: date | None = None
 
 
+class WorkflowDraftAdminView(StrictModel):
+    """DIST 流程草稿的 Admin 视图：含回放证据，不含步骤执行参数。"""
+
+    id: UUID
+    user_id: UUID
+    plan_id: UUID | None
+    name: str
+    description: str | None
+    steps: list[WorkflowStep]
+    status: str
+    replay_status: str
+    replay_detail: dict[str, object]
+    created_at: datetime
+    reviewed_at: datetime | None
+
+
+def _draft_view(record: Any) -> WorkflowDraftAdminView:
+    return WorkflowDraftAdminView(
+        id=record.id,
+        user_id=record.user_id,
+        plan_id=record.plan_id,
+        name=record.name,
+        description=record.description,
+        steps=[WorkflowStep.model_validate(item) for item in record.steps or []],
+        status=record.status,
+        replay_status=record.replay_status,
+        replay_detail=dict(record.replay_detail or {}),
+        created_at=record.created_at,
+        reviewed_at=record.reviewed_at,
+    )
+
+
 def create_admin_butler_router(
     *,
     database: Database,
@@ -51,6 +84,8 @@ def create_admin_butler_router(
     briefs: DailyBriefService,
     reviews: DailyReviewService,
     admin_token: str | None,
+    drafts: WorkflowDraftStore | None = None,
+    distiller: PlanDistiller | None = None,
 ) -> APIRouter:
     router = APIRouter(
         prefix="/api/v1/admin/butler",
@@ -105,6 +140,91 @@ def create_admin_butler_router(
             await workflows.delete_workflow(await resolve_user(user_id), workflow_id)
         except LookupError as error:
             raise HTTPException(status.HTTP_404_NOT_FOUND, detail=str(error)) from error
+
+    @router.get("/workflow-drafts", response_model=list[WorkflowDraftAdminView])
+    async def list_workflow_drafts(
+        user_id: UUID | None = None,
+        draft_status: Annotated[str | None, Query(alias="status")] = "pending",
+        limit: Annotated[int, Query(ge=1, le=100)] = 50,
+    ) -> list[WorkflowDraftAdminView]:
+        if drafts is None:
+            raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, detail="drafts_disabled")
+        records = await drafts.list_drafts(
+            await resolve_user(user_id), status=draft_status, limit=limit
+        )
+        return [_draft_view(record) for record in records]
+
+    @router.post(
+        "/workflow-drafts/{draft_id}/approve", response_model=WorkflowDraftAdminView
+    )
+    async def approve_workflow_draft(
+        draft_id: UUID, user_id: UUID | None = None
+    ) -> WorkflowDraftAdminView:
+        """审批通过：回放通过（或无可回放步骤）才允许创建正式流程。"""
+        if drafts is None:
+            raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, detail="drafts_disabled")
+        record = await drafts.get(draft_id)
+        if record is None or record.status != "pending":
+            raise HTTPException(status.HTTP_404_NOT_FOUND, detail="draft not found")
+        owner = await resolve_user(user_id)
+        if record.user_id != owner:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, detail="draft not found")
+        if record.replay_status == "failed":
+            raise HTTPException(
+                status.HTTP_409_CONFLICT,
+                detail="replay_failed_rerun_before_approve",
+            )
+        if record.replay_status == "not_run":
+            raise HTTPException(
+                status.HTTP_409_CONFLICT,
+                detail="replay_not_run_rerun_before_approve",
+            )
+        steps = [WorkflowStep.model_validate(item) for item in record.steps or []]
+        try:
+            await workflows.save_workflow(
+                user_id=owner,
+                name=record.name,
+                steps=steps,
+                description=record.description,
+            )
+        except ValueError as error:
+            raise HTTPException(status.HTTP_409_CONFLICT, detail=str(error)) from error
+        reviewed = await drafts.mark_reviewed(draft_id, status="approved")
+        assert reviewed is not None
+        return _draft_view(reviewed)
+
+    @router.post(
+        "/workflow-drafts/{draft_id}/dismiss", response_model=WorkflowDraftAdminView
+    )
+    async def dismiss_workflow_draft(
+        draft_id: UUID, user_id: UUID | None = None
+    ) -> WorkflowDraftAdminView:
+        if drafts is None:
+            raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, detail="drafts_disabled")
+        record = await drafts.get(draft_id)
+        if record is None or record.status != "pending":
+            raise HTTPException(status.HTTP_404_NOT_FOUND, detail="draft not found")
+        owner = await resolve_user(user_id)
+        if record.user_id != owner:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, detail="draft not found")
+        reviewed = await drafts.mark_reviewed(draft_id, status="dismissed")
+        assert reviewed is not None
+        return _draft_view(reviewed)
+
+    @router.post(
+        "/workflow-drafts/{draft_id}/replay", response_model=WorkflowDraftAdminView
+    )
+    async def replay_workflow_draft(
+        draft_id: UUID, user_id: UUID | None = None
+    ) -> WorkflowDraftAdminView:
+        """手动重跑样例回放；结果写回草稿作为审批依据。"""
+        if drafts is None or distiller is None:
+            raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, detail="drafts_disabled")
+        owner = await resolve_user(user_id)
+        record = await replay_pending_draft(distiller, drafts, draft_id, user_id=owner)
+        if record is None:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, detail="draft not found")
+        return _draft_view(record)
 
     @router.get("/scenes", response_model=list[HomeSceneView])
     async def list_scenes(user_id: UUID | None = None) -> list[HomeSceneView]:

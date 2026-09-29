@@ -229,6 +229,7 @@ from app.workflows import (
     WorkflowService,
     WorkflowStore,
 )
+from app.workflows.drafts import PlanDistiller, WorkflowDraftStore
 from app.xiaoai_config import XiaoAiConfigMaterializer
 
 
@@ -383,6 +384,18 @@ def create_app(
         if runtime_database is not None
         else None
     )
+    # DIST（docs/09 §4）：计划轨迹蒸馏为流程草稿；回放执行器随 device_tools
+    # 装配完成后注入，完成回调只负责触发。
+    workflow_draft_store = (
+        WorkflowDraftStore(runtime_database) if runtime_database is not None else None
+    )
+    plan_distiller = (
+        PlanDistiller(runtime_database, workflow_draft_store, registry=action_registry)
+        if runtime_database is not None and workflow_draft_store is not None
+        else None
+    )
+    if action_plan_service is not None and plan_distiller is not None:
+        action_plan_service.set_completion_callback(plan_distiller.on_plan_completed)
     cognitive_cycle = (
         CognitiveCycle(
             cognitive_store,
@@ -1393,6 +1406,8 @@ def create_app(
                         briefs=daily_brief_service,
                         reviews=daily_review_service,
                         admin_token=runtime_admin_token,
+                        drafts=workflow_draft_store,
+                        distiller=plan_distiller,
                     )
                 )
             app.include_router(
@@ -1631,6 +1646,9 @@ def create_app(
                         home_state_provider=home_assistant_manager,
                     )
                 )
+                if plan_distiller is not None:
+                    # DIST：回放复用与计划执行同一套工具注册表与隐私闸门
+                    plan_distiller.set_executor(ToolExecutor(ToolRegistry(device_tools)))
             capability_provider = (
                 CompositeRuntimeCapabilityProvider(capability_providers)
                 if capability_providers

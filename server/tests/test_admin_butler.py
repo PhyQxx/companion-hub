@@ -297,3 +297,81 @@ async def test_explicit_user_id_and_empty_user_pool(database: Database) -> None:
         default = await client.get("/api/v1/admin/butler/summary", headers=AUTH)
         assert default.status_code == 200
         assert default.json()["user_id"] == str(other)
+
+
+async def test_workflow_draft_review_flow_via_api(
+    database: Database, user_id: UUID
+) -> None:
+    """DIST（docs/09 §4）：草稿列表/审批晋级（回放门禁）/终态不可再审。"""
+    from app.workflows.drafts import PlanDistiller, WorkflowDraftStore
+
+    registry = build_builtin_action_registry()
+    plans = ActionPlanService(database, registry)
+    workflows = WorkflowService(WorkflowStore(database), registry, plans)
+    drafts = WorkflowDraftStore(database)
+    distiller = PlanDistiller(database, drafts, registry=registry)
+    services = _services(database)
+    app = FastAPI()
+    app.include_router(
+        create_admin_butler_router(
+            database=database,
+            workflows=workflows,
+            scenes=services[1],
+            meetings=services[2],
+            briefs=services[3],
+            reviews=services[4],
+            admin_token="test-admin-token",
+            drafts=drafts,
+            distiller=distiller,
+        )
+    )
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        draft = await drafts.create_draft(
+            user_id=user_id,
+            plan_id=None,
+            name="睡前检查",
+            steps=[
+                WorkflowStep(
+                    action_id="home.light.turn_off", arguments={"target": "客厅主灯"}
+                ),
+                WorkflowStep(
+                    action_id="home.climate.set_temperature",
+                    arguments={"target": "卧室空调", "temperature_c": 25},
+                ),
+            ],
+            description="测试草稿",
+        )
+        assert draft is not None
+
+        listed = await client.get("/api/v1/admin/butler/workflow-drafts", headers=AUTH)
+        assert listed.status_code == 200
+        assert len(listed.json()) == 1
+        assert listed.json()[0]["replay_status"] == "not_run"
+
+        # 未回放不可直接审批
+        blocked = await client.post(
+            f"/api/v1/admin/butler/workflow-drafts/{draft.id}/approve", headers=AUTH
+        )
+        assert blocked.status_code == 409
+
+        # 手动回放（无来源计划 → not_applicable）
+        replayed = await client.post(
+            f"/api/v1/admin/butler/workflow-drafts/{draft.id}/replay", headers=AUTH
+        )
+        assert replayed.status_code == 200
+        assert replayed.json()["replay_status"] == "not_applicable"
+
+        approved = await client.post(
+            f"/api/v1/admin/butler/workflow-drafts/{draft.id}/approve", headers=AUTH
+        )
+        assert approved.status_code == 200
+        body = approved.json()
+        assert body["status"] == "approved"
+        # 审批创建了正式流程
+        assert len(await workflows.list_workflows(user_id)) == 1
+
+        # 终态不可再审
+        again = await client.post(
+            f"/api/v1/admin/butler/workflow-drafts/{draft.id}/approve", headers=AUTH
+        )
+        assert again.status_code == 404

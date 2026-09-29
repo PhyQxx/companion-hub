@@ -1559,6 +1559,47 @@ class WorkflowRecord(Base):
     )
 
 
+class WorkflowDraftRecord(Base):
+    """DIST（docs/09 §4）计划轨迹蒸馏出的流程草稿：仅人工审阅后可用。
+
+    来源是全部步骤验证通过的行动计划；审批硬门槛是 A0 只读步骤的
+    样例回放通过（结构一致），不存在自动晋级。dedupe_key 按步骤内容
+    幂等，同一轨迹重复完成不重复生成草稿。
+    """
+
+    __tablename__ = "workflow_draft"
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('pending','approved','dismissed')",
+            name="ck_workflow_draft_status",
+        ),
+        CheckConstraint(
+            "replay_status IN ('not_run','passed','failed','not_applicable')",
+            name="ck_workflow_draft_replay",
+        ),
+        Index("ix_workflow_draft_user", "user_id"),
+        UniqueConstraint("dedupe_key", name="uq_workflow_draft_dedupe"),
+    )
+
+    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True)
+    user_id: Mapped[UUID] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("app_user.id", ondelete="CASCADE"), nullable=False
+    )
+    # 蒸馏来源计划；计划删除后草稿保留（步骤快照自足）
+    plan_id: Mapped[UUID | None] = mapped_column(Uuid(as_uuid=True))
+    name: Mapped[str] = mapped_column(String(120), nullable=False)
+    description: Mapped[str | None] = mapped_column(String(500))
+    steps: Mapped[list[dict[str, Any]]] = mapped_column(JSON, nullable=False, default=list)
+    status: Mapped[str] = mapped_column(String(16), nullable=False, server_default="pending")
+    replay_status: Mapped[str] = mapped_column(String(16), nullable=False, server_default="not_run")
+    replay_detail: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False, default=dict)
+    dedupe_key: Mapped[str] = mapped_column(String(64), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    reviewed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
 class SkillRecord(Base):
     """Installed Skill; content is immutable within its current version."""
 

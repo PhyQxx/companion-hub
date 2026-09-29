@@ -136,6 +136,8 @@ class PlanChangedEvent(StrictModel):
 
 ExecutionListener = Callable[[PlanExecutionEvent], Awaitable[None]]
 ChangeListener = Callable[[PlanChangedEvent], Awaitable[None]]
+# DIST：计划全部完成后的回调（plan_id, user_id）
+PlanCompletionCallback = Callable[[UUID, UUID], None]
 
 
 class ActionPlanService:
@@ -156,6 +158,8 @@ class ActionPlanService:
         self._runner = runner
         self._execution_listener: ExecutionListener | None = None
         self._change_listener: ChangeListener | None = None
+        # DIST（docs/09 §4）：计划全部步骤完成后触发（回调自身转后台执行）
+        self._completion_callback: PlanCompletionCallback | None = None
 
     def set_runner(
         self,
@@ -166,6 +170,10 @@ class ActionPlanService:
     def set_execution_listener(self, listener: ExecutionListener) -> None:
         """PC-02：订阅执行进度事件；监听器异常绝不影响执行本身。"""
         self._execution_listener = listener
+
+    def set_completion_callback(self, callback: PlanCompletionCallback) -> None:
+        """DIST：计划完成后触发蒸馏等后续加工；回调异常只记日志。"""
+        self._completion_callback = callback
 
     def set_change_listener(self, listener: ChangeListener) -> None:
         self._change_listener = listener
@@ -651,6 +659,16 @@ class ActionPlanService:
                 reason_code=view.reason_code,
             )
         )
+        if (
+            view.status == ActionPlanStatus.COMPLETED.value
+            and self._completion_callback is not None
+        ):
+            # DIST：全部完成后触发蒸馏回调；回调自身负责转后台，同步调用
+            # 不阻塞执行返回，异常只记日志。
+            try:
+                self._completion_callback(plan_id, user_id)
+            except Exception:
+                logger.warning("plan completion callback failed: %s", plan_id, exc_info=True)
         return view
 
     async def _claim_next_step(
