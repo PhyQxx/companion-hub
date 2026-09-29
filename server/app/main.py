@@ -144,7 +144,13 @@ from app.integrations.mcp.actions import sync_mcp_actions
 from app.integrations.mcp.chat_tools import McpChatToolProvider
 from app.jobs import AssetStore, JobEngine
 from app.llm.provider import EnvSecretProvider
-from app.mail import MailAttachmentStore, MailClient, MailSendTool, create_mail_tools
+from app.mail import (
+    MailAttachmentStore,
+    MailClient,
+    MailOutboxStore,
+    MailSendTool,
+    create_mail_tools,
+)
 from app.meetings import LlmMeetingSummarizer, MeetingService, MeetingStore
 from app.memory import (
     LlmMemoryExtractor,
@@ -1507,10 +1513,14 @@ def create_app(
                 if runtime_config is not None and runtime_database
                 else None
             )
+            mail_outbox = MailOutboxStore(runtime_database) if runtime_database else None
             if runtime_config is not None:
                 device_tools.extend(
                     create_mail_tools(
-                        runtime_config, drafts=pending_mutations, attachments=mail_attachments
+                        runtime_config,
+                        drafts=pending_mutations,
+                        attachments=mail_attachments,
+                        outbox=mail_outbox,
                     )
                 )
             if (

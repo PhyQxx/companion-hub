@@ -189,9 +189,9 @@ def _device_tool_ready(
         # 助手工具：写/读个人任务、日历、联系人与流程库。L0 公开模式不读写
         # 个人数据，L2 私密会话内容不入库（工具执行层同样兜底拒绝），仅 L1 开放。
         return privacy_level is PrivacyLevel.L1 and _cloud_tool_model_ready(config, llm_route)
-    if name in {"mail_read", "mail_send"}:
-        # 邮件是云端账号操作（读摘要/出站发送），L2 私密会话禁止外发，仅 L1 开放；
-        # 未配置账号时工具自身 available=False。
+    if name in {"mail_read", "mail_send", "mail_sent"}:
+        # 邮件是云端账号操作（读摘要/出站发送/查本地发送日志），L2 私密会话
+        # 禁止外发与留痕，仅 L1 开放；未配置账号时工具自身 available=False。
         return privacy_level is PrivacyLevel.L1 and _cloud_tool_model_ready(config, llm_route)
     if name in {
         "pnkx_read_life",
@@ -2255,4 +2255,5 @@ def _tool_label(tool_name: str) -> str:
         "contact_query": "正在查找联系人…",
         "mail_read": "正在读取邮箱…",
         "mail_send": "正在发送邮件…",
+        "mail_sent": "正在查发送记录…",
     }.get(tool_name, "正在使用外部工具…")

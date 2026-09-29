@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable
 from datetime import UTC, datetime
 from time import perf_counter
@@ -19,8 +20,11 @@ from app.confirmation import (
 from app.llm import ToolDefinition
 from app.mail.attachments import MailAttachmentStore
 from app.mail.client import MailAttachment, MailClient, MailError, valid_address
+from app.mail.outbox import LIST_WINDOW, MailOutboxStore
 from app.schemas.common import PrivacyLevel
 from app.tools.contracts import ToolContext, ToolResult
+
+logger = logging.getLogger("app.mail.tools")
 
 _SUBJECT_LIMIT = 200
 _BODY_LIMIT = 10_000
@@ -86,10 +90,12 @@ class MailSendTool:
         *,
         drafts: PendingMutationStore | DatabasePendingMutationStore | None = None,
         attachments: MailAttachmentStore | None = None,
+        outbox: MailOutboxStore | None = None,
         clock: Callable[[], datetime] | None = None,
     ) -> None:
         self._client = client
         self._attachments = attachments
+        self._outbox = outbox
         self._clock = clock or (lambda: datetime.now(UTC))
         # 预览经共享确认底座；持久化存储时重启不失效，发送结果不明绝不自动重试。
         self._drafts: PendingMutationStore | DatabasePendingMutationStore = (
@@ -215,7 +221,24 @@ class MailSendTool:
             raise
         if self._attachments is not None and attachment_ids:
             await self._attachments.mark_used(attachment_ids)
-        return _mail_view(await self._drafts.complete(draft, dict(receipt)))
+        completed = await self._drafts.complete(draft, dict(receipt))
+        if self._outbox is not None:
+            # 邮件已真实发出：日志只回查凭据（收件人/主题/message_id），
+            # 写失败不影响确认结果，也不允许把已发送误报成结果未知。
+            try:
+                await self._outbox.record(
+                    user_id=user_id,
+                    turn_id=draft.turn_id,
+                    to=args.to,
+                    cc=args.cc or [],
+                    subject=args.subject,
+                    message_id=str(receipt.get("message_id") or ""),
+                    attachments=[item.filename for item in attachments],
+                    sent_at=self._clock(),
+                )
+            except Exception:
+                logger.warning("mail outbox log write failed", exc_info=True)
+        return _mail_view(completed)
 
     def _failure(self, reason: str, started: float) -> ToolResult:
         return ToolResult(
@@ -537,11 +560,94 @@ class MailAttachmentsTool:
         )
 
 
+class MailSentArgs(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    limit: Annotated[int, Field(ge=1, le=20)] = 10
+    # 关键词命中主题或收件人地址（本地子串匹配，大小写不敏感）
+    query: Annotated[str, Field(min_length=1, max_length=200)] | None = None
+
+
+class MailSentTool:
+    name = "mail_sent"
+    description = (
+        "查询本地保存的已发送邮件记录（收件人、抄送、主题、附件名、发送时间、"
+        "message_id）。用户问「我给谁发过什么」「刚才那封发了没有」时用本工具，"
+        "不要凭记忆声称已发送；这里只有经确认页发出的邮件，收件箱内容请用"
+        " mail_read。仅 L1 可用。"
+    )
+    arguments_model: type[BaseModel] = MailSentArgs
+    max_privacy_level = PrivacyLevel.L1
+
+    def __init__(self, outbox: MailOutboxStore) -> None:
+        self._outbox = outbox
+
+    @property
+    def available(self) -> bool:
+        return True  # 本地日志，无需外部邮箱配置
+
+    def definition(self) -> ToolDefinition:
+        return ToolDefinition(
+            name=self.name,
+            description=self.description,
+            parameters=MailSentArgs.model_json_schema(),
+        )
+
+    async def execute(self, arguments: BaseModel, context: ToolContext) -> ToolResult:
+        started = perf_counter()
+        args = cast(MailSentArgs, arguments)
+        if context.privacy_level != PrivacyLevel.L1:
+            return self._failure("private_session_unsupported", started)
+        if context.user_id is None:
+            return self._failure("idempotency_key_missing", started)
+        records = await self._outbox.list_recent(context.user_id, limit=LIST_WINDOW)
+        if args.query:
+            needle = args.query.casefold()
+            records = [
+                record
+                for record in records
+                if needle in record.subject.casefold()
+                or any(
+                    needle in address.casefold()
+                    for address in [*record.to_addresses, *record.cc_addresses]
+                )
+            ]
+        records = records[: args.limit]
+        return ToolResult(
+            ok=True,
+            tool_name=self.name,
+            data={
+                "messages": [
+                    {
+                        "to": record.to_addresses,
+                        "cc": record.cc_addresses,
+                        "subject": record.subject,
+                        "attachments": record.attachments,
+                        "message_id": record.message_id,
+                        "sent_at": record.sent_at.isoformat(),
+                    }
+                    for record in records
+                ],
+                "count": len(records),
+            },
+            latency_ms=(perf_counter() - started) * 1_000,
+        )
+
+    def _failure(self, reason: str, started: float) -> ToolResult:
+        return ToolResult(
+            ok=False,
+            tool_name=self.name,
+            reason_code=reason,
+            latency_ms=(perf_counter() - started) * 1_000,
+        )
+
+
 def create_mail_tools(
     config_store: ConfigStore | DatabaseConfigStore,
     *,
     drafts: PendingMutationStore | DatabasePendingMutationStore | None = None,
     attachments: MailAttachmentStore | None = None,
+    outbox: MailOutboxStore | None = None,
 ) -> list[
     MailSendTool
     | MailReadTool
@@ -549,6 +655,7 @@ def create_mail_tools(
     | MailFoldersTool
     | MailMoveTool
     | MailAttachmentsTool
+    | MailSentTool
 ]:
     client = MailClient(config_store)
     tools: list[
@@ -558,13 +665,16 @@ def create_mail_tools(
         | MailFoldersTool
         | MailMoveTool
         | MailAttachmentsTool
+        | MailSentTool
     ] = [
         MailReadTool(client),
-        MailSendTool(client, drafts=drafts, attachments=attachments),
+        MailSendTool(client, drafts=drafts, attachments=attachments, outbox=outbox),
         MailMarkTool(client),
         MailFoldersTool(client),
         MailMoveTool(client),
     ]
     if attachments is not None:
         tools.append(MailAttachmentsTool(attachments))
+    if outbox is not None:
+        tools.append(MailSentTool(outbox))
     return tools

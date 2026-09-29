@@ -1989,6 +1989,30 @@ class MailAttachmentRecord(Base):
     )
 
 
+class MailOutboxLogRecord(Base):
+    """MAIL-01 已发送邮件日志：确认发送成功后追加，永久保留。
+
+    与 15 分钟 TTL 的 pending_mutation 不同，这是持久的本地发送凭据：
+    收件人、主题、附件名与 SMTP 回执 message_id。正文不入库。
+    """
+
+    __tablename__ = "mail_outbox_log"
+    __table_args__ = (Index("ix_mail_outbox_user_sent", "user_id", "sent_at"),)
+
+    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True)
+    user_id: Mapped[UUID] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("app_user.id", ondelete="CASCADE"), nullable=False
+    )
+    # 发起这封邮件的对话回合，用于回溯"是哪次对话让它发出的"
+    turn_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
+    to_addresses: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
+    cc_addresses: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
+    subject: Mapped[str] = mapped_column(String(200), nullable=False)
+    message_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    attachments: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
+    sent_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
 class CalendarOAuthTokenRecord(Base):
     """CAL-01 外部日历 OAuth 刷新令牌（Google 等）：按用户+提供方唯一。
 

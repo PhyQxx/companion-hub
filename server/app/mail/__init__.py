@@ -7,6 +7,7 @@ from .client import (
     MailSummary,
     resolve_mail_account,
 )
+from .outbox import MailOutboxStore
 from .tools import (
     MailAttachmentsTool,
     MailFoldersTool,
@@ -14,6 +15,7 @@ from .tools import (
     MailMoveTool,
     MailReadTool,
     MailSendTool,
+    MailSentTool,
     create_mail_tools,
 )
 
@@ -27,8 +29,10 @@ __all__ = [
     "MailFoldersTool",
     "MailMarkTool",
     "MailMoveTool",
+    "MailOutboxStore",
     "MailReadTool",
     "MailSendTool",
+    "MailSentTool",
     "MailSummary",
     "create_mail_tools",
     "resolve_mail_account",

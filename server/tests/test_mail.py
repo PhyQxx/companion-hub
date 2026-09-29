@@ -898,3 +898,129 @@ async def test_mail_attachments_tool_lists_pending_for_model(
         assert private.reason_code == "private_session_unsupported"
     finally:
         await database.close()
+
+
+# ---------------------------------------------------------------------------
+# MAIL-01 本地发送日志（mail_outbox_log）
+# ---------------------------------------------------------------------------
+
+
+async def test_outbox_log_written_on_confirm_and_query_tool(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from app.auth import AuthService
+    from app.db import Base, create_database
+    from app.mail import MailOutboxStore, MailSendTool, MailSentTool
+
+    database = create_database(f"sqlite+aiosqlite:///{tmp_path / 'outbox.db'}")
+    try:
+        async with database.engine.begin() as connection:
+            await connection.run_sync(Base.metadata.create_all)
+        auth = AuthService(database)
+        owner = await auth.setup(display_name="Outbox", password="correct horse")
+        user = owner.principal.user_id
+        outbox = MailOutboxStore(database)
+        client = MailClient(await _mail_store_enabled(tmp_path))
+        sends: list[dict[str, Any]] = []
+
+        async def send(**kwargs: Any) -> dict[str, object]:
+            sends.append(kwargs)
+            return {"message_id": "mid-outbox", "recipients": kwargs["to"]}
+
+        monkeypatch.setattr(client, "send", send)
+        tool = MailSendTool(client, outbox=outbox)
+        context = ToolContext(
+            privacy_level=PrivacyLevel.L1, user_id=user, turn_id=uuid4()
+        )
+
+        def args(payload: dict[str, Any]) -> Any:
+            return MailSendTool.arguments_model.model_validate(payload)
+
+        assert await outbox.list_recent(user) == []
+
+        await tool.execute(
+            args(
+                {
+                    "to": ["friend@example.com"],
+                    "cc": ["boss@example.com"],
+                    "subject": "你好",
+                    "body": "内容",
+                }
+            ),
+            context,
+        )
+        draft = (await tool.list_drafts(user))[0]
+        receipt = await tool.confirm(user, UUID(str(draft["id"])), str(draft["digest"]))
+        assert receipt["status"] == "sent"
+
+        # 重复确认走已完成短路：不重复发送也不重复写日志
+        repeated = await tool.confirm(user, UUID(str(draft["id"])), str(draft["digest"]))
+        assert repeated == receipt
+        assert len(sends) == 1
+        rows = await outbox.list_recent(user)
+        assert len(rows) == 1
+        row = rows[0]
+        assert row.to_addresses == ["friend@example.com"]
+        assert row.cc_addresses == ["boss@example.com"]
+        assert row.subject == "你好"
+        assert row.message_id == "mid-outbox"
+        assert row.attachments == []
+        assert row.turn_id == context.turn_id
+
+        sent_tool = MailSentTool(outbox)
+
+        def sent_args(payload: dict[str, Any]) -> Any:
+            return MailSentTool.arguments_model.model_validate(payload)
+
+        result = await sent_tool.execute(sent_args({}), context)
+        assert result.ok is True
+        assert result.data["count"] == 1
+        message = result.data["messages"][0]
+        assert message["to"] == ["friend@example.com"]
+        assert message["subject"] == "你好"
+        assert message["message_id"] == "mid-outbox"
+        assert message["sent_at"]
+
+        # query 过滤：主题命中、地址大小写不敏感、未命中为空
+        assert (await sent_tool.execute(sent_args({"query": "你好"}), context)).data[
+            "count"
+        ] == 1
+        assert (
+            await sent_tool.execute(sent_args({"query": "FRIEND@example.com"}), context)
+        ).data["count"] == 1
+        assert (
+            await sent_tool.execute(sent_args({"query": "不存在"}), context)
+        ).data["count"] == 0
+
+        # 用户隔离与 L2 拒绝
+        stranger = await sent_tool.execute(
+            sent_args({}), context.model_copy(update={"user_id": uuid4()})
+        )
+        assert stranger.data["count"] == 0
+        private = await sent_tool.execute(
+            sent_args({}), context.model_copy(update={"privacy_level": PrivacyLevel.L2})
+        )
+        assert private.ok is False
+        assert private.reason_code == "private_session_unsupported"
+
+        # 取消与 SMTP 失败都不写日志
+        await tool.execute(
+            args({"to": ["x@example.com"], "subject": "取消", "body": "b"}), context
+        )
+        cancelled = (await tool.list_drafts(user))[-1]
+        await tool.cancel(user, UUID(str(cancelled["id"])))
+
+        async def failing_send(**kwargs: Any) -> dict[str, object]:
+            del kwargs
+            raise MailError("mail_send_failed")
+
+        monkeypatch.setattr(client, "send", failing_send)
+        await tool.execute(
+            args({"to": ["fail@example.com"], "subject": "失败", "body": "b"}), context
+        )
+        broken = (await tool.list_drafts(user))[-1]
+        with pytest.raises(MailError):
+            await tool.confirm(user, UUID(str(broken["id"])), str(broken["digest"]))
+        assert len(await outbox.list_recent(user)) == 1
+    finally:
+        await database.close()
