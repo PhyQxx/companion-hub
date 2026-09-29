@@ -355,7 +355,9 @@ async def test_propose_skill_revision_flow(database: Database) -> None:
     target = await store.create(_target_document(), source="created")
     assert target.version == 1
     revised = _proposal_response()
-    revised["document"]["description"] = "查询情侣卡券（修订）"
+    revised_document = revised["document"]
+    assert isinstance(revised_document, dict)
+    revised_document["description"] = "查询情侣卡券（修订）"
     assistant = _assistant(store, FakeBackend(revised))
     result = await assistant.execute(
         _ProposeSkillArgs.model_validate(_REVISION_ARGS),
@@ -497,7 +499,9 @@ async def test_draft_verification_lifecycle(database: Database) -> None:
         assert failed.verify_reason == "connection_disabled"
         # 说明型草稿（无 api 契约）无法试跑，原因可诊断
         no_api = _proposal_response()
-        no_api["document"]["api"] = None
+        no_api_document = no_api["document"]
+        assert isinstance(no_api_document, dict)
+        no_api_document["api"] = None
         plain = SkillDraftAssistant(store, SkillDraftGenerator(backend=FakeBackend(no_api)))
         plain_result = await plain.execute(
             _ProposeSkillArgs.model_validate(

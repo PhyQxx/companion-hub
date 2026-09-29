@@ -743,6 +743,15 @@ class ChatService:
                 # 设备能力查询失败不能影响聊天；失败时按“没有现实能力”收紧边界。
                 logger.warning("runtime capability lookup failed", exc_info=True)
         pnkx_intent = _has_pnkx_intent(text)
+        skill_handlers: tuple[SkillReadToolHandler, ...] = ()
+        if (
+            self._skill_tools is not None
+            and _cloud_tool_model_ready(snapshot.config, llm_route)
+        ):
+            try:
+                skill_handlers = await self._skill_tools.select(text, privacy_level=privacy_level)
+            except Exception:
+                logger.warning("skill selection failed for turn %s", turn_id, exc_info=True)
         # 工具挂载只看在线能力与配置就绪；选哪个、何时调用由模型根据工具描述自行判断。
         # 先于 reality_block 计算：能力边界提示需要知道本轮真正挂载了哪些工具。
         candidate_device_tools = self._device_tools.names()
@@ -754,6 +763,11 @@ class ChatService:
             # 情侣卡券走登录态 Bearer Skill；旧生活工具没有卡券资源。
             candidate_device_tools = tuple(
                 name for name in candidate_device_tools if not name.startswith("pnkx_")
+            )
+        elif any(handler.name.startswith("skill.pnkx-") for handler in skill_handlers):
+            # 已授权的 PNKX 只读 Skill 使用独立 Bearer 连接；不要同时提供旧令牌读取工具。
+            candidate_device_tools = tuple(
+                name for name in candidate_device_tools if name != "pnkx_read_life"
             )
         device_tool_names = tuple(
             name
@@ -871,7 +885,6 @@ class ChatService:
         if mcp_handlers:
             tool_names = (*tool_names, *(handler.name for handler in mcp_handlers))
             tool_definitions.extend(handler.definition() for handler in mcp_handlers)
-        skill_handlers: tuple[SkillReadToolHandler, ...] = ()
         skill_guidance = ""
         if self._skill_tools is not None:
             try:
@@ -880,14 +893,6 @@ class ChatService:
                 logger.warning(
                     "skill guidance selection failed for turn %s", turn_id, exc_info=True
                 )
-        if (
-            self._skill_tools is not None
-            and _cloud_tool_model_ready(snapshot.config, llm_route)
-        ):
-            try:
-                skill_handlers = await self._skill_tools.select(text, privacy_level=privacy_level)
-            except Exception:
-                logger.warning("skill selection failed for turn %s", turn_id, exc_info=True)
         if skill_handlers:
             tool_names = (*tool_names, *(handler.name for handler in skill_handlers))
             tool_definitions.extend(handler.definition() for handler in skill_handlers)
@@ -2060,7 +2065,10 @@ def _render_pnkx_tool_reply(result: ToolResult) -> str:
     """Render pnkx results locally so L2 data never needs a second model pass."""
     if not result.ok:
         if result.reason_code == "integration_token_rejected":
-            return "PNKX 生活服务拒绝了集成令牌。请在管理端检查 PNKX 连接的令牌与授权。"
+            return (
+                "旧 PNKX 生活连接的集成令牌被拒绝；这次没有使用技能中心连接。"
+                "若已授权相关技能，请确认当前为 L1 会话；否则检查旧连接的令牌。"
+            )
         return f"PNKX 操作没有完成（{result.reason_code or 'unknown_error'}）。"
     resource = str(result.data.get("resource") or "data")
     label = _PNKX_RESOURCE_LABELS.get(resource, "数据")

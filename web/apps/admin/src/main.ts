@@ -49,6 +49,9 @@ const movedDeviceTabs: Record<string, { path: string; tab: string; section?: str
 
 router.beforeEach((to) => {
   const tab = typeof to.query.tab === "string" ? to.query.tab : "";
+  if (to.path === "/integrations" && tab === "pnkx") {
+    return { path: "/skills", query: { tab: "connections" } };
+  }
   if (to.path === "/devices") {
     const target = movedDeviceTabs[tab];
     if (!target) return true;

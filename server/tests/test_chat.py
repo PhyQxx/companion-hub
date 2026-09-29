@@ -4,6 +4,7 @@ from __future__ import annotations
 from collections.abc import AsyncIterator, Awaitable, Callable
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import cast
 from uuid import UUID
 
 import pytest
@@ -34,6 +35,7 @@ from app.llm import (
     LLMRouteExhausted,
     ModelUsage,
     ToolCall,
+    ToolDefinition,
 )
 from app.main import create_app
 from app.persona import PersonaConfig, PersonaStore
@@ -44,6 +46,7 @@ from app.pnkx import (
     PnkxUpdateTool,
 )
 from app.schemas import PrivacyLevel
+from app.skills.runtime import SkillToolProvider
 from app.tools import ToolExecution, ToolResult
 from app.tools.browser import InspectWebpageTool
 from app.tools.screen import CaptureScreenTool
@@ -196,6 +199,56 @@ async def test_pnkx_tools_are_exposed_to_tool_capable_chat_model(
     assert "device:test:screen.capture" not in pending.request.messages[0].content
 
 
+async def test_pnkx_read_uses_matching_skill_instead_of_legacy_token_tool(
+    database: Database,
+    store: DatabaseConfigStore,
+) -> None:
+    candidate = store.current.config.model_dump(mode="python")
+    candidate["models"]["cloud"]["supports_tool_calling"] = True
+    draft = await store.create_draft(HubConfig.model_validate(candidate), actor="test")
+    await store.publish(draft.version, actor="test")
+
+    class AnniversarySkill:
+        name = "skill.pnkx-commemoration.commemoration_list"
+
+        def definition(self) -> ToolDefinition:
+            return ToolDefinition(
+                name=self.name,
+                description="查询纪念日列表",
+                parameters={"type": "object"},
+            )
+
+    class MatchingSkills:
+        async def select(
+            self, text: str, *, privacy_level: PrivacyLevel
+        ) -> tuple[AnniversarySkill, ...]:
+            assert "纪念日" in text
+            assert privacy_level is PrivacyLevel.L1
+            return (AnniversarySkill(),)
+
+        async def guidance(self, text: str) -> str:
+            return ""
+
+    service = ChatService(
+        database,
+        store,
+        device_tools=(PnkxReadTool.__new__(PnkxReadTool),),
+        skill_tools=cast(SkillToolProvider, MatchingSkills()),
+    )
+    user = await create_user(database)
+    conversation = await service.create_conversation(user_id=user.id, title="pnkx skill")
+
+    pending = await service.start_turn(
+        conversation.id,
+        user_id=user.id,
+        text="看看纪念日现在有哪些",
+        privacy_level=PrivacyLevel.L1,
+    )
+
+    assert pending.tool_names == ("skill.pnkx-commemoration.commemoration_list",)
+    assert {tool.name for tool in pending.request.tools} == set(pending.tool_names)
+
+
 def test_pnkx_tool_result_is_rendered_locally() -> None:
     reply = _render_pnkx_tool_reply(
         ToolResult(
@@ -231,7 +284,8 @@ def test_pnkx_auth_failure_has_actionable_message() -> None:
         )
     )
     assert "集成令牌" in reply
-    assert "管理端" in reply
+    assert "技能中心连接" in reply
+    assert "L1 会话" in reply
 
 
 def test_pnkx_update_and_delete_results_are_rendered_locally() -> None:

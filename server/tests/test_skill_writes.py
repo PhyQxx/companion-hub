@@ -110,13 +110,14 @@ async def test_sync_registers_enabled_confirm_ops_and_removes_stale(
     }
     # 契约新增操作后同步覆盖；技能停用后移除
     await store.set_enabled(skill.id, False)
-    await store.set_api(skill.id, _document(extra_operation=True).api or skill.api)  # type: ignore[arg-type]
+    updated_api = _document(extra_operation=True).api or skill.api
+    assert updated_api is not None
+    await store.set_api(skill.id, updated_api)
     await store.set_enabled(skill.id, True)
     sync_skill_actions(registry, await store.list())
-    assert (
-        "skill.partner-todo.todo_delete"
-        in registry.get("skill.partner-todo.todo_delete").definition.action_id
-    )  # type: ignore[union-attr]
+    registered = registry.get("skill.partner-todo.todo_delete")
+    assert registered is not None
+    assert "skill.partner-todo.todo_delete" in registered.definition.action_id
     await store.set_enabled(skill.id, False)
     sync_skill_actions(registry, await store.list())
     assert not [

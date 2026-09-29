@@ -160,14 +160,7 @@ from app.output.proactive import DesktopCommandGateway
 from app.perception import PerceptionPipeline, PerceptionStore, ProactivePolicy
 from app.perception.pipeline import EventObserver
 from app.persona import PersonaStore
-from app.pnkx import (
-    PnkxCreateTool,
-    PnkxDeleteTool,
-    PnkxLifeClient,
-    PnkxReadTool,
-    PnkxUpdateTool,
-    pnkx_runs_local,
-)
+from app.pnkx import PnkxLifeClient
 from app.push import PushSubscriptionStore, WebPushAdapter
 from app.runtime import TurnCoordinator
 from app.safety import ActivityTracker, SafetyActivityScheduler, SafetyAlertService
@@ -1520,15 +1513,6 @@ def create_app(
                         runtime_config, drafts=pending_mutations, attachments=mail_attachments
                     )
                 )
-            if pnkx_life_client is not None:
-                current_pnkx_base_url, _, _ = pnkx_settings()
-                pnkx_is_local = pnkx_runs_local(current_pnkx_base_url)
-                device_tools.append(PnkxReadTool(pnkx_life_client, runs_local=pnkx_is_local))
-                # 写权限由动态客户端在每次请求时按当前数据库配置执行；始终注册工具，
-                # 后台启用/停用后无需重建 ChatService。
-                device_tools.append(PnkxCreateTool(pnkx_life_client, runs_local=pnkx_is_local))
-                device_tools.append(PnkxUpdateTool(pnkx_life_client, runs_local=pnkx_is_local))
-                device_tools.append(PnkxDeleteTool(pnkx_life_client, runs_local=pnkx_is_local))
             if (
                 skill_store is not None
                 and skill_connections is not None
