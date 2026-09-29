@@ -374,8 +374,8 @@ watch(
         </el-table>
       </div>
 
-      <!-- 升级与信息 -->
-      <div v-if="mode === 'updates'">
+      <!-- 升级与信息：并入「基础与升级」Tab，与基础设置同页堆叠 -->
+      <div v-if="mode === 'general' || mode === 'updates'">
         <el-card shadow="never">
           <template #header><span>版本信息</span></template>
           <div class="meta">

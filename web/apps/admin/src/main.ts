@@ -24,9 +24,11 @@ const router = createRouter({
     { path: "/jobs", redirect: { path: "/settings", query: { tab: "jobs" } } },
     { path: "/screen-awareness", redirect: { path: "/perception", query: { tab: "screen" } } },
     { path: "/avatars", redirect: { path: "/personas", query: { tab: "gallery" } } },
-    // 信息架构合并：形象与外观并入「人格与形象」；主动输出并入「感知与守护」。
+    // 信息架构合并：形象与外观并入「人格与形象」；主动输出并入「感知与守护」；
+    // 隐私与安全并入「观测与审计」。
     { path: "/appearance", redirect: { path: "/personas", query: { tab: "gallery" } } },
     { path: "/output", redirect: { path: "/perception", query: { tab: "channels" } } },
+    { path: "/privacy", component: () => import("./views/ModuleWorkspaceView.vue"), props: { module: "logs" } },
     { path: "/:pathMatch(.*)*", redirect: "/" },
   ],
 });
@@ -71,6 +73,27 @@ router.beforeEach((to) => {
   if (to.path === "/skills" && tab === "generate") {
     // 智能创建并入「创建技能」页内切换
     return { path: "/skills", query: { ...to.query, tab: "create", section: "generate" } };
+  }
+  if (to.path === "/skills" && tab === "suggestions") {
+    // 学习建议并入「审阅中心」页内切换
+    return { path: "/skills", query: { ...to.query, tab: "drafts", section: "suggestions" } };
+  }
+  if (to.path === "/privacy") {
+    // 隐私与安全并入「观测与审计」：旧 Tab 迁移到新键
+    const movedPrivacyTabs: Record<string, string> = {
+      summary: "summary",
+      flow: "summary",
+      egress: "egress",
+      operations: "egress",
+      policies: "policies",
+    };
+    const target = movedPrivacyTabs[tab] ?? "summary";
+    return { path: "/logs", query: { ...to.query, tab: target } };
+  }
+  if (to.path === "/logs" && ["events", "performance", "errors", "alerts"].includes(tab)) {
+    // 日志追踪 Tab 合并：事件并入 Trace，性能/错误/告警并入分析与告警
+    const merged = tab === "events" ? "traces" : "analysis";
+    return { path: "/logs", query: { ...to.query, tab: merged } };
   }
   return true;
 });

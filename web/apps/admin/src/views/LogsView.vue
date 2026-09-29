@@ -94,8 +94,9 @@ onMounted(refresh);
     </div>
 
     <div v-if="data" v-loading="loading">
-      <!-- Trace 查询 -->
+      <!-- Trace 与事件：合并 Tab 内堆叠展示 -->
       <div v-if="mode === 'traces'">
+        <h4>决策 Trace</h4>
         <el-table :data="data.traces" size="small">
           <el-table-column prop="id" label="ID" width="220"><template #default="{ row }"><code>{{ row.id.slice(0, 8) }}</code></template></el-table-column>
           <el-table-column prop="trigger_kind" label="触发源" width="140" />
@@ -107,10 +108,7 @@ onMounted(refresh);
           <el-table-column prop="created_at" label="时间" width="170"><template #default="{ row }">{{ new Date(row.created_at).toLocaleString() }}</template></el-table-column>
         </el-table>
         <p class="hint">共 {{ data.trace_count }} 条决策记录</p>
-      </div>
-
-      <!-- 事件日志 -->
-      <div v-if="mode === 'events'">
+        <h4 style="margin-top: 20px;">事件日志</h4>
         <el-table :data="data.events" size="small">
           <el-table-column prop="event_id" label="Event ID" width="220"><template #default="{ row }"><code>{{ row.event_id.slice(0, 8) }}</code></template></el-table-column>
           <el-table-column prop="kind" label="类型" width="140" />
@@ -122,8 +120,9 @@ onMounted(refresh);
         <p class="hint">共 {{ data.event_count }} 条事件记录</p>
       </div>
 
-      <!-- 性能分析 -->
-      <div v-if="mode === 'performance'">
+      <!-- 分析与告警：性能 + 错误 + 告警合并 Tab -->
+      <div v-if="mode === 'analysis'">
+        <h4>性能概览</h4>
         <div class="stats">
           <el-card shadow="never"><span>决策总数</span><strong>{{ data.trace_count }}</strong></el-card>
           <el-card shadow="never"><span>事件总数</span><strong>{{ data.event_count }}</strong></el-card>
@@ -131,10 +130,8 @@ onMounted(refresh);
           <el-card shadow="never"><span>命令失败</span><strong>{{ data.command_error_count }}</strong></el-card>
         </div>
         <el-alert title="性能分析需要更多指标采集（P50/P90 阶段耗时）" type="info" :closable="false" show-icon style="margin-top: 12px;" />
-      </div>
 
-      <!-- 错误分析 -->
-      <div v-if="mode === 'errors'">
+        <h4 style="margin-top: 20px;">错误分析</h4>
         <h4>死信队列（{{ data.dead_letters.length }} 条最近）</h4>
         <el-table :data="data.dead_letters" size="small" style="margin-bottom: 16px;">
           <el-table-column prop="id" label="ID" width="80" />
@@ -150,10 +147,8 @@ onMounted(refresh);
           <el-table-column prop="reason_code" label="原因码" width="160" />
           <el-table-column prop="issued_at" label="时间" width="170"><template #default="{ row }">{{ new Date(row.issued_at).toLocaleString() }}</template></el-table-column>
         </el-table>
-      </div>
 
-      <!-- 告警记录 -->
-      <div v-if="mode === 'alerts'">
+        <h4 style="margin-top: 20px;">告警记录</h4>
         <el-empty description="告警系统需要专门的告警规则与通知渠道配置" />
         <el-alert title="当前状态" type="info" :closable="false" show-icon style="margin-top: 12px;">
           <div>死信队列: {{ data.dead_letter_count }} 条</div>

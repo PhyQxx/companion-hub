@@ -77,11 +77,7 @@ onMounted(refresh);
           <el-table-column prop="memory_count" label="记忆" width="100" />
           <el-table-column prop="timeline_count" label="时间线" width="100" />
         </el-table>
-      </div>
-
-      <!-- 数据流向 -->
-      <div v-if="mode === 'flow'">
-        <el-card shadow="never">
+        <el-card shadow="never" style="margin-top: 12px;">
           <template #header><span>数据生命周期</span></template>
           <div class="flow">
             <div class="flow-step"><el-tag type="success">采集</el-tag><span>事件 (event) → 消息 (message)</span></div>
@@ -93,8 +89,9 @@ onMounted(refresh);
         <el-alert title="详细流向图需要后续实现" type="info" :closable="false" show-icon style="margin-top: 12px;" />
       </div>
 
-      <!-- 外发审计 -->
+      <!-- 外发与操作审计：合并 Tab -->
       <div v-if="mode === 'egress'">
+        <h4>外发审计</h4>
         <el-table :data="data.egress" size="small">
           <el-table-column prop="id" label="ID" width="220"><template #default="{ row }"><code>{{ row.id.slice(0, 8) }}</code></template></el-table-column>
           <el-table-column prop="kind" label="渠道" width="120" />
@@ -102,11 +99,10 @@ onMounted(refresh);
           <el-table-column prop="privacy_level" label="隐私" width="80" />
           <el-table-column prop="created_at" label="时间" width="170"><template #default="{ row }">{{ new Date(row.created_at).toLocaleString() }}</template></el-table-column>
         </el-table>
-      </div>
 
-      <!-- 操作审计 -->
-      <div v-if="mode === 'operations'">
-        <el-table :data="data.operations" size="small">
+        <h4 style="margin-top: 20px;">操作审计</h4>
+        <el-table :data="data.operations" size="small" style="margin-top: 12px;">
+          <el-table-column type="index" label="#" width="48" />
           <el-table-column prop="id" label="ID" width="80" />
           <el-table-column prop="kind" label="类型" width="120"><template #default="{ row }"><el-tag size="small">{{ row.kind }}</el-tag></template></el-table-column>
           <el-table-column prop="actor" label="操作人" width="120" />

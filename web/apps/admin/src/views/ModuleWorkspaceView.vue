@@ -78,8 +78,11 @@ const currentView = computed(() => {
   if (props.module === "perception" && activeTab.value === "safety") return SafetyAdminView;
   if (props.module === "perception" && activeTab.value === "channels") return ProactiveChannelsView;
   if (props.module === "logs" && activeTab.value === "live") return LiveLogsView;
+  // 观测与审计：日志域（LogsView）与隐私审计域（PrivacyView）共用一个模块
+  if (props.module === "logs" && ["summary", "egress", "policies"].includes(activeTab.value)) {
+    return PrivacyView;
+  }
   if (props.module === "logs") return LogsView;
-  if (props.module === "privacy") return PrivacyView;
   if (props.module === "system" && activeTab.value === "jobs") return JobsView;
   if (props.module === "system") return SystemView;
   return PlaceholderView;

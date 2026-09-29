@@ -102,6 +102,10 @@ const route = useRoute();
 const createMode = ref<"manual" | "generate">(
   route.query.section === "generate" ? "generate" : "manual",
 );
+// 「待审草稿」与「学习建议」合并为审阅中心：页内切换，?section=suggestions 深链直达
+const reviewSection = ref<"drafts" | "suggestions">(
+  route.query.section === "suggestions" ? "suggestions" : "drafts",
+);
 const items = ref<SkillItem[]>([]);
 const selected = ref<SkillItem | null>(null);
 const busy = ref(false);
@@ -935,58 +939,23 @@ onUnmounted(() => {
       </div>
     </template>
 
-    <template v-else-if="mode === 'suggestions'">
-      <div class="hero panel">
-        <div>
-          <div class="eyebrow">技能中心 · 学习建议</div>
-          <h2>学习建议</h2>
-          <p>同一技能版本的同一操作在最近 10 次运行中出现至少 3 次相同错误时生成。建议只用于排查，不会自动改写技能或扩展权限。</p>
-        </div>
-        <div class="hero-actions">
-          <el-button :loading="busy" @click="loadSuggestions">刷新</el-button>
-        </div>
-      </div>
-      <div class="panel">
-        <div class="panel-head"><div><h2>待审核建议</h2><p>结合错误码与运行证据判断是否需要调整技能契约或连接配置。</p></div></div>
-        <el-table :data="suggestions" empty-text="暂无待审核建议" style="width:100%">
-          <el-table-column label="建议" min-width="240">
-            <template #default="{ row }">
-              <strong>{{ row.title }}</strong>
-              <small>{{ row.guidance }}</small>
-            </template>
-          </el-table-column>
-          <el-table-column label="操作 · 版本" min-width="150">
-            <template #default="{ row }">{{ row.operation }} · v{{ row.skill_version }}</template>
-          </el-table-column>
-          <el-table-column label="错误码" min-width="110">
-            <template #default="{ row }"><code>{{ row.reason_code }}</code></template>
-          </el-table-column>
-          <el-table-column label="证据" width="80">
-            <template #default="{ row }">{{ row.evidence_run_ids.length }} 次</template>
-          </el-table-column>
-          <el-table-column label="创建时间" min-width="150">
-            <template #default="{ row }">{{ fmt(row.created_at) }}</template>
-          </el-table-column>
-          <el-table-column label="操作" width="90" fixed="right">
-            <template #default="{ row }">
-              <el-button size="small" type="danger" plain :disabled="busy" @click="dismissSuggestion(row.id)">忽略</el-button>
-            </template>
-          </el-table-column>
-        </el-table>
-      </div>
-    </template>
-
     <template v-else-if="mode === 'drafts'">
       <div class="hero panel">
         <div>
-          <div class="eyebrow">技能中心 · 待审草稿</div>
-          <h2>待审草稿</h2>
-          <p>对话中通过 propose_skill 主动沉淀，或后台从含接口文档的消息中收割生成。草稿不会执行；可先试跑校验只读接口，通过后新建技能或为现有技能创建新版本，均保持停用待启用。</p>
+          <div class="eyebrow">技能中心 · 审阅中心</div>
+          <h2>审阅中心</h2>
+          <p v-if="reviewSection === 'drafts'">对话中通过 propose_skill 主动沉淀，或后台从含接口文档的消息中收割生成。草稿不会执行；可先试跑校验只读接口，通过后新建技能或为现有技能创建新版本，均保持停用待启用。</p>
+          <p v-else>同一技能版本的同一操作在最近 10 次运行中出现至少 3 次相同错误时生成。建议只用于排查，不会自动改写技能或扩展权限。</p>
         </div>
         <div class="hero-actions">
-          <el-button :loading="busy" @click="loadDrafts">刷新</el-button>
+          <el-radio-group v-model="reviewSection">
+            <el-radio-button value="drafts">待审草稿</el-radio-button>
+            <el-radio-button value="suggestions">学习建议</el-radio-button>
+          </el-radio-group>
+          <el-button :loading="busy" @click="reviewSection === 'drafts' ? loadDrafts() : loadSuggestions()">刷新</el-button>
         </div>
       </div>
+      <template v-if="reviewSection === 'drafts'">
       <div class="panel">
         <div class="panel-head"><div><h2>待审阅草稿</h2><p>展开查看说明、警告与文档证据，逐字核对接口后再通过。</p></div></div>
         <el-table :data="drafts" empty-text="暂无待审草稿" style="width:100%">
@@ -1061,6 +1030,37 @@ onUnmounted(() => {
           </el-table-column>
         </el-table>
       </div>
+      </template>
+      <template v-else>
+        <div class="panel">
+        <div class="panel-head"><div><h2>学习建议</h2><p>同一技能版本的同一操作在最近 10 次运行中出现至少 3 次相同错误时生成；只用于排查，不会自动改写技能或扩展权限。</p></div></div>
+        <el-table :data="suggestions" empty-text="暂无待审核建议" style="width:100%">
+          <el-table-column label="建议" min-width="240">
+            <template #default="{ row }">
+              <strong>{{ row.title }}</strong>
+              <small>{{ row.guidance }}</small>
+            </template>
+          </el-table-column>
+          <el-table-column label="操作 · 版本" min-width="150">
+            <template #default="{ row }">{{ row.operation }} · v{{ row.skill_version }}</template>
+          </el-table-column>
+          <el-table-column label="错误码" min-width="110">
+            <template #default="{ row }"><code>{{ row.reason_code }}</code></template>
+          </el-table-column>
+          <el-table-column label="证据" width="80">
+            <template #default="{ row }">{{ row.evidence_run_ids.length }} 次</template>
+          </el-table-column>
+          <el-table-column label="创建时间" min-width="150">
+            <template #default="{ row }">{{ fmt(row.created_at) }}</template>
+          </el-table-column>
+          <el-table-column label="操作" width="90" fixed="right">
+            <template #default="{ row }">
+              <el-button size="small" type="danger" plain :disabled="busy" @click="dismissSuggestion(row.id)">忽略</el-button>
+            </template>
+          </el-table-column>
+        </el-table>
+        </div>
+      </template>
     </template>
 
     <template v-else-if="mode === 'test'">
