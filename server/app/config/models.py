@@ -852,6 +852,24 @@ class EmbeddingsConfig(StrictModel):
         return self
 
 
+class MailAwarenessConfig(StrictModel):
+    """周期邮件感知（docs/09 §3 MAILW）：默认关闭。
+
+    未读摘要经 utility 路由分析后即焚，仅持久化降敏摘要与时间线条目；
+    主动提起仍由感知稳定性窗口 + 认知决策（DND/打扰预算）裁决。
+    需 integrations.mail 已配置 IMAP。
+    """
+
+    enabled: bool = False
+    interval_seconds: Annotated[int, Field(ge=300, le=7_200)] = 900
+    max_messages_per_tick: Annotated[int, Field(ge=1, le=10)] = 5
+    analysis_prompt: Annotated[str, Field(min_length=1, max_length=1_000)] = (
+        "概括这封未读邮件的内容，并判断是否值得主动向用户提起或记住。"
+    )
+    memory_enabled: bool = True
+    proactive_enabled: bool = True
+
+
 class HubConfig(StrictModel):
     schema_version: Literal[1] = 1
     models: Annotated[dict[str, ModelEndpoint], Field(min_length=1, max_length=64)]
@@ -865,6 +883,7 @@ class HubConfig(StrictModel):
     proactive_output: ProactiveOutputConfig = Field(default_factory=ProactiveOutputConfig)
     screen_awareness: ScreenAwarenessConfig = Field(default_factory=ScreenAwarenessConfig)
     browser_awareness: BrowserAwarenessConfig = Field(default_factory=BrowserAwarenessConfig)
+    mail_awareness: MailAwarenessConfig = Field(default_factory=MailAwarenessConfig)
     safety: SafetyConfig = Field(default_factory=SafetyConfig)
     mcp: McpConfig = Field(default_factory=McpConfig)
 

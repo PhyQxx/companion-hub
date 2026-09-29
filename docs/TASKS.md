@@ -50,7 +50,7 @@
 - [ ] BTL-02 单轮多只读调用执行（后续分期）。
 - [ ] BTL-03 工具循环与 ActionPlan A2 断点续跑打通（后续分期）。
 - [x] SEMB 本地语义 embedding（Hub 侧 2026-09-29，待真实模型验收）：`embeddings` 配置段（默认关闭）+ `HttpEmbeddingProvider`（OpenAI 兼容 /embeddings，响应维度校验，版本含模型名隔离向量空间）；启动连通性探测失败回落哈希不阻断启动；Admin 记忆检索页展示 provider/维度；secret_value 入脱敏链。测试 `test_memory_embeddings.py` 8 项。
-- [ ] MAILW 邮件感知 loop：周期 IMAP 拉取 → 规则预过滤 → utility 摘要 → `mail.received.notable` SemanticEvent 进认知管线。
+- [x] MAILW 邮件感知 loop（Hub 侧 2026-09-29，待真实邮箱验收）：`mail_awareness` 配置段（默认关闭）+ `app/mail_awareness` 循环；BODY.PEEK 拉未读、片段即焚、UID 基线防重启重报、watermark 限流；`mail.received` SemanticEvent 进既有感知-认知-四通道链路；分析提示禁执行邮件指令。测试 `test_mail_awareness.py` 8 项。
 - [ ] DIST 技能蒸馏与回放晋级：验证通过的计划轨迹提炼 workflow/技能草稿，样例回放通过才可审批启用（衔接 Skill S4）。
 - [ ] DELEG 长任务委派：启用 JobEngine 承接耗时任务，完成经主动通道汇报，任意表面可取消。
 - [ ] CTX 滚动会话摘要：post-turn 异步维护摘要，上下文组装「原文 + 摘要 + 记忆」按 token 预算收缩。

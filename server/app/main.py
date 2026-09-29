@@ -151,6 +151,7 @@ from app.mail import (
     MailSendTool,
     create_mail_tools,
 )
+from app.mail_awareness import LlmMailAnalyzer, MailAwarenessLoop
 from app.meetings import LlmMeetingSummarizer, MeetingService, MeetingStore
 from app.memory import (
     LlmMemoryExtractor,
@@ -302,6 +303,7 @@ def create_app(
     home_assistant_proactive: HomeAssistantProactiveEngine | None = None
     screen_awareness_loop: ScreenAwarenessLoop | None = None
     browser_awareness_loop: BrowserAwarenessLoop | None = None
+    mail_awareness_loop: MailAwarenessLoop | None = None
     mcp_manager = McpManager(runtime_config) if runtime_config is not None else None
     skill_store = SkillStore(runtime_database) if runtime_database is not None else None
     skill_connections = (
@@ -874,6 +876,8 @@ def create_app(
             screen_awareness_loop.start()
         if browser_awareness_loop is not None:
             browser_awareness_loop.start()
+        if mail_awareness_loop is not None:
+            mail_awareness_loop.start()
         if mcp_manager is not None:
             mcp_manager.start()
         if safety_alert_service is not None:
@@ -929,6 +933,8 @@ def create_app(
                 await screen_awareness_loop.stop()
             if browser_awareness_loop is not None:
                 await browser_awareness_loop.stop()
+            if mail_awareness_loop is not None:
+                await mail_awareness_loop.stop()
             if mcp_manager is not None:
                 await mcp_manager.stop()
             if safety_alert_service is not None:
@@ -2004,6 +2010,22 @@ def create_app(
                     tab_hints=cast(BrowserAwarenessTabHints, device_command_gateway),
                 )
                 app.state.browser_awareness_loop = browser_awareness_loop
+                mail_awareness_loop = MailAwarenessLoop(
+                    config_store=runtime_config,
+                    database=runtime_database,
+                    reader=MailClient(runtime_config),
+                    analyzer=LlmMailAnalyzer(runtime_config),
+                    timeline=timeline_store,
+                    memory_ingester=(
+                        MemoryIngester(memory_store) if memory_store is not None else None
+                    ),
+                    perception_pipeline=perception_pipeline,
+                    proactive_deliver=(
+                        proactive_delivery.deliver if proactive_delivery is not None else None
+                    ),
+                    cognitive_cycle=cognitive_cycle,
+                )
+                app.state.mail_awareness_loop = mail_awareness_loop
 
     return app
 

@@ -254,6 +254,18 @@ browser_awareness:
   max_text_chars: 8000
   blocked_hosts: []
 
+# 邮件感知默认关闭（docs/09 §3 MAILW）。需 integrations.mail 已配置 IMAP。
+# 周期拉取未读（BODY.PEEK 不改旗标），摘要经 utility 路由分析后即焚；
+# 账单/到期/邀约/行程变更类经认知决策（DND/打扰预算）后才主动提起，
+# 营销与验证码静默。首个周期只建立 UID 基线，重启不重报历史未读。
+mail_awareness:
+  enabled: false
+  interval_seconds: 900
+  max_messages_per_tick: 5
+  analysis_prompt: 概括这封未读邮件的内容，并判断是否值得主动向用户提起或记住。
+  memory_enabled: true
+  proactive_enabled: true
+
 # 家庭守护（SAFE-01/02，docs/44）。S1：开启后 HA 告警按 severity 分级富化，
 # critical 规则（漏水/烟雾等）全通道广播；升级链参数供 S2 告警状态机使用。
 safety:
