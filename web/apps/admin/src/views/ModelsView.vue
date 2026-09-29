@@ -200,7 +200,7 @@ function mergePreservingUnknown(base: unknown, updates: unknown): unknown {
 }
 interface HubToolsConfig {
   enabled: boolean;
-  max_tool_rounds: 1;
+  max_tool_rounds: number;
   query: {
     location_enabled: boolean;
     weather_enabled: boolean;
@@ -1205,6 +1205,16 @@ onActivated(() => {
             <el-checkbox v-model="draft.tools.query.weather_enabled">天气</el-checkbox>
             <el-checkbox v-model="draft.tools.query.nearby_enabled">附近地点</el-checkbox>
             <el-checkbox v-model="draft.tools.query.route_enabled">路线规划</el-checkbox>
+          </div>
+          <div class="form-grid three global-fields">
+            <label class="field"><span>工具调用轮数</span>
+              <el-select v-model.number="draft.tools.max_tool_rounds">
+                <el-option :value="1" label="1 轮（单次调用）" />
+                <el-option :value="2" label="2 轮" />
+                <el-option :value="3" label="3 轮" />
+                <el-option :value="4" label="4 轮" />
+              </el-select>
+            </label>
           </div>
           <div class="form-grid three global-fields">
             <label class="field"><span>默认城市</span><el-input v-model="draft.tools.query.default_city" placeholder="济南市" /></label>

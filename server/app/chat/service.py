@@ -524,25 +524,39 @@ class ChatService:
                 )
                 result = await backend.complete(consistency_request)
             else:
-                result = await backend.complete(pending.request)
-                result = absorb_text_tool_calls(pending.request, result)
-            if deterministic_call is None and result.tool_calls:
-                execution = await self._execute_tool_call(pending, result.tool_calls)
-                tool_executions = (execution,)
-                consistency_request = self._tool_followup_request(
-                    pending.request, result, execution
-                )
-                direct_reply = _render_mail_send_receipt(execution.result)
-                if direct_reply is not None:
-                    result = result.model_copy(
-                        update={
-                            "text": direct_reply,
-                            "tool_calls": [],
-                            "finish_reason": "stop",
-                        }
+                # 有界工具循环（docs/09 §1 BTL）：每轮至多执行一个调用并回填
+                # 结果；未到最后轮次的跟进补全保留工具目录（tool_choice=auto）
+                # 允许模型链式调用与自我修正，最后一轮强制 tool_choice=none
+                # 收束为纯文本。预览类工具（mail_send 回执）保持确定性直答。
+                request = pending.request
+                result = await backend.complete(request)
+                result = absorb_text_tool_calls(request, result)
+                rounds_left = pending.config.tools.max_tool_rounds
+                while result.tool_calls and rounds_left > 0:
+                    rounds_left -= 1
+                    execution = await self._execute_tool_call(pending, result.tool_calls)
+                    tool_executions = (*tool_executions, execution)
+                    request = self._tool_followup_request(
+                        request,
+                        result,
+                        execution,
+                        allow_followup_tools=rounds_left > 0,
                     )
-                else:
-                    result = await backend.complete(consistency_request)
+                    direct_reply = _render_mail_send_receipt(execution.result)
+                    if direct_reply is not None:
+                        result = result.model_copy(
+                            update={
+                                "text": direct_reply,
+                                "tool_calls": [],
+                                "finish_reason": "stop",
+                            }
+                        )
+                        break
+                    if not await self._turn_is_active(pending.turn_id):
+                        raise TurnCancelled("generation_cancelled")
+                    result = await backend.complete(request)
+                    result = absorb_text_tool_calls(request, result)
+                consistency_request = request
             consistency = await self._memory_consistency_guard.enforce(
                 result=result,
                 request=consistency_request,
@@ -1042,15 +1056,25 @@ class ChatService:
                 )
                 result = await backend.stream(consistency_request, filtered_delta)
             elif pending.request.tools:
-                initial_chunks: list[str] = []
+                # 有界工具循环（docs/09 §1 BTL）：带工具的补全先缓冲——中间
+                # 轮次可能继续调用工具，其前导文本按 v1 语义丢弃；确定是
+                # 最后一轮（模型不再调用或轮次耗尽）后才对前端流式输出。
+                def make_buffer() -> tuple[list[str], Callable[[str], Awaitable[None]]]:
+                    chunks: list[str] = []
 
-                async def buffer_delta(delta: str) -> None:
-                    if delta:
-                        initial_chunks.append(delta)
+                    async def buffer(delta: str) -> None:
+                        if delta:
+                            chunks.append(delta)
 
-                result = await backend.stream(pending.request, buffer_delta)
-                result = absorb_text_tool_calls(pending.request, result)
-                if result.tool_calls:
+                    return chunks, buffer
+
+                initial_chunks, buffer_delta = make_buffer()
+                request = pending.request
+                rounds_left = pending.config.tools.max_tool_rounds
+                result = await backend.stream(request, buffer_delta)
+                result = absorb_text_tool_calls(request, result)
+                while result.tool_calls and rounds_left > 0:
+                    rounds_left -= 1
                     if on_tool_event is not None:
                         await on_tool_event(
                             {
@@ -1070,9 +1094,12 @@ class ChatService:
                                 "reason_code": execution.result.reason_code,
                             }
                         )
-                    tool_executions = (execution,)
-                    consistency_request = self._tool_followup_request(
-                        pending.request, result, execution
+                    tool_executions = (*tool_executions, execution)
+                    request = self._tool_followup_request(
+                        request,
+                        result,
+                        execution,
+                        allow_followup_tools=rounds_left > 0,
                     )
                     if execution.result.tool_name.startswith("pnkx_"):
                         direct_reply = _render_pnkx_tool_reply(execution.result)
@@ -1084,7 +1111,8 @@ class ChatService:
                                 "finish_reason": "stop",
                             }
                         )
-                    elif (mail_receipt := _render_mail_send_receipt(execution.result)) is not None:
+                        break
+                    if (mail_receipt := _render_mail_send_receipt(execution.result)) is not None:
                         await filtered_delta(mail_receipt)
                         result = result.model_copy(
                             update={
@@ -1093,11 +1121,24 @@ class ChatService:
                                 "finish_reason": "stop",
                             }
                         )
-                    else:
-                        result = await backend.stream(consistency_request, filtered_delta)
+                        break
+                    if not await self._turn_is_active(pending.turn_id):
+                        raise TurnCancelled("generation_cancelled")
+                    if rounds_left == 0:
+                        result = await backend.stream(request, filtered_delta)
+                        break
+                    round_chunks, round_buffer = make_buffer()
+                    result = await backend.stream(request, round_buffer)
+                    result = absorb_text_tool_calls(request, result)
+                    if not result.tool_calls:
+                        for chunk in round_chunks:
+                            await filtered_delta(chunk)
+                        break
+                    # 模型还想继续调用工具：丢弃本轮前导文本，进入下一轮
                 else:
                     for chunk in initial_chunks:
                         await filtered_delta(chunk)
+                consistency_request = request
             else:
                 result = await backend.stream(pending.request, filtered_delta)
             for visible in stream_filter.finish():
@@ -1334,18 +1375,24 @@ class ChatService:
         request: CompletionRequest,
         first_result: CompletionResult,
         execution: ToolExecution,
+        *,
+        allow_followup_tools: bool = False,
     ) -> CompletionRequest:
         selected_call = next(
             (call for call in first_result.tool_calls if call.id == execution.call_id),
             first_result.tool_calls[0],
         )
-        return ChatService._tool_result_request(request, selected_call, execution)
+        return ChatService._tool_result_request(
+            request, selected_call, execution, allow_followup_tools=allow_followup_tools
+        )
 
     @staticmethod
     def _tool_result_request(
         request: CompletionRequest,
         selected_call: ToolCall,
         execution: ToolExecution,
+        *,
+        allow_followup_tools: bool = False,
     ) -> CompletionRequest:
         messages = [
             *request.messages,
@@ -1365,8 +1412,9 @@ class ChatService:
             {
                 **request.model_dump(mode="python"),
                 "messages": messages,
-                "tools": [],
-                "tool_choice": "none",
+                # 最后一轮收束为无工具纯文本；中间轮保留目录允许链式调用。
+                "tools": request.tools if allow_followup_tools else [],
+                "tool_choice": "auto" if allow_followup_tools else "none",
             }
         )
 
@@ -1542,7 +1590,12 @@ class ChatService:
                 }
                 for execution in tool_executions
             ]
-            presentation = _tool_presentation(tool_executions[0].result)
+            if len(tool_executions) > 1:
+                # 有界工具循环的多轮轨迹（docs/09 §1）；单轮时 tool_calls 已足够。
+                decision_meta["tool_rounds"] = [
+                    execution.result.tool_name for execution in tool_executions
+                ]
+            presentation = _tool_presentation(tool_executions[-1].result)
             if presentation is not None:
                 # 只落前端展示所需的公开字段，不含用户起点坐标或 provider 原始响应。
                 decision_meta["tool_result"] = presentation

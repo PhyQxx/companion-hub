@@ -337,7 +337,9 @@ class WebFetchConfig(StrictModel):
 
 class ToolsConfig(StrictModel):
     enabled: bool = False
-    max_tool_rounds: Literal[1] = 1
+    # 每回合最多执行的工具轮数：1 保持 v1 单轮语义；>1 允许模型在
+    # 只读/预览类工具上链式调用与自我修正（docs/09 §1 BTL）。
+    max_tool_rounds: Annotated[int, Field(ge=1, le=4)] = 1
     query: QueryToolConfig = Field(default_factory=QueryToolConfig)
     amap: AmapToolConfig = Field(default_factory=AmapToolConfig)
     desktop_actions: DesktopActionsConfig = Field(default_factory=DesktopActionsConfig)

@@ -1254,6 +1254,175 @@ async def test_text_form_tool_call_is_absorbed_executed_and_never_leaks(
     assert calls[0]["tool_name"] == "get_weather"
 
 
+class LoopingToolRouter:
+    """按脚本回放多轮补全：带工具目录时依次返回 tool_sequence 里的调用，
+    目录仍在但脚本耗尽、或目录被移除时返回终答。"""
+
+    def __init__(self, *, tool_sequence: list[str], final_text: str) -> None:
+        self.tool_sequence = list(tool_sequence)
+        self.final_text = final_text
+        self.requests: list[CompletionRequest] = []
+        self._call_index = 0
+
+    async def complete(self, request: CompletionRequest) -> CompletionResult:
+        self.requests.append(request)
+        if request.tools and self._call_index < len(self.tool_sequence):
+            name = self.tool_sequence[self._call_index]
+            self._call_index += 1
+            return CompletionResult(
+                text=f"我先查{name}。",
+                provider="openai_compatible",
+                model="tool-model",
+                endpoint="cloud",
+                route=request.route,
+                finish_reason="tool_calls",
+                latency_ms=10,
+                tool_calls=[
+                    ToolCall(
+                        id=f"call-{self._call_index}",
+                        function={"name": name, "arguments": {"location": "济南市"}},
+                    )
+                ],
+            )
+        return CompletionResult(
+            text=self.final_text,
+            provider="openai_compatible",
+            model="tool-model",
+            endpoint="cloud",
+            route=request.route,
+            finish_reason="stop",
+            latency_ms=8,
+        )
+
+    async def stream(
+        self,
+        request: CompletionRequest,
+        on_delta: Callable[[str], Awaitable[None]],
+    ) -> CompletionResult:
+        result = await self.complete(request)
+        await on_delta(result.text)
+        return result
+
+
+def _loop_candidate(store: DatabaseConfigStore, max_tool_rounds: int) -> dict[str, object]:
+    candidate = store.current.config.model_dump(mode="python")
+    candidate["models"]["cloud"]["supports_tool_calling"] = True
+    candidate["tools"] = {
+        "enabled": True,
+        "max_tool_rounds": max_tool_rounds,
+        "query": {"default_city": "济南市"},
+        "amap": {"enabled": True, "secret_value": "test-only-key"},
+    }
+    return candidate
+
+
+async def _publish_loop_config(
+    store: DatabaseConfigStore, *, max_tool_rounds: int
+) -> None:
+    draft = await store.create_draft(
+        HubConfig.model_validate(_loop_candidate(store, max_tool_rounds)), actor="test"
+    )
+    await store.publish(draft.version, actor="test")
+
+
+async def test_tool_loop_chains_read_tools_across_rounds(
+    database: Database,
+    store: DatabaseConfigStore,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """多轮循环：中间轮保留工具目录（tool_choice=auto），模型自然收笔后
+    中间轮前导文本被丢弃、终答正常流出，全部轮次进 decision_meta。"""
+    await _publish_loop_config(store, max_tool_rounds=3)
+    backend = LoopingToolRouter(
+        tool_sequence=["get_weather", "search_nearby"],
+        final_text="济南多云 29 度，附近有超市。",
+    )
+    monkeypatch.setattr(
+        "app.chat.service.build_query_tool_runtime",
+        lambda config, secrets: FakeToolRuntime(),
+    )
+    service = ChatService(database, store, router_builder=lambda config: backend)
+    user = await create_user(database)
+    conversation = await service.create_conversation(user_id=user.id, title="loop")
+    deltas: list[str] = []
+    tool_events: list[dict[str, object]] = []
+
+    async def capture_tool_event(event: dict[str, object]) -> None:
+        tool_events.append(event)
+
+    pending = await service.start_turn(
+        conversation.id,
+        user_id=user.id,
+        text="济南天气怎么样，附近有什么超市",
+        privacy_level=PrivacyLevel.L1,
+    )
+    result = await service.run_stream(
+        pending, _append_chat_delta(deltas), capture_tool_event
+    )
+
+    assert deltas == ["济南多云 29 度，附近有超市。"]
+    assert [event["type"] for event in tool_events] == [
+        "tool.started",
+        "tool.finished",
+        "tool.started",
+        "tool.finished",
+    ]
+    assert len(backend.requests) == 3
+    intermediate = backend.requests[1]
+    assert intermediate.tools
+    assert intermediate.tool_choice == "auto"
+    assert intermediate.messages[-2].role == "assistant"
+    assert intermediate.messages[-1].role == "tool"
+    meta = result.assistant_message.decision_meta or {}
+    calls = meta["tool_calls"]
+    rounds = meta["tool_rounds"]
+    assert isinstance(calls, list) and all(isinstance(call, dict) for call in calls)
+    assert isinstance(rounds, list)
+    assert [call["tool_name"] for call in calls] == ["get_weather", "search_nearby"]
+    assert rounds == ["get_weather", "search_nearby"]
+
+
+async def test_tool_loop_stops_at_configured_round_cap(
+    database: Database,
+    store: DatabaseConfigStore,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """轮次耗尽强制收束：最后一次跟进补全移除工具目录并 tool_choice=none，
+    模型再想调用也只执行到配置的轮数。"""
+    await _publish_loop_config(store, max_tool_rounds=2)
+    backend = LoopingToolRouter(
+        tool_sequence=["get_weather"] * 10,
+        final_text="按你给的两条信息，济南今天多云。",
+    )
+    monkeypatch.setattr(
+        "app.chat.service.build_query_tool_runtime",
+        lambda config, secrets: FakeToolRuntime(),
+    )
+    service = ChatService(database, store, router_builder=lambda config: backend)
+    user = await create_user(database)
+    conversation = await service.create_conversation(user_id=user.id, title="cap")
+
+    turn = await service.send_message(
+        conversation.id,
+        user_id=user.id,
+        text="济南天气怎么样",
+        privacy_level=PrivacyLevel.L1,
+    )
+
+    assert turn.assistant_message.content == "按你给的两条信息，济南今天多云。"
+    assert len(backend.requests) == 3
+    final_request = backend.requests[2]
+    assert final_request.tools == []
+    assert final_request.tool_choice == "none"
+    meta = turn.assistant_message.decision_meta or {}
+    calls = meta["tool_calls"]
+    rounds = meta["tool_rounds"]
+    assert isinstance(calls, list) and all(isinstance(call, dict) for call in calls)
+    assert isinstance(rounds, list)
+    assert [call["tool_name"] for call in calls] == ["get_weather", "get_weather"]
+    assert rounds == ["get_weather", "get_weather"]
+
+
 async def test_published_database_config_is_used_on_next_turn(
     database: Database, store: DatabaseConfigStore
 ) -> None:

@@ -46,7 +46,7 @@
 
 借鉴 Jarvis 管家原型与 Hermes（Nous Research 自托管 agent 框架）的闭环设计；方案与分期见 [09-管家能力增强](./09-管家能力增强.md)。原则：只借产品形态与闭环，不借宽松默认——所有新增自主性都在既有 A0-A3 分级、确认预览与隐私出口闸门内扩展。优先级不变的前置仍是 §1 的真实验收收口（真实凭据/真机/真实数据）。
 
-- [ ] BTL-01 有界工具循环：`tools.max_tool_rounds` 从固定 1 放宽为 1-4（默认 1 行为不变）；聊天管线按轮次「补全 → 单工具执行 → 结果回填 → 再补全」，A2 断点与预览直答语义不变；轮次轨迹入 `decision_meta.tool_rounds`。
+- [x] BTL-01 有界工具循环（2026-09-29）：`tools.max_tool_rounds` 从固定 1 放宽为 1-4（默认 1 行为不变，Admin 工具页可配）；聊天管线（流式与非流式）按轮次「补全 → 单工具执行 → 结果回填 → 再补全」，中间轮保留工具目录（tool_choice=auto），最后一轮强制收束为纯文本；预览直答（mail_send/pnkx）与轮间取消语义不变；`decision_meta.tool_calls` 记录全部轮次，多轮时加 `tool_rounds` 轨迹。测试 `test_chat.py` 增多轮链式与轮次上限两项。
 - [ ] BTL-02 单轮多只读调用执行（后续分期）。
 - [ ] BTL-03 工具循环与 ActionPlan A2 断点续跑打通（后续分期）。
 - [ ] SEMB 本地语义 embedding：接入 LM Studio text-embedding provider，探测失败回落哈希；Admin 记忆检索页展示当前 provider。

@@ -148,6 +148,8 @@ routes:
 # dialogue 模型端点的 supports_tool_calling 设为 true 后通过真实能力探测。
 tools:
   enabled: false
+  # 每回合最多执行的工具轮数（1-4）：1 保持单轮语义；>1 允许模型在
+  # 只读/预览类工具上链式调用（查日程→查路线之类），最后一轮强制收束为纯文本。
   max_tool_rounds: 1
   query:
     enabled: true

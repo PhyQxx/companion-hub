@@ -7,7 +7,7 @@ import pytest
 from httpx import ASGITransport, AsyncClient
 
 from app.config import ConfigStore, ConfigWatcher
-from app.config.models import HubConfig
+from app.config.models import HubConfig, ToolsConfig
 from app.config.store import load_config_file
 from app.llm import LLMRoute
 from app.main import create_app
@@ -248,3 +248,12 @@ def test_redacted_config_masks_push_secret_and_still_validates() -> None:
     assert restored.integrations.push.vapid_private_key_secret_value == "H" * 43
     assert restored.integrations.pnkx.secret_value == "pnkx-secret"
     assert restored.mcp.servers[0].secret_value == "K" * 40
+
+
+def test_tools_max_tool_rounds_bounds() -> None:
+    assert ToolsConfig(max_tool_rounds=4).max_tool_rounds == 4
+
+    with pytest.raises(ValueError):
+        ToolsConfig(max_tool_rounds=0)
+    with pytest.raises(ValueError):
+        ToolsConfig(max_tool_rounds=5)
