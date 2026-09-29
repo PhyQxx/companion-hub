@@ -158,6 +158,8 @@ from app.memory import (
     MemoryIngester,
     MemoryRetriever,
     MemoryStore,
+    build_embedding_provider,
+    probe_embedding_provider,
 )
 from app.model_capabilities import CapabilityModelService
 from app.observability import apply_observability, configure_logging
@@ -828,6 +830,24 @@ def create_app(
                 await xiaoai_materializer.write()
         if persona_store is not None:
             await persona_store.load()
+        if memory_store is not None and runtime_config is not None:
+            # SEMB（docs/09 §2）：配置启用语义嵌入时先做连通性探测，
+            # 失败回落内置哈希嵌入（词法级检索），不阻断启动。
+            embedding_provider = build_embedding_provider(
+                runtime_config.current.config.embeddings, EnvSecretProvider()
+            )
+            if embedding_provider is not None:
+                if await probe_embedding_provider(embedding_provider):
+                    memory_store.set_embedding_provider(embedding_provider)
+                    logging.getLogger(__name__).info(
+                        "semantic embedding enabled model=%s dimension=%d",
+                        embedding_provider.model_name,
+                        embedding_provider.dimension,
+                    )
+                else:
+                    logging.getLogger(__name__).warning(
+                        "semantic embedding unavailable, falling back to hashing embedder"
+                    )
         if home_assistant_manager is not None:
             await home_assistant_manager.start()
         if mqtt_client is not None:

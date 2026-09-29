@@ -110,9 +110,18 @@ class MemoryHitView(StrictModel):
     reasons: list[str]
 
 
+class EmbeddingInfoView(StrictModel):
+    """当前记忆检索使用的嵌入 provider（SEMB 观测，docs/09 §2）。"""
+
+    model: str
+    dimension: int
+    version: str
+
+
 class RetrievalQueryResult(StrictModel):
     policy_version: str
     candidate_count: int
+    embedding: EmbeddingInfoView
     hits: list[MemoryHitView]
 
 
@@ -215,9 +224,15 @@ def create_admin_memory_router(store: MemoryStore, *, admin_token: str | None) -
             user_id=payload.user_id,
             privacy_level=payload.privacy_level,
         )
+        provider = store.embedding_provider
         return RetrievalQueryResult(
             policy_version=result.policy_version,
             candidate_count=result.candidate_count,
+            embedding=EmbeddingInfoView(
+                model=provider.model_name,
+                dimension=provider.dimension,
+                version=provider.version,
+            ),
             hits=[
                 MemoryHitView(
                     memory=_view(hit.memory),

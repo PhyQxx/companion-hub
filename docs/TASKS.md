@@ -49,7 +49,7 @@
 - [x] BTL-01 有界工具循环（2026-09-29）：`tools.max_tool_rounds` 从固定 1 放宽为 1-4（默认 1 行为不变，Admin 工具页可配）；聊天管线（流式与非流式）按轮次「补全 → 单工具执行 → 结果回填 → 再补全」，中间轮保留工具目录（tool_choice=auto），最后一轮强制收束为纯文本；预览直答（mail_send/pnkx）与轮间取消语义不变；`decision_meta.tool_calls` 记录全部轮次，多轮时加 `tool_rounds` 轨迹。测试 `test_chat.py` 增多轮链式与轮次上限两项。
 - [ ] BTL-02 单轮多只读调用执行（后续分期）。
 - [ ] BTL-03 工具循环与 ActionPlan A2 断点续跑打通（后续分期）。
-- [ ] SEMB 本地语义 embedding：接入 LM Studio text-embedding provider，探测失败回落哈希；Admin 记忆检索页展示当前 provider。
+- [x] SEMB 本地语义 embedding（Hub 侧 2026-09-29，待真实模型验收）：`embeddings` 配置段（默认关闭）+ `HttpEmbeddingProvider`（OpenAI 兼容 /embeddings，响应维度校验，版本含模型名隔离向量空间）；启动连通性探测失败回落哈希不阻断启动；Admin 记忆检索页展示 provider/维度；secret_value 入脱敏链。测试 `test_memory_embeddings.py` 8 项。
 - [ ] MAILW 邮件感知 loop：周期 IMAP 拉取 → 规则预过滤 → utility 摘要 → `mail.received.notable` SemanticEvent 进认知管线。
 - [ ] DIST 技能蒸馏与回放晋级：验证通过的计划轨迹提炼 workflow/技能草稿，样例回放通过才可审批启用（衔接 Skill S4）。
 - [ ] DELEG 长任务委派：启用 JobEngine 承接耗时任务，完成经主动通道汇报，任意表面可取消。

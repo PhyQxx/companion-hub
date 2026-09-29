@@ -3,8 +3,11 @@ from .consolidation import ConsolidateOutcome, ConsolidationPolicy, MemoryIngest
 from .embeddings import (
     EmbeddingProvider,
     HashingEmbeddingProvider,
+    HttpEmbeddingProvider,
+    build_embedding_provider,
     cosine_similarity,
     lexical_cosine,
+    probe_embedding_provider,
     text_tokens,
 )
 from .extraction import (
@@ -61,6 +64,7 @@ __all__ = [
     "ExtractedCandidates",
     "ExtractionBackend",
     "HashingEmbeddingProvider",
+    "HttpEmbeddingProvider",
     "LlmMemoryExtractor",
     "MemoryCandidate",
     "MemoryEntry",
@@ -82,10 +86,12 @@ __all__ = [
     "RuleBasedExtractor",
     "SimilarMemory",
     "TurnMemoryExtractor",
+    "build_embedding_provider",
     "cosine_similarity",
     "extract_assistant_fact_assertions",
     "extraction_instruction",
     "lexical_cosine",
+    "probe_embedding_provider",
     "replay_deletions",
     "text_tokens",
 ]

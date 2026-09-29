@@ -816,6 +816,42 @@ class ProactiveOutputConfig(StrictModel):
         return self
 
 
+class EmbeddingsConfig(StrictModel):
+    """语义嵌入服务（docs/09 §2 SEMB）：OpenAI 兼容 /embeddings。
+
+    默认关闭，关闭时记忆检索用内置哈希嵌入（词法级）。嵌入服务会收到
+    记忆原文，务必指向本地（LM Studio / Ollama）或私有网络内的服务。
+    版本按模型名隔离向量空间，切换模型后旧向量仍可经词法通道命中，
+    新沉淀的记忆逐步切换到语义向量。
+    """
+
+    enabled: bool = False
+    base_url: AnyHttpUrl | None = None
+    model: Annotated[str, Field(min_length=1, max_length=128)] | None = None
+    dimension: Annotated[int, Field(ge=16, le=4_096)] | None = None
+    secret_ref: Annotated[str, Field(min_length=1, max_length=256)] | None = None
+    secret_value: Annotated[str, Field(min_length=1, max_length=512)] | None = None
+    timeout_ms: Annotated[int, Field(ge=500, le=30_000)] = 5_000
+
+    @model_validator(mode="after")
+    def validate_enabled(self) -> EmbeddingsConfig:
+        if self.enabled:
+            missing = [
+                name
+                for name, value in (
+                    ("base_url", self.base_url),
+                    ("model", self.model),
+                    ("dimension", self.dimension),
+                )
+                if value is None
+            ]
+            if missing:
+                raise ValueError(f"enabled embeddings require {', '.join(missing)}")
+            if self.secret_ref is not None and self.secret_value is not None:
+                raise ValueError("embeddings secret_ref and secret_value are mutually exclusive")
+        return self
+
+
 class HubConfig(StrictModel):
     schema_version: Literal[1] = 1
     models: Annotated[dict[str, ModelEndpoint], Field(min_length=1, max_length=64)]
@@ -824,6 +860,7 @@ class HubConfig(StrictModel):
     observability: ObservabilityConfig = Field(default_factory=ObservabilityConfig)
     voice: VoiceConfig = Field(default_factory=VoiceConfig)
     tools: ToolsConfig = Field(default_factory=ToolsConfig)
+    embeddings: EmbeddingsConfig = Field(default_factory=EmbeddingsConfig)
     integrations: IntegrationsConfig = Field(default_factory=IntegrationsConfig)
     proactive_output: ProactiveOutputConfig = Field(default_factory=ProactiveOutputConfig)
     screen_awareness: ScreenAwarenessConfig = Field(default_factory=ScreenAwarenessConfig)

@@ -144,6 +144,18 @@ routes:
     # 本地思考模型首轮工具选择与工具结果回注均可能超过 30 秒。
     timeout_ms: 120000
 
+# 语义记忆嵌入默认关闭（docs/09 §2 SEMB）。关闭时记忆检索用内置哈希嵌入
+# （词法级）。启用时走 OpenAI 兼容 /embeddings，启动先做连通性探测，失败
+# 自动回落哈希不阻断启动。嵌入服务会收到记忆原文，务必指向本地
+# （LM Studio `text-embedding-*`、Ollama）或私有网络内的服务。
+# embeddings:
+#   enabled: true
+#   base_url: http://127.0.0.1:1234/v1
+#   model: text-embedding-bge-m3
+#   dimension: 1024
+#   # secret_ref: env:EMBEDDING_API_KEY   # 本地服务通常无需密钥
+#   timeout_ms: 5000
+
 # 地图/天气工具默认关闭。启用前先设置 AMAP_WEB_SERVICE_KEY，并将至少一个
 # dialogue 模型端点的 supports_tool_calling 设为 true 后通过真实能力探测。
 tools:

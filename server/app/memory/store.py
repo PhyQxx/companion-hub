@@ -106,6 +106,14 @@ class MemoryStore:
     def embedding_provider(self) -> EmbeddingProvider:
         return self._embedding_provider
 
+    def set_embedding_provider(self, provider: EmbeddingProvider) -> None:
+        """启动期切换嵌入 provider（SEMB 探测成功后换入语义嵌入）。
+
+        仅允许在 lifespan 启动、尚未对外服务时调用；运行中切换会造
+        成同回合内 add/retrieve 的向量版本不一致。
+        """
+        self._embedding_provider = provider
+
     async def add(
         self,
         candidate: MemoryCandidate,

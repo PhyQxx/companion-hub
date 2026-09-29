@@ -116,7 +116,12 @@ const addForm = reactive({
   pin: false,
 });
 const queryForm = reactive({ text: "", privacy: "L1", user: "" });
-const queryResult = ref<{ policy_version: string; candidate_count: number; hits: HitItem[] } | null>(null);
+const queryResult = ref<{
+  policy_version: string;
+  candidate_count: number;
+  embedding: { model: string; dimension: number; version: string };
+  hits: HitItem[];
+} | null>(null);
 
 const memoryParams = computed(() => {
   const params = new URLSearchParams();
@@ -301,6 +306,7 @@ async function runQuery() {
     queryResult.value = await api.request<{
       policy_version: string;
       candidate_count: number;
+      embedding: { model: string; dimension: number; version: string };
       hits: HitItem[];
     }>("/api/v1/admin/memories/query", {
       method: "POST",
@@ -365,7 +371,7 @@ onMounted(load);
         <el-button type="primary" @click="runQuery">检索</el-button>
       </div>
       <div v-if="queryResult" class="query-result">
-        <p class="hint">{{ queryResult.candidate_count }} 个候选 · {{ queryResult.policy_version }} · 命中 {{ queryResult.hits.length }} 条</p>
+        <p class="hint">{{ queryResult.candidate_count }} 个候选 · {{ queryResult.policy_version }} · 命中 {{ queryResult.hits.length }} 条 · 嵌入 {{ queryResult.embedding.model }}（{{ queryResult.embedding.dimension }} 维）</p>
         <div v-for="hit in queryResult.hits" :key="hit.memory.id" class="hit">
           <span class="score">{{ hit.final_score.toFixed(3) }}</span>
           <span>

@@ -362,6 +362,9 @@ def _redact_config(config: HubConfig) -> HubConfig:
     google = data["integrations"]["calendar"]["google"]
     if google.get("secret_value"):
         google["secret_value"] = _SECRET_MASK
+    embeddings = data["embeddings"]
+    if embeddings.get("secret_value"):
+        embeddings["secret_value"] = _SECRET_MASK
     return HubConfig.model_validate(data)
 
 
@@ -397,6 +400,8 @@ def _restore_secret_masks(config: HubConfig, current: HubConfig) -> HubConfig:
     incoming_google = data["integrations"]["calendar"]["google"]
     if incoming_google.get("secret_value") == _SECRET_MASK:
         incoming_google["secret_value"] = current.integrations.calendar.google.secret_value
+    if data["embeddings"].get("secret_value") == _SECRET_MASK:
+        data["embeddings"]["secret_value"] = current.embeddings.secret_value
     return HubConfig.model_validate(data)
 
 
