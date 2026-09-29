@@ -25,7 +25,7 @@ from app.db import (
 from app.ids import uuid7
 from app.integrations.mcp.chat_tools import McpChatToolProvider, McpReadToolHandler
 from app.llm import CompletionRequest, CompletionResult, LLMMessage, LLMRoute, ToolCall
-from app.llm.factory import build_router
+from app.llm.factory import CachedRouterBuilder
 from app.llm.provider import EnvSecretProvider, absorb_text_tool_calls
 from app.memory import (
     DeletionReceipt,
@@ -393,8 +393,13 @@ class ChatService:
         # 后台记忆任务的强引用集合：既防止任务被 GC，也支持停机前等待收尾
         self._background_tasks: set[asyncio.Task[None]] = set()
         self._recent_devices: dict[UUID, list[RecentDeviceReference]] = {}
+        # PERE-02：本进程已取消的 generation_id（cancel_turn 写入，回合收尾
+        # 逐出）。流式热路径的取消检查由此走内存而非逐 delta 查库。
+        self._cancelled_generations: set[UUID] = set()
         secrets = EnvSecretProvider()
-        self._router_builder = router_builder or (lambda config: build_router(config, secrets))
+        # PERE-01：默认按配置指纹缓存 Router，省去每轮重建 provider；
+        # 显式传入的 builder（测试假件等）不经过缓存。
+        self._router_builder = router_builder or CachedRouterBuilder(secrets)
 
     def set_safety(self, safety: Any | None) -> None:
         """SAFE-02：投递服务晚于 ChatService 构造，装配后注入告警服务。"""
@@ -552,7 +557,7 @@ class ChatService:
                             }
                         )
                         break
-                    if not await self._turn_is_active(pending.turn_id):
+                    if pending.generation_id in self._cancelled_generations:
                         raise TurnCancelled("generation_cancelled")
                     result = await backend.complete(request)
                     result = absorb_text_tool_calls(request, result)
@@ -574,6 +579,8 @@ class ChatService:
         except BaseException:
             await self._fail_if_active(pending.turn_id)
             raise
+        finally:
+            self._cancelled_generations.discard(pending.generation_id)
 
     async def create_proactive_message(
         self,
@@ -1009,7 +1016,9 @@ class ChatService:
             if not emitted:
                 await self._transition(pending.turn_id, {"thinking"}, "streaming")
                 emitted = True
-            elif not await self._turn_is_active(pending.turn_id):
+            elif pending.generation_id in self._cancelled_generations:
+                # PERE-02：流式热路径取消检查走内存集合（cancel_turn 写入），
+                # 不再每个 delta 查一次库；单进程部署形态下与本进程取消同源。
                 raise TurnCancelled("generation_cancelled")
             await on_delta(delta)
 
@@ -1020,7 +1029,7 @@ class ChatService:
                     if not emitted:
                         await self._transition(pending.turn_id, {"thinking"}, "streaming")
                         emitted = True
-                    elif not await self._turn_is_active(pending.turn_id):
+                    elif pending.generation_id in self._cancelled_generations:
                         raise TurnCancelled("generation_cancelled")
                 else:
                     await guarded_delta(visible)
@@ -1122,7 +1131,7 @@ class ChatService:
                             }
                         )
                         break
-                    if not await self._turn_is_active(pending.turn_id):
+                    if pending.generation_id in self._cancelled_generations:
                         raise TurnCancelled("generation_cancelled")
                     if rounds_left == 0:
                         result = await backend.stream(request, filtered_delta)
@@ -1146,7 +1155,7 @@ class ChatService:
                     if not emitted:
                         await self._transition(pending.turn_id, {"thinking"}, "streaming")
                         emitted = True
-                    elif not await self._turn_is_active(pending.turn_id):
+                    elif pending.generation_id in self._cancelled_generations:
                         raise TurnCancelled("generation_cancelled")
                 else:
                     await guarded_delta(visible)
@@ -1174,6 +1183,8 @@ class ChatService:
         except BaseException:
             await self._fail_if_active(pending.turn_id)
             raise
+        finally:
+            self._cancelled_generations.discard(pending.generation_id)
 
     async def _execute_tool_call(
         self,
@@ -1443,6 +1454,8 @@ class ChatService:
             turn.state_version += 1
             turn.cancel_reason = reason
             turn.completed_at = now
+        # PERE-02：热路径取消检查的内存信号；回合收尾（提交/失败）时逐出。
+        self._cancelled_generations.add(generation_id)
         return True
 
     async def list_messages_after(
@@ -1893,13 +1906,6 @@ class ChatService:
                 raise RuntimeError("invalid turn state transition")
             turn.state = target
             turn.state_version += 1
-
-    async def _turn_is_active(self, turn_id: UUID) -> bool:
-        async with self._database.sessions() as session:
-            state = await session.scalar(
-                select(InteractionTurnRecord.state).where(InteractionTurnRecord.id == turn_id)
-            )
-        return state in {"thinking", "streaming"}
 
     async def _fail_if_active(self, turn_id: UUID) -> None:
         now = datetime.now(UTC)

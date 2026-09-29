@@ -15,7 +15,7 @@ from sqlalchemy import func, select
 from app.api import create_chat_router
 from app.auth import AuthService
 from app.avatar import AvatarStore
-from app.chat import ChatService, RuntimeActionCapability
+from app.chat import ChatService, RuntimeActionCapability, TurnCancelled
 from app.chat.service import _render_mail_send_receipt, _render_pnkx_tool_reply
 from app.cognition import (
     AttentionEngine,
@@ -1421,6 +1421,59 @@ async def test_tool_loop_stops_at_configured_round_cap(
     assert isinstance(rounds, list)
     assert [call["tool_name"] for call in calls] == ["get_weather", "get_weather"]
     assert rounds == ["get_weather", "get_weather"]
+
+
+class MultiDeltaRouter:
+    """分多次 delta 输出，供取消信号在流中途触发的场景。"""
+
+    async def complete(self, request: CompletionRequest) -> CompletionResult:
+        return CompletionResult(
+            text="第一段第二段第三段",
+            provider="openai_compatible",
+            model="tool-model",
+            endpoint="cloud",
+            route=request.route,
+            finish_reason="stop",
+            latency_ms=5,
+        )
+
+    async def stream(
+        self,
+        request: CompletionRequest,
+        on_delta: Callable[[str], Awaitable[None]],
+    ) -> CompletionResult:
+        for chunk in ["第一段", "第二段", "第三段"]:
+            await on_delta(chunk)
+        return await self.complete(request)
+
+
+async def test_cancel_turn_interrupts_stream_via_memory_signal(
+    database: Database,
+    store: DatabaseConfigStore,
+) -> None:
+    """PERE-02：取消后流式热路径凭内存集合立即中断，不查库。"""
+    service = ChatService(database, store, router_builder=lambda config: MultiDeltaRouter())
+    user = await create_user(database)
+    conversation = await service.create_conversation(user_id=user.id, title="cancel")
+    pending = await service.start_turn(
+        conversation.id,
+        user_id=user.id,
+        text="讲三段话",
+        privacy_level=PrivacyLevel.L1,
+    )
+    deltas: list[str] = []
+
+    async def on_delta(delta: str) -> None:
+        deltas.append(delta)
+        if len(deltas) == 1:
+            await service.cancel_turn(pending.generation_id, user_id=user.id)
+
+    with pytest.raises(TurnCancelled):
+        await service.run_stream(pending, on_delta)
+
+    assert deltas == ["第一段"]
+    # 回合收尾（失败路径）后取消标记逐出，不泄漏
+    assert pending.generation_id not in service._cancelled_generations
 
 
 async def test_published_database_config_is_used_on_next_turn(

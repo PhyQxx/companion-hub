@@ -9,6 +9,7 @@ from typing import Any
 import pytest
 from pydantic import ValidationError
 
+from app.config.models import HubConfig
 from app.ids import uuid7
 from app.llm import (
     CompletionRequest,
@@ -1060,3 +1061,63 @@ def _append(target: list[str]) -> Callable[[str], Awaitable[None]]:
             target.append(delta)
 
     return append
+
+
+def test_cached_router_builder_reuses_by_config_fingerprint() -> None:
+    from app.llm.factory import CachedRouterBuilder
+
+    base = HubConfig.model_validate(
+        {
+            "models": {
+                "cloud": {
+                    "provider": "openai_compatible",
+                    "model": "dialogue-v1",
+                    "base_url": "https://models.example/v1",
+                    "secret_value": "test",
+                    "runs_local": False,
+                    "max_privacy_level": "L1",
+                },
+                "local_private": {
+                    "provider": "openai_compatible",
+                    "model": "qwen-local",
+                    "base_url": "http://127.0.0.1:1234/v1",
+                    "secret_value": "local",
+                    "runs_local": True,
+                    "max_privacy_level": "L3",
+                },
+            },
+            "routes": {
+                "dialogue": {"primary": "cloud"},
+                "utility": {"primary": "cloud"},
+                "private": {"primary": "local_private"},
+            },
+        }
+    )
+    builder = CachedRouterBuilder(EnvSecretProvider(), capacity=2)
+
+    first = builder(base)
+    assert builder(base) is first
+
+    # 配置变化（新指纹）应重建，旧条目按容量逐出
+    changed = base.model_copy(
+        deep=True,
+        update={
+            "models": {
+                **base.models,
+                "cloud": base.models["cloud"].model_copy(update={"model": "dialogue-v2"}),
+            }
+        },
+    )
+    second = builder(changed)
+    assert second is not first
+    another = changed.model_copy(
+        deep=True,
+        update={
+            "models": {
+                **changed.models,
+                "cloud": changed.models["cloud"].model_copy(update={"model": "dialogue-v3"}),
+            }
+        },
+    )
+    builder(another)
+    assert len(builder._cache) == 2
