@@ -13,8 +13,6 @@ from uuid import UUID
 from zoneinfo import ZoneInfo
 
 from fastapi import FastAPI
-from fastapi.responses import FileResponse
-from fastapi.staticfiles import StaticFiles
 
 from app import __version__
 from app.adapters import AdapterRegistry
@@ -67,7 +65,6 @@ from app.api import (
     create_xiaoai_websocket_router,
 )
 from app.api.admin_config import set_runtime_admin_token
-from app.api.events import create_event_router
 from app.api.mail import create_mail_router
 from app.appearance import ThemeStore
 from app.auth import AuthService
@@ -235,6 +232,7 @@ from app.tools.mcp_actions import McpToolCallTool
 from app.tools.screen import CapabilityScreenAnalyzer, CaptureScreenTool
 from app.tools.sensors import ReadSensorsTool
 from app.voice import ConfigVoiceSource
+from app.wiring.frontend import register_frontend
 from app.workflows import (
     WorkflowRunTool,
     WorkflowSaveTool,
@@ -1061,257 +1059,19 @@ def create_app(
     app.state.skill_store = skill_store
     app.state.skill_connections = skill_connections
 
-    admin_root = Path(__file__).parent / "admin"
-    app.mount("/admin/legacy", StaticFiles(directory=admin_root), name="admin-legacy")
-    admin_dist = Path(__file__).resolve().parents[2] / "web" / "apps" / "admin" / "dist"
-    admin_spa_ready = (admin_dist / "index.html").is_file()
-    if admin_spa_ready:
-        app.mount(
-            "/admin/assets",
-            StaticFiles(directory=admin_dist / "assets"),
-            name="admin-assets",
-        )
-    chat_root = Path(__file__).parent / "chat_ui"
-    app.mount("/chat/debug/assets", StaticFiles(directory=chat_root), name="chat-debug-assets")
-    pet_ui_root = Path(__file__).parent / "pet_ui"
-    app.mount(
-        "/desktop/pet",
-        StaticFiles(directory=pet_ui_root, html=True),
-        name="desktop-pet",
+    # PERE-03：前端静态资源与系统端点搬至 wiring/frontend.py（行为不变）
+    register_frontend(
+        app,
+        worker=worker,
+        config_store=runtime_config,
+        persona_store=persona_store,
+        avatar_store=avatar_store,
+        home_assistant_manager=home_assistant_manager,
+        avatar_upload_root=avatar_upload_root,
+        adapters=runtime_adapters,
+        database=runtime_database,
+        enable_dev_endpoints=enable_dev_endpoints,
     )
-    chat_dist = Path(__file__).resolve().parents[2] / "web" / "apps" / "chat" / "dist"
-    chat_spa_ready = (chat_dist / "index.html").is_file()
-    chat_dist_assets = chat_dist / "assets"
-    if chat_dist_assets.is_dir():
-        app.mount("/chat/assets", StaticFiles(directory=chat_dist_assets), name="chat-assets")
-    chat_dist_icons = chat_dist / "icons"
-    if chat_dist_icons.is_dir():
-        app.mount("/chat/icons", StaticFiles(directory=chat_dist_icons), name="chat-icons")
-    avatar_assets_root = Path(__file__).parent / "avatar" / "assets"
-    app.mount(
-        "/api/v1/avatar-assets",
-        StaticFiles(directory=avatar_assets_root),
-        name="avatar-assets",
-    )
-    app.mount(
-        "/api/v1/avatar-user-assets",
-        StaticFiles(directory=avatar_upload_root),
-        name="avatar-user-assets",
-    )
-    # Resolve this at app startup so a newly installed runtime is served after restart/reload.
-    configured_live2d_runtime_dir = os.getenv("ARIA_LIVE2D_RUNTIME_DIR")
-    default_live2d_runtime_dir = (
-        Path.home()
-        / "Library"
-        / "Application Support"
-        / "AriaCompanionHub"
-        / "live2d-runtime"
-        / "current"
-    )
-    live2d_runtime_dir = (
-        Path(configured_live2d_runtime_dir).expanduser()
-        if configured_live2d_runtime_dir
-        else default_live2d_runtime_dir
-    )
-    if live2d_runtime_dir.is_dir():
-        app.mount(
-            "/api/v1/avatar-live2d-runtime",
-            StaticFiles(directory=live2d_runtime_dir.resolve()),
-            name="avatar-live2d-runtime",
-        )
-
-    if admin_spa_ready:
-
-        @app.get("/admin", include_in_schema=False)
-        @app.get("/admin/{rest:path}", include_in_schema=False)
-        async def admin_spa(rest: str = "") -> FileResponse:
-            return FileResponse(admin_dist / "index.html")
-
-    else:
-
-        @app.get("/admin/models", include_in_schema=False)
-        async def model_admin() -> FileResponse:
-            return FileResponse(admin_root / "models.html")
-
-        @app.get("/admin", include_in_schema=False)
-        @app.get("/admin/devices", include_in_schema=False)
-        @app.get("/admin/logs", include_in_schema=False)
-        @app.get("/admin/privacy", include_in_schema=False)
-        @app.get("/admin/settings", include_in_schema=False)
-        async def admin_module() -> FileResponse:
-            return FileResponse(admin_root / "module.html")
-
-        @app.get("/admin/personas", include_in_schema=False)
-        async def persona_admin() -> FileResponse:
-            return FileResponse(admin_root / "personas.html")
-
-        @app.get("/admin/memory", include_in_schema=False)
-        async def memory_admin() -> FileResponse:
-            return FileResponse(admin_root / "memory.html")
-
-    if chat_spa_ready:
-
-        @app.get("/chat/manifest.webmanifest", include_in_schema=False)
-        async def chat_manifest() -> FileResponse:
-            return FileResponse(
-                chat_dist / "manifest.webmanifest",
-                media_type="application/manifest+json",
-            )
-
-        @app.get("/chat/sw.js", include_in_schema=False)
-        async def chat_service_worker() -> FileResponse:
-            return FileResponse(
-                chat_dist / "sw.js",
-                media_type="application/javascript",
-                headers={"Cache-Control": "no-cache"},
-            )
-
-        @app.get("/chat/offline.html", include_in_schema=False)
-        async def chat_offline() -> FileResponse:
-            return FileResponse(chat_dist / "offline.html")
-
-    @app.get("/chat", include_in_schema=False)
-    @app.get("/chat/", include_in_schema=False)
-    async def chat_entry() -> FileResponse:
-        if chat_spa_ready:
-            return FileResponse(chat_dist / "index.html")
-        return FileResponse(chat_root / "index.html")
-
-    @app.get("/chat/debug", include_in_schema=False)
-    async def chat_debug() -> FileResponse:
-        return FileResponse(chat_root / "index.html")
-
-    @app.get("/healthz", tags=["system"])
-    async def health() -> dict[str, object]:
-        dispatcher = None
-        status = "ok"
-        if worker is not None:
-            dispatcher = {
-                "running": worker.state.running,
-                "cycles": worker.state.cycles,
-                "last_error": worker.state.last_error,
-            }
-            if not worker.state.running or worker.state.last_error is not None:
-                status = "degraded"
-        result: dict[str, object] = {"status": status, "version": __version__}
-        if dispatcher is not None:
-            result["dispatcher"] = dispatcher
-        if runtime_config is not None:
-            config_status = {
-                "version": runtime_config.current.version,
-                "content_hash": runtime_config.current.content_hash,
-                "last_error": runtime_config.last_error,
-            }
-            result["configuration"] = config_status
-            if runtime_config.last_error is not None:
-                result["status"] = "degraded"
-        if persona_store is not None:
-            persona_snapshot = await persona_store.refresh()
-            result["persona"] = {
-                "version": persona_snapshot.version,
-                "content_hash": persona_snapshot.content_hash,
-                "name": persona_snapshot.persona.name,
-            }
-        if home_assistant_manager is not None:
-            ha_health = home_assistant_manager.health()
-            result["home_assistant"] = {
-                "status": ha_health.status,
-                "connected": ha_health.connected,
-                "cached_entities": ha_health.cached_entities,
-                "last_sync_at": (
-                    ha_health.last_sync_at.isoformat()
-                    if ha_health.last_sync_at is not None
-                    else None
-                ),
-                "reason_code": ha_health.reason_code,
-            }
-            if ha_health.status in {"degraded", "auth_failed"}:
-                result["status"] = "degraded"
-        return result
-
-    @app.get("/api/v1/meta/protocol", tags=["system"])
-    async def protocol() -> dict[str, object]:
-        return {
-            "protocol_version": 1,
-            "supported_protocol_versions": [1],
-            "schemas": [
-                "aria.input-envelope/1",
-                "aria.agent-reply/1",
-                "aria.output-intent/1",
-            ],
-        }
-
-    @app.get("/api/v1/meta/runtime", tags=["system"])
-    async def runtime_meta() -> dict[str, object]:
-        result: dict[str, object] = {}
-        if runtime_config is not None:
-            # 前端据此决定定位授权节奏(每次询问/会话内允许); 不含任何密钥。
-            result["location_policy"] = {
-                "tools_enabled": runtime_config.current.config.tools.enabled,
-                "precise": runtime_config.current.config.tools.query.precise_location_policy,
-            }
-        if persona_store is not None:
-            persona_snapshot = await persona_store.refresh()
-            result["persona"] = {
-                "version": persona_snapshot.version,
-                "content_hash": persona_snapshot.content_hash,
-                "name": persona_snapshot.persona.name,
-            }
-            if avatar_store is not None:
-                avatar = await avatar_store.get_default_for_persona(persona_snapshot.version)
-                if avatar is not None:
-                    pack = await avatar_store.get_pack(avatar.pack_id)
-                    result["avatar"] = {
-                        "instance_id": str(avatar.id),
-                        "pack_id": avatar.pack_id,
-                        "name": avatar.name,
-                        "engine": pack.engine if pack is not None else "static",
-                        "customization": avatar.customization,
-                        "assets": pack.manifest.get("assets", {}) if pack is not None else {},
-                    }
-        return result
-
-    @app.get("/api/v1/meta/adapters", tags=["system"])
-    async def adapters() -> dict[str, object]:
-        return {
-            "adapters": [
-                manifest.model_dump(mode="json") for manifest in runtime_adapters.list_manifests()
-            ]
-        }
-
-    @app.get("/api/v1/meta/config", tags=["system"])
-    async def configuration() -> dict[str, object]:
-        if runtime_config is None:
-            return {"configured": False}
-        snapshot = runtime_config.current
-        return {
-            "configured": True,
-            "version": snapshot.version,
-            "content_hash": snapshot.content_hash,
-            "models": [
-                {
-                    "name": name,
-                    "kind": endpoint.kind,
-                    "provider": endpoint.provider,
-                    "model": endpoint.model,
-                    "enabled": endpoint.enabled,
-                    "runs_local": endpoint.runs_local,
-                    "max_privacy_level": endpoint.max_privacy_level,
-                }
-                for name, endpoint in snapshot.config.models.items()
-            ],
-            "routes": {
-                route: policy.model_dump(mode="json")
-                for route, policy in snapshot.config.routes.items()
-            },
-            "capability_models": snapshot.config.capability_models.model_dump(mode="json"),
-        }
-
-    dev_enabled = enable_dev_endpoints
-    if dev_enabled is None:
-        dev_enabled = os.getenv("ARIA_ENABLE_DEV_ENDPOINTS", "false").lower() == "true"
-    if dev_enabled and runtime_database is not None:
-        app.include_router(create_event_router(runtime_database))
     if isinstance(runtime_config, DatabaseConfigStore):
         runtime_admin_token = (
             admin_token if admin_token is not None else os.getenv("ARIA_ADMIN_TOKEN")
