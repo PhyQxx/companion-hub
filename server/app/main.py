@@ -19,24 +19,16 @@ from app.adapters import AdapterRegistry
 from app.adapters.builtin import create_builtin_registry
 from app.api import (
     create_admin_avatar_router,
-    create_admin_backups_router,
     create_admin_browser_awareness_router,
     create_admin_butler_router,
-    create_admin_config_router,
     create_admin_dashboard_router,
     create_admin_export_router,
     create_admin_jobs_router,
-    create_admin_mcp_router,
-    create_admin_memory_router,
-    create_admin_persona_router,
     create_admin_safety_router,
     create_admin_screen_awareness_router,
     create_admin_security_router,
-    create_admin_senseaudio_router,
-    create_admin_skills_router,
     create_admin_tasks_router,
     create_admin_theme_router,
-    create_admin_timeline_router,
     create_admin_voice_router,
     create_auth_router,
     create_avatar_router,
@@ -46,7 +38,6 @@ from app.api import (
     create_chat_websocket_router,
     create_cognition_router,
     create_contacts_router,
-    create_deletion_ledger_router,
     create_device_command_routers,
     create_device_routers,
     create_home_scenes_router,
@@ -64,7 +55,6 @@ from app.api import (
     create_workflows_router,
     create_xiaoai_websocket_router,
 )
-from app.api.admin_config import set_runtime_admin_token
 from app.api.mail import create_mail_router
 from app.appearance import ThemeStore
 from app.auth import AuthService
@@ -140,7 +130,6 @@ from app.home_scene import (
     HomeSceneStore,
 )
 from app.integrations.mcp import McpManager
-from app.integrations.mcp.actions import sync_mcp_actions
 from app.integrations.mcp.chat_tools import McpChatToolProvider
 from app.jobs import (
     DELEG_KIND_RESEARCH,
@@ -232,6 +221,7 @@ from app.tools.mcp_actions import McpToolCallTool
 from app.tools.screen import CapabilityScreenAnalyzer, CaptureScreenTool
 from app.tools.sensors import ReadSensorsTool
 from app.voice import ConfigVoiceSource
+from app.wiring.admin_routers import register_admin_routers
 from app.wiring.frontend import register_frontend
 from app.workflows import (
     WorkflowRunTool,
@@ -1072,109 +1062,28 @@ def create_app(
         database=runtime_database,
         enable_dev_endpoints=enable_dev_endpoints,
     )
+    # PERE-03：Admin 前置路由搬至 wiring/admin_routers.py（行为不变，
+    # 原 trigger_calendar_sync 死代码删除）
+    runtime_admin_token: str | None = None
     if isinstance(runtime_config, DatabaseConfigStore):
-        runtime_admin_token = (
-            admin_token if admin_token is not None else os.getenv("ARIA_ADMIN_TOKEN")
-        )
-        set_runtime_admin_token(runtime_admin_token)
-
-        async def reconfigure_integrations() -> None:
-            if home_assistant_manager is not None:
-                await home_assistant_manager.reconfigure()
-            if xiaoai_materializer is not None:
-                await xiaoai_materializer.write()
-
-        async def trigger_calendar_sync(provider: str) -> dict[str, object]:
-            """Admin 手动同步外部日历；两个镜像服务等价，读各自配置门控。"""
-            service = caldav_sync_service if provider == "caldav" else google_calendar_sync_service
-            if service is None:
-                raise RuntimeError("calendar sync service unavailable")
-            if provider == "caldav":
-                stats = await service.sync_once()
-            else:
-                stats = await service.sync_once()
-            return {
-                "calendars": stats.calendars,
-                "pulled": stats.pulled,
-                "mirrors_created": stats.mirrors_created,
-                "mirrors_updated": stats.mirrors_updated,
-                "mirrors_cancelled": stats.mirrors_cancelled,
-                "errors": stats.errors,
-            }
-
-        app.include_router(
-            create_admin_config_router(
-                runtime_config,
-                admin_token=runtime_admin_token,
-                on_publish=reconfigure_integrations,
-                on_proactive_test=test_home_assistant_proactive,
-            )
-        )
-        app.include_router(
-            create_admin_senseaudio_router(
-                runtime_config,
-                admin_token=runtime_admin_token,
-            )
-        )
-        app.include_router(
-            create_admin_mcp_router(
-                mcp_manager,
-                admin_token=runtime_admin_token,
-            )
-        )
-        if skill_store is not None:
-            app.include_router(
-                create_admin_skills_router(
-                    skill_store,
-                    admin_token=runtime_admin_token,
-                    generator=skill_generator,
-                    tool_provider=skill_tool_provider,
-                    connections=skill_connections,
-                    credentials=skill_credentials,
-                    http_client=skill_http_client,
-                    action_registry=action_registry,
-                )
-            )
-        app.state.mcp_manager = mcp_manager
-        if mcp_manager is not None:
-            # MCP-D：目录刷新后把白名单写工具同步进动作注册表（A2 每次确认）
-            mcp_manager.set_catalog_listener(lambda: sync_mcp_actions(action_registry, mcp_manager))
-        if persona_store is not None:
-            app.include_router(
-                create_admin_persona_router(
-                    persona_store,
-                    admin_token=runtime_admin_token,
-                )
-            )
-        if timeline_store is not None:
-            app.include_router(
-                create_admin_timeline_router(
-                    timeline_store,
-                    admin_token=runtime_admin_token,
-                )
-            )
-        if memory_store is not None:
-            app.include_router(
-                create_admin_memory_router(
-                    memory_store,
-                    admin_token=runtime_admin_token,
-                )
-            )
-            app.include_router(
-                create_deletion_ledger_router(
-                    memory_store,
-                    admin_token=runtime_admin_token,
-                )
-            )
-        # BK-01 备份状态：目录只读检视，不依赖数据库
-        app.include_router(
-            create_admin_backups_router(
-                backup_dir=Path(os.getenv("ARIA_BACKUP_DIR", "backups")),
-                keep_days=int(os.getenv("ARIA_BACKUP_KEEP_DAYS", "14")),
-                backup_at=os.getenv("ARIA_BACKUP_AT", "03:30"),
-                timezone_name=os.getenv("ARIA_BACKUP_TZ", "Asia/Shanghai"),
-                admin_token=runtime_admin_token,
-            )
+        runtime_admin_token = register_admin_routers(
+            app,
+            config=runtime_config,
+            admin_token=admin_token,
+            home_assistant_manager=home_assistant_manager,
+            xiaoai_materializer=xiaoai_materializer,
+            ha_proactive_test=test_home_assistant_proactive,
+            mcp_manager=mcp_manager,
+            skill_store=skill_store,
+            skill_generator=skill_generator,
+            skill_tool_provider=skill_tool_provider,
+            skill_connections=skill_connections,
+            skill_credentials=skill_credentials,
+            skill_http_client=skill_http_client,
+            action_registry=action_registry,
+            persona_store=persona_store,
+            timeline_store=timeline_store,
+            memory_store=memory_store,
         )
         if runtime_database is not None:
             # FR-S3 数据导出/导入：伴侣数据 JSON 档案，凭据与机器状态不导出
