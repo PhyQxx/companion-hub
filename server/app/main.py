@@ -142,7 +142,14 @@ from app.home_scene import (
 from app.integrations.mcp import McpManager
 from app.integrations.mcp.actions import sync_mcp_actions
 from app.integrations.mcp.chat_tools import McpChatToolProvider
-from app.jobs import AssetStore, JobEngine
+from app.jobs import (
+    DELEG_KIND_RESEARCH,
+    AssetStore,
+    DelegatedJobWorker,
+    DelegateTaskTool,
+    JobEngine,
+    WebResearchHandler,
+)
 from app.llm.provider import EnvSecretProvider
 from app.mail import (
     MailAttachmentStore,
@@ -720,6 +727,20 @@ def create_app(
         if runtime_config is not None
         else None
     )
+    # DELEG（docs/09 §5）：长任务委派 worker + 对话入口工具；主动汇报通道
+    # 在 ProactiveDeliveryService 装配后注入。
+    deleg_worker = (
+        DelegatedJobWorker(job_engine)
+        if job_engine is not None
+        and runtime_config is not None
+        and web_fetch_tool is not None
+        else None
+    )
+    if deleg_worker is not None and web_fetch_tool is not None and runtime_config is not None:
+        deleg_worker.register(
+            DELEG_KIND_RESEARCH, WebResearchHandler(web_fetch_tool, runtime_config)
+        )
+    delegate_task_tool = DelegateTaskTool(job_engine) if job_engine is not None else None
     # 对话内 propose_skill 工具 + 回合后草稿收割，共用生成器与草稿存储；
     # url 文档链接由服务端复用 web_fetch 抓取，避免模型转述正文
     skill_draft_assistant = (
@@ -885,6 +906,8 @@ def create_app(
             await config_watcher.start()
         if worker is not None:
             await worker.start()
+        if deleg_worker is not None:
+            deleg_worker.start()
         if screen_awareness_loop is not None:
             screen_awareness_loop.start()
         if browser_awareness_loop is not None:
@@ -967,6 +990,8 @@ def create_app(
                 await runtime_chat_service.drain_background_work()
             if worker is not None:
                 await worker.stop()
+            if deleg_worker is not None:
+                await deleg_worker.stop()
             if home_assistant_manager is not None:
                 await home_assistant_manager.stop()
             if config_watcher is not None:
@@ -1534,6 +1559,8 @@ def create_app(
                 workflow_save_tool = WorkflowSaveTool(workflow_service, drafts=pending_mutations)
                 device_tools.append(workflow_save_tool)
                 device_tools.append(WorkflowRunTool(workflow_service))
+            if delegate_task_tool is not None:
+                device_tools.append(delegate_task_tool)
             if focus_service is not None:
                 device_tools.extend(
                     [
@@ -1854,6 +1881,9 @@ def create_app(
                     ),
                 )
                 app.state.proactive_delivery_service = proactive_delivery
+                if deleg_worker is not None:
+                    # DELEG：任务完成经主动输出通道汇报（Web/桌面通知/推送/语音）
+                    deleg_worker.set_deliver(proactive_delivery.deliver)
                 # SAFE-02：告警状态机（critical 升级链 + 聊天确认意图 + Timeline）
                 safety_alert_service = SafetyAlertService(
                     runtime_database,

@@ -122,6 +122,12 @@ class JobEngine:
             record = await session.get(JobRecord, job_id)
             return self._to_view(record) if record is not None else None
 
+    async def job_input(self, job_id: UUID) -> dict[str, Any] | None:
+        """Worker 侧读取任务输入（JobView 刻意不透出 input）。"""
+        async with self._database.sessions() as session:
+            record = await session.get(JobRecord, job_id)
+            return dict(record.input) if record is not None else None
+
     async def list_jobs(
         self,
         *,
