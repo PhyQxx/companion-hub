@@ -213,6 +213,7 @@ def _device_tool_ready(
         "contact_query",
         "workflow_save",
         "workflow_run",
+        "propose_action",
         "commute_check",
         "focus_start",
         "focus_stop",
@@ -2685,4 +2686,5 @@ def _tool_label(tool_name: str) -> str:
         "mail_send": "正在发送邮件…",
         "mail_sent": "正在查发送记录…",
         "delegate_task": "正在转入后台处理…",
+        "propose_action": "正在草拟待确认的操作…",
     }.get(tool_name, "正在使用外部工具…")

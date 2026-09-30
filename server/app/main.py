@@ -98,7 +98,9 @@ from app.cognition import (
     CognitiveCycle,
     CognitiveStore,
     GoalTracker,
+    PlanCompletionReporter,
     PlanExecutionEvent,
+    ProposeActionTool,
     RouterDeliberator,
     RuleBasedDeliberator,
     SemanticEvent,
@@ -417,7 +419,26 @@ def create_app(
         else None
     )
     if action_plan_service is not None and plan_distiller is not None:
-        action_plan_service.set_completion_callback(plan_distiller.on_plan_completed)
+        action_plan_service.add_completion_callback(plan_distiller.on_plan_completed)
+    # BTL-03（docs/09 §1）：对话内提议注册表动作（A1/A2 转计划确认）+
+    # 计划完成主动汇报（续跑闭环）。
+    plan_completion_reporter = (
+        PlanCompletionReporter(action_plan_service)
+        if action_plan_service is not None
+        else None
+    )
+    if action_plan_service is not None and plan_completion_reporter is not None:
+        action_plan_service.add_completion_callback(
+            plan_completion_reporter.on_plan_completed
+        )
+    propose_action_tool = (
+        ProposeActionTool(
+            lambda: action_plan_service,
+            action_registry,
+        )
+        if runtime_database is not None
+        else None
+    )
     cognitive_cycle = (
         CognitiveCycle(
             cognitive_store,
@@ -1576,6 +1597,8 @@ def create_app(
                 device_tools.append(WorkflowRunTool(workflow_service))
             if delegate_task_tool is not None:
                 device_tools.append(delegate_task_tool)
+            if propose_action_tool is not None:
+                device_tools.append(propose_action_tool)
             if focus_service is not None:
                 device_tools.extend(
                     [
@@ -1899,6 +1922,9 @@ def create_app(
                 if deleg_worker is not None:
                     # DELEG：任务完成经主动输出通道汇报（Web/桌面通知/推送/语音）
                     deleg_worker.set_deliver(proactive_delivery.deliver)
+                if plan_completion_reporter is not None:
+                    # BTL-03：计划执行完成主动汇报结果
+                    plan_completion_reporter.set_deliver(proactive_delivery.deliver)
                 # SAFE-02：告警状态机（critical 升级链 + 聊天确认意图 + Timeline）
                 safety_alert_service = SafetyAlertService(
                     runtime_database,

@@ -158,8 +158,8 @@ class ActionPlanService:
         self._runner = runner
         self._execution_listener: ExecutionListener | None = None
         self._change_listener: ChangeListener | None = None
-        # DIST（docs/09 §4）：计划全部步骤完成后触发（回调自身转后台执行）
-        self._completion_callback: PlanCompletionCallback | None = None
+        # DIST/BTL-03：计划全部步骤完成后的回调列表（每个回调自身转后台执行）
+        self._completion_callbacks: list[PlanCompletionCallback] = []
 
     def set_runner(
         self,
@@ -171,9 +171,13 @@ class ActionPlanService:
         """PC-02：订阅执行进度事件；监听器异常绝不影响执行本身。"""
         self._execution_listener = listener
 
+    def add_completion_callback(self, callback: PlanCompletionCallback) -> None:
+        """BTL-03：追加计划完成回调（DIST 蒸馏、完成汇报等）；异常只记日志。"""
+        self._completion_callbacks.append(callback)
+
     def set_completion_callback(self, callback: PlanCompletionCallback) -> None:
-        """DIST：计划完成后触发蒸馏等后续加工；回调异常只记日志。"""
-        self._completion_callback = callback
+        """DIST：单回调快捷入口（清空后设为唯一回调）。"""
+        self._completion_callbacks = [callback]
 
     def set_change_listener(self, listener: ChangeListener) -> None:
         self._change_listener = listener
@@ -659,16 +663,16 @@ class ActionPlanService:
                 reason_code=view.reason_code,
             )
         )
-        if (
-            view.status == ActionPlanStatus.COMPLETED.value
-            and self._completion_callback is not None
-        ):
-            # DIST：全部完成后触发蒸馏回调；回调自身负责转后台，同步调用
-            # 不阻塞执行返回，异常只记日志。
-            try:
-                self._completion_callback(plan_id, user_id)
-            except Exception:
-                logger.warning("plan completion callback failed: %s", plan_id, exc_info=True)
+        if view.status == ActionPlanStatus.COMPLETED.value and self._completion_callbacks:
+            # DIST/BTL-03：全部完成后触发回调；回调自身负责转后台，同步调用
+            # 不阻塞执行返回，每个回调的异常只记日志互不影响。
+            for callback in self._completion_callbacks:
+                try:
+                    callback(plan_id, user_id)
+                except Exception:
+                    logger.warning(
+                        "plan completion callback failed: %s", plan_id, exc_info=True
+                    )
         return view
 
     async def _claim_next_step(

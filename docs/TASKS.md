@@ -48,7 +48,7 @@
 
 - [x] BTL-01 有界工具循环（2026-09-29）：`tools.max_tool_rounds` 从固定 1 放宽为 1-4（默认 1 行为不变，Admin 工具页可配）；聊天管线（流式与非流式）按轮次「补全 → 单工具执行 → 结果回填 → 再补全」，中间轮保留工具目录（tool_choice=auto），最后一轮强制收束为纯文本；预览直答（mail_send/pnkx）与轮间取消语义不变；`decision_meta.tool_calls` 记录全部轮次，多轮时加 `tool_rounds` 轨迹。测试 `test_chat.py` 增多轮链式与轮次上限两项。
 - [x] BTL-02 单轮多只读调用执行（2026-09-30）：只读安全集（查询/HA 读/邮件读/技能只读/挂载 MCP 只读等）内并行执行并逐条回填；含写动作组合拒绝执行让模型自我修正。测试 2 项。
-- [ ] BTL-03 工具循环与 ActionPlan A2 断点续跑打通（后续分期）。
+- [x] BTL-03 对话内动作提议与完成汇报（2026-09-30）：`propose_action` 工具（仅 L1）把 A1/A2 注册表动作转待确认计划（A3/A0/未注册/参数无效拒绝，同回合幂等）；计划完成回调多槽化，`PlanCompletionReporter` 经主动通道汇报结果。测试 `test_propose_action.py` 5 项。
 - [x] SEMB 本地语义 embedding（Hub 侧 2026-09-29，待真实模型验收）：`embeddings` 配置段（默认关闭）+ `HttpEmbeddingProvider`（OpenAI 兼容 /embeddings，响应维度校验，版本含模型名隔离向量空间）；启动连通性探测失败回落哈希不阻断启动；Admin 记忆检索页展示 provider/维度；secret_value 入脱敏链。测试 `test_memory_embeddings.py` 8 项。
 - [x] MAILW 邮件感知 loop（Hub 侧 2026-09-29，待真实邮箱验收）：`mail_awareness` 配置段（默认关闭）+ `app/mail_awareness` 循环；BODY.PEEK 拉未读、片段即焚、UID 基线防重启重报、watermark 限流；`mail.received` SemanticEvent 进既有感知-认知-四通道链路；分析提示禁执行邮件指令。测试 `test_mail_awareness.py` 8 项。
 - [x] DIST 技能蒸馏与回放晋级（2026-09-29，Hub 侧）：迁移 0058 `workflow_draft`；计划完成回调后台蒸馏（≥2 步、步骤快照幂等去重、等步骤流程不重复提案）；A0 步骤样例回放（重编译校验 + 隐私闸门 + 结果结构比对）为晋级硬门槛；Admin 管家中心草稿列表/审批/忽略/手动回放端点，未回放或失败 409 阻断。测试 10 项（`test_workflow_drafts.py` 9 + `test_admin_butler.py` 1）。命名经 utility 路由润色、失败回落标题（2026-09-30，测试 1 项）；对话内主动提示留后续。

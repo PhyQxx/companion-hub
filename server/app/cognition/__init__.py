@@ -43,6 +43,7 @@ from .models import (
     Urgency,
     WorldState,
 )
+from .propose import PlanCompletionReporter, ProposeActionTool
 from .reflection import ReflectionEngine
 from .store import CognitiveStore
 from .world import WorldStateBuilder
@@ -81,7 +82,9 @@ __all__ = [
     "GoalStatus",
     "GoalTracker",
     "GoalView",
+    "PlanCompletionReporter",
     "PlanExecutionEvent",
+    "ProposeActionTool",
     "ReflectionCandidate",
     "ReflectionEngine",
     "RouterDeliberator",
