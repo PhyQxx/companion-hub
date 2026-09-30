@@ -23,6 +23,7 @@ from uuid import UUID
 from pydantic import BaseModel, ConfigDict, Field
 
 from app.config import ConfigStore, DatabaseConfigStore, HubConfig
+from app.db import Database
 from app.ids import uuid7
 from app.llm import (
     CompletionRequest,
@@ -252,6 +253,35 @@ class WebResearchHandler:
             )
         )
         return result.text.strip()[:1_000]
+
+
+async def cancel_turn_delegations(
+    engine: JobEngine, database: Database, turn_id: UUID
+) -> int:
+    """取消由指定回合委派的未完结 deleg 任务（取消回合时联动）。
+
+    delegate_task 以回合 id 作幂等键并把 turn_id 存入 payload；用户取消
+    生成中的回合即视为撤回本次委派。终态任务不触碰。
+    """
+    from sqlalchemy import select
+
+    from app.db import JobRecord
+
+    async with database.sessions() as session:
+        records = list(
+            await session.scalars(
+                select(JobRecord).where(JobRecord.kind.like("deleg.%"))
+            )
+        )
+    cancelled = 0
+    for record in records:
+        if record.status in {"succeeded", "failed", "cancelled"}:
+            continue
+        if (record.input or {}).get("turn_id") != str(turn_id):
+            continue
+        if await engine.cancel(record.id):
+            cancelled += 1
+    return cancelled
 
 
 class DelegateTaskArgs(BaseModel):

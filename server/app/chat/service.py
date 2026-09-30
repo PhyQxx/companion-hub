@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import logging
 import re
@@ -28,6 +29,7 @@ from app.integrations.mcp.chat_tools import McpChatToolProvider, McpReadToolHand
 from app.llm import CompletionRequest, CompletionResult, LLMMessage, LLMRoute, ToolCall
 from app.llm.factory import CachedRouterBuilder
 from app.llm.provider import EnvSecretProvider, absorb_text_tool_calls
+from app.llm.text_tool_calls import MAX_TEXT_TOOL_CALLS
 from app.memory import (
     DeletionReceipt,
     ExtractionBackend,
@@ -86,6 +88,31 @@ MAX_CONTEXT_MESSAGES = 20
 SUMMARY_TRIGGER_MESSAGES = 10
 SUMMARY_WINDOW_LIMIT = 30
 SUMMARY_MAX_CHARS = 500
+# BTL-02（docs/09 §1）：单轮并行调用只对显式只读工具开放；技能（skill.*
+# 前缀，GET-only）与本轮挂载的 MCP 只读工具按前缀/清单放行，其余组合
+# 一律保持单调用语义。
+MULTI_CALL_SAFE_TOOLS = frozenset(
+    {
+        "get_location",
+        "get_weather",
+        "search_nearby",
+        "plan_route",
+        "home_get_state",
+        "home_get_history",
+        "search_devices",
+        "mail_read",
+        "mail_folders",
+        "mail_attachments",
+        "mail_sent",
+        "contact_query",
+        "commute_check",
+        "focus_status",
+        "inspect_webpage",
+        "fetch_webpage",
+        "propose_skill",
+        "pnkx_read_life",
+    }
+)
 
 logger = logging.getLogger(__name__)
 
@@ -405,6 +432,8 @@ class ChatService:
         self._cancelled_generations: set[UUID] = set()
         # CTX：正在做滚动摘要维护的会话（同会话同时至多一个后台更新）
         self._summary_updates_in_flight: set[UUID] = set()
+        # DELEG：取消回合时联动取消委派任务的回调（main 装配注入）
+        self._deleg_canceller: Callable[[UUID], Awaitable[int]] | None = None
         secrets = EnvSecretProvider()
         # PERE-01：默认按配置指纹缓存 Router，省去每轮重建 provider；
         # 显式传入的 builder（测试假件等）不经过缓存。
@@ -413,6 +442,12 @@ class ChatService:
     def set_safety(self, safety: Any | None) -> None:
         """SAFE-02：投递服务晚于 ChatService 构造，装配后注入告警服务。"""
         self._safety = safety
+
+    def set_deleg_canceller(
+        self, canceller: Callable[[UUID], Awaitable[int]] | None
+    ) -> None:
+        """DELEG：取消回合时联动取消委派任务的回调（main 装配注入）。"""
+        self._deleg_canceller = canceller
 
     def set_activity_tracker(self, tracker: Any | None) -> None:
         """SAFE-01：聊天回合即活动信号，装配后注入追踪器。"""
@@ -557,15 +592,16 @@ class ChatService:
                 )
             deterministic_call = _deterministic_home_read_call(pending)
             if deterministic_call is not None:
-                execution = await self._execute_tool_call(pending, [deterministic_call])
+                execution = (await self._execute_tool_call(pending, [deterministic_call]))[0]
                 tool_executions = (execution,)
                 consistency_request = self._tool_result_request(
                     pending.request, deterministic_call, execution
                 )
                 result = await backend.complete(consistency_request)
             else:
-                # 有界工具循环（docs/09 §1 BTL）：每轮至多执行一个调用并回填
-                # 结果；未到最后轮次的跟进补全保留工具目录（tool_choice=auto）
+                # 有界工具循环（docs/09 §1 BTL）：每轮执行一组调用（BTL-02：
+                # 只读安全集内可并行，含写动作的组合拒绝执行让模型自我修正）；
+                # 未到最后轮次的跟进补全保留工具目录（tool_choice=auto）
                 # 允许模型链式调用与自我修正，最后一轮强制 tool_choice=none
                 # 收束为纯文本。预览类工具（mail_send 回执）保持确定性直答。
                 request = pending.request
@@ -574,15 +610,19 @@ class ChatService:
                 rounds_left = pending.config.tools.max_tool_rounds
                 while result.tool_calls and rounds_left > 0:
                     rounds_left -= 1
-                    execution = await self._execute_tool_call(pending, result.tool_calls)
-                    tool_executions = (*tool_executions, execution)
+                    executions = await self._execute_tool_call(pending, result.tool_calls)
+                    tool_executions = (*tool_executions, *executions)
                     request = self._tool_followup_request(
                         request,
                         result,
-                        execution,
+                        executions,
                         allow_followup_tools=rounds_left > 0,
                     )
-                    direct_reply = _render_mail_send_receipt(execution.result)
+                    direct_reply = (
+                        _render_mail_send_receipt(executions[0].result)
+                        if len(executions) == 1
+                        else None
+                    )
                     if direct_reply is not None:
                         result = result.model_copy(
                             update={
@@ -1120,7 +1160,7 @@ class ChatService:
                             "label": _tool_label(deterministic_call.function.name),
                         }
                     )
-                execution = await self._execute_tool_call(pending, [deterministic_call])
+                execution = (await self._execute_tool_call(pending, [deterministic_call]))[0]
                 if on_tool_event is not None:
                     await on_tool_event(
                         {
@@ -1157,33 +1197,37 @@ class ChatService:
                 while result.tool_calls and rounds_left > 0:
                     rounds_left -= 1
                     if on_tool_event is not None:
-                        await on_tool_event(
-                            {
-                                "type": "tool.started",
-                                "tool": result.tool_calls[0].function.name,
-                                "label": _tool_label(result.tool_calls[0].function.name),
-                            }
-                        )
-                    execution = await self._execute_tool_call(pending, result.tool_calls)
+                        for call in result.tool_calls:
+                            await on_tool_event(
+                                {
+                                    "type": "tool.started",
+                                    "tool": call.function.name,
+                                    "label": _tool_label(call.function.name),
+                                }
+                            )
+                    executions = await self._execute_tool_call(pending, result.tool_calls)
                     if on_tool_event is not None:
-                        await on_tool_event(
-                            {
-                                "type": "tool.finished",
-                                "tool": execution.result.tool_name,
-                                "ok": execution.result.ok,
-                                "latency_ms": round(execution.result.latency_ms, 1),
-                                "reason_code": execution.result.reason_code,
-                            }
-                        )
-                    tool_executions = (*tool_executions, execution)
+                        for execution in executions:
+                            await on_tool_event(
+                                {
+                                    "type": "tool.finished",
+                                    "tool": execution.result.tool_name,
+                                    "ok": execution.result.ok,
+                                    "latency_ms": round(execution.result.latency_ms, 1),
+                                    "reason_code": execution.result.reason_code,
+                                }
+                            )
+                    tool_executions = (*tool_executions, *executions)
                     request = self._tool_followup_request(
                         request,
                         result,
-                        execution,
+                        executions,
                         allow_followup_tools=rounds_left > 0,
                     )
-                    if execution.result.tool_name.startswith("pnkx_"):
-                        direct_reply = _render_pnkx_tool_reply(execution.result)
+                    if len(executions) == 1 and executions[0].result.tool_name.startswith(
+                        "pnkx_"
+                    ):
+                        direct_reply = _render_pnkx_tool_reply(executions[0].result)
                         await filtered_delta(direct_reply)
                         result = result.model_copy(
                             update={
@@ -1193,7 +1237,12 @@ class ChatService:
                             }
                         )
                         break
-                    if (mail_receipt := _render_mail_send_receipt(execution.result)) is not None:
+                    mail_receipt = (
+                        _render_mail_send_receipt(executions[0].result)
+                        if len(executions) == 1
+                        else None
+                    )
+                    if mail_receipt is not None:
                         await filtered_delta(mail_receipt)
                         result = result.model_copy(
                             update={
@@ -1262,20 +1311,52 @@ class ChatService:
         self,
         pending: PendingTurn,
         calls: list[ToolCall],
+    ) -> list[ToolExecution]:
+        """BTL-02：单轮执行一组调用。
+
+        单调用维持既有语义；多调用仅当全部命中只读安全集时逐个执行，
+        否则不执行任何调用并回 multiple_tool_calls_not_allowed 让模型
+        自我修正——绝不批量执行含写动作的组合。
+        """
+        if len(calls) == 1:
+            return [await self._execute_single_call(pending, calls[0])]
+        if not calls:
+            return []
+        unsafe = next(
+            (call for call in calls if not self._multi_call_safe(call, pending)), None
+        )
+        if unsafe is not None:
+            return [
+                ToolExecution(
+                    call_id=unsafe.id,
+                    result=ToolResult(
+                        ok=False,
+                        tool_name=unsafe.function.name,
+                        reason_code="multiple_tool_calls_not_allowed",
+                        latency_ms=0,
+                    ),
+                )
+            ]
+        return [
+            await self._execute_single_call(pending, call)
+            for call in calls[:MAX_TEXT_TOOL_CALLS]
+        ]
+
+    def _multi_call_safe(self, call: ToolCall, pending: PendingTurn) -> bool:
+        name = call.function.name
+        if name in MULTI_CALL_SAFE_TOOLS:
+            return True
+        if name.startswith("skill."):
+            # 技能只读工具按契约只允许 GET 挂载进对话
+            return True
+        # 本轮挂载的 MCP 工具均为只读（写动作只经计划确认链）
+        return any(handler.name == name for handler in pending.mcp_handlers)
+
+    async def _execute_single_call(
+        self,
+        pending: PendingTurn,
+        call: ToolCall,
     ) -> ToolExecution:
-        if len(calls) != 1:
-            call_id = calls[0].id if calls else "invalid-tool-call"
-            tool_name = calls[0].function.name if calls else "invalid_tool_call"
-            return ToolExecution(
-                call_id=call_id,
-                result=ToolResult(
-                    ok=False,
-                    tool_name=tool_name,
-                    reason_code="multiple_tool_calls_not_allowed",
-                    latency_ms=0,
-                ),
-            )
-        call = calls[0]
         context = ToolContext(
             privacy_level=pending.request.privacy_level,
             user_id=pending.user_id,
@@ -1487,16 +1568,49 @@ class ChatService:
     def _tool_followup_request(
         request: CompletionRequest,
         first_result: CompletionResult,
-        execution: ToolExecution,
+        executions: list[ToolExecution],
         *,
         allow_followup_tools: bool = False,
     ) -> CompletionRequest:
-        selected_call = next(
-            (call for call in first_result.tool_calls if call.id == execution.call_id),
-            first_result.tool_calls[0],
-        )
-        return ChatService._tool_result_request(
-            request, selected_call, execution, allow_followup_tools=allow_followup_tools
+        """按执行结果构建跟进请求（BTL-02：单轮多个只读调用全部回填）。
+
+        每个执行结果对应一条 tool 消息；assistant 消息携带对应的全部
+        调用（协议要求每个 tool_call 都有应答）。单执行路径保持既有
+        语义（只回填该调用）。
+        """
+        by_id = {execution.call_id: execution for execution in executions}
+        selected: list[ToolCall] = []
+        for call in first_result.tool_calls:
+            if call.id in by_id:
+                selected.append(call)
+        if not selected:
+            selected = [first_result.tool_calls[0]]
+        messages: list[LLMMessage] = [
+            *request.messages,
+            LLMMessage(role="assistant", content="", tool_calls=selected),
+        ]
+        for call in selected:
+            execution = by_id.get(call.id) or executions[0]
+            messages.append(
+                LLMMessage(
+                    role="tool",
+                    tool_call_id=call.id,
+                    name=call.function.name,
+                    content=json.dumps(
+                        execution.result.model_dump(mode="json"),
+                        ensure_ascii=False,
+                        separators=(",", ":"),
+                    ),
+                )
+            )
+        return CompletionRequest.model_validate(
+            {
+                **request.model_dump(mode="python"),
+                "messages": messages,
+                # 最后一轮收束为无工具纯文本；中间轮保留目录允许链式调用。
+                "tools": request.tools if allow_followup_tools else [],
+                "tool_choice": "auto" if allow_followup_tools else "none",
+            }
         )
 
     @staticmethod
@@ -1556,8 +1670,13 @@ class ChatService:
             turn.state_version += 1
             turn.cancel_reason = reason
             turn.completed_at = now
+            cancelled_turn_id = turn.id
         # PERE-02：热路径取消检查的内存信号；回合收尾（提交/失败）时逐出。
         self._cancelled_generations.add(generation_id)
+        if self._deleg_canceller is not None:
+            # DELEG：取消回合即撤回本次委派的后台任务；失败只记日志
+            with contextlib.suppress(Exception):
+                await self._deleg_canceller(cancelled_turn_id)
         return True
 
     async def list_messages_after(

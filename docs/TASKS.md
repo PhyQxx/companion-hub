@@ -47,12 +47,12 @@
 借鉴 Jarvis 管家原型与 Hermes（Nous Research 自托管 agent 框架）的闭环设计；方案与分期见 [09-管家能力增强](./09-管家能力增强.md)。原则：只借产品形态与闭环，不借宽松默认——所有新增自主性都在既有 A0-A3 分级、确认预览与隐私出口闸门内扩展。优先级不变的前置仍是 §1 的真实验收收口（真实凭据/真机/真实数据）。
 
 - [x] BTL-01 有界工具循环（2026-09-29）：`tools.max_tool_rounds` 从固定 1 放宽为 1-4（默认 1 行为不变，Admin 工具页可配）；聊天管线（流式与非流式）按轮次「补全 → 单工具执行 → 结果回填 → 再补全」，中间轮保留工具目录（tool_choice=auto），最后一轮强制收束为纯文本；预览直答（mail_send/pnkx）与轮间取消语义不变；`decision_meta.tool_calls` 记录全部轮次，多轮时加 `tool_rounds` 轨迹。测试 `test_chat.py` 增多轮链式与轮次上限两项。
-- [ ] BTL-02 单轮多只读调用执行（后续分期）。
+- [x] BTL-02 单轮多只读调用执行（2026-09-30）：只读安全集（查询/HA 读/邮件读/技能只读/挂载 MCP 只读等）内并行执行并逐条回填；含写动作组合拒绝执行让模型自我修正。测试 2 项。
 - [ ] BTL-03 工具循环与 ActionPlan A2 断点续跑打通（后续分期）。
 - [x] SEMB 本地语义 embedding（Hub 侧 2026-09-29，待真实模型验收）：`embeddings` 配置段（默认关闭）+ `HttpEmbeddingProvider`（OpenAI 兼容 /embeddings，响应维度校验，版本含模型名隔离向量空间）；启动连通性探测失败回落哈希不阻断启动；Admin 记忆检索页展示 provider/维度；secret_value 入脱敏链。测试 `test_memory_embeddings.py` 8 项。
 - [x] MAILW 邮件感知 loop（Hub 侧 2026-09-29，待真实邮箱验收）：`mail_awareness` 配置段（默认关闭）+ `app/mail_awareness` 循环；BODY.PEEK 拉未读、片段即焚、UID 基线防重启重报、watermark 限流；`mail.received` SemanticEvent 进既有感知-认知-四通道链路；分析提示禁执行邮件指令。测试 `test_mail_awareness.py` 8 项。
-- [x] DIST 技能蒸馏与回放晋级（2026-09-29，Hub 侧）：迁移 0058 `workflow_draft`；计划完成回调后台蒸馏（≥2 步、步骤快照幂等去重、等步骤流程不重复提案）；A0 步骤样例回放（重编译校验 + 隐私闸门 + 结果结构比对）为晋级硬门槛；Admin 管家中心草稿列表/审批/忽略/手动回放端点，未回放或失败 409 阻断。测试 10 项（`test_workflow_drafts.py` 9 + `test_admin_butler.py` 1）。对话内主动提示与 LLM 命名润色留后续。
-- [x] DELEG 长任务委派（2026-09-30，Hub 侧）：`DelegatedJobWorker` 领取执行 deleg Job（租约/重试/检查点），完成经主动四通道汇报，执行中取消丢弃结果；对话挂载 `delegate_task`（仅 L1，同回合幂等）；首个类型 `deleg.web_research`（≤5 URL，web_fetch SSRF+隐私闸门复用，utility 汇总防注入）。测试 `test_delegated_jobs.py` 8 项。pnkx 周报类型与对话内直连取消留后续。
+- [x] DIST 技能蒸馏与回放晋级（2026-09-29，Hub 侧）：迁移 0058 `workflow_draft`；计划完成回调后台蒸馏（≥2 步、步骤快照幂等去重、等步骤流程不重复提案）；A0 步骤样例回放（重编译校验 + 隐私闸门 + 结果结构比对）为晋级硬门槛；Admin 管家中心草稿列表/审批/忽略/手动回放端点，未回放或失败 409 阻断。测试 10 项（`test_workflow_drafts.py` 9 + `test_admin_butler.py` 1）。命名经 utility 路由润色、失败回落标题（2026-09-30，测试 1 项）；对话内主动提示留后续。
+- [x] DELEG 长任务委派（2026-09-30，Hub 侧）：`DelegatedJobWorker` 领取执行 deleg Job（租约/重试/检查点），完成经主动四通道汇报，执行中取消丢弃结果；对话挂载 `delegate_task`（仅 L1，同回合幂等）；首个类型 `deleg.web_research`（≤5 URL，web_fetch SSRF+隐私闸门复用，utility 汇总防注入）。测试 `test_delegated_jobs.py` 8 项。取消回合联动取消其委派任务（2026-09-30，测试 1 项）；pnkx 周报类型与 handler 协作式取消留后续。
 - [x] CTX 滚动会话摘要（2026-09-29，Hub 侧）：迁移 0057；阈值 10 触发后台增量重写（≤500 字，L2 窗口强制 PRIVATE 路由），水位 FOR UPDATE 防并发覆盖；对话超出 20 条窗口后系统提示注入「此前对话要点」。测试三项（文件库时序无关）。
 - [x] RPT 透明度汇报（2026-09-29）：透明度问询短路模型链路，从近 24h CognitiveDecision 确定性渲染（开口次数/时间/决策类型/触发来源/安静计数），L1/L2 均可问。每日自体检留后续。
 - [x] PERE-01 Router 跨轮缓存（配置指纹 sha256，容量 4，发布自动失效）；PERE-02 流式取消检查改内存集合（cancel_turn 写入、回合收尾逐出）；PERE-03 main.py 拆分未实施。

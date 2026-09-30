@@ -2044,3 +2044,123 @@ async def test_transparency_report_renders_deterministically(
         for request in requests
         for message in request.messages
     )
+
+
+class MultiCallRouter:
+    """首个补全一次返回两个只读调用（或含写动作的混合），之后终答。"""
+
+    def __init__(self, *, names: list[str]) -> None:
+        self.names = list(names)
+        self.requests: list[CompletionRequest] = []
+
+    async def complete(self, request: CompletionRequest) -> CompletionResult:
+        self.requests.append(request)
+        if request.tools and self.names:
+            names, self.names = self.names, []
+            return CompletionResult(
+                text="我一次查完。",
+                provider="openai_compatible",
+                model="tool-model",
+                endpoint="cloud",
+                route=request.route,
+                finish_reason="tool_calls",
+                latency_ms=10,
+                tool_calls=[
+                    ToolCall(
+                        id=f"call-{name}",
+                        function={"name": name, "arguments": {"location": "济南市"}},
+                    )
+                    for name in names
+                ],
+            )
+        return CompletionResult(
+            text="查询完成：多云，附近有超市。",
+            provider="openai_compatible",
+            model="tool-model",
+            endpoint="cloud",
+            route=request.route,
+            finish_reason="stop",
+            latency_ms=8,
+        )
+
+    async def stream(
+        self,
+        request: CompletionRequest,
+        on_delta: Callable[[str], Awaitable[None]],
+    ) -> CompletionResult:
+        result = await self.complete(request)
+        await on_delta(result.text)
+        return result
+
+
+async def test_multi_read_calls_execute_in_one_round(
+    database: Database,
+    store: DatabaseConfigStore,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """BTL-02：模型并行调用两个只读工具时同轮全部执行并回填。"""
+    await _publish_loop_config(store, max_tool_rounds=2)
+    backend = MultiCallRouter(names=["get_weather", "search_nearby"])
+    monkeypatch.setattr(
+        "app.chat.service.build_query_tool_runtime",
+        lambda config, secrets: FakeToolRuntime(),
+    )
+    service = ChatService(database, store, router_builder=lambda config: backend)
+    user = await create_user(database)
+    conversation = await service.create_conversation(user_id=user.id, title="multi")
+
+    turn = await service.send_message(
+        conversation.id,
+        user_id=user.id,
+        text="济南天气和附近超市",
+        privacy_level=PrivacyLevel.L1,
+    )
+
+    assert turn.assistant_message.content == "查询完成：多云，附近有超市。"
+    followup = backend.requests[1]
+    tool_messages = [m for m in followup.messages if m.role == "tool"]
+    assert len(tool_messages) == 2
+    assistant_call = next(m for m in followup.messages if m.role == "assistant")
+    assert [c.function.name for c in assistant_call.tool_calls] == [
+        "get_weather",
+        "search_nearby",
+    ]
+    meta = turn.assistant_message.decision_meta or {}
+    calls = meta["tool_calls"]
+    assert isinstance(calls, list)
+    assert [call["tool_name"] for call in calls] == ["get_weather", "search_nearby"]
+
+
+async def test_mixed_write_calls_rejected_without_execution(
+    database: Database,
+    store: DatabaseConfigStore,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """BTL-02：只读+写动作的组合拒绝执行，回错误让模型自我修正。"""
+    await _publish_loop_config(store, max_tool_rounds=2)
+    backend = MultiCallRouter(names=["get_weather", "home_control"])
+    monkeypatch.setattr(
+        "app.chat.service.build_query_tool_runtime",
+        lambda config, secrets: FakeToolRuntime(),
+    )
+    service = ChatService(database, store, router_builder=lambda config: backend)
+    user = await create_user(database)
+    conversation = await service.create_conversation(user_id=user.id, title="mixed")
+
+    turn = await service.send_message(
+        conversation.id,
+        user_id=user.id,
+        text="查天气并开灯",
+        privacy_level=PrivacyLevel.L1,
+    )
+
+    # 第一轮拒绝执行（multiple_tool_calls_not_allowed），模型收错后第二轮
+    # 不再调用工具直接回答
+    followup = backend.requests[1]
+    tool_messages = [m for m in followup.messages if m.role == "tool"]
+    assert len(tool_messages) == 1
+    assert "multiple_tool_calls_not_allowed" in tool_messages[0].content
+    meta = turn.assistant_message.decision_meta or {}
+    calls = meta["tool_calls"]
+    assert isinstance(calls, list) and len(calls) == 1
+    assert calls[0]["outcome"] == "failed"

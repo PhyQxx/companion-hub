@@ -6,6 +6,7 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager, suppress
 from datetime import UTC, datetime, timedelta
 from datetime import time as dt_time
+from functools import partial
 from pathlib import Path
 from typing import Any, cast
 from uuid import UUID
@@ -149,7 +150,9 @@ from app.jobs import (
     DelegateTaskTool,
     JobEngine,
     WebResearchHandler,
+    cancel_turn_delegations,
 )
+from app.llm.factory import build_router
 from app.llm.provider import EnvSecretProvider
 from app.mail import (
     MailAttachmentStore,
@@ -392,12 +395,24 @@ def create_app(
         else None
     )
     # DIST（docs/09 §4）：计划轨迹蒸馏为流程草稿；回放执行器随 device_tools
-    # 装配完成后注入，完成回调只负责触发。
+    # 装配完成后注入，完成回调只负责触发。命名经 utility 路由润色，失败
+    # 回落确定性标题命名。
     workflow_draft_store = (
         WorkflowDraftStore(runtime_database) if runtime_database is not None else None
     )
+    _distill_secrets = EnvSecretProvider()
     plan_distiller = (
-        PlanDistiller(runtime_database, workflow_draft_store, registry=action_registry)
+        PlanDistiller(
+            runtime_database,
+            workflow_draft_store,
+            registry=action_registry,
+            config_store=runtime_config,
+            router_builder=(
+                lambda config: build_router(config, _distill_secrets)
+                if runtime_config is not None
+                else None
+            ),
+        )
         if runtime_database is not None and workflow_draft_store is not None
         else None
     )
@@ -1895,6 +1910,11 @@ def create_app(
                 app.state.safety_alert_service = safety_alert_service
                 runtime_chat_service.set_safety(safety_alert_service)
                 runtime_chat_service.set_activity_tracker(activity_tracker)
+                if job_engine is not None:
+                    # DELEG：取消回合即撤回该回合委派的后台任务
+                    runtime_chat_service.set_deleg_canceller(
+                        partial(cancel_turn_delegations, job_engine, runtime_database)
+                    )
                 app.include_router(
                     create_admin_safety_router(
                         safety_alert_service, admin_token=runtime_admin_token

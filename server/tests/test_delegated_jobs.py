@@ -298,3 +298,39 @@ async def test_web_research_handler_rejects_all_failed(user_id: UUID) -> None:
         await handler(
             {"user_id": str(user_id), "topic": "t", "urls": ["https://bad.com"]}
         )
+
+
+async def test_cancel_turn_cascades_to_delegations(
+    database: Database, user_id: UUID
+) -> None:
+    """取消回合时联动取消该回合委派的 deleg 任务，其他任务不受影响。"""
+    from app.jobs import cancel_turn_delegations
+
+    engine = JobEngine(database)
+    tool = DelegateTaskTool(engine)
+    turn_id = uuid4()
+    arguments = tool.arguments_model.model_validate(
+        {"kind": "web_research", "topic": "t", "urls": ["https://example.com/a"]}
+    )
+    executed = await tool.execute(
+        arguments,
+        ToolContext(
+            privacy_level=PrivacyLevel.L1, user_id=user_id, turn_id=turn_id
+        ),
+    )
+    assert executed.ok
+    job_id = UUID(executed.data["job_id"])
+    # 另一个回合的任务不应被波及
+    other = await engine.submit(
+        "deleg.web_research",
+        {"user_id": str(user_id), "turn_id": str(uuid4()), "topic": "x", "urls": []},
+        resource_class=DELEG_RESOURCE_CLASS,
+    )
+
+    cancelled = await cancel_turn_delegations(engine, database, turn_id)
+
+    assert cancelled == 1
+    fresh = await engine.get(job_id)
+    assert fresh is not None and fresh.status == "cancelled"
+    untouched = await engine.get(other.id)
+    assert untouched is not None and untouched.status == "queued"

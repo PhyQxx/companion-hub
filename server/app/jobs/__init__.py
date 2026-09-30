@@ -5,6 +5,7 @@ from .delegated import (
     DelegatedJobWorker,
     DelegateTaskTool,
     WebResearchHandler,
+    cancel_turn_delegations,
 )
 from .engine import JobEngine, JobStatus, JobView
 
@@ -19,4 +20,5 @@ __all__ = [
     "JobStatus",
     "JobView",
     "WebResearchHandler",
+    "cancel_turn_delegations",
 ]
