@@ -16,6 +16,8 @@ import asyncio
 import contextlib
 import logging
 from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
+from functools import partial
 from time import perf_counter
 from typing import Annotated, Any, Literal, cast
 from uuid import UUID
@@ -49,9 +51,21 @@ RESEARCH_EXCERPT_CHARS = 2_000
 WORKER_LEASE_SECONDS = 900.0
 WORKER_POLL_SECONDS = 5.0
 
-# handler(payload) -> 结果摘要 dict；user_id/turn_id 由 payload 携带
-DelegHandler = Callable[[dict[str, Any]], Awaitable[dict[str, Any]]]
+# handler(payload, context) -> 结果摘要 dict；user_id/turn_id 由 payload 携带
+DelegHandler = Callable[[dict[str, Any], "DelegRunContext"], Awaitable[dict[str, Any]]]
 ProactiveDeliver = Callable[..., Awaitable[Any]]
+
+
+class DelegCancelled(RuntimeError):
+    """Handler 协作式取消：worker 按取消收尾，结果不汇报。"""
+
+
+@dataclass(frozen=True, slots=True)
+class DelegRunContext:
+    """Handler 运行期上下文；is_cancel_requested 供长循环协作式退出。"""
+
+    job_id: UUID
+    is_cancel_requested: Callable[[], Awaitable[bool]]
 
 
 class DelegatedJobWorker:
@@ -133,8 +147,17 @@ class DelegatedJobWorker:
             )
             return
         step_id = await self._engine.start_step(job.id, "run")
+        run_context = DelegRunContext(
+            job_id=job.id,
+            is_cancel_requested=partial(self._engine.cancel_requested, job.id),
+        )
         try:
-            result = await handler(payload)
+            result = await handler(payload, run_context)
+        except DelegCancelled:
+            # Handler 协作式取消：与执行后取消同语义，结果不汇报
+            logger.info("delegated job %s cancelled cooperatively", job.id)
+            await self._engine.confirm_cancelled(job.id, self._worker_id)
+            return
         except Exception as error:
             logger.warning(
                 "delegated job %s (%s) failed", job.id, job.kind, exc_info=True
@@ -184,7 +207,9 @@ class WebResearchHandler:
         secrets = EnvSecretProvider()
         self._router_builder = router_builder or (lambda config: build_router(config, secrets))
 
-    async def __call__(self, payload: dict[str, Any]) -> dict[str, Any]:
+    async def __call__(
+        self, payload: dict[str, Any], run_context: DelegRunContext
+    ) -> dict[str, Any]:
         urls = payload.get("urls")
         topic = str(payload.get("topic") or "网页调研")
         if not isinstance(urls, list) or not 1 <= len(urls) <= MAX_RESEARCH_URLS:
@@ -193,6 +218,9 @@ class WebResearchHandler:
         documents: list[dict[str, str]] = []
         failures: list[dict[str, str]] = []
         for raw in urls:
+            if await run_context.is_cancel_requested():
+                # 协作式取消：未抓取的 URL 直接放弃，已抓取结果随任务取消丢弃
+                raise DelegCancelled("web_research")
             url = str(raw).strip()
             context = ToolContext(
                 privacy_level=PrivacyLevel.L1,

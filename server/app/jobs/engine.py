@@ -354,6 +354,14 @@ class JobEngine:
                 record.completed_at = now
             return True
 
+    async def cancel_requested(self, job_id: UUID) -> bool:
+        """Handler 协作式取消检查：取消已请求且 Job 未到终态。"""
+        async with self._database.sessions() as session:
+            record = await session.get(JobRecord, job_id)
+            if record is None or record.status in _TERMINAL:
+                return False
+            return record.cancel_requested_at is not None
+
     async def confirm_cancelled(self, job_id: UUID, worker_id: str) -> bool:
         """Worker 确认取消完成。"""
         now = datetime.now(UTC)

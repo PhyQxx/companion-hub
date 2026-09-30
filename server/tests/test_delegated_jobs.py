@@ -15,6 +15,8 @@ from app.jobs import (
     DELEG_RESOURCE_CLASS,
     DelegatedJobWorker,
     DelegateTaskTool,
+    DelegCancelled,
+    DelegRunContext,
     JobEngine,
     WebResearchHandler,
 )
@@ -55,7 +57,7 @@ async def test_worker_runs_handler_and_reports_via_deliver(
     async def deliver(text: str, **kwargs: Any) -> None:
         delivered.append((text, kwargs))
 
-    async def handler(payload: dict[str, Any]) -> dict[str, Any]:
+    async def handler(payload: dict[str, Any], context: object) -> dict[str, Any]:
         return {"summary": f"关于{payload['topic']}的调研纪要"}
 
     worker = _worker(engine, deliver)
@@ -84,7 +86,7 @@ async def test_worker_runs_handler_and_reports_via_deliver(
 async def test_handler_failure_enters_retry(database: Database, user_id: UUID) -> None:
     engine = JobEngine(database)
 
-    async def handler(payload: dict[str, Any]) -> dict[str, Any]:
+    async def handler(payload: dict[str, Any], context: object) -> dict[str, Any]:
         raise RuntimeError("boom")
 
     worker = _worker(engine)
@@ -125,7 +127,7 @@ async def test_cancel_during_execution_discards_result(
     async def deliver(text: str, **kwargs: Any) -> None:
         delivered.append(text)
 
-    async def handler(payload: dict[str, Any]) -> dict[str, Any]:
+    async def handler(payload: dict[str, Any], context: object) -> dict[str, Any]:
         # 模拟执行期间收到取消请求
         await engine.cancel(job_id_holder["id"])
         return {"summary": "不应汇报的结果"}
@@ -259,6 +261,13 @@ class _StubBackend:
         )
 
 
+def _no_cancel_context() -> DelegRunContext:
+    async def not_cancelled() -> bool:
+        return False
+
+    return DelegRunContext(job_id=uuid4(), is_cancel_requested=not_cancelled)
+
+
 def _research_handler() -> tuple[WebResearchHandler, _StubBackend]:
     backend = _StubBackend()
 
@@ -283,7 +292,8 @@ async def test_web_research_handler_summarizes(user_id: UUID) -> None:
             "user_id": str(user_id),
             "topic": "嵌入式数据库",
             "urls": ["https://ok1.com", "https://ok2.com", "https://bad.com"],
-        }
+        },
+        _no_cancel_context(),
     )
     assert result["summary"].startswith("三个来源结论一致")
     assert result["sources"] == ["https://ok1.com", "https://ok2.com"]
@@ -296,7 +306,8 @@ async def test_web_research_handler_rejects_all_failed(user_id: UUID) -> None:
     handler, _ = _research_handler()
     with pytest.raises(ValueError, match="all_fetches_failed"):
         await handler(
-            {"user_id": str(user_id), "topic": "t", "urls": ["https://bad.com"]}
+            {"user_id": str(user_id), "topic": "t", "urls": ["https://bad.com"]},
+            _no_cancel_context(),
         )
 
 
@@ -334,3 +345,36 @@ async def test_cancel_turn_cascades_to_delegations(
     assert fresh is not None and fresh.status == "cancelled"
     untouched = await engine.get(other.id)
     assert untouched is not None and untouched.status == "queued"
+
+
+@pytest.mark.asyncio
+async def test_handler_cooperative_cancel_discards_result(
+    database: Database, user_id: UUID
+) -> None:
+    """Handler 协作式取消：抓取循环中途退出，任务按取消收尾且不汇报。"""
+    engine = JobEngine(database)
+    delivered: list[str] = []
+
+    async def deliver(text: str, **kwargs: Any) -> None:
+        delivered.append(text)
+
+    async def handler(payload: dict[str, Any], context: DelegRunContext) -> dict[str, Any]:
+        if await context.is_cancel_requested():
+            raise DelegCancelled("web_research")
+        return {"summary": "不应汇报的结果"}
+
+    worker = _worker(engine, deliver)
+    worker.register("deleg.coop_cancel", handler)
+    job = await engine.submit(
+        "deleg.coop_cancel",
+        {"user_id": str(user_id)},
+        resource_class=DELEG_RESOURCE_CLASS,
+    )
+    claimed = await engine.claim(worker._worker_id, resource_class=DELEG_RESOURCE_CLASS)
+    assert claimed is not None
+    await engine.cancel(job.id)
+    assert await engine.cancel_requested(job.id) is True
+    await worker._execute(claimed)
+    view = await engine.get(job.id)
+    assert view is not None and view.status == "cancelled"
+    assert delivered == []
