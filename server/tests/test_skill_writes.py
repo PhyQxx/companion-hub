@@ -239,9 +239,9 @@ def test_render_action_catalog_lists_registered_skill_actions() -> None:
     # 内置动作不含 skill.* 前缀：空目录
     assert render_action_catalog(registry) == ""
 
-    store = None  # 仅用注册表渲染，无需存储
-    del store
     registry_with_skill = build_builtin_action_registry()
+    manifest = _document().api
+    assert manifest is not None
     sync_skill_actions(
         registry_with_skill,
         [
@@ -251,11 +251,7 @@ def test_render_action_catalog_lists_registered_skill_actions() -> None:
                 {
                     "name": "partner-todo",
                     "enabled": True,
-                    "api": SkillApiManifest(
-                        schema_version=1,
-                        connection="partner-system",
-                        operations=_document().api.operations,
-                    ),
+                    "api": manifest,
                 },
             )()
         ],
