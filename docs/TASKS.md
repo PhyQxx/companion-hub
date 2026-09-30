@@ -55,7 +55,7 @@
 - [x] DELEG 长任务委派（2026-09-30，Hub 侧）：`DelegatedJobWorker` 领取执行 deleg Job（租约/重试/检查点），完成经主动四通道汇报，执行中取消丢弃结果；对话挂载 `delegate_task`（仅 L1，同回合幂等）；首个类型 `deleg.web_research`（≤5 URL，web_fetch SSRF+隐私闸门复用，utility 汇总防注入）。测试 `test_delegated_jobs.py` 8 项。取消回合联动取消其委派任务（2026-09-30，测试 1 项）；pnkx 周报类型与 handler 协作式取消留后续。
 - [x] CTX 滚动会话摘要（2026-09-29，Hub 侧）：迁移 0057；阈值 10 触发后台增量重写（≤500 字，L2 窗口强制 PRIVATE 路由），水位 FOR UPDATE 防并发覆盖；对话超出 20 条窗口后系统提示注入「此前对话要点」。测试三项（文件库时序无关）。
 - [x] RPT 透明度汇报（2026-09-29）：透明度问询短路模型链路，从近 24h CognitiveDecision 确定性渲染（开口次数/时间/决策类型/触发来源/安静计数），L1/L2 均可问。每日自体检留后续。
-- [x] PERE-01 Router 跨轮缓存（配置指纹 sha256，容量 4，发布自动失效）；PERE-02 流式取消检查改内存集合（cancel_turn 写入、回合收尾逐出）；PERE-03 main.py 拆分未实施。
+- [x] PERE-01 Router 跨轮缓存（配置指纹 sha256，容量 4，发布自动失效）；PERE-02 流式取消检查改内存集合（cancel_turn 写入、回合收尾逐出）；PERE-03 组合根拆分进行中（2026-09-30）：wiring/ 包已承接前端静态/系统端点、Admin 前置路由、主动投递栈与感知循环三批，main.py 2127→1620 行，每批分段全量验证；剩余 lifespan 与运行时装配段待建 Wiring 容器后搬移。
 
 ### 0.0 核查后优先修复（2026-09-08）
 
