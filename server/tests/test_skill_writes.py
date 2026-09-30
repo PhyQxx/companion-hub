@@ -14,7 +14,7 @@ from app.cognition.action_plan import (
     ActionPlanStatus,
     ActionVerificationStatus,
 )
-from app.cognition.action_registry import build_builtin_action_registry
+from app.cognition.action_registry import build_builtin_action_registry, render_action_catalog
 from app.cognition.action_runner import ToolActionRunner
 from app.db import AppUserRecord, Base, Database, create_database
 from app.ids import uuid7
@@ -205,6 +205,65 @@ async def test_write_reports_remote_business_error(database: Database) -> None:
         assert runs and not runs[0].ok
     finally:
         await http.aclose()
+
+
+@pytest.mark.asyncio
+async def test_write_receipt_carries_remote_id(database: Database) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"code": 200, "data": 283})
+
+    store = SkillStore(database)
+    connections = SkillConnectionStore(database)
+    await connections.put(SkillConnection(**_WRITE_CONNECTION))
+    http = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    client = SkillHttpClient(connections, client=http)
+    try:
+        skill = await store.create(_document(), source="created")
+        await store.set_enabled(skill.id, True)
+        write = _write_handler(store, connections, client)
+        context = ToolContext(privacy_level=PrivacyLevel.L1, idempotency_key="step-key-id")
+
+        result = await write.execute(
+            _write_args("partner-todo", "todo_create", {"title": "买牛奶"}), context
+        )
+
+        # RuoYi 创建回执的新记录 id 放在 data 字段；透传给模型供转述与后续修改
+        assert result.ok
+        assert result.data["remote_id"] == "283"
+    finally:
+        await http.aclose()
+
+
+def test_render_action_catalog_lists_registered_skill_actions() -> None:
+    registry = build_builtin_action_registry()
+    # 内置动作不含 skill.* 前缀：空目录
+    assert render_action_catalog(registry) == ""
+
+    store = None  # 仅用注册表渲染，无需存储
+    del store
+    registry_with_skill = build_builtin_action_registry()
+    sync_skill_actions(
+        registry_with_skill,
+        [
+            type(
+                "View",
+                (),
+                {
+                    "name": "partner-todo",
+                    "enabled": True,
+                    "api": SkillApiManifest(
+                        schema_version=1,
+                        connection="partner-system",
+                        operations=_document().api.operations,
+                    ),
+                },
+            )()
+        ],
+    )
+    catalog = render_action_catalog(registry_with_skill)
+    assert "skill.partner-todo.todo_create" in catalog
+    assert "title*" in catalog
+    assert "【可提议的写操作】" in catalog
 
 
 @pytest.mark.asyncio

@@ -161,6 +161,7 @@ from app.schemas.common import PrivacyLevel
 from app.screen_awareness import (
     ScreenAwarenessLoop,
 )
+from app.skills.audit import SkillAuditScheduler
 from app.skills.connections import SkillConnectionStore, SkillHttpClient
 from app.skills.credentials import SkillCredentialStore
 from app.skills.drafts import SkillDraftAssistant
@@ -1254,6 +1255,7 @@ def create_app(
                 cognitive_cycle=cognitive_cycle,
                 avatar_store=avatar_store,
                 goal_tracker=goal_tracker,
+                action_registry=action_registry,
             )
             app.state.auth_service = auth_service
             app.state.chat_service = runtime_chat_service
@@ -1509,6 +1511,9 @@ def create_app(
     deps.skill_store = skill_store
     deps.action_registry = action_registry
     deps.skill_http_client = skill_http_client
+    deps.skill_audit_scheduler = (
+        SkillAuditScheduler(skill_store, skill_connections) if skill_store is not None else None
+    )
     deps.pnkx_life_client = pnkx_life_client
     deps.home_assistant_proactive = home_assistant_proactive
     deps.mqtt_presence_bridge = mqtt_presence_bridge

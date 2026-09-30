@@ -3,6 +3,7 @@ from __future__ import annotations
 import sqlite3
 from pathlib import Path
 
+import pytest
 from alembic.config import Config
 
 from alembic import command
@@ -18,7 +19,11 @@ def _alembic_config(database_path: Path) -> Config:
     return config
 
 
-def test_0011_timeline_backfills_existing_sources_and_downgrades(tmp_path: Path) -> None:
+def test_0011_timeline_backfills_existing_sources_and_downgrades(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # 迁移测试显式使用临时 SQLite；不能被开发机/CI 的生产数据库环境变量覆盖。
+    monkeypatch.delenv("ARIA_DATABASE_URL", raising=False)
     database_path = tmp_path / "timeline-migration.db"
     config = _alembic_config(database_path)
     command.upgrade(config, "0010_memory_subject_scope")

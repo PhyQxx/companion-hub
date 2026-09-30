@@ -10,6 +10,7 @@ from uuid import UUID
 import pytest
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
+from pydantic import BaseModel, ConfigDict
 from sqlalchemy import func, select
 
 from app.api import create_chat_router
@@ -18,9 +19,13 @@ from app.avatar import AvatarStore
 from app.chat import ChatService, RuntimeActionCapability, TurnCancelled
 from app.chat.service import _render_mail_send_receipt, _render_pnkx_tool_reply
 from app.cognition import (
+    ActionDefinition,
+    ActionRegistry,
+    ActionRisk,
     AttentionEngine,
     CognitiveCycle,
     CognitiveStore,
+    ConfirmationPolicy,
     RuleBasedDeliberator,
     WorldStateBuilder,
 )
@@ -237,6 +242,56 @@ async def test_pnkx_intent_keeps_assistant_tools_without_legacy_pnkx_tools(
     )
 
     assert pending.tool_names == ("reminder_create",)
+
+
+async def test_action_catalog_rendered_into_system_prompt(
+    database: Database,
+    store: DatabaseConfigStore,
+) -> None:
+    """自描述能力：注册表快照进提示词，模型不再依赖会漂移的手写文案。"""
+
+    class _ThingArgs(BaseModel):
+        model_config = ConfigDict(extra="forbid", frozen=True)
+
+        title: str
+
+    registry = ActionRegistry()
+    registry.register(
+        ActionDefinition(
+            action_id="skill.demo.thing_add",
+            label="技能 · demo.thing_add",
+            description="新增演示记录。",
+            risk=ActionRisk.A2_CONFIRM,
+            confirmation_policy=ConfirmationPolicy.ALWAYS,
+            reversible=False,
+            tool_name="skill_write",
+            arguments_schema=_ThingArgs.model_json_schema(),
+            bound_arguments={},
+            max_privacy_level=PrivacyLevel.L1,
+        ),
+        _ThingArgs,
+    )
+    registry.validate()
+
+    candidate = store.current.config.model_dump(mode="python")
+    candidate["models"]["cloud"]["supports_tool_calling"] = True
+    draft = await store.create_draft(HubConfig.model_validate(candidate), actor="test")
+    await store.publish(draft.version, actor="test")
+    service = ChatService(database, store, action_registry=registry)
+    user = await create_user(database)
+    conversation = await service.create_conversation(user_id=user.id, title="catalog")
+
+    pending = await service.start_turn(
+        conversation.id,
+        user_id=user.id,
+        text="帮我记个演示",
+        privacy_level=PrivacyLevel.L1,
+    )
+
+    system_prompt = pending.request.messages[0].content
+    assert "【可提议的写操作】" in system_prompt
+    assert "skill.demo.thing_add" in system_prompt
+    assert "title*" in system_prompt
 
 
 async def test_pnkx_read_uses_matching_skill_instead_of_legacy_token_tool(

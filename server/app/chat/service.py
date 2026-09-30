@@ -14,7 +14,13 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from sqlalchemy import delete, select, update
 
-from app.cognition import CognitiveCycle, CognitiveDecision, SemanticEvent
+from app.cognition import (
+    ActionRegistry,
+    CognitiveCycle,
+    CognitiveDecision,
+    SemanticEvent,
+    render_action_catalog,
+)
 from app.config import ConfigStore, DatabaseConfigStore, HubConfig
 from app.db import (
     AppUserRecord,
@@ -391,6 +397,7 @@ class ChatService:
         cognitive_cycle: CognitiveCycle | None = None,
         avatar_store: Any | None = None,
         goal_tracker: Any | None = None,
+        action_registry: ActionRegistry | None = None,
     ) -> None:
         self._database = database
         self._config_store = config_store
@@ -408,6 +415,8 @@ class ChatService:
         )
         self._capability_provider = capability_provider
         self._cognitive_cycle = cognitive_cycle
+        # 自描述能力：注册表实时渲染进提示词，替代会漂移的手写能力文案
+        self._action_registry = action_registry
         self._avatar_store = avatar_store
         self._goal_tracker = goal_tracker
         handlers = list(device_tools)
@@ -447,9 +456,7 @@ class ChatService:
         """SAFE-02：投递服务晚于 ChatService 构造，装配后注入告警服务。"""
         self._safety = safety
 
-    def set_deleg_canceller(
-        self, canceller: Callable[[UUID], Awaitable[int]] | None
-    ) -> None:
+    def set_deleg_canceller(self, canceller: Callable[[UUID], Awaitable[int]] | None) -> None:
         """DELEG：取消回合时联动取消委派任务的回调（main 装配注入）。"""
         self._deleg_canceller = canceller
 
@@ -855,10 +862,7 @@ class ChatService:
                 logger.warning("runtime capability lookup failed", exc_info=True)
         pnkx_intent = _has_pnkx_intent(text)
         skill_handlers: tuple[SkillReadToolHandler, ...] = ()
-        if (
-            self._skill_tools is not None
-            and _cloud_tool_model_ready(snapshot.config, llm_route)
-        ):
+        if self._skill_tools is not None and _cloud_tool_model_ready(snapshot.config, llm_route):
             try:
                 skill_handlers = await self._skill_tools.select(text, privacy_level=privacy_level)
             except Exception:
@@ -896,6 +900,12 @@ class ChatService:
             home_device_mode=snapshot.config.integrations.home_assistant.device_context_mode,
             mounted_device_tools=frozenset(device_tool_names),
             private_session_ready=_local_tool_model_ready(snapshot.config),
+        )
+        # 写动作目录仅 L1 渲染（A2 动作上限 L1；L0 不写个人数据，L2 私密不走云端）
+        action_catalog_block = (
+            render_action_catalog(self._action_registry)
+            if self._action_registry is not None and privacy_level is PrivacyLevel.L1
+            else ""
         )
         recent_device_block = self._recent_device_context(
             conversation_id,
@@ -1011,10 +1021,7 @@ class ChatService:
         if skill_handlers:
             tool_names = (*tool_names, *(handler.name for handler in skill_handlers))
             tool_definitions.extend(handler.definition() for handler in skill_handlers)
-        if (
-            self._skill_drafts is not None
-            and _cloud_tool_model_ready(snapshot.config, llm_route)
-        ):
+        if self._skill_drafts is not None and _cloud_tool_model_ready(snapshot.config, llm_route):
             # propose_skill 只产出待审阅草稿，不外发数据；跟随工具模型可用性挂载
             tool_names = (*tool_names, self._skill_drafts.name)
             tool_definitions.append(self._skill_drafts.definition())
@@ -1050,6 +1057,7 @@ class ChatService:
                     + structured_reply_instruction(persona)
                     + f"\n\n{time_block}"
                     + f"\n\n{reality_block}"
+                    + (f"\n\n{action_catalog_block}" if action_catalog_block else "")
                     + (f"\n\n{recent_device_block}" if recent_device_block else "")
                     + (f"\n\n{memory_block}" if memory_block else "")
                     + (f"\n\n{screen_activity_block}" if screen_activity_block else "")
@@ -1061,7 +1069,8 @@ class ChatService:
                         "\n\n【情侣卡券】本轮没有可用的卡券查询工具。请如实说明暂时无法读取卡券，"
                         "需要在技能中心配置并启用对应的 Bearer API 连接，且使用 L1 会话；"
                         "不得改用 PNKX 生活工具或猜测卡券数据。"
-                        if card_skill_unavailable else ""
+                        if card_skill_unavailable
+                        else ""
                     ),
                 ),
                 *[
@@ -1231,9 +1240,7 @@ class ChatService:
                         executions,
                         allow_followup_tools=rounds_left > 0,
                     )
-                    if len(executions) == 1 and executions[0].result.tool_name.startswith(
-                        "pnkx_"
-                    ):
+                    if len(executions) == 1 and executions[0].result.tool_name.startswith("pnkx_"):
                         direct_reply = _render_pnkx_tool_reply(executions[0].result)
                         await filtered_delta(direct_reply)
                         result = result.model_copy(
@@ -1329,9 +1336,7 @@ class ChatService:
             return [await self._execute_single_call(pending, calls[0])]
         if not calls:
             return []
-        unsafe = next(
-            (call for call in calls if not self._multi_call_safe(call, pending)), None
-        )
+        unsafe = next((call for call in calls if not self._multi_call_safe(call, pending)), None)
         if unsafe is not None:
             return [
                 ToolExecution(
@@ -1345,8 +1350,7 @@ class ChatService:
                 )
             ]
         return [
-            await self._execute_single_call(pending, call)
-            for call in calls[:MAX_TEXT_TOOL_CALLS]
+            await self._execute_single_call(pending, call) for call in calls[:MAX_TEXT_TOOL_CALLS]
         ]
 
     def _multi_call_safe(self, call: ToolCall, pending: PendingTurn) -> bool:
@@ -1787,9 +1791,7 @@ class ChatService:
                 backend=backend,
             )
             result = consistency.result
-        reply = parse_agent_reply(
-            result.text, pending.persona, tool_names=pending.tool_names
-        )
+        reply = parse_agent_reply(result.text, pending.persona, tool_names=pending.tool_names)
         if reply.parse_status == "fallback":
             # 兜底回复意味着模型没给出可用文本：把当轮模型、结束原因与工具
             # 失败摘要打进控制台，否则「没有生成有效回复」无从排查。
@@ -2009,9 +2011,7 @@ class ChatService:
         if summary_due and pending.conversation_id not in self._summary_updates_in_flight:
             # CTX：达到阈值才派生摘要维护（同会话同时至多一个），失败静默
             self._summary_updates_in_flight.add(pending.conversation_id)
-            self._spawn_background(
-                self._update_conversation_summary(pending.conversation_id)
-            )
+            self._spawn_background(self._update_conversation_summary(pending.conversation_id))
         return turn_result
 
     async def _update_conversation_summary(self, conversation_id: UUID) -> None:
@@ -2054,9 +2054,7 @@ class ChatService:
                 else self._config_store.current
             )
             backend = self._router_builder(snapshot.config)
-            transcript = "\n".join(
-                f"{record.role}: {record.content[:300]}" for record in records
-            )
+            transcript = "\n".join(f"{record.role}: {record.content[:300]}" for record in records)
             previous = f"已有摘要：\n{summary_text}\n\n" if summary_text else ""
             result = await backend.complete(
                 CompletionRequest(
@@ -2115,9 +2113,7 @@ class ChatService:
                 backend=self._router_builder(pending.config),
             )
         except Exception:
-            logger.warning(
-                "skill draft harvest failed for turn %s", pending.turn_id, exc_info=True
-            )
+            logger.warning("skill draft harvest failed for turn %s", pending.turn_id, exc_info=True)
 
     async def _extract_commitments(
         self,
@@ -2370,9 +2366,7 @@ _TRANSPARENCY_LABELS = {
 }
 
 
-def render_transparency_report(
-    rows: list[CognitiveDecisionRecord], *, zone: ZoneInfo
-) -> str:
+def render_transparency_report(rows: list[CognitiveDecisionRecord], *, zone: ZoneInfo) -> str:
     """把近 24 小时的认知决策渲染为可问责的确定性汇报文本。"""
     visible = [row for row in rows if row.decision in _TRANSPARENCY_LABELS]
     silent_count = len(rows) - len(visible)
@@ -2386,9 +2380,7 @@ def render_transparency_report(
     for row in visible[:8]:
         clock = _aware(row.created_at).astimezone(zone).strftime("%H:%M")
         reasons = f"（{'、'.join(row.reason_codes[:2])}）" if row.reason_codes else ""
-        lines.append(
-            f"· {clock} {_TRANSPARENCY_LABELS[row.decision]}：{row.trigger_kind}{reasons}"
-        )
+        lines.append(f"· {clock} {_TRANSPARENCY_LABELS[row.decision]}：{row.trigger_kind}{reasons}")
     if len(visible) > 8:
         lines.append(f"· ……以及另外 {len(visible) - 8} 次")
     if silent_count:

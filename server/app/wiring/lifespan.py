@@ -40,6 +40,7 @@ from app.pnkx import PnkxLifeClient
 from app.runtime import TurnCoordinator
 from app.screen_awareness import ScreenAwarenessLoop
 from app.skills.actions import sync_skill_actions
+from app.skills.audit import SkillAuditScheduler
 from app.skills.connections import SkillHttpClient
 from app.skills.store import SkillStore
 from app.tasks import TaskScheduler
@@ -86,6 +87,7 @@ class LifespanDeps:
     skill_store: SkillStore | None = None
     action_registry: ActionRegistry | None = None
     skill_http_client: SkillHttpClient | None = None
+    skill_audit_scheduler: SkillAuditScheduler | None = None
     pnkx_life_client: PnkxLifeClient | None = None
     home_assistant_proactive: HomeAssistantProactiveEngine | None = None
     mqtt_presence_bridge: MqttPresenceBridge | None = None
@@ -184,9 +186,13 @@ def build_lifespan(
                 logging.getLogger(__name__).warning(
                     "skill write action sync failed on startup", exc_info=True
                 )
+        if deps.skill_audit_scheduler is not None:
+            deps.skill_audit_scheduler.start()
         try:
             yield
         finally:
+            if deps.skill_audit_scheduler is not None:
+                await deps.skill_audit_scheduler.stop()
             if deps.skill_http_client is not None:
                 await deps.skill_http_client.close()
             if deps.pnkx_life_client is not None:

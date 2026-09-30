@@ -18,6 +18,7 @@ from .action_registry import (
     ConfirmationPolicy,
     VerificationPolicy,
     build_builtin_action_registry,
+    render_action_catalog,
 )
 from .action_runner import ToolActionRunner
 from .attention import ATTENTION_POLICY_VERSION, AttentionEngine
@@ -96,4 +97,5 @@ __all__ = [
     "WorldState",
     "WorldStateBuilder",
     "build_builtin_action_registry",
+    "render_action_catalog",
 ]

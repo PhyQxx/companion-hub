@@ -167,6 +167,17 @@ class ActionRegistry:
     def definitions(self) -> list[ActionDefinition]:
         return [item.definition for item in self._actions.values()]
 
+    def skill_write_definitions(self) -> list[ActionDefinition]:
+        """skill.* 前缀的可提议写动作（技能中心动态注册的部分）。"""
+        return sorted(
+            (
+                item.definition
+                for item in self._actions.values()
+                if item.definition.action_id.startswith("skill.")
+            ),
+            key=lambda definition: definition.action_id,
+        )
+
     def compile(self, action_id: str, arguments: dict[str, object]) -> CompiledAction:
         registered = self.require(action_id)
         if registered.definition.risk is ActionRisk.A3_PROHIBITED:
@@ -481,3 +492,35 @@ def build_builtin_action_registry() -> ActionRegistry:
         registry.register(definition, arguments_model)
     registry.validate()
     return registry
+
+
+def render_action_catalog(registry: ActionRegistry, *, max_entries: int = 40) -> str:
+    """把注册表中 skill.* 写动作渲染成紧凑目录（自描述能力清单）。
+
+    技能说明是手写文案，会与注册表事实漂移（2026-09-30 连续多轮：说明自称
+    只读而动作已注册、参数缺失、模型抄错 id）。目录每轮从注册表现读，是
+    「现在真正能做什么」的唯一事实源；与说明冲突时以目录为准。
+    """
+    definitions = registry.skill_write_definitions()
+    if not definitions:
+        return ""
+    lines: list[str] = []
+    for definition in definitions[:max_entries]:
+        schema = definition.arguments_schema
+        properties = schema.get("properties") if isinstance(schema, dict) else None
+        required_raw = schema.get("required") if isinstance(schema, dict) else None
+        required = {str(name) for name in required_raw} if isinstance(required_raw, list) else set()
+        if isinstance(properties, dict) and properties:
+            args = " ".join(f"{name}*" if name in required else str(name) for name in properties)
+        else:
+            args = "无参数"
+        summary = definition.description.split("。", 1)[0][:60]
+        lines.append(f"- {definition.action_id} | {summary} | 参数: {args}")
+    remaining = len(definitions) - len(lines)
+    if remaining > 0:
+        lines.append(f"…（其余 {remaining} 个动作略）")
+    return (
+        "【可提议的写操作】（来自 Action Registry 实时快照；起草待确认操作时从这里"
+        "选择 action_id，带 * 的参数必填，均为需用户在计划卡片确认后执行的写动作。"
+        "此清单是当前真实可用的能力，与任何技能说明冲突时以本清单为准）\n" + "\n".join(lines)
+    )

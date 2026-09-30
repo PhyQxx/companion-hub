@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import difflib
 import logging
 from collections.abc import Awaitable, Callable
 from time import perf_counter
@@ -89,12 +90,22 @@ class ProposeActionTool:
             return self._failure("plan_service_unavailable", started)
         registered = self._registry.get(args.action_id)
         if registered is None:
-            logger.warning(
-                "propose_action rejected: action_id 不在注册表 action_id=%r（模型笔误或"
-                "注册表未同步；已注册前缀 skill.* 的动作见 ActionRegistry）",
+            # 近邻提示让模型在下一工具轮自纠错（typo 类失败在会话内闭环）
+            suggestions = difflib.get_close_matches(
                 args.action_id,
+                [definition.action_id for definition in self._registry.definitions()],
+                n=2,
+                cutoff=0.6,
             )
-            return self._failure("action_unknown", started)
+            logger.warning(
+                "propose_action rejected: action_id 不在注册表 action_id=%r"
+                "（模型笔误或注册表未同步；近邻=%s）",
+                args.action_id,
+                suggestions or "无",
+            )
+            return self._failure(
+                "action_unknown", started, {"suggest": suggestions} if suggestions else None
+            )
         # definition.risk 经 pydantic 存储后是字符串值，这里归一回枚举
         try:
             risk = ActionRisk(registered.definition.risk)
@@ -108,9 +119,7 @@ class ProposeActionTool:
         try:
             plan = await plan_service.create_plan(
                 user_id=context.user_id,
-                invocations=[
-                    _invocation(args.action_id, dict(args.arguments))
-                ],
+                invocations=[_invocation(args.action_id, dict(args.arguments))],
                 title=f"提议：{registered.definition.label}"[:240],
                 idempotency_key=f"propose-{context.turn_id}-{args.action_id}",
                 ttl_seconds=600,

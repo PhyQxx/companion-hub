@@ -299,6 +299,53 @@ class SkillStore:
             except IntegrityError:
                 await session.rollback()
 
+    async def record_audit_suggestion(
+        self,
+        *,
+        skill_id: UUID,
+        skill_version: int,
+        operation: str,
+        reason_code: str,
+        kind: str,
+        title: str,
+        guidance: str,
+    ) -> bool:
+        """巡检结论落建议流；dedupe 命中或并发撞键返回 False，不重复打扰。"""
+        dedupe_key = hashlib.sha256(
+            f"audit:{skill_id}:{skill_version}:{operation}:{reason_code}".encode()
+        ).hexdigest()
+        async with self._database.sessions() as session:
+            existing = await session.scalar(
+                select(SkillSuggestionRecord.id).where(
+                    SkillSuggestionRecord.dedupe_key == dedupe_key
+                )
+            )
+            if existing is not None:
+                return False
+            session.add(
+                SkillSuggestionRecord(
+                    id=uuid7(),
+                    skill_id=skill_id,
+                    skill_version=skill_version,
+                    operation=operation,
+                    reason_code=reason_code,
+                    kind=kind,
+                    title=title,
+                    guidance=guidance,
+                    evidence_run_ids=[],
+                    dedupe_key=dedupe_key,
+                    status="pending",
+                    created_at=datetime.now(UTC),
+                    reviewed_at=None,
+                )
+            )
+            try:
+                await session.commit()
+            except IntegrityError:
+                await session.rollback()
+                return False
+            return True
+
     async def suggestions(
         self, *, status: str | None = "pending", limit: int = 50
     ) -> builtin_list[SkillSuggestionView]:

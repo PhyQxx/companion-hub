@@ -97,7 +97,7 @@ class SkillWriteToolHandler:
             else:
                 query[name] = str(value).lower() if isinstance(value, bool) else value
         try:
-            await self._http_client.skill_write(
+            payload = await self._http_client.skill_write(
                 skill.api.connection,
                 operation.path,
                 path,
@@ -128,7 +128,19 @@ class SkillWriteToolHandler:
             True,
             started,
             meta,
-            data={"skill_name": skill.name, "operation": operation.name, "status": "ok"},
+            data={
+                "skill_name": args.skill_name,
+                "operation": args.operation,
+                "status": "ok",
+                # RuoYi 创建回执把新记录 id 放在 data；带进回执供模型转述与后续修改
+                **(
+                    {"remote_id": str(payload.get("data"))}
+                    if isinstance(payload, dict)
+                    and isinstance(payload.get("data"), int)
+                    and not isinstance(payload.get("data"), bool)
+                    else {}
+                ),
+            },
         )
 
     async def _finish(

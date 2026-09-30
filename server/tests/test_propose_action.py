@@ -78,9 +78,7 @@ def _tool(database: Database) -> tuple[ProposeActionTool, ActionPlanService]:
     return tool, service
 
 
-def _context(
-    user_id: UUID, turn_id: UUID, privacy: PrivacyLevel = PrivacyLevel.L1
-) -> ToolContext:
+def _context(user_id: UUID, turn_id: UUID, privacy: PrivacyLevel = PrivacyLevel.L1) -> ToolContext:
     return ToolContext(privacy_level=privacy, user_id=user_id, turn_id=turn_id)
 
 
@@ -100,9 +98,7 @@ async def test_propose_a2_creates_awaiting_confirmation_plan(
         _context(user_id, turn_id),
     )
     assert result.ok
-    plan = await service.get_plan(
-        user_id=user_id, plan_id=UUID(result.data["plan_id"])
-    )
+    plan = await service.get_plan(user_id=user_id, plan_id=UUID(result.data["plan_id"]))
     assert plan is not None
     assert plan.status == "awaiting_confirmation"
     assert plan.steps[0].action_id == "test.confirm_write"
@@ -132,9 +128,7 @@ async def test_propose_a1_creates_ready_plan(database: Database, user_id: UUID) 
         _context(user_id, uuid4()),
     )
     assert result.ok
-    plan = await service.get_plan(
-        user_id=user_id, plan_id=UUID(result.data["plan_id"])
-    )
+    plan = await service.get_plan(user_id=user_id, plan_id=UUID(result.data["plan_id"]))
     assert plan is not None
     assert plan.status == "ready"
 
@@ -169,6 +163,16 @@ async def test_propose_rejects_prohibited_readonly_unknown_and_bad_args(
     )
     assert not unknown.ok and unknown.reason_code == "action_unknown"
 
+    # 近邻提示：模型抄错 id 时给出最接近的注册动作，下一工具轮可自纠错
+    typo = await tool.execute(
+        tool.arguments_model.model_validate(
+            {"action_id": "test.confirm_writ", "arguments": {"target": "x"}, "note": "n"}
+        ),
+        _context(user_id, turn_id),
+    )
+    assert not typo.ok and typo.reason_code == "action_unknown"
+    assert "test.confirm_write" in typo.data.get("suggest", [])
+
     invalid = await tool.execute(
         tool.arguments_model.model_validate(
             {
@@ -185,9 +189,7 @@ async def test_propose_rejects_prohibited_readonly_unknown_and_bad_args(
     assert "target" in str(invalid.data.get("error_detail", ""))
 
 
-async def test_propose_privacy_and_context_gates(
-    database: Database, user_id: UUID
-) -> None:
+async def test_propose_privacy_and_context_gates(database: Database, user_id: UUID) -> None:
     tool, _ = _tool(database)
     l2 = await tool.execute(
         tool.arguments_model.model_validate(
@@ -219,9 +221,7 @@ async def test_completion_reporter_delivers_after_plan_completes(
 
     async def runner(step: ActionStepView, runner_user_id: UUID) -> ToolResult:
         del runner_user_id
-        return ToolResult(
-            ok=True, tool_name=step.tool_name, provider="test", latency_ms=1, data={}
-        )
+        return ToolResult(ok=True, tool_name=step.tool_name, provider="test", latency_ms=1, data={})
 
     service = ActionPlanService(database, registry, runner=runner)
     reporter = PlanCompletionReporter(service, deliver=deliver)
@@ -237,9 +237,9 @@ async def test_completion_reporter_delivers_after_plan_completes(
         user_id=user_id,
         title="关灯流程",
         invocations=[
-            __import__(
-                "app.cognition", fromlist=["ActionInvocation"]
-            ).ActionInvocation(action_id="test.low_write", arguments={"target": "x"}),
+            __import__("app.cognition", fromlist=["ActionInvocation"]).ActionInvocation(
+                action_id="test.low_write", arguments={"target": "x"}
+            ),
         ],
         idempotency_key="report-plan-0001",
     )
