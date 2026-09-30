@@ -382,6 +382,7 @@ def assemble_runtime(
         ),
         skill_tools=domain.skill_tool_provider,
         skill_drafts=domain.skill_draft_assistant,
+        skill_learner=domain.skill_learner,
         web_fetch=domain.web_fetch_tool,
         cognitive_cycle=domain.cognitive_cycle,
         avatar_store=domain.avatar_store,

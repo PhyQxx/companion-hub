@@ -39,6 +39,16 @@ class SkillView(BaseModel):
     created_at: datetime
     updated_at: datetime
 
+    @property
+    def document(self) -> SkillDocument:
+        """当前版本的完整文档（修订生成器的基线）。"""
+        return SkillDocument(
+            name=self.name,
+            description=self.description,
+            instructions=self.instructions,
+            api=self.api,
+        )
+
 
 class SkillVersionView(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -451,6 +461,19 @@ class SkillStore:
         async with self._database.sessions() as session:
             record = await session.get(SkillDraftRecord, draft_id)
             return _draft_view(record) if record is not None else None
+
+    async def pending_revision_exists(self, target_skill_id: UUID) -> bool:
+        """同一技能已有待审修订草稿时不重复提案（S4 学习收割去重）。"""
+        async with self._database.sessions() as session:
+            existing = await session.scalar(
+                select(SkillDraftRecord.id)
+                .where(
+                    SkillDraftRecord.target_skill_id == target_skill_id,
+                    SkillDraftRecord.status == "pending",
+                )
+                .limit(1)
+            )
+            return existing is not None
 
     async def dismiss_draft(self, draft_id: UUID) -> SkillDraftView:
         async with self._database.sessions() as session:

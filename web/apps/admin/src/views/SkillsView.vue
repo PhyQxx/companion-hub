@@ -80,7 +80,7 @@ interface SkillDraft {
   document: { name: string; description: string; instructions: string; api: unknown | null };
   warnings: string[];
   evidence: string[];
-  source: "chat" | "harvest";
+  source: "chat" | "harvest" | "learning";
   turn_id: string | null;
   status: string;
   skill_id: string | null;
@@ -1030,7 +1030,7 @@ onUnmounted(() => {
           </el-table-column>
           <el-table-column label="来源" width="100">
             <template #default="{ row }">
-              <el-tag size="small" :type="row.source === 'chat' ? 'primary' : 'warning'">{{ row.source === "chat" ? "对话提案" : "后台收割" }}</el-tag>
+              <el-tag size="small" :type="row.source === 'chat' ? 'primary' : row.source === 'learning' ? 'danger' : 'warning'">{{ row.source === "chat" ? "对话提案" : row.source === "learning" ? "学习候选" : "后台收割" }}</el-tag>
             </template>
           </el-table-column>
           <el-table-column label="试跑" width="150">

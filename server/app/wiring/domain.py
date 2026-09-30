@@ -90,6 +90,7 @@ from app.skills.connections import SkillConnectionStore, SkillHttpClient
 from app.skills.credentials import SkillCredentialStore
 from app.skills.drafts import SkillDraftAssistant
 from app.skills.generator import SkillDraftGenerator
+from app.skills.learning import SkillRevisionLearner
 from app.skills.runtime import SkillToolProvider
 from app.skills.store import SkillStore
 from app.tasks import TaskScheduler, TaskStore
@@ -137,6 +138,7 @@ class DomainAssembly:
     skill_tool_provider: SkillToolProvider | None
     skill_generator: SkillDraftGenerator | None
     skill_draft_assistant: SkillDraftAssistant | None
+    skill_learner: SkillRevisionLearner | None
     persona_store: PersonaStore | None
     memory_store: MemoryStore | None
     timeline_store: TimelineStore | None
@@ -667,6 +669,17 @@ def assemble_domain(
         if skill_store is not None and skill_generator is not None
         else None
     )
+    # S4（docs/08）：对话纠正 → 技能修订候选；试跑复用连接白名单与认证闸门
+    skill_learner = (
+        SkillRevisionLearner(
+            skill_store,
+            skill_generator,
+            connections=skill_connections,
+            http_client=skill_http_client,
+        )
+        if skill_store is not None and skill_generator is not None
+        else None
+    )
     todo_sync_scheduler = (
         TodoSyncScheduler(
             todo_sync_service,
@@ -748,6 +761,7 @@ def assemble_domain(
         skill_tool_provider=skill_tool_provider,
         skill_generator=skill_generator,
         skill_draft_assistant=skill_draft_assistant,
+        skill_learner=skill_learner,
         persona_store=persona_store,
         memory_store=memory_store,
         timeline_store=timeline_store,

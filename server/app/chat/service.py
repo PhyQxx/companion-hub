@@ -51,6 +51,7 @@ from app.memory import (
 from app.persona import PersonaConfig, PersonaStore
 from app.schemas import PrivacyLevel
 from app.skills.drafts import SkillDraftAssistant
+from app.skills.learning import SkillRevisionLearner, TurnSkillRun
 from app.skills.runtime import SkillReadToolHandler, SkillToolProvider
 from app.timeline import (
     BrowserActivityRecallResult,
@@ -392,6 +393,7 @@ class ChatService:
         mcp_tools: McpChatToolProvider | None = None,
         skill_tools: SkillToolProvider | None = None,
         skill_drafts: SkillDraftAssistant | None = None,
+        skill_learner: SkillRevisionLearner | None = None,
         web_fetch: FetchWebpageTool | None = None,
         safety: Any | None = None,
         cognitive_cycle: CognitiveCycle | None = None,
@@ -426,6 +428,7 @@ class ChatService:
         self._mcp_tools = mcp_tools
         self._skill_tools = skill_tools
         self._skill_drafts = skill_drafts
+        self._skill_learner = skill_learner
         self._web_fetch = web_fetch
         # SAFE-02 SafetyAlertService：聊天确认意图入口（可选依赖，无则跳过）。
         # main.py 中投递服务晚于 ChatService 构造，装配后经 set_safety 注入。
@@ -2008,6 +2011,21 @@ class ChatService:
         )
         # 技能沉淀收割：后台检测文档型需求并生成待审阅草稿，失败静默
         self._spawn_background(self._harvest_skill_draft(pending))
+        if self._skill_learner is not None and tool_executions:
+            # S4 学习收割：本回合技能执行证据 + 用户纠正 → 修订候选，失败静默
+            skill_runs = [
+                TurnSkillRun(
+                    tool_name=execution.result.tool_name,
+                    ok=execution.result.ok,
+                    reason_code=execution.result.reason_code,
+                )
+                for execution in tool_executions
+                if execution.result.tool_name.startswith("skill.")
+            ]
+            if skill_runs:
+                self._spawn_background(
+                    self._harvest_skill_revision(pending, skill_runs)
+                )
         if summary_due and pending.conversation_id not in self._summary_updates_in_flight:
             # CTX：达到阈值才派生摘要维护（同会话同时至多一个），失败静默
             self._summary_updates_in_flight.add(pending.conversation_id)
@@ -2114,6 +2132,22 @@ class ChatService:
             )
         except Exception:
             logger.warning("skill draft harvest failed for turn %s", pending.turn_id, exc_info=True)
+
+    async def _harvest_skill_revision(
+        self, pending: PendingTurn, skill_runs: list[TurnSkillRun]
+    ) -> None:
+        assert self._skill_learner is not None
+        try:
+            await self._skill_learner.harvest(
+                text=pending.user_message.content,
+                turn_id=pending.turn_id,
+                runs=skill_runs,
+                backend=self._router_builder(pending.config),
+            )
+        except Exception:
+            logger.warning(
+                "skill revision harvest failed for turn %s", pending.turn_id, exc_info=True
+            )
 
     async def _extract_commitments(
         self,
