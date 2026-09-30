@@ -80,6 +80,7 @@ from app.memory import (
 )
 from app.model_capabilities import CapabilityModelService
 from app.observability import apply_observability
+from app.observability.selfcheck import DailySelfCheckScheduler
 from app.perception import PerceptionPipeline, PerceptionStore, ProactivePolicy
 from app.perception.pipeline import EventObserver
 from app.persona import PersonaStore
@@ -189,6 +190,7 @@ class DomainAssembly:
     memory_extractor: MemoryExtractor | None
     build_commute_service: Callable[[], CommuteService | None]
     skill_audit_scheduler: SkillAuditScheduler | None
+    self_check_scheduler: DailySelfCheckScheduler | None
 
 
 def assemble_domain(
@@ -745,6 +747,15 @@ def assemble_domain(
     skill_audit_scheduler = (
         SkillAuditScheduler(skill_store, skill_connections) if skill_store is not None else None
     )
+    # RPT 每日自体检（docs/09 §7）：路由连通/设备心跳/备份落盘，异常才说话
+    self_check_scheduler: DailySelfCheckScheduler | None = None
+    if runtime_database is not None:
+        self_check_scheduler = DailySelfCheckScheduler(
+            runtime_database,
+            config_store=runtime_config,
+            device_registry=device_registry,
+            timezone_name=os.getenv("ARIA_DEFAULT_TIMEZONE", "Asia/Shanghai"),
+        )
     return DomainAssembly(
         config_watcher=config_watcher,
         capability_models=capability_models,
@@ -812,4 +823,5 @@ def assemble_domain(
         memory_extractor=memory_extractor,
         build_commute_service=build_commute_service,
         skill_audit_scheduler=skill_audit_scheduler,
+        self_check_scheduler=self_check_scheduler,
     )

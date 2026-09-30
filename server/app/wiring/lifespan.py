@@ -34,6 +34,7 @@ from app.mail_awareness import MailAwarenessLoop
 from app.memory import build_embedding_provider, probe_embedding_provider
 from app.memory.store import MemoryStore
 from app.observability import apply_observability
+from app.observability.selfcheck import DailySelfCheckScheduler
 from app.perception import PerceptionPipeline
 from app.persona import PersonaStore
 from app.pnkx import PnkxLifeClient
@@ -92,6 +93,7 @@ class LifespanDeps:
     home_assistant_proactive: HomeAssistantProactiveEngine | None = None
     mqtt_presence_bridge: MqttPresenceBridge | None = None
     perception_pipeline: PerceptionPipeline | None = None
+    self_check_scheduler: DailySelfCheckScheduler | None = None
 
 
 def build_lifespan(
@@ -188,9 +190,13 @@ def build_lifespan(
                 )
         if deps.skill_audit_scheduler is not None:
             deps.skill_audit_scheduler.start()
+        if deps.self_check_scheduler is not None:
+            deps.self_check_scheduler.start()
         try:
             yield
         finally:
+            if deps.self_check_scheduler is not None:
+                await deps.self_check_scheduler.stop()
             if deps.skill_audit_scheduler is not None:
                 await deps.skill_audit_scheduler.stop()
             if deps.skill_http_client is not None:

@@ -270,6 +270,7 @@ def create_app(
     deps.home_assistant_proactive = home_assistant_proactive
     deps.mqtt_presence_bridge = mqtt_presence_bridge
     deps.perception_pipeline = perception_pipeline
+    deps.self_check_scheduler = domain.self_check_scheduler
 
     return app
 

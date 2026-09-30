@@ -585,6 +585,7 @@ def assemble_runtime(
             home_assistant_manager=domain.home_assistant_manager,
             mqtt_client=domain.mqtt_client,
             perception_pipeline=domain.perception_pipeline,
+            self_check_scheduler=domain.self_check_scheduler,
         )
     if (
         runtime_database is not None

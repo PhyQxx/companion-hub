@@ -37,6 +37,7 @@ from app.mail import MailClient
 from app.mail_awareness import LlmMailAnalyzer, MailAwarenessLoop
 from app.memory import MemoryIngester
 from app.memory.store import MemoryStore
+from app.observability.selfcheck import DailySelfCheckScheduler
 from app.output import ProactiveDeliveryService
 from app.output.proactive import DesktopCommandGateway
 from app.perception import PerceptionPipeline
@@ -82,6 +83,7 @@ def register_proactive_stack(
     home_assistant_manager: HomeAssistantManager | None,
     mqtt_client: MqttDeviceClient | None,
     perception_pipeline: PerceptionPipeline | None,
+    self_check_scheduler: DailySelfCheckScheduler | None = None,
 ) -> tuple[
     ProactiveDeliveryService,
     SafetyAlertService,
@@ -117,6 +119,9 @@ def register_proactive_stack(
     if plan_completion_reporter is not None:
         # BTL-03：计划执行完成主动汇报结果
         plan_completion_reporter.set_deliver(proactive_delivery.deliver)
+    if self_check_scheduler is not None:
+        # RPT 每日自体检：异常才经主动通道说话
+        self_check_scheduler.set_deliverer(proactive_delivery.deliver)
     # SAFE-02：告警状态机（critical 升级链 + 聊天确认意图 + Timeline）
     safety_alert_service = SafetyAlertService(
         database,
