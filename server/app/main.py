@@ -2,8 +2,7 @@ from __future__ import annotations
 
 import logging
 import os
-from collections.abc import AsyncIterator
-from contextlib import asynccontextmanager, suppress
+from contextlib import suppress
 from datetime import UTC, datetime, timedelta
 from datetime import time as dt_time
 from pathlib import Path
@@ -147,8 +146,6 @@ from app.memory import (
     MemoryExtractor,
     MemoryRetriever,
     MemoryStore,
-    build_embedding_provider,
-    probe_embedding_provider,
 )
 from app.model_capabilities import CapabilityModelService
 from app.observability import apply_observability, configure_logging
@@ -164,7 +161,6 @@ from app.schemas.common import PrivacyLevel
 from app.screen_awareness import (
     ScreenAwarenessLoop,
 )
-from app.skills.actions import sync_skill_actions
 from app.skills.connections import SkillConnectionStore, SkillHttpClient
 from app.skills.credentials import SkillCredentialStore
 from app.skills.drafts import SkillDraftAssistant
@@ -209,6 +205,7 @@ from app.tools.sensors import ReadSensorsTool
 from app.voice import ConfigVoiceSource
 from app.wiring.admin_routers import register_admin_routers
 from app.wiring.frontend import register_frontend
+from app.wiring.lifespan import LifespanDeps, build_lifespan
 from app.wiring.proactive import register_awareness_loops, register_proactive_stack
 from app.workflows import (
     WorkflowRunTool,
@@ -868,147 +865,10 @@ def create_app(
 
     turn_coordinator: TurnCoordinator | None = None
 
-    @asynccontextmanager
-    async def lifespan(_: FastAPI) -> AsyncIterator[None]:
-        if runtime_config is not None:
-            await runtime_config.load()
-            apply_observability(runtime_config.current.config)
-            if xiaoai_materializer is not None:
-                await xiaoai_materializer.write()
-        if persona_store is not None:
-            await persona_store.load()
-        if memory_store is not None and runtime_config is not None:
-            # SEMB（docs/09 §2）：配置启用语义嵌入时先做连通性探测，
-            # 失败回落内置哈希嵌入（词法级检索），不阻断启动。
-            embedding_provider = build_embedding_provider(
-                runtime_config.current.config.embeddings, EnvSecretProvider()
-            )
-            if embedding_provider is not None:
-                if await probe_embedding_provider(embedding_provider):
-                    memory_store.set_embedding_provider(embedding_provider)
-                    logging.getLogger(__name__).info(
-                        "semantic embedding enabled model=%s dimension=%d",
-                        embedding_provider.model_name,
-                        embedding_provider.dimension,
-                    )
-                else:
-                    logging.getLogger(__name__).warning(
-                        "semantic embedding unavailable, falling back to hashing embedder"
-                    )
-        if home_assistant_manager is not None:
-            await home_assistant_manager.start()
-        if mqtt_client is not None:
-            await mqtt_client.start()
-        if avatar_store is not None:
-            await avatar_store.load_builtin_packs()
-        if theme_store is not None:
-            await theme_store.load_builtin_themes()
-        if runtime_chat_service is not None:
-            await runtime_chat_service.recover_incomplete_turns()
-        if turn_coordinator is not None:
-            # 重启后把不安全的未完成回合标记为 cancelled，并清理遗留音频/麦克风租约
-            recovered_turns = await turn_coordinator.recover_after_restart()
-            await turn_coordinator.expire_stale_leases()
-            if recovered_turns:
-                logging.getLogger(__name__).info(
-                    "recovered %s unsafe turns after restart", recovered_turns
-                )
-        if config_watcher is not None:
-            await config_watcher.start()
-        if worker is not None:
-            await worker.start()
-        if deleg_worker is not None:
-            deleg_worker.start()
-        if screen_awareness_loop is not None:
-            screen_awareness_loop.start()
-        if browser_awareness_loop is not None:
-            browser_awareness_loop.start()
-        if mail_awareness_loop is not None:
-            mail_awareness_loop.start()
-        if mcp_manager is not None:
-            mcp_manager.start()
-        if safety_alert_service is not None:
-            await safety_alert_service.resume()
-        if activity_scheduler is not None:
-            await activity_scheduler.start()
-        if task_scheduler is not None:
-            task_scheduler.start()
-        if goal_reminder_scheduler is not None:
-            goal_reminder_scheduler.start()
-        if focus_scheduler is not None:
-            focus_scheduler.start()
-        if daily_brief_scheduler is not None:
-            daily_brief_scheduler.start()
-        if daily_review_scheduler is not None:
-            daily_review_scheduler.start()
-        if todo_sync_scheduler is not None:
-            todo_sync_scheduler.start()
-        if caldav_sync_scheduler is not None:
-            caldav_sync_scheduler.start()
-        if google_calendar_sync_scheduler is not None:
-            google_calendar_sync_scheduler.start()
-        if skill_store is not None and action_registry is not None:
-            # 技能 S3：启动时把已启用技能的写操作同步进动作目录
-            try:
-                sync_skill_actions(action_registry, await skill_store.list())
-            except Exception:
-                logging.getLogger(__name__).warning(
-                    "skill write action sync failed on startup", exc_info=True
-                )
-        try:
-            yield
-        finally:
-            if skill_http_client is not None:
-                await skill_http_client.close()
-            if pnkx_life_client is not None:
-                await pnkx_life_client.close()
-            if todo_sync_scheduler is not None:
-                await todo_sync_scheduler.stop()
-            if caldav_sync_scheduler is not None:
-                await caldav_sync_scheduler.stop()
-            if google_calendar_sync_scheduler is not None:
-                await google_calendar_sync_scheduler.stop()
-            if daily_review_scheduler is not None:
-                await daily_review_scheduler.stop()
-            if daily_brief_scheduler is not None:
-                await daily_brief_scheduler.stop()
-            if goal_reminder_scheduler is not None:
-                await goal_reminder_scheduler.stop()
-            if task_scheduler is not None:
-                await task_scheduler.stop()
-            if screen_awareness_loop is not None:
-                await screen_awareness_loop.stop()
-            if browser_awareness_loop is not None:
-                await browser_awareness_loop.stop()
-            if mail_awareness_loop is not None:
-                await mail_awareness_loop.stop()
-            if mcp_manager is not None:
-                await mcp_manager.stop()
-            if safety_alert_service is not None:
-                await safety_alert_service.stop()
-            if activity_scheduler is not None:
-                await activity_scheduler.stop()
-            if home_assistant_proactive is not None:
-                await home_assistant_proactive.stop()
-            if mqtt_client is not None:
-                await mqtt_client.stop()
-            if mqtt_presence_bridge is not None:
-                await mqtt_presence_bridge.stop()
-            if perception_pipeline is not None:
-                await perception_pipeline.stop()
-            if runtime_chat_service is not None:
-                # 等待仍在执行的后台记忆沉淀收尾，避免丢最后一轮的事实
-                await runtime_chat_service.drain_background_work()
-            if worker is not None:
-                await worker.stop()
-            if deleg_worker is not None:
-                await deleg_worker.stop()
-            if home_assistant_manager is not None:
-                await home_assistant_manager.stop()
-            if config_watcher is not None:
-                await config_watcher.stop()
-            if owns_database and runtime_database is not None:
-                await runtime_database.close()
+    # PERE-03：lifespan 启停序列搬至 wiring/lifespan.py；
+    # deps 在 return app 前统一灌入最终值，启动时按属性读取。
+    deps = LifespanDeps()
+    lifespan = build_lifespan(deps)
 
     app = FastAPI(title="Aria Companion Hub", version=__version__, lifespan=lifespan)
     app.state.database = runtime_database
@@ -1614,7 +1474,46 @@ def create_app(
                     cognitive_cycle=cognitive_cycle,
                 )
 
+    # PERE-03：lifespan 依赖快照灌入（全部装配已完成，此处为最终值）
+    deps.runtime_config = runtime_config
+    deps.runtime_database = runtime_database
+    deps.owns_database = owns_database
+    deps.xiaoai_materializer = xiaoai_materializer
+    deps.persona_store = persona_store
+    deps.memory_store = memory_store
+    deps.home_assistant_manager = home_assistant_manager
+    deps.mqtt_client = mqtt_client
+    deps.avatar_store = avatar_store
+    deps.theme_store = theme_store
+    deps.runtime_chat_service = runtime_chat_service
+    deps.turn_coordinator = turn_coordinator
+    deps.config_watcher = config_watcher
+    deps.worker = worker
+    deps.deleg_worker = deleg_worker
+    deps.screen_awareness_loop = screen_awareness_loop
+    deps.browser_awareness_loop = browser_awareness_loop
+    deps.mail_awareness_loop = mail_awareness_loop
+    deps.mcp_manager = mcp_manager
+    deps.safety_alert_service = safety_alert_service
+    deps.activity_scheduler = activity_scheduler
+    deps.task_scheduler = task_scheduler
+    deps.goal_reminder_scheduler = goal_reminder_scheduler
+    deps.focus_scheduler = focus_scheduler
+    deps.daily_brief_scheduler = daily_brief_scheduler
+    deps.daily_review_scheduler = daily_review_scheduler
+    deps.todo_sync_scheduler = todo_sync_scheduler
+    deps.caldav_sync_scheduler = caldav_sync_scheduler
+    deps.google_calendar_sync_scheduler = google_calendar_sync_scheduler
+    deps.skill_store = skill_store
+    deps.action_registry = action_registry
+    deps.skill_http_client = skill_http_client
+    deps.pnkx_life_client = pnkx_life_client
+    deps.home_assistant_proactive = home_assistant_proactive
+    deps.mqtt_presence_bridge = mqtt_presence_bridge
+    deps.perception_pipeline = perception_pipeline
+
     return app
+
 
 
 app = create_app()
