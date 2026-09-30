@@ -6,7 +6,6 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager, suppress
 from datetime import UTC, datetime, timedelta
 from datetime import time as dt_time
-from functools import partial
 from pathlib import Path
 from typing import Any, cast
 from uuid import UUID
@@ -24,7 +23,6 @@ from app.api import (
     create_admin_dashboard_router,
     create_admin_export_router,
     create_admin_jobs_router,
-    create_admin_safety_router,
     create_admin_screen_awareness_router,
     create_admin_security_router,
     create_admin_tasks_router,
@@ -60,12 +58,7 @@ from app.appearance import ThemeStore
 from app.auth import AuthService
 from app.avatar import AvatarAssetImporter, AvatarStore
 from app.browser_awareness import (
-    BrowserAwarenessAnalyzer,
-    BrowserAwarenessGateway,
     BrowserAwarenessLoop,
-    BrowserAwarenessResolver,
-    BrowserAwarenessTabHints,
-    LlmBrowserAnalyzer,
 )
 from app.bus import DispatcherWorker, EventPublisher, LocalEventPublisher
 from app.calendar import (
@@ -138,23 +131,20 @@ from app.jobs import (
     DelegateTaskTool,
     JobEngine,
     WebResearchHandler,
-    cancel_turn_delegations,
 )
 from app.llm.factory import build_router
 from app.llm.provider import EnvSecretProvider
 from app.mail import (
     MailAttachmentStore,
-    MailClient,
     MailOutboxStore,
     MailSendTool,
     create_mail_tools,
 )
-from app.mail_awareness import LlmMailAnalyzer, MailAwarenessLoop
+from app.mail_awareness import MailAwarenessLoop
 from app.meetings import LlmMeetingSummarizer, MeetingService, MeetingStore
 from app.memory import (
     LlmMemoryExtractor,
     MemoryExtractor,
-    MemoryIngester,
     MemoryRetriever,
     MemoryStore,
     build_embedding_provider,
@@ -163,20 +153,16 @@ from app.memory import (
 from app.model_capabilities import CapabilityModelService
 from app.observability import apply_observability, configure_logging
 from app.output import ProactiveDeliveryService
-from app.output.proactive import DesktopCommandGateway
 from app.perception import PerceptionPipeline, PerceptionStore, ProactivePolicy
 from app.perception.pipeline import EventObserver
 from app.persona import PersonaStore
 from app.pnkx import PnkxLifeClient
-from app.push import PushSubscriptionStore, WebPushAdapter
+from app.push import PushSubscriptionStore
 from app.runtime import TurnCoordinator
 from app.safety import ActivityTracker, SafetyActivityScheduler, SafetyAlertService
 from app.schemas.common import PrivacyLevel
 from app.screen_awareness import (
-    ScreenAwarenessAnalyzer,
-    ScreenAwarenessGateway,
     ScreenAwarenessLoop,
-    ScreenAwarenessResolver,
 )
 from app.skills.actions import sync_skill_actions
 from app.skills.connections import SkillConnectionStore, SkillHttpClient
@@ -223,6 +209,7 @@ from app.tools.sensors import ReadSensorsTool
 from app.voice import ConfigVoiceSource
 from app.wiring.admin_routers import register_admin_routers
 from app.wiring.frontend import register_frontend
+from app.wiring.proactive import register_awareness_loops, register_proactive_stack
 from app.workflows import (
     WorkflowRunTool,
     WorkflowSaveTool,
@@ -1567,228 +1554,65 @@ def create_app(
                 )
                 app.state.push_subscription_store = push_subscription_store
             if runtime_config is not None:
-                # 主动投递栈只依赖配置/数据库/通道组件，不依赖 Home Assistant；
-                # 误挂在 HA 条件下会在 HA 缺席时让提醒/简报/回顾/安全告警全部静默失效。
-                proactive_delivery = ProactiveDeliveryService(
-                    runtime_database,
-                    runtime_config,
-                    runtime_chat_service,
-                    websocket_manager,
-                    device_resolver=device_target_resolver,
-                    device_gateway=(
-                        cast(DesktopCommandGateway, device_command_gateway)
-                        if device_command_gateway is not None
-                        else None
-                    ),
-                    voice_broadcaster=voice_manager,
-                    push_adapter=(
-                        WebPushAdapter(push_subscription_store, config_store=runtime_config)
-                        if push_subscription_store is not None
-                        else None
-                    ),
-                )
-                app.state.proactive_delivery_service = proactive_delivery
-                if deleg_worker is not None:
-                    # DELEG：任务完成经主动输出通道汇报（Web/桌面通知/推送/语音）
-                    deleg_worker.set_deliver(proactive_delivery.deliver)
-                if plan_completion_reporter is not None:
-                    # BTL-03：计划执行完成主动汇报结果
-                    plan_completion_reporter.set_deliver(proactive_delivery.deliver)
-                # SAFE-02：告警状态机（critical 升级链 + 聊天确认意图 + Timeline）
-                safety_alert_service = SafetyAlertService(
-                    runtime_database,
-                    runtime_config,
-                    proactive_delivery.deliver,
-                    timeline=timeline_store,
-                    mailer=MailClient(runtime_config),
-                )
-                app.state.safety_alert_service = safety_alert_service
-                runtime_chat_service.set_safety(safety_alert_service)
-                runtime_chat_service.set_activity_tracker(activity_tracker)
-                if job_engine is not None:
-                    # DELEG：取消回合即撤回该回合委派的后台任务
-                    runtime_chat_service.set_deleg_canceller(
-                        partial(cancel_turn_delegations, job_engine, runtime_database)
-                    )
-                app.include_router(
-                    create_admin_safety_router(
-                        safety_alert_service, admin_token=runtime_admin_token
-                    )
-                )
-                # SAFE-01：久未活动调度器（外部信号可经 activity_tracker.record 注入）
-                activity_scheduler = SafetyActivityScheduler(
-                    runtime_database,
-                    runtime_config,
-                    proactive_delivery.deliver,
-                    activity_tracker,
+                # PERE-03：主动投递栈/HA 主动引擎/MQTT 桥/感知循环搬至
+                # wiring/proactive.py（行为不变）
+                (
+                    proactive_delivery,
+                    safety_alert_service,
+                    activity_scheduler,
+                    home_assistant_proactive,
+                    mqtt_presence_bridge,
+                ) = register_proactive_stack(
+                    app,
+                    config=runtime_config,
+                    database=runtime_database,
+                    chat_service=runtime_chat_service,
+                    websocket_manager=websocket_manager,
+                    device_target_resolver=device_target_resolver,
+                    device_command_gateway=device_command_gateway,
+                    voice_manager=voice_manager,
+                    push_subscription_store=push_subscription_store,
+                    deleg_worker=deleg_worker,
+                    plan_completion_reporter=plan_completion_reporter,
+                    activity_tracker=activity_tracker,
+                    job_engine=job_engine,
+                    admin_token=runtime_admin_token,
                     cognitive_cycle=cognitive_cycle,
-                )
-                app.state.safety_activity_scheduler = activity_scheduler
-                app.state.safety_activity_tracker = activity_tracker
-                if task_scheduler is not None:
-                    task_scheduler.set_deliverer(deliver_task_reminder)
-                if goal_reminder_scheduler is not None:
-                    goal_reminder_scheduler.set_deliverer(deliver_goal_reminder)
-                if focus_scheduler is not None:
-
-                    async def deliver_focus_nudge(
-                        text: str,
-                        *,
-                        user_id: UUID,
-                        entity_id: str,
-                        trigger_kind: str,
-                        privacy_level: str,
-                    ) -> list[str] | None:
-                        result = await proactive_delivery.deliver(
-                            text,
-                            entity_id=entity_id,
-                            rule_id=entity_id,
-                            trigger_kind=trigger_kind,
-                            privacy_level=PrivacyLevel(privacy_level),
-                            target_user_id=user_id,
-                        )
-                        if result is None:
-                            return None
-                        return list(result.delivered_channels)
-
-                    focus_scheduler.set_deliverer(deliver_focus_nudge)
-                if daily_brief_scheduler is not None:
-
-                    async def deliver_daily_brief(
-                        text: str,
-                        *,
-                        user_id: UUID,
-                        brief_id: UUID,
-                        privacy_level: PrivacyLevel,
-                        trigger_kind: str,
-                    ) -> list[str] | None:
-                        if proactive_delivery is None:
-                            return None
-                        result = await proactive_delivery.deliver(
-                            text,
-                            entity_id="brief",
-                            rule_id=f"brief:{brief_id}",
-                            trigger_kind=trigger_kind,
-                            privacy_level=privacy_level,
-                            target_user_id=user_id,
-                        )
-                        if result is None:
-                            return None
-                        return list(result.delivered_channels)
-
-                    daily_brief_scheduler.set_deliverer(deliver_daily_brief)
-                if daily_review_scheduler is not None:
-
-                    async def deliver_daily_review(
-                        text: str,
-                        *,
-                        user_id: UUID,
-                        review_id: UUID,
-                        privacy_level: PrivacyLevel,
-                        trigger_kind: str,
-                    ) -> list[str] | None:
-                        if proactive_delivery is None:
-                            return None
-                        result = await proactive_delivery.deliver(
-                            text,
-                            entity_id="review",
-                            rule_id=f"review:{review_id}",
-                            trigger_kind=trigger_kind,
-                            privacy_level=privacy_level,
-                            target_user_id=user_id,
-                        )
-                        if result is None:
-                            return None
-                        return list(result.delivered_channels)
-
-                    daily_review_scheduler.set_deliverer(deliver_daily_review)
-
-            if home_assistant_manager is not None:
-                home_assistant_proactive = HomeAssistantProactiveEngine(
-                    runtime_database,
-                    runtime_config,
-                    home_assistant_manager.get_state,
-                    proactive_delivery.deliver,
-                    cognitive_cycle=cognitive_cycle,
+                    task_scheduler=task_scheduler,
+                    goal_reminder_scheduler=goal_reminder_scheduler,
+                    focus_scheduler=focus_scheduler,
+                    daily_brief_scheduler=daily_brief_scheduler,
+                    daily_review_scheduler=daily_review_scheduler,
+                    timeline_store=timeline_store,
+                    home_assistant_manager=home_assistant_manager,
+                    mqtt_client=mqtt_client,
                     perception_pipeline=perception_pipeline,
-                    safety=safety_alert_service,
                 )
-                home_assistant_manager.set_state_change_handler(
-                    home_assistant_proactive.on_state_change
-                )
-                app.state.home_assistant_proactive_engine = home_assistant_proactive
-
-            if mqtt_client is not None and perception_pipeline is not None:
-                mqtt_presence_bridge = MqttPresenceBridge(
-                    runtime_database,
-                    perception_pipeline,
-                    proactive_deliver=(
-                        proactive_delivery.deliver if proactive_delivery is not None else None
-                    ),
-                )
-                mqtt_client.set_signal_handler(mqtt_presence_bridge.handle)
-                app.state.mqtt_presence_bridge = mqtt_presence_bridge
-
             if (
                 runtime_database is not None
                 and timeline_store is not None
                 and device_target_resolver is not None
                 and device_command_gateway is not None
                 and capability_models is not None
+                and runtime_config is not None
             ):
-                screen_awareness_loop = ScreenAwarenessLoop(
-                    config_store=runtime_config,
+                (
+                    screen_awareness_loop,
+                    browser_awareness_loop,
+                    mail_awareness_loop,
+                ) = register_awareness_loops(
+                    app,
+                    config=runtime_config,
                     database=runtime_database,
-                    resolver=cast(ScreenAwarenessResolver, device_target_resolver),
-                    gateway=cast(ScreenAwarenessGateway, device_command_gateway),
-                    analyzer=cast(
-                        ScreenAwarenessAnalyzer, CapabilityScreenAnalyzer(capability_models)
-                    ),
-                    timeline=timeline_store,
-                    memory_ingester=(
-                        MemoryIngester(memory_store) if memory_store is not None else None
-                    ),
+                    device_target_resolver=device_target_resolver,
+                    device_command_gateway=device_command_gateway,
+                    capability_models=capability_models,
+                    timeline_store=timeline_store,
+                    memory_store=memory_store,
                     perception_pipeline=perception_pipeline,
-                    proactive_deliver=(
-                        proactive_delivery.deliver if proactive_delivery is not None else None
-                    ),
+                    proactive_delivery=proactive_delivery,
                     cognitive_cycle=cognitive_cycle,
                 )
-                app.state.screen_awareness_loop = screen_awareness_loop
-                browser_awareness_loop = BrowserAwarenessLoop(
-                    config_store=runtime_config,
-                    database=runtime_database,
-                    resolver=cast(BrowserAwarenessResolver, device_target_resolver),
-                    gateway=cast(BrowserAwarenessGateway, device_command_gateway),
-                    analyzer=cast(BrowserAwarenessAnalyzer, LlmBrowserAnalyzer(runtime_config)),
-                    timeline=timeline_store,
-                    memory_ingester=(
-                        MemoryIngester(memory_store) if memory_store is not None else None
-                    ),
-                    perception_pipeline=perception_pipeline,
-                    proactive_deliver=(
-                        proactive_delivery.deliver if proactive_delivery is not None else None
-                    ),
-                    cognitive_cycle=cognitive_cycle,
-                    tab_hints=cast(BrowserAwarenessTabHints, device_command_gateway),
-                )
-                app.state.browser_awareness_loop = browser_awareness_loop
-                mail_awareness_loop = MailAwarenessLoop(
-                    config_store=runtime_config,
-                    database=runtime_database,
-                    reader=MailClient(runtime_config),
-                    analyzer=LlmMailAnalyzer(runtime_config),
-                    timeline=timeline_store,
-                    memory_ingester=(
-                        MemoryIngester(memory_store) if memory_store is not None else None
-                    ),
-                    perception_pipeline=perception_pipeline,
-                    proactive_deliver=(
-                        proactive_delivery.deliver if proactive_delivery is not None else None
-                    ),
-                    cognitive_cycle=cognitive_cycle,
-                )
-                app.state.mail_awareness_loop = mail_awareness_loop
 
     return app
 
