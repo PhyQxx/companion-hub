@@ -179,6 +179,35 @@ async def test_write_handler_gates_and_execution(database: Database) -> None:
 
 
 @pytest.mark.asyncio
+async def test_write_reports_remote_business_error(database: Database) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"code": 500, "msg": "系统异常"})
+
+    store = SkillStore(database)
+    connections = SkillConnectionStore(database)
+    await connections.put(SkillConnection(**_WRITE_CONNECTION))
+    http = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    client = SkillHttpClient(connections, client=http)
+    try:
+        skill = await store.create(_document(), source="created")
+        await store.set_enabled(skill.id, True)
+        write = _write_handler(store, connections, client)
+        context = ToolContext(privacy_level=PrivacyLevel.L1, idempotency_key="step-key-err")
+
+        result = await write.execute(
+            _write_args("partner-todo", "todo_create", {"title": "买牛奶"}), context
+        )
+
+        # RuoYi 风格错误包（HTTP 200 + code!=200）必须按失败上报，不能谎报已写入
+        assert not result.ok
+        assert result.reason_code == "skill_remote_rejected"
+        runs = await store.runs(skill.id)
+        assert runs and not runs[0].ok
+    finally:
+        await http.aclose()
+
+
+@pytest.mark.asyncio
 async def test_plan_confirm_execute_and_idempotent_replay(database: Database) -> None:
     call_count = 0
 

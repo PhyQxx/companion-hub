@@ -107,6 +107,7 @@ MULTI_CALL_SAFE_TOOLS = frozenset(
         "contact_query",
         "commute_check",
         "focus_status",
+        "reminder_list",
         "inspect_webpage",
         "fetch_webpage",
         "propose_skill",
@@ -208,6 +209,8 @@ def _device_tool_ready(
         return False
     if name in {
         "reminder_create",
+        "reminder_list",
+        "reminder_cancel",
         "calendar_create",
         "contact_save",
         "contact_query",
@@ -863,7 +866,10 @@ class ChatService:
         # 工具挂载只看在线能力与配置就绪；选哪个、何时调用由模型根据工具描述自行判断。
         # 先于 reality_block 计算：能力边界提示需要知道本轮真正挂载了哪些工具。
         candidate_device_tools = self._device_tools.names()
-        if pnkx_intent:
+        if pnkx_intent and any(name.startswith("pnkx_") for name in candidate_device_tools):
+            # 仅当旧版 pnkx_* 聊天工具确实注册时才做「pnkx 意图独占」收缩；
+            # 技能中心化后旧工具不再挂载，无条件过滤会把 propose_action、
+            # reminder_* 等助手工具一并清空，日记/待办类消息将无任何工具可调。
             candidate_device_tools = tuple(
                 name for name in candidate_device_tools if name.startswith("pnkx_")
             )
@@ -1784,6 +1790,21 @@ class ChatService:
         reply = parse_agent_reply(
             result.text, pending.persona, tool_names=pending.tool_names
         )
+        if reply.parse_status == "fallback":
+            # 兜底回复意味着模型没给出可用文本：把当轮模型、结束原因与工具
+            # 失败摘要打进控制台，否则「没有生成有效回复」无从排查。
+            logger.warning(
+                "assistant reply fell back: model=%s finish=%s tool_failures=%s raw_head=%r",
+                result.model,
+                result.finish_reason,
+                [
+                    (e.result.tool_name, e.result.reason_code)
+                    for e in tool_executions
+                    if not e.result.ok
+                ]
+                or "none",
+                result.text[:120],
+            )
         decision_meta: dict[str, object] = {
             "schema_version": 1,
             "config_version": pending.config_version,
@@ -2676,6 +2697,8 @@ def _tool_label(tool_name: str) -> str:
         "pnkx_update_life": "正在更新 pnkx 生活数据…",
         "pnkx_delete_life": "正在删除 pnkx 生活数据…",
         "reminder_create": "正在创建提醒…",
+        "reminder_list": "正在查看提醒列表…",
+        "reminder_cancel": "正在关闭提醒…",
         "calendar_create": "正在创建日程…",
         "contact_save": "正在保存联系人…",
         "commute_check": "正在规划出行…",

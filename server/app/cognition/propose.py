@@ -89,6 +89,11 @@ class ProposeActionTool:
             return self._failure("plan_service_unavailable", started)
         registered = self._registry.get(args.action_id)
         if registered is None:
+            logger.warning(
+                "propose_action rejected: action_id 不在注册表 action_id=%r（模型笔误或"
+                "注册表未同步；已注册前缀 skill.* 的动作见 ActionRegistry）",
+                args.action_id,
+            )
             return self._failure("action_unknown", started)
         # definition.risk 经 pydantic 存储后是字符串值，这里归一回枚举
         try:
@@ -112,9 +117,18 @@ class ProposeActionTool:
             )
         except PermissionError:
             return self._failure("action_prohibited", started)
-        except ValueError:
-            # 参数未过编译校验（必填缺失/类型不符/多余字段）
-            return self._failure("arguments_invalid", started)
+        except ValueError as error:
+            # 参数未过编译校验（必填缺失/类型不符/多余字段）。
+            # 细节透传给模型：收尾补全看得懂缺什么，才能向用户说明或改参重试。
+            detail = str(error).strip()[:300]
+            logger.warning(
+                "propose_action rejected: 参数未过校验 action_id=%r detail=%s",
+                args.action_id,
+                detail,
+            )
+            return self._failure(
+                "arguments_invalid", started, {"error_detail": detail} if detail else None
+            )
         return ToolResult(
             ok=True,
             tool_name=self.name,
@@ -123,11 +137,14 @@ class ProposeActionTool:
             data=_plan_card(plan, args.note),
         )
 
-    def _failure(self, reason: str, started: float) -> ToolResult:
+    def _failure(
+        self, reason: str, started: float, data: dict[str, Any] | None = None
+    ) -> ToolResult:
         return ToolResult(
             ok=False,
             tool_name=self.name,
             reason_code=reason,
+            data=data or {},
             latency_ms=(perf_counter() - started) * 1_000,
         )
 

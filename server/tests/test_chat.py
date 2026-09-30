@@ -55,6 +55,7 @@ from app.pnkx import (
 )
 from app.schemas import PrivacyLevel
 from app.skills.runtime import SkillToolProvider
+from app.tasks import ReminderCreateTool
 from app.tools import ToolExecution, ToolResult
 from app.tools.browser import InspectWebpageTool
 from app.tools.screen import CaptureScreenTool
@@ -205,6 +206,37 @@ async def test_pnkx_tools_are_exposed_to_tool_capable_chat_model(
         "pnkx_delete_life",
     }
     assert "device:test:screen.capture" not in pending.request.messages[0].content
+
+
+async def test_pnkx_intent_keeps_assistant_tools_without_legacy_pnkx_tools(
+    database: Database,
+    store: DatabaseConfigStore,
+) -> None:
+    """技能中心化后无旧版 pnkx_* 工具：pnkx 意图消息不得清空助手工具挂载。
+
+    回归 2026-09-30：日记/待办类消息命中 pnkx 意图后 propose_action 等
+    工具被全部过滤，模型只剩文字起草并声称「没有写入工具」。
+    """
+    candidate = store.current.config.model_dump(mode="python")
+    candidate["models"]["cloud"]["supports_tool_calling"] = True
+    draft = await store.create_draft(HubConfig.model_validate(candidate), actor="test")
+    await store.publish(draft.version, actor="test")
+    service = ChatService(
+        database,
+        store,
+        device_tools=(ReminderCreateTool.__new__(ReminderCreateTool),),
+    )
+    user = await create_user(database)
+    conversation = await service.create_conversation(user_id=user.id, title="diary")
+
+    pending = await service.start_turn(
+        conversation.id,
+        user_id=user.id,
+        text="今天的日记重新写一下，内容就是哈哈哈",
+        privacy_level=PrivacyLevel.L1,
+    )
+
+    assert pending.tool_names == ("reminder_create",)
 
 
 async def test_pnkx_read_uses_matching_skill_instead_of_legacy_token_tool(
@@ -465,9 +497,7 @@ def test_mail_send_receipt_is_deterministic() -> None:
         data={"sent": False, "confirmation_required": True},
     )
 
-    assert _render_mail_send_receipt(sent) == (
-        "邮件已发送成功。收件人：friend@example.com。"
-    )
+    assert _render_mail_send_receipt(sent) == ("邮件已发送成功。收件人：friend@example.com。")
     assert _render_mail_send_receipt(duplicate) == (
         "这封邮件已经发送成功，本次没有重复发送。收件人：friend@example.com。"
     )
@@ -1159,10 +1189,7 @@ class TextToolCallRouter:
         self.requests.append(request)
         if request.tools:
             return CompletionResult(
-                text=(
-                    "好嘞，我查一下天气。"
-                    '<get_weather>{"location": "济南市"}</get_weather>'
-                ),
+                text=('好嘞，我查一下天气。<get_weather>{"location": "济南市"}</get_weather>'),
                 provider="openai_compatible",
                 model="tool-model",
                 endpoint="cloud",
@@ -1324,9 +1351,7 @@ def _loop_candidate(store: DatabaseConfigStore, max_tool_rounds: int) -> dict[st
     return candidate
 
 
-async def _publish_loop_config(
-    store: DatabaseConfigStore, *, max_tool_rounds: int
-) -> None:
+async def _publish_loop_config(store: DatabaseConfigStore, *, max_tool_rounds: int) -> None:
     draft = await store.create_draft(
         HubConfig.model_validate(_loop_candidate(store, max_tool_rounds)), actor="test"
     )
@@ -1364,9 +1389,7 @@ async def test_tool_loop_chains_read_tools_across_rounds(
         text="济南天气怎么样，附近有什么超市",
         privacy_level=PrivacyLevel.L1,
     )
-    result = await service.run_stream(
-        pending, _append_chat_delta(deltas), capture_tool_event
-    )
+    result = await service.run_stream(pending, _append_chat_delta(deltas), capture_tool_event)
 
     assert deltas == ["济南多云 29 度，附近有超市。"]
     assert [event["type"] for event in tool_events] == [
@@ -1724,12 +1747,12 @@ async def test_conversation_archive_preserves_messages_and_can_be_restored(
 
     assert archived.status == "archived"
     assert await service.list_conversations(user_id=user.id) == []
-    assert [item.id for item in await service.list_conversations(
-        user_id=user.id, status="archived"
-    )] == [conversation.id]
-    assert [item.content for item in await service.list_messages(
-        conversation.id, user_id=user.id
-    )] == ["归档后仍然存在"]
+    assert [
+        item.id for item in await service.list_conversations(user_id=user.id, status="archived")
+    ] == [conversation.id]
+    assert [
+        item.content for item in await service.list_messages(conversation.id, user_id=user.id)
+    ] == ["归档后仍然存在"]
     with pytest.raises(ValueError, match="conversation is archived"):
         await service.send_message(
             conversation.id,
@@ -1985,9 +2008,7 @@ async def test_transparency_report_renders_deterministically(
 ) -> None:
     """RPT：透明度问询不经模型，直接从认知决策记录渲染。"""
     requests: list[CompletionRequest] = []
-    service = ChatService(
-        database, store, router_builder=lambda config: FakeRouter("m", requests)
-    )
+    service = ChatService(database, store, router_builder=lambda config: FakeRouter("m", requests))
     user = await create_user(database)
     conversation = await service.create_conversation(user_id=user.id, title="rpt")
     now = datetime.now(UTC)

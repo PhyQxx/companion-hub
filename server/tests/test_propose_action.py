@@ -181,6 +181,8 @@ async def test_propose_rejects_prohibited_readonly_unknown_and_bad_args(
     )
     assert not invalid.ok
     assert str(invalid.reason_code).startswith("arguments_invalid")
+    # 编译错误细节透传：收尾补全能据此向用户说明缺了什么参数
+    assert "target" in str(invalid.data.get("error_detail", ""))
 
 
 async def test_propose_privacy_and_context_gates(

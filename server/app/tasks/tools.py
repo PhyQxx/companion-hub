@@ -1,14 +1,18 @@
-"""TASK-01 聊天端建提醒工具：把模型规范化后的参数写入任务存储。
+"""TASK-01 聊天端提醒工具：创建、查看与关闭。
 
 安全边界：挂载门禁在 ChatService `_device_tool_ready`（仅 L1 开放；L0 公开
-模式不写入个人数据，L2 私密会话内容不入库），这里再做执行级兜底拒绝。
-同一回合重复调用按 turn 幂等返回已创建的任务，不重复写入。
+模式不读写个人数据，L2 私密会话内容不入库），这里再做执行级兜底拒绝。
+创建同一回合重复调用按 turn 幂等返回已创建的任务，不重复写入。
+
+关闭按标题一步匹配（精确→包含）：默认 max_tool_rounds=1，模型没有
+「先查列表再按 id 关闭」的两回合预算，必须在单次调用内解析目标。
 """
 
 from __future__ import annotations
 
 from collections import OrderedDict
 from collections.abc import Callable
+from contextlib import suppress
 from datetime import UTC, datetime
 from time import perf_counter
 from typing import Annotated, Literal, cast
@@ -19,7 +23,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from app.llm import ToolDefinition
 from app.schemas.common import PrivacyLevel
-from app.tasks.models import RepeatKind, TaskKind, TaskTrigger, TaskView
+from app.tasks.models import RepeatKind, TaskKind, TaskStatus, TaskTrigger, TaskView
 from app.tasks.store import TaskStore
 from app.tools.contracts import ToolContext, ToolResult
 
@@ -107,7 +111,11 @@ class ReminderCreateTool:
             return ToolResult(
                 ok=True,
                 tool_name=self.name,
-                data={"created": False, "duplicate": True, **_task_payload(existing)},
+                data={
+                    "created": False,
+                    "duplicate": True,
+                    **_task_payload(existing, self._timezone),
+                },
                 latency_ms=(perf_counter() - started) * 1_000,
             )
         trigger = self._trigger(args)
@@ -119,9 +127,7 @@ class ReminderCreateTool:
                 notes=args.notes,
                 trigger=trigger,
                 privacy_level=(
-                    PrivacyLevel.L0
-                    if context.privacy_level == PrivacyLevel.L0
-                    else PrivacyLevel.L1
+                    PrivacyLevel.L0 if context.privacy_level == PrivacyLevel.L0 else PrivacyLevel.L1
                 ),
                 source="chat",
                 now=self._clock(),
@@ -138,7 +144,7 @@ class ReminderCreateTool:
         return ToolResult(
             ok=True,
             tool_name=self.name,
-            data={"created": True, **_task_payload(view)},
+            data={"created": True, **_task_payload(view, self._timezone)},
             latency_ms=(perf_counter() - started) * 1_000,
         )
 
@@ -168,15 +174,251 @@ class ReminderCreateTool:
         )
 
 
-def _task_payload(view: TaskView) -> dict[str, object]:
+class ReminderListArgs(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    status: Literal["active", "done", "cancelled", "all"] = "active"
+
+
+class ReminderListTool:
+    name = "reminder_list"
+    description = (
+        "查看用户已创建的提醒（用户问「我有哪些提醒/还有什么要提醒我/明天几点有提醒」"
+        "时使用）。返回每条的 id、标题、重复方式、下次触发时间与状态；"
+        "用户要关闭或取消某条提醒时改用 reminder_cancel，不要在本工具结果上追问 id。"
+    )
+    arguments_model: type[BaseModel] = ReminderListArgs
+    runs_local = True
+    max_privacy_level = PrivacyLevel.L2
+
+    _MAX_RETURNED = 30
+
+    def __init__(
+        self,
+        store: TaskStore,
+        *,
+        timezone_name: str = "Asia/Shanghai",
+    ) -> None:
+        self._store = store
+        self._timezone = timezone_name
+
+    def definition(self) -> ToolDefinition:
+        return ToolDefinition(
+            name=self.name,
+            description=self.description,
+            parameters=ReminderListArgs.model_json_schema(),
+        )
+
+    async def execute(self, arguments: BaseModel, context: ToolContext) -> ToolResult:
+        started = perf_counter()
+        args = cast(ReminderListArgs, arguments)
+        if context.privacy_level == PrivacyLevel.L2:
+            return self._failure("private_session_unsupported", started)
+        if context.user_id is None:
+            return self._failure("user_context_missing", started)
+        status = None if args.status == "all" else TaskStatus(args.status)
+        tasks = await self._store.list_tasks(context.user_id, status=status)
+        reminders = [task for task in tasks if task.kind == TaskKind.REMINDER]
+        trimmed = reminders[: self._MAX_RETURNED]
+        return ToolResult(
+            ok=True,
+            tool_name=self.name,
+            data={
+                "count": len(trimmed),
+                "total": len(reminders),
+                "tasks": [_task_summary(task, self._timezone) for task in trimmed],
+            },
+            latency_ms=(perf_counter() - started) * 1_000,
+        )
+
+    def _failure(self, reason: str, started: float) -> ToolResult:
+        return ToolResult(
+            ok=False,
+            tool_name=self.name,
+            reason_code=reason,
+            latency_ms=(perf_counter() - started) * 1_000,
+        )
+
+
+class ReminderCancelArgs(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    # reminder_list 结果里的任务 id；用户复述过 id 或上一轮候选列表里有 id 时使用
+    task_id: Annotated[str, Field(min_length=8, max_length=64)] | None = None
+    # 提醒标题（用户只说了名称时使用），在生效提醒中做精确→包含匹配
+    title: Annotated[str, Field(min_length=1, max_length=320)] | None = None
+    # done=事项已办完；cancel=不想要这条提醒了。两者都会停止后续触发
+    mark: Literal["cancel", "done"] = "cancel"
+
+
+class ReminderCancelTool:
+    name = "reminder_cancel"
+    description = (
+        "关闭用户的某条提醒（用户说「这个提醒不要了/关掉/已经去过了/取消那条」时使用）。"
+        "用户直接说了提醒名称时传 title 即可，系统会在生效提醒里做精确→包含匹配，"
+        "无需先调用 reminder_list；已知任务 id 时传 task_id 精确指定。"
+        "唯一命中即关闭；多个命中会返回候选列表，需向用户确认关哪条；"
+        "没有命中则如实告知未找到。mark=done 表示事项已完成，默认 cancel。"
+    )
+    arguments_model: type[BaseModel] = ReminderCancelArgs
+    runs_local = True
+    max_privacy_level = PrivacyLevel.L2
+
+    def __init__(
+        self,
+        store: TaskStore,
+        *,
+        timezone_name: str = "Asia/Shanghai",
+        clock: Callable[[], datetime] | None = None,
+    ) -> None:
+        self._store = store
+        self._timezone = timezone_name
+        self._clock = clock or _default_clock
+
+    def definition(self) -> ToolDefinition:
+        return ToolDefinition(
+            name=self.name,
+            description=self.description,
+            parameters=ReminderCancelArgs.model_json_schema(),
+        )
+
+    async def execute(self, arguments: BaseModel, context: ToolContext) -> ToolResult:
+        started = perf_counter()
+        args = cast(ReminderCancelArgs, arguments)
+        if context.privacy_level == PrivacyLevel.L2:
+            return self._failure("private_session_unsupported", started, {"changed": False})
+        if context.user_id is None:
+            return self._failure("user_context_missing", started, {"changed": False})
+        if (args.task_id is None) == (args.title is None):
+            return self._failure(
+                "invalid_arguments",
+                started,
+                {"changed": False, "reason_detail": "task_id 与 title 必须二选一"},
+            )
+        matches, reason = await self._resolve(context.user_id, args)
+        if reason is not None:
+            return self._failure(reason, started, {"changed": False})
+        if not matches:
+            return self._failure(
+                "task_not_found",
+                started,
+                {
+                    "changed": False,
+                    "hint": "没有找到匹配的提醒，可调用 reminder_list 查看现有提醒",
+                },
+            )
+        if len(matches) > 1:
+            return self._failure(
+                "ambiguous_match",
+                started,
+                {
+                    "changed": False,
+                    "candidates": [_task_summary(task, self._timezone) for task in matches],
+                },
+            )
+        target = matches[0]
+        if target.status != TaskStatus.ACTIVE:
+            return ToolResult(
+                ok=True,
+                tool_name=self.name,
+                data={
+                    "changed": False,
+                    "status": str(target.status),
+                    "task": _task_summary(target, self._timezone),
+                },
+                latency_ms=(perf_counter() - started) * 1_000,
+            )
+        try:
+            view = (
+                await self._store.complete_task(context.user_id, target.id, now=self._clock())
+                if args.mark == "done"
+                else await self._store.cancel_task(context.user_id, target.id, now=self._clock())
+            )
+        except ValueError:
+            # 并发下状态已变（如刚好触发转 firing/done），以最新状态幂等返回
+            view = await self._store.get_task(context.user_id, target.id)
+            return ToolResult(
+                ok=True,
+                tool_name=self.name,
+                data={
+                    "changed": False,
+                    "status": str(view.status),
+                    "task": _task_summary(view, self._timezone),
+                },
+                latency_ms=(perf_counter() - started) * 1_000,
+            )
+        return ToolResult(
+            ok=True,
+            tool_name=self.name,
+            data={
+                "changed": True,
+                "mark": "done" if args.mark == "done" else "cancelled",
+                "task": _task_summary(view, self._timezone),
+            },
+            latency_ms=(perf_counter() - started) * 1_000,
+        )
+
+    async def _resolve(
+        self, user_id: UUID, args: ReminderCancelArgs
+    ) -> tuple[list[TaskView], str | None]:
+        """解析关闭目标：按 id 直取；按标题在生效提醒中匹配。"""
+        if args.task_id is not None:
+            try:
+                task_id = UUID(args.task_id)
+            except ValueError:
+                return [], "invalid_arguments"
+            try:
+                task = await self._store.get_task(user_id, task_id)
+            except LookupError:
+                return [], "task_not_found"
+            if task.source == "pnkx":
+                # pnkx 是外部真源，本地关闭会造成双端状态漂移，拒绝改走镜像协议
+                return [], "external_mirror_unsupported"
+            return [task], None
+        assert args.title is not None
+        active = [
+            task
+            for task in await self._store.list_tasks(user_id, status=TaskStatus.ACTIVE)
+            if task.kind == TaskKind.REMINDER and task.source != "pnkx"
+        ]
+        wanted = args.title.strip().casefold()
+        exact = [task for task in active if task.title.strip().casefold() == wanted]
+        if exact:
+            return exact, None
+        partial = [
+            task
+            for task in active
+            if wanted in task.title.casefold() or task.title.casefold() in wanted
+        ]
+        return partial, None
+
+    def _failure(
+        self, reason: str, started: float, data: dict[str, object] | None = None
+    ) -> ToolResult:
+        return ToolResult(
+            ok=False,
+            tool_name=self.name,
+            reason_code=reason,
+            data=data or {},
+            latency_ms=(perf_counter() - started) * 1_000,
+        )
+
+
+def _task_summary(view: TaskView, timezone_name: str | None = None) -> dict[str, object]:
+    next_fire = view.next_fire_at
+    if next_fire is not None and timezone_name is not None:
+        with suppress(ZoneInfoNotFoundError, ValueError):
+            next_fire = next_fire.astimezone(ZoneInfo(timezone_name))
     return {
-        "task": {
-            "id": str(view.id),
-            "title": view.title,
-            "repeat": str(view.trigger.repeat_kind),
-            "event": view.trigger.event_type,
-            "next_fire_at": view.next_fire_at.isoformat()
-            if view.next_fire_at is not None
-            else None,
-        },
+        "id": str(view.id),
+        "title": view.title,
+        "repeat": str(view.trigger.repeat_kind),
+        "event": view.trigger.event_type,
+        "status": str(view.status),
+        "source": view.source,
+        "next_fire_at": next_fire.isoformat() if next_fire is not None else None,
     }
+
+
+def _task_payload(view: TaskView, timezone_name: str | None = None) -> dict[str, object]:
+    return {"task": _task_summary(view, timezone_name)}

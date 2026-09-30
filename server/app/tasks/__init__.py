@@ -10,13 +10,15 @@ from .models import (
 )
 from .scheduler import TRIGGER_KIND_EVENT, TRIGGER_KIND_TIME, TaskScheduler
 from .store import TaskStore
-from .tools import ReminderCreateTool
+from .tools import ReminderCancelTool, ReminderCreateTool, ReminderListTool
 
 __all__ = [
     "TRIGGER_KIND_EVENT",
     "TRIGGER_KIND_TIME",
     "ClaimedTask",
+    "ReminderCancelTool",
     "ReminderCreateTool",
+    "ReminderListTool",
     "RepeatKind",
     "TaskKind",
     "TaskScheduler",

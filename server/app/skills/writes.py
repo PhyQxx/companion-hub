@@ -109,6 +109,12 @@ class SkillWriteToolHandler:
                 idempotency_key=context.idempotency_key,
             )
         except SkillConnectionError as error:
+            logger.warning(
+                "skill write denied: skill=%s operation=%s reason=%s",
+                args.skill_name,
+                args.operation,
+                error.reason_code,
+            )
             return await self._finish(False, started, meta, error.reason_code)
         except Exception:
             logger.warning(

@@ -383,6 +383,28 @@ async function dismissDraft(id: string) {
   }
 }
 
+const editingConnectionId = ref("");
+const connectionDialogVisible = ref(false);
+
+function resetConnectionForm() {
+  connectionId.value = "";
+  connectionBaseUrl.value = "";
+  connectionAuth.value = "none";
+  connectionSecretRef.value = "";
+  connectionUsernameRef.value = "";
+  connectionHeader.value = "";
+  connectionPaths.value = "";
+  connectionWritePaths.value = "";
+  connectionAuthPaths.value = "";
+  connectionEnabled.value = false;
+}
+
+function openCreateConnection() {
+  editingConnectionId.value = "";
+  resetConnectionForm();
+  connectionDialogVisible.value = true;
+}
+
 function editConnection(item: SkillConnection) {
   connectionId.value = item.id;
   connectionBaseUrl.value = item.base_url;
@@ -394,6 +416,8 @@ function editConnection(item: SkillConnection) {
   connectionWritePaths.value = item.allowed_write_paths.join("\n");
   connectionAuthPaths.value = item.allowed_auth_paths.join("\n");
   connectionEnabled.value = item.enabled;
+  editingConnectionId.value = item.id;
+  connectionDialogVisible.value = true;
 }
 
 function connectionStatus(item: SkillItem): string {
@@ -468,6 +492,8 @@ async function saveConnection() {
       }),
     });
     await loadConnections();
+    connectionDialogVisible.value = false;
+    editingConnectionId.value = "";
     ok("连接配置已保存。已启用的只读技能会按路径白名单挂载。");
   } catch (error) {
     fail(error, "保存连接失败");
@@ -881,11 +907,12 @@ onUnmounted(() => {
           <p>连接由管理员配置，只读与写入路径模板分开登记，且只允许 HTTPS。只读路径按相关性挂载进对话；写入路径仅服务 Action Registry 计划—确认—执行链，每次执行都需用户确认。用户名密码登录的账号在技能详情中加密保存；固定令牌或自定义头可使用服务端 env: 引用。</p>
         </div>
         <div class="hero-actions">
+          <el-button type="primary" @click="openCreateConnection">新建连接</el-button>
           <el-button :loading="busy" @click="loadConnections">刷新</el-button>
         </div>
       </div>
       <div class="panel">
-        <div class="panel-head"><div><h2>已配置连接</h2><p>点击「编辑」把配置带入下方表单修改。</p></div></div>
+        <div class="panel-head"><div><h2>已配置连接</h2><p>点击「编辑」在弹窗中修改连接配置。</p></div></div>
         <el-table :data="connections" empty-text="尚未配置连接" style="width:100%">
           <el-table-column prop="id" label="连接标识" min-width="120" />
           <el-table-column label="服务地址" min-width="220">
@@ -912,10 +939,13 @@ onUnmounted(() => {
           </el-table-column>
         </el-table>
       </div>
-      <div class="panel">
-        <div class="panel-head"><div><h2>配置连接</h2><p>路径模板必须与技能契约完全一致，每行一条。</p></div></div>
+      <el-dialog
+        v-model="connectionDialogVisible"
+        :title="editingConnectionId ? `编辑连接：${editingConnectionId}` : '新建连接'"
+        width="min(680px, 94vw)"
+      >
         <div class="form-grid">
-          <label><span>连接标识</span><el-input v-model="connectionId" placeholder="partner-system" /></label>
+          <label><span>连接标识</span><el-input v-model="connectionId" placeholder="partner-system" :disabled="!!editingConnectionId" /></label>
           <label><span>HTTPS 服务地址（可含固定前缀）</span><el-input v-model="connectionBaseUrl" placeholder="https://api.example.com/prod-api" /></label>
           <label><span>认证方式</span>
             <el-select v-model="connectionAuth">
@@ -932,11 +962,12 @@ onUnmounted(() => {
           <label class="wide"><span>只读路径模板（每行一条，与技能契约完全一致）</span><el-input v-model="connectionPaths" type="textarea" :rows="5" placeholder="/coupons&#10;/coupons/{coupon_id}" /></label>
           <label class="wide"><span>写入路径模板（每行一条；写操作需用户逐次确认后才会执行）</span><el-input v-model="connectionWritePaths" type="textarea" :rows="3" placeholder="/todos" /></label>
           <label class="wide"><span>启用连接</span><el-checkbox v-model="connectionEnabled">已启用的只读技能会按路径白名单挂载</el-checkbox></label>
-          <div class="actions wide">
-            <el-button type="primary" :loading="busy" @click="saveConnection">保存连接</el-button>
-          </div>
         </div>
-      </div>
+        <template #footer>
+          <el-button @click="connectionDialogVisible = false">取消</el-button>
+          <el-button type="primary" :loading="busy" @click="saveConnection">保存连接</el-button>
+        </template>
+      </el-dialog>
     </template>
 
     <template v-else-if="mode === 'drafts'">

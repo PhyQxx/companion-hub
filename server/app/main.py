@@ -168,7 +168,13 @@ from app.skills.generator import SkillDraftGenerator
 from app.skills.runtime import SkillToolProvider
 from app.skills.store import SkillStore
 from app.skills.writes import SkillWriteToolHandler
-from app.tasks import ReminderCreateTool, TaskScheduler, TaskStore
+from app.tasks import (
+    ReminderCancelTool,
+    ReminderCreateTool,
+    ReminderListTool,
+    TaskScheduler,
+    TaskStore,
+)
 from app.tasks.brief import BriefCommute, BriefWeather, DailyBriefService
 from app.tasks.brief_scheduler import DailyBriefScheduler
 from app.tasks.goal_scheduler import GoalReminderScheduler
@@ -382,9 +388,9 @@ def create_app(
             registry=action_registry,
             config_store=runtime_config,
             router_builder=(
-                lambda config: build_router(config, _distill_secrets)
-                if runtime_config is not None
-                else None
+                lambda config: (
+                    build_router(config, _distill_secrets) if runtime_config is not None else None
+                )
             ),
         )
         if runtime_database is not None and workflow_draft_store is not None
@@ -395,14 +401,10 @@ def create_app(
     # BTL-03（docs/09 §1）：对话内提议注册表动作（A1/A2 转计划确认）+
     # 计划完成主动汇报（续跑闭环）。
     plan_completion_reporter = (
-        PlanCompletionReporter(action_plan_service)
-        if action_plan_service is not None
-        else None
+        PlanCompletionReporter(action_plan_service) if action_plan_service is not None else None
     )
     if action_plan_service is not None and plan_completion_reporter is not None:
-        action_plan_service.add_completion_callback(
-            plan_completion_reporter.on_plan_completed
-        )
+        action_plan_service.add_completion_callback(plan_completion_reporter.on_plan_completed)
     propose_action_tool = (
         ProposeActionTool(
             lambda: action_plan_service,
@@ -739,9 +741,7 @@ def create_app(
     # 在 ProactiveDeliveryService 装配后注入。
     deleg_worker = (
         DelegatedJobWorker(job_engine)
-        if job_engine is not None
-        and runtime_config is not None
-        and web_fetch_tool is not None
+        if job_engine is not None and runtime_config is not None and web_fetch_tool is not None
         else None
     )
     if deleg_worker is not None and web_fetch_tool is not None and runtime_config is not None:
@@ -1090,6 +1090,8 @@ def create_app(
             )
             if task_store is not None:
                 device_tools.append(ReminderCreateTool(task_store, timezone_name=default_timezone))
+                device_tools.append(ReminderListTool(task_store, timezone_name=default_timezone))
+                device_tools.append(ReminderCancelTool(task_store, timezone_name=default_timezone))
             if calendar_service is not None:
                 calendar_create_tool = CalendarCreateTool(
                     calendar_service,
@@ -1513,7 +1515,6 @@ def create_app(
     deps.perception_pipeline = perception_pipeline
 
     return app
-
 
 
 app = create_app()

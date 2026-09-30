@@ -1,4 +1,4 @@
-"""聊天端建提醒/建日程工具：写入契约、两段式确认、幂等与隐私门禁。"""
+"""聊天端提醒/日程工具：写入契约、两段式确认、查看关闭、幂等与隐私门禁。"""
 
 from __future__ import annotations
 
@@ -16,7 +16,15 @@ from app.config import DatabaseConfigStore, HubConfig
 from app.db import AppUserRecord, Base, Database, TaskItemRecord, create_database
 from app.ids import uuid7
 from app.schemas.common import PrivacyLevel
-from app.tasks import ReminderCreateTool, TaskStore
+from app.tasks import (
+    ReminderCancelTool,
+    ReminderCreateTool,
+    ReminderListTool,
+    TaskKind,
+    TaskStore,
+    TaskTrigger,
+    TaskView,
+)
 from app.tools.contracts import ToolContext
 
 NOW = datetime(2026, 9, 3, 4, 0, tzinfo=UTC)  # Asia/Shanghai 当天 12:00
@@ -120,9 +128,7 @@ class TestReminderCreateTool:
         assert event.data["task"]["event"] == "user_arrived_home"
         assert event.data["task"]["next_fire_at"] is None
 
-    async def test_same_turn_is_idempotent(
-        self, database: Database, context: ToolContext
-    ) -> None:
+    async def test_same_turn_is_idempotent(self, database: Database, context: ToolContext) -> None:
         tool = ReminderCreateTool(
             _task_store(database), timezone_name="Asia/Shanghai", clock=_clock
         )
@@ -169,15 +175,252 @@ class TestReminderCreateTool:
             {"title": "私密", "at": "2026-09-03T15:00"}
         )
 
-        private = await tool.execute(
-            args, context.model_copy(update={"privacy_level": "L2"})
-        )
+        private = await tool.execute(args, context.model_copy(update={"privacy_level": "L2"}))
         assert private.ok is False
         assert private.reason_code == "private_session_unsupported"
 
         anonymous = await tool.execute(args, context.model_copy(update={"turn_id": None}))
         assert anonymous.ok is False
         assert anonymous.reason_code == "idempotency_key_missing"
+
+
+# ---------------------------------------------------------------------------
+# ReminderListTool / ReminderCancelTool
+# ---------------------------------------------------------------------------
+
+
+async def _seed_reminder(
+    database: Database,
+    user_id: UUID,
+    title: str,
+    *,
+    at: datetime | None = None,
+    source: str = "chat",
+) -> TaskView:
+    return await _task_store(database).create(
+        user_id=user_id,
+        kind=TaskKind.REMINDER,
+        title=title,
+        trigger=TaskTrigger(type="time", at=at or NOW + timedelta(hours=6)),
+        source=source,
+        now=NOW,
+    )
+
+
+class TestReminderListTool:
+    async def test_lists_active_reminders_with_local_time(
+        self, database: Database, context: ToolContext, user_id: UUID
+    ) -> None:
+        await _seed_reminder(database, user_id, "去潍坊")
+        closed = await _seed_reminder(database, user_id, "过期提醒")
+        await _task_store(database).cancel_task(user_id, closed.id, now=NOW)
+
+        tool = ReminderListTool(_task_store(database), timezone_name="Asia/Shanghai")
+        result = await tool.execute(
+            ReminderListTool.arguments_model.model_validate({}),
+            context,
+        )
+
+        assert result.ok is True
+        assert result.data["count"] == 1
+        task = result.data["tasks"][0]
+        assert task["title"] == "去潍坊"
+        assert task["status"] == "active"
+        assert task["repeat"] == "once"
+        assert task["next_fire_at"].endswith("+08:00")
+
+    async def test_status_filter_includes_closed(
+        self, database: Database, context: ToolContext, user_id: UUID
+    ) -> None:
+        await _seed_reminder(database, user_id, "去潍坊")
+        closed = await _seed_reminder(database, user_id, "过期提醒")
+        await _task_store(database).cancel_task(user_id, closed.id, now=NOW)
+        tool = ReminderListTool(_task_store(database))
+
+        all_tasks = await tool.execute(
+            ReminderListTool.arguments_model.model_validate({"status": "all"}),
+            context,
+        )
+        cancelled = await tool.execute(
+            ReminderListTool.arguments_model.model_validate({"status": "cancelled"}),
+            context,
+        )
+
+        assert all_tasks.data["count"] == 2
+        assert cancelled.data["count"] == 1
+        assert cancelled.data["tasks"][0]["title"] == "过期提醒"
+
+    async def test_refuses_private_and_anonymous_context(
+        self, database: Database, context: ToolContext
+    ) -> None:
+        tool = ReminderListTool(_task_store(database))
+
+        private = await tool.execute(
+            ReminderListTool.arguments_model.model_validate({}),
+            context.model_copy(update={"privacy_level": "L2"}),
+        )
+        assert private.ok is False
+        assert private.reason_code == "private_session_unsupported"
+
+        anonymous = await tool.execute(
+            ReminderListTool.arguments_model.model_validate({}),
+            context.model_copy(update={"user_id": None}),
+        )
+        assert anonymous.ok is False
+        assert anonymous.reason_code == "user_context_missing"
+
+
+class TestReminderCancelTool:
+    async def test_cancels_by_exact_title(
+        self, database: Database, context: ToolContext, user_id: UUID
+    ) -> None:
+        await _seed_reminder(database, user_id, "去潍坊")
+        tool = ReminderCancelTool(
+            _task_store(database), timezone_name="Asia/Shanghai", clock=_clock
+        )
+
+        result = await tool.execute(
+            ReminderCancelTool.arguments_model.model_validate({"title": "去潍坊"}),
+            context,
+        )
+
+        assert result.ok is True
+        assert result.data["changed"] is True
+        assert result.data["mark"] == "cancelled"
+        assert result.data["task"]["status"] == "cancelled"
+        async with database.sessions() as session:
+            rows = (await session.scalars(select(TaskItemRecord))).all()
+        assert rows[0].status == "cancelled"
+        assert rows[0].next_fire_at is None
+
+    async def test_marks_done_with_partial_title(
+        self, database: Database, context: ToolContext, user_id: UUID
+    ) -> None:
+        await _seed_reminder(database, user_id, "去潍坊出差")
+        tool = ReminderCancelTool(_task_store(database), clock=_clock)
+
+        result = await tool.execute(
+            ReminderCancelTool.arguments_model.model_validate(
+                {"title": "潍坊出差", "mark": "done"}
+            ),
+            context,
+        )
+
+        assert result.ok is True
+        assert result.data["changed"] is True
+        assert result.data["mark"] == "done"
+        async with database.sessions() as session:
+            row = (await session.scalars(select(TaskItemRecord))).one()
+        assert row.status == "done"
+        assert row.completed_at is not None
+
+    async def test_ambiguous_match_returns_candidates(
+        self, database: Database, context: ToolContext, user_id: UUID
+    ) -> None:
+        await _seed_reminder(database, user_id, "去潍坊")
+        await _seed_reminder(database, user_id, "去潍坊拿材料")
+        tool = ReminderCancelTool(_task_store(database))
+
+        result = await tool.execute(
+            ReminderCancelTool.arguments_model.model_validate({"title": "潍坊"}),
+            context,
+        )
+
+        assert result.ok is False
+        assert result.reason_code == "ambiguous_match"
+        titles = {item["title"] for item in result.data["candidates"]}
+        assert titles == {"去潍坊", "去潍坊拿材料"}
+
+    async def test_cancel_by_task_id_is_idempotent_when_closed(
+        self, database: Database, context: ToolContext, user_id: UUID
+    ) -> None:
+        task = await _seed_reminder(database, user_id, "去潍坊")
+        tool = ReminderCancelTool(_task_store(database), clock=_clock)
+        args = ReminderCancelTool.arguments_model.model_validate({"task_id": str(task.id)})
+
+        first = await tool.execute(args, context)
+        second = await tool.execute(args, context)
+
+        assert first.data["changed"] is True
+        assert second.ok is True
+        assert second.data["changed"] is False
+        assert second.data["status"] == "cancelled"
+
+    async def test_not_found_and_argument_rules(
+        self, database: Database, context: ToolContext
+    ) -> None:
+        tool = ReminderCancelTool(_task_store(database))
+
+        missing = await tool.execute(
+            ReminderCancelTool.arguments_model.model_validate({"title": "不存在"}),
+            context,
+        )
+        assert missing.ok is False
+        assert missing.reason_code == "task_not_found"
+        assert "reminder_list" in missing.data["hint"]
+
+        both = await tool.execute(
+            ReminderCancelTool.arguments_model.model_validate(
+                {"task_id": "0198b2f4-3b00-7001-8000-000000000009", "title": "去潍坊"}
+            ),
+            context,
+        )
+        assert both.reason_code == "invalid_arguments"
+
+        neither = await tool.execute(
+            ReminderCancelTool.arguments_model.model_validate({}),
+            context,
+        )
+        assert neither.reason_code == "invalid_arguments"
+
+    async def test_title_matching_skips_pnkx_mirrors(
+        self, database: Database, context: ToolContext, user_id: UUID
+    ) -> None:
+        await _seed_reminder(database, user_id, "去潍坊", source="chat")
+        await _seed_reminder(database, user_id, "去潍坊", source="pnkx")
+        tool = ReminderCancelTool(_task_store(database), clock=_clock)
+
+        result = await tool.execute(
+            ReminderCancelTool.arguments_model.model_validate({"title": "去潍坊"}),
+            context,
+        )
+
+        # 同名镜像不参与匹配，本地唯一命中直接关闭，不会产生歧义
+        assert result.ok is True
+        assert result.data["changed"] is True
+        async with database.sessions() as session:
+            rows = (await session.scalars(select(TaskItemRecord))).all()
+        statuses = {row.source: row.status for row in rows}
+        assert statuses["chat"] == "cancelled"
+        assert statuses["pnkx"] == "active"
+
+    async def test_cancel_pnkx_mirror_by_id_is_refused(
+        self, database: Database, context: ToolContext, user_id: UUID
+    ) -> None:
+        mirror = await _seed_reminder(database, user_id, "拿快递", source="pnkx")
+        tool = ReminderCancelTool(_task_store(database))
+
+        result = await tool.execute(
+            ReminderCancelTool.arguments_model.model_validate({"task_id": str(mirror.id)}),
+            context,
+        )
+
+        assert result.ok is False
+        assert result.reason_code == "external_mirror_unsupported"
+
+    async def test_refuses_private_and_anonymous_context(
+        self, database: Database, context: ToolContext
+    ) -> None:
+        tool = ReminderCancelTool(_task_store(database))
+        args = ReminderCancelTool.arguments_model.model_validate({"title": "去潍坊"})
+
+        private = await tool.execute(args, context.model_copy(update={"privacy_level": "L2"}))
+        assert private.ok is False
+        assert private.reason_code == "private_session_unsupported"
+
+        anonymous = await tool.execute(args, context.model_copy(update={"user_id": None}))
+        assert anonymous.ok is False
+        assert anonymous.reason_code == "user_context_missing"
 
 
 # ---------------------------------------------------------------------------
@@ -238,9 +481,7 @@ class TestCalendarCreateTool:
         assert isinstance(event, dict)
         assert event["reminder_task_id"]
         tasks = await _calendar_service(database).task_store.list_tasks(context.user_id)
-        assert [task.source_ref for task in tasks] == [
-            f"calendar:{event['id']}"
-        ]
+        assert [task.source_ref for task in tasks] == [f"calendar:{event['id']}"]
 
     async def test_conflict_blocks_preview_and_model_confirmation_is_rejected(
         self, database: Database, context: ToolContext
@@ -377,9 +618,7 @@ routes:
 
 
 @pytest.fixture
-async def config_store(
-    database: Database, tmp_path: Path
-) -> AsyncIterator[DatabaseConfigStore]:
+async def config_store(database: Database, tmp_path: Path) -> AsyncIterator[DatabaseConfigStore]:
     path = tmp_path / "hub.yaml"
     path.write_text(_config_yaml(), encoding="utf-8")
     store = DatabaseConfigStore(database, path)

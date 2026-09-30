@@ -322,6 +322,15 @@ class SkillHttpClient:
                 payload = await self._read_json(response, max_bytes=64 * 1024)
                 if isinstance(payload, dict) and payload.get("code") == 401:
                     raise SkillConnectionError("connection_http_401")
+                if (
+                    isinstance(payload, dict)
+                    and "code" in payload
+                    and "msg" in payload
+                    and payload.get("code") not in (200, "200")
+                ):
+                    # RuoYi 风格错误包：HTTP 200 但业务 code 非 200；
+                    # 不拦截会把远端失败当成功回执，写链路会谎报已写入
+                    raise SkillConnectionError("skill_remote_rejected")
                 return payload
         except httpx.HTTPStatusError as error:
             raise SkillConnectionError(f"connection_http_{error.response.status_code}") from error
