@@ -1,6 +1,6 @@
 # Aria 当前任务
 
-> 最后更新：2026-09-29
+> 最后更新：2026-10-01
 > 详细设计入口：[00-产品与架构.md](./00-产品与架构.md)
 
 本文件只维护当前执行队列、未完成门槛和最新质量基线。历史交付细节留在对应阶段文档，不在这里重复。
@@ -38,7 +38,7 @@
 - [ ] S1/S2 后续：ZIP 其余附件保存（SKILL.md 原文已随导入持久化并在详情展示）、真实 PNKX 卡券契约联调；通用受控连接与依赖报告。
 - [x] S3 写操作闭环（2026-09-28）：已启用技能的 confirm 操作同步为 Action Registry A2 动作（`sync_skill_actions`，启停/改版自动重同步）；只经计划—确认—执行链触发，`skill_write` 执行器不挂载进对话，执行时实时复核技能/操作/连接白名单并重校验参数；连接独立 `allowed_write_paths` 写白名单（迁移 0054，默认空）；计划步骤幂等键透传 `Idempotency-Key`，同键重放返回原计划不重复核销；回执验证只记技能/操作/状态，运行证据入 `skill_run`。测试 `test_skill_writes.py` 3 项（同步、闸门、计划全流程幂等）。
 - [x] 写链路巡检与动作目录自描述（2026-09-30，提交 316f2c0）：`app/skills/audit.py` `SkillAuditScheduler`（默认 6h，可配）只做数据库内省——连接缺失/停用、写路径白名单未放行、confirm 操作参数缺口三类漂移自动落 `skill_suggestion` 建议流（sha256 dedupe 不重复打扰），诊断自动、修复留人；Action Registry 新增 `skill_write_definitions` 与 `render_action_catalog`——每轮从注册表实时渲染 `skill.*` 写动作目录进系统提示（id/摘要/必填参数标注），与手写技能说明冲突时以目录为准，根治「说明自称只读而动作已注册、模型抄错 id」类故障；写回执携带远端 `remote_id`。测试 `test_skill_audit.py` 3 项、`test_skill_writes.py` +2、`test_chat.py` +1（目录注入系统提示）。
-- [ ] S4 自主学习：从反馈生成候选草稿、样例回放、Admin 审核发布。
+- [x] S4 自主学习闭环（2026-10-01）：对话纠正自动生成技能修订候选——回合提交后收割（`app/skills/learning.py` `SkillRevisionLearner`）：本回合执行过技能操作且用户消息命中纠正信号时，私密路由裁决纠正指向的技能（纠正摘录须逐字出自用户消息），基于当前版本文档 + 完整消息 + 运行失败原因生成修订草稿（source=learning，记录 base_version）；生成即自动试跑（与人工试跑同链路的只读探活与白名单闸门）。证据纪律：修订路径与认证字段须逐字出自基线文档或用户消息、连接标识禁止切换、POST/read 冲突由模型校验器拒绝；同技能已有待审修订或最近运行来自旧版本（基线过期）时不重复起草，审批侧 base_version 闸门兜底。审批沿用 Admin 审阅中心与 revise() 链——诊断自动、发布留人。测试 `test_skill_learning.py` 9 项；Admin 草稿来源新增「学习候选」标签。
 
 - [x] 2026-09-29 `Admin 菜单合并`：「形象与外观」并入「人格与形象」（形象库/主题中心成为 Tab，Live2D 动作映射与形象包同域）；单 Tab 模块「主动输出」并入「感知与守护」；技能中心"创建技能+智能创建"合并为单 Tab 页内切换（`?section=generate`）。旧路由 `/appearance`、`/avatars`、`/output`、`/skills?tab=generate`、`/models?tab=channels` 全部重定向；模块 14→12，浏览器实测重定向与 Tab 校验通过（连接态侧边栏待真实令牌复验）。设计说明见 `docs/07` §2。
 - [x] 2026-09-29 `Admin 菜单合并第二批`：「日志追踪+隐私与安全」合并为「观测与审计」（11 Tab→6，Tab 级吸收：事件→Trace 与事件、性能/错误/告警→分析与告警、数据流向→隐私概览、操作审计→外发与操作审计）；技能中心「待审草稿+学习建议」合并为「审阅中心」（页内切换，`?section=suggestions` 持久化）；系统与维护「基础设置+升级与信息」合并为「基础与升级」。旧路由 `/privacy`、`/logs` 旧 Tab、`/skills?tab=suggestions` 全部守卫迁移；一级模块 12→11，7 条重定向浏览器实测全过。
@@ -53,10 +53,11 @@
 - [x] SEMB 本地语义 embedding（Hub 侧 2026-09-29，待真实模型验收）：`embeddings` 配置段（默认关闭）+ `HttpEmbeddingProvider`（OpenAI 兼容 /embeddings，响应维度校验，版本含模型名隔离向量空间）；启动连通性探测失败回落哈希不阻断启动；Admin 记忆检索页展示 provider/维度；secret_value 入脱敏链。测试 `test_memory_embeddings.py` 8 项。
 - [x] MAILW 邮件感知 loop（Hub 侧 2026-09-29，待真实邮箱验收）：`mail_awareness` 配置段（默认关闭）+ `app/mail_awareness` 循环；BODY.PEEK 拉未读、片段即焚、UID 基线防重启重报、watermark 限流；`mail.received` SemanticEvent 进既有感知-认知-四通道链路；分析提示禁执行邮件指令。测试 `test_mail_awareness.py` 8 项。
 - [x] DIST 技能蒸馏与回放晋级（2026-09-29，Hub 侧）：迁移 0058 `workflow_draft`；计划完成回调后台蒸馏（≥2 步、步骤快照幂等去重、等步骤流程不重复提案）；A0 步骤样例回放（重编译校验 + 隐私闸门 + 结果结构比对）为晋级硬门槛；Admin 管家中心草稿列表/审批/忽略/手动回放端点，未回放或失败 409 阻断。测试 10 项（`test_workflow_drafts.py` 9 + `test_admin_butler.py` 1）。命名经 utility 路由润色、失败回落标题（2026-09-30，测试 1 项）；对话内主动提示留后续。
-- [x] DELEG 长任务委派（2026-09-30，Hub 侧）：`DelegatedJobWorker` 领取执行 deleg Job（租约/重试/检查点），完成经主动四通道汇报，执行中取消丢弃结果；对话挂载 `delegate_task`（仅 L1，同回合幂等）；首个类型 `deleg.web_research`（≤5 URL，web_fetch SSRF+隐私闸门复用，utility 汇总防注入）。测试 `test_delegated_jobs.py` 8 项。取消回合联动取消其委派任务（2026-09-30，测试 1 项）；pnkx 周报类型与 handler 协作式取消留后续。
+- [x] DELEG 长任务委派（2026-09-30，Hub 侧）：`DelegatedJobWorker` 领取执行 deleg Job（租约/重试/检查点），完成经主动四通道汇报，执行中取消丢弃结果；对话挂载 `delegate_task`（仅 L1，同回合幂等）；首个类型 `deleg.web_research`（≤5 URL，web_fetch SSRF+隐私闸门复用，utility 汇总防注入）。测试 `test_delegated_jobs.py` 8 项。取消回合联动取消其委派任务（2026-09-30，测试 1 项）。handler 协作式取消（2026-10-01）：`DelegHandler` 协议升级为 `handler(payload, DelegRunContext)`，`JobEngine.cancel_requested` 供长循环轮询，`WebResearchHandler` 抓取循环逐 URL 检查、命中即抛 `DelegCancelled`——worker 按取消收尾、结果不汇报，未抓取 URL 直接放弃。测试 +2（协作取消收尾、直接调用路径）。pnkx 周报任务类型仍留后续（待真实 pnkx 验收后评估）。
 - [x] CTX 滚动会话摘要（2026-09-29，Hub 侧）：迁移 0057；阈值 10 触发后台增量重写（≤500 字，L2 窗口强制 PRIVATE 路由），水位 FOR UPDATE 防并发覆盖；对话超出 20 条窗口后系统提示注入「此前对话要点」。测试三项（文件库时序无关）。
-- [x] RPT 透明度汇报（2026-09-29）：透明度问询短路模型链路，从近 24h CognitiveDecision 确定性渲染（开口次数/时间/决策类型/触发来源/安静计数），L1/L2 均可问。每日自体检留后续。
-- [x] PERE-01 Router 跨轮缓存（配置指纹 sha256，容量 4，发布自动失效）；PERE-02 流式取消检查改内存集合（cancel_turn 写入、回合收尾逐出）；PERE-03 组合根拆分进行中（2026-09-30）：wiring/ 包已承接前端静态/系统端点、Admin 前置路由、主动投递栈与感知循环、lifespan 启停序列四批，main.py 2127→1519 行，每批分段全量验证；剩余 lifespan 与运行时装配段待建 Wiring 容器后搬移。
+- [x] RPT 透明度汇报（2026-09-29）：透明度问询短路模型链路，从近 24h CognitiveDecision 确定性渲染（开口次数/时间/决策类型/触发来源/安静计数），L1/L2 均可问。
+- [x] RPT 每日自体检（2026-10-01）：`app/observability/selfcheck.py` `DailySelfCheckScheduler`——每日到点（`ARIA_SELF_CHECK_TIME`，默认 10:00，每日至多一次）确定性体检三项：模型路由最小补全探活（失败才报）、设备心跳（7 天内活跃设备静默超 24h 才报、注销与久离设备不噪音）、备份落盘（已产出备份但最新超过 26h 才报，未启用备份保持安静）；全部健康不说话，异常经主动通道投递给全部活跃用户。测试 `test_self_check.py` 7 项。
+- [x] PERE-01 Router 跨轮缓存（配置指纹 sha256，容量 4，发布自动失效）；PERE-02 流式取消检查改内存集合（cancel_turn 写入、回合收尾逐出）；PERE-03 组合根拆分完成（2026-10-01）：wiring/ 包六批承接前端静态/系统端点、Admin 前置路由、主动投递栈与感知循环、lifespan 启停序列、领域装配段（`domain.py` `DomainAssembly` 容器 + `assemble_domain`，顺带删除 deliver_task_reminder/deliver_goal_reminder 死代码）与运行时装配段（`runtime.py` `assemble_runtime` 返回 `RuntimeAssembly` + Admin 数据路由 `register_admin_data_routers`），main.py 2127→277 行，每批分段全量验证。
 
 ### 0.0 核查后优先修复（2026-09-08）
 
