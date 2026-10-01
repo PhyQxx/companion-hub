@@ -507,6 +507,24 @@ export type Prefer =
     ];
 export type TurnId1 = string | null;
 export type UserId1 = string;
+export type EventId1 = string;
+export type Kind1 = string;
+export type OccurredAt3 = string;
+export type PrivacyLevel2 = string;
+export type SchemaVersion2 = number;
+export type Seq = number;
+export type CancelEpoch = number;
+export type ConfigVersion = number | null;
+export type ConversationId2 = string | null;
+export type CreatedAt1 = string;
+export type Id = string;
+export type JobIds = string[];
+export type PersonaVersion = number | null;
+export type PlanIds = string[];
+export type PrivacyLevel3 = string;
+export type StateVersion = number;
+export type Status = string;
+export type UpdatedAt = string;
 /**
  * This interface was referenced by `AriaContracts`'s JSON-Schema
  * via the `definition` "Priority".
@@ -523,6 +541,8 @@ export interface AriaContracts {
   EphemeralSignal?: EphemeralSignal;
   InputEnvelope?: InputEnvelope;
   OutputIntent?: OutputIntent;
+  RunEventView?: RunEventView;
+  RunView?: RunView;
   [k: string]: unknown;
 }
 /**
@@ -924,4 +944,38 @@ export interface TargetSelector {
   endpoint_ids?: EndpointIds;
   mode?: Mode1;
   prefer?: Prefer;
+}
+/**
+ * This interface was referenced by `AriaContracts`'s JSON-Schema
+ * via the `definition` "RunEventView".
+ */
+export interface RunEventView {
+  event_id: EventId1;
+  kind: Kind1;
+  occurred_at: OccurredAt3;
+  payload: Payload;
+  privacy_level: PrivacyLevel2;
+  schema_version: SchemaVersion2;
+  seq: Seq;
+}
+export interface Payload {
+  [k: string]: unknown;
+}
+/**
+ * This interface was referenced by `AriaContracts`'s JSON-Schema
+ * via the `definition` "RunView".
+ */
+export interface RunView {
+  cancel_epoch: CancelEpoch;
+  config_version: ConfigVersion;
+  conversation_id: ConversationId2;
+  created_at: CreatedAt1;
+  id: Id;
+  job_ids?: JobIds;
+  persona_version: PersonaVersion;
+  plan_ids?: PlanIds;
+  privacy_level: PrivacyLevel3;
+  state_version: StateVersion;
+  status: Status;
+  updated_at: UpdatedAt;
 }

@@ -36,6 +36,7 @@ def _aware(value: datetime) -> datetime:
     """SQLite DateTime 返回朴素时间，统一按 UTC 补齐后再与时钟比较。"""
     return value if value.tzinfo is not None else value.replace(tzinfo=UTC)
 
+
 # 告警最长生命周期：超过后即使无人确认也收尾为 expired
 ALERT_LIFETIME = timedelta(hours=2)
 # 聊天确认意图：仅在存在活跃告警时生效，普通对话不受影响
@@ -86,7 +87,8 @@ class SafetyAlertService:
         tasks = tuple(self._tasks.values())
         self._tasks.clear()
         for task in tasks:
-            task.cancel()
+            if not task.cancelling():
+                task.cancel()
         for task in tasks:
             with contextlib.suppress(asyncio.CancelledError):
                 await task
@@ -161,11 +163,18 @@ class SafetyAlertService:
             self._run_escalation(record.id), name=f"safety-alert-{record.id}"
         )
         self._tasks[record.id] = task
-        task.add_done_callback(lambda done: self._tasks.pop(record.id, None))
+
+        def finished(done: asyncio.Task[None]) -> None:
+            if self._tasks.get(record.id) is done:
+                self._tasks.pop(record.id, None)
+
+        task.add_done_callback(finished)
 
     def _cancel_task(self, alert_id: UUID) -> None:
-        task = self._tasks.pop(alert_id, None)
-        if task is not None:
+        # Keep cancelled tasks owned until their DB cleanup finishes, so stop()
+        # can await them. Repeated cancellation can interrupt shielded cleanup.
+        task = self._tasks.get(alert_id)
+        if task is not None and task is not asyncio.current_task() and not task.cancelling():
             task.cancel()
 
     async def _run_escalation(self, alert_id: UUID) -> None:
@@ -201,11 +210,7 @@ class SafetyAlertService:
     ) -> None:
         """等待自 level_at 起的窗口（确认窗口或推送重试），然后升级/重提醒。"""
         config = self._config_store.current.config.safety
-        window = (
-            config.push_retry_minutes * 60
-            if repeat
-            else config.confirm_window_seconds
-        )
+        window = config.push_retry_minutes * 60 if repeat else config.confirm_window_seconds
         record = await self._store.get(alert_id)
         if record is None or record.status != "escalating":
             return
@@ -308,9 +313,7 @@ class SafetyAlertService:
             extra={"level": 3, "channel": "email", "result": status},
             source_suffix="esc-3-email",
         )
-        logger.info(
-            "safety alert escalated to contact alert=%s status=%s", alert_id, status
-        )
+        logger.info("safety alert escalated to contact alert=%s status=%s", alert_id, status)
 
     # ------------------------------------------------------------------ #
     # 投递与 Timeline
@@ -333,9 +336,7 @@ class SafetyAlertService:
                 broadcast=True,
             )
         except Exception:
-            logger.exception(
-                "safety alert delivery failed alert=%s level=%s", record.id, level
-            )
+            logger.exception("safety alert delivery failed alert=%s level=%s", record.id, level)
 
     async def _index(
         self,

@@ -7,6 +7,7 @@ from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
 from contextlib import asynccontextmanager, suppress
 from dataclasses import dataclass
 
+from app.harness.window import ContextWindowExceeded, fit_window
 from app.observability import TraceRecorder
 from app.privacy import EgressBlocked, EgressDestination, EgressGuard
 from app.schemas import PrivacyLevel
@@ -102,9 +103,19 @@ class LLMRouter:
                 rejected_for_privacy += 1
                 continue
             provider = self._providers[endpoint_name]
-            endpoint_request = self._apply_endpoint_max_tokens(
-                routed_request, endpoint
-            )
+            try:
+                fitted = fit_window(routed_request, endpoint)
+            except ContextWindowExceeded:
+                failures += 1
+                failure_details.append(
+                    LLMEndpointFailure(
+                        endpoint=endpoint_name,
+                        attempt=0,
+                        error_type="ContextWindowExceeded",
+                    )
+                )
+                continue
+            endpoint_request = fitted.request
             for attempt in range(1, endpoint.max_retries + 2):
                 timeout_ms = policy.timeout_ms or endpoint.timeout_ms
                 try:
@@ -113,10 +124,11 @@ class LLMRouter:
                         endpoint_name,
                         attempt,
                     ):
-                        return await asyncio.wait_for(
+                        result = await asyncio.wait_for(
                             provider.complete(endpoint_request),
                             timeout=timeout_ms / 1_000,
                         )
+                        return result.model_copy(update={"context_budget": fitted.manifest})
                 except TimeoutError as error:
                     failures += 1
                     failure_details.append(
@@ -179,6 +191,10 @@ class LLMRouter:
                 privacy.value,
             )
             raise LLMRouteExhausted("no_privacy_compatible_model")
+        if failure_details and all(
+            failure.error_type == "ContextWindowExceeded" for failure in failure_details
+        ):
+            raise LLMRouteExhausted("context_window_exceeded", failures=tuple(failure_details))
         self._log_route_exhausted(
             request=routed_request,
             reason_code="all_model_routes_failed",
@@ -224,9 +240,19 @@ class LLMRouter:
                 rejected_for_privacy += 1
                 continue
             provider = self._providers[endpoint_name]
-            endpoint_request = self._apply_endpoint_max_tokens(
-                routed_request, endpoint
-            )
+            try:
+                fitted = fit_window(routed_request, endpoint)
+            except ContextWindowExceeded:
+                failures += 1
+                failure_details.append(
+                    LLMEndpointFailure(
+                        endpoint=endpoint_name,
+                        attempt=0,
+                        error_type="ContextWindowExceeded",
+                    )
+                )
+                continue
+            endpoint_request = fitted.request
             for attempt in range(1, endpoint.max_retries + 2):
                 emitted = False
 
@@ -243,10 +269,11 @@ class LLMRouter:
                 watchdog = asyncio.timeout(first_chunk_ms / 1_000)
                 try:
                     async with self._span(endpoint_request, endpoint_name, attempt), watchdog:
-                        return await provider.stream(
+                        result = await provider.stream(
                             endpoint_request,
                             _watched_delta(guarded_delta, watchdog, idle_ms / 1_000),
                         )
+                        return result.model_copy(update={"context_budget": fitted.manifest})
                 except Exception as error:
                     failures += 1
                     failure_details.append(
@@ -301,6 +328,10 @@ class LLMRouter:
                 privacy.value,
             )
             raise LLMRouteExhausted("no_privacy_compatible_model")
+        if failure_details and all(
+            failure.error_type == "ContextWindowExceeded" for failure in failure_details
+        ):
+            raise LLMRouteExhausted("context_window_exceeded", failures=tuple(failure_details))
         self._log_route_exhausted(
             request=routed_request,
             reason_code="all_model_routes_failed",
@@ -386,26 +417,13 @@ class LLMRouter:
                 if route == LLMRoute.PRIVATE and not endpoint.runs_local:
                     raise ValueError("private route cannot reference a cloud endpoint")
 
-    def _select_route(
-        self, request: CompletionRequest, privacy: PrivacyLevel
-    ) -> LLMRoute:
+    def _select_route(self, request: CompletionRequest, privacy: PrivacyLevel) -> LLMRoute:
         if privacy is PrivacyLevel.L2:
             return LLMRoute.PRIVATE
         requested = LLMRoute(request.route)
         if requested is LLMRoute.VOICE and requested not in self._routes:
             return LLMRoute.DIALOGUE
         return requested
-
-    @staticmethod
-    def _apply_endpoint_max_tokens(
-        request: CompletionRequest,
-        endpoint: ModelEndpoint,
-    ) -> CompletionRequest:
-        if endpoint.max_tokens is None:
-            return request
-        return CompletionRequest.model_validate(
-            {**request.model_dump(mode="python"), "max_tokens": endpoint.max_tokens}
-        )
 
     @asynccontextmanager
     async def _span(

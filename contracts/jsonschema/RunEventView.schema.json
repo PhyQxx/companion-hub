@@ -1,0 +1,47 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "event_id": {
+      "format": "uuid",
+      "title": "Event Id",
+      "type": "string"
+    },
+    "kind": {
+      "title": "Kind",
+      "type": "string"
+    },
+    "occurred_at": {
+      "format": "date-time",
+      "title": "Occurred At",
+      "type": "string"
+    },
+    "payload": {
+      "additionalProperties": true,
+      "title": "Payload",
+      "type": "object"
+    },
+    "privacy_level": {
+      "title": "Privacy Level",
+      "type": "string"
+    },
+    "schema_version": {
+      "title": "Schema Version",
+      "type": "integer"
+    },
+    "seq": {
+      "title": "Seq",
+      "type": "integer"
+    }
+  },
+  "required": [
+    "event_id",
+    "seq",
+    "kind",
+    "schema_version",
+    "payload",
+    "privacy_level",
+    "occurred_at"
+  ],
+  "title": "RunEventView",
+  "type": "object"
+}

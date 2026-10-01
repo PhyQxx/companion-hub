@@ -63,7 +63,12 @@ class MemoryIngester:
         self._turn_extractor = TurnMemoryExtractor(self._extractor)
 
     async def ingest(
-        self, candidate: MemoryCandidate, *, user_id: UUID, actor: str = "extractor"
+        self,
+        candidate: MemoryCandidate,
+        *,
+        user_id: UUID,
+        actor: str = "extractor",
+        enforce_sources: bool = False,
     ) -> ConsolidateOutcome:
         if candidate.fact_key is not None:
             slot = await self._store.list_memories(
@@ -82,6 +87,7 @@ class MemoryIngester:
                     updated = await self._store.register_support(
                         current.id,
                         sources=candidate.sources,
+                        source_owner_id=user_id if enforce_sources else None,
                         importance_step=self._policy.support_importance_step,
                     )
                     return ConsolidateOutcome(
@@ -93,6 +99,7 @@ class MemoryIngester:
                     candidate,
                     user_id=user_id,
                     actor=actor,
+                    enforce_sources=enforce_sources,
                     status=MemoryStatus.CONFLICT,
                     conflict_with=current.id,
                 )
@@ -106,7 +113,9 @@ class MemoryIngester:
         # 它们也可以同时为真，不能套用稳定事实的“相似但不同即冲突”规则。
         # 上游事件管线负责按事件 ID、截图哈希和时间窗口去重；这里按事件追加。
         if MemoryType(candidate.type) is MemoryType.EPISODIC:
-            created = await self._store.add(candidate, user_id=user_id, actor=actor)
+            created = await self._store.add(
+                candidate, user_id=user_id, actor=actor, enforce_sources=enforce_sources
+            )
             return ConsolidateOutcome(
                 decision=ConsolidateDecision.CREATED, memory=created, related=None
             )
@@ -124,6 +133,7 @@ class MemoryIngester:
             updated = await self._store.register_support(
                 best.entry.id,
                 sources=candidate.sources,
+                source_owner_id=user_id if enforce_sources else None,
                 importance_step=self._policy.support_importance_step,
             )
             return ConsolidateOutcome(
@@ -134,13 +144,16 @@ class MemoryIngester:
                 candidate,
                 user_id=user_id,
                 actor=actor,
+                enforce_sources=enforce_sources,
                 status=MemoryStatus.CONFLICT,
                 conflict_with=best.entry.id,
             )
             return ConsolidateOutcome(
                 decision=ConsolidateDecision.CONFLICT, memory=created, related=best.entry
             )
-        created = await self._store.add(candidate, user_id=user_id, actor=actor)
+        created = await self._store.add(
+            candidate, user_id=user_id, actor=actor, enforce_sources=enforce_sources
+        )
         return ConsolidateOutcome(
             decision=ConsolidateDecision.CREATED, memory=created, related=None
         )
@@ -186,6 +199,7 @@ class MemoryIngester:
         privacy_level: PrivacyLevel,
         retrieved_memories: tuple[MemoryEntry, ...] = (),
         backend: ExtractionBackend | None = None,
+        enforce_sources: bool = False,
     ) -> list[ConsolidateOutcome]:
         candidates = await self._turn_extractor.extract_turn(
             user_text=user_text,
@@ -203,6 +217,7 @@ class MemoryIngester:
                 candidate,
                 user_id=user_id,
                 actor=candidate.extractor_version or RULE_EXTRACTOR_VERSION,
+                enforce_sources=enforce_sources,
             )
             for candidate in candidates
         ]

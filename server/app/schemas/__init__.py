@@ -10,6 +10,7 @@ from .common import PrivacyLevel
 from .input import EphemeralSignal, InputEnvelope
 from .output import DeliveryPlan, DeliveryReceipt, OutputIntent
 from .reply import AgentAction, AgentReply
+from .runs import RunEventView, RunView
 
 SCHEMA_MODELS = (
     InputEnvelope,
@@ -21,6 +22,8 @@ SCHEMA_MODELS = (
     AdapterHealth,
     EndpointCapabilities,
     AgentReply,
+    RunView,
+    RunEventView,
 )
 
 __all__ = [
@@ -39,4 +42,6 @@ __all__ = [
     "InputEnvelope",
     "OutputIntent",
     "PrivacyLevel",
+    "RunEventView",
+    "RunView",
 ]

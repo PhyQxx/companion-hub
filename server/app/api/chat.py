@@ -24,6 +24,7 @@ class CreateConversationRequest(StrictModel):
 
 
 class SendMessageRequest(StrictModel):
+    client_request_id: Annotated[str, Field(min_length=1, max_length=160)] | None = None
     text: Annotated[str, Field(min_length=1, max_length=20_000)]
     privacy_level: Literal["L0", "L1", "L2"] = "L1"
     # 可选的终端 WGS84 临时位置; 仅内存 TTL, 用于工具位置解析, 不落库。
@@ -112,9 +113,7 @@ def create_chat_router(service: ChatService, auth_service: AuthService) -> APIRo
         principal: Annotated[ChatPrincipal, Depends(chat_guard)],
     ) -> ConversationResponse:
         try:
-            result = await service.archive_conversation(
-                conversation_id, user_id=principal.user_id
-            )
+            result = await service.archive_conversation(conversation_id, user_id=principal.user_id)
         except LookupError as error:
             raise HTTPException(status.HTTP_404_NOT_FOUND, detail=str(error)) from error
         return _conversation_response(result)
@@ -128,9 +127,7 @@ def create_chat_router(service: ChatService, auth_service: AuthService) -> APIRo
         principal: Annotated[ChatPrincipal, Depends(chat_guard)],
     ) -> ConversationResponse:
         try:
-            result = await service.restore_conversation(
-                conversation_id, user_id=principal.user_id
-            )
+            result = await service.restore_conversation(conversation_id, user_id=principal.user_id)
         except LookupError as error:
             raise HTTPException(status.HTTP_404_NOT_FOUND, detail=str(error)) from error
         return _conversation_response(result)
@@ -170,9 +167,7 @@ def create_chat_router(service: ChatService, auth_service: AuthService) -> APIRo
         principal: Annotated[ChatPrincipal, Depends(chat_guard)],
     ) -> ConversationDeletionResponse:
         try:
-            receipt = await service.delete_conversation(
-                conversation_id, user_id=principal.user_id
-            )
+            receipt = await service.delete_conversation(conversation_id, user_id=principal.user_id)
         except LookupError as error:
             raise HTTPException(status.HTTP_404_NOT_FOUND, detail=str(error)) from error
         return ConversationDeletionResponse(
@@ -193,11 +188,10 @@ def create_chat_router(service: ChatService, auth_service: AuthService) -> APIRo
             result = await service.send_message(
                 conversation_id,
                 user_id=principal.user_id,
+                client_request_id=body.client_request_id,
                 text=body.text,
                 privacy_level=PrivacyLevel(body.privacy_level),
-                client_location=(
-                    body.location.to_client_location() if body.location else None
-                ),
+                client_location=(body.location.to_client_location() if body.location else None),
             )
         except LookupError as error:
             raise HTTPException(status.HTTP_404_NOT_FOUND, detail=str(error)) from error
@@ -210,8 +204,7 @@ def create_chat_router(service: ChatService, auth_service: AuthService) -> APIRo
                 principal.user_id,
                 error.reason_code,
                 ", ".join(
-                    f"{item.endpoint}#{item.attempt}:{item.error_type}"
-                    for item in error.failures
+                    f"{item.endpoint}#{item.attempt}:{item.error_type}" for item in error.failures
                 ),
             )
             raise HTTPException(

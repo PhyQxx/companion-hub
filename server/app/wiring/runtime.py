@@ -43,6 +43,7 @@ from app.api import (
     create_xiaoai_websocket_router,
 )
 from app.api.mail import create_mail_router
+from app.api.runs import create_runs_router
 from app.auth import AuthService
 from app.browser_awareness import BrowserAwarenessLoop
 from app.calendar import CalendarCreateTool, CalendarSyncTool
@@ -375,6 +376,7 @@ def assemble_runtime(
     app.state.chat_service = runtime_chat_service
     app.include_router(create_auth_router(auth_service, admin_token=admin_token))
     app.include_router(create_chat_router(runtime_chat_service, auth_service))
+    app.include_router(create_runs_router(runtime_chat_service, auth_service))
     for device_tool in device_tools:
         if isinstance(device_tool, MailSendTool):
             app.include_router(

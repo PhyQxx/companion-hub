@@ -39,9 +39,7 @@ async def _database(tmp_path: Any) -> Database:
 
 def _config_store(*, window: int = 60, retry: int = 3) -> Any:
     safety = SafetyConfig(enabled=True, confirm_window_seconds=window, push_retry_minutes=retry)
-    return SimpleNamespace(
-        current=SimpleNamespace(config=SimpleNamespace(safety=safety))
-    )
+    return SimpleNamespace(current=SimpleNamespace(config=SimpleNamespace(safety=safety)))
 
 
 def _make_service(
@@ -154,12 +152,18 @@ async def test_handle_dedupes_active_alert(tmp_path: Any) -> None:
     service, deliveries = _make_service(database, fake_time)
     try:
         first = await service.handle(
-            user_id=user_id, rule_id="smoke", entity_id="binary_sensor.smoke",
-            message="m", evidence={},
+            user_id=user_id,
+            rule_id="smoke",
+            entity_id="binary_sensor.smoke",
+            message="m",
+            evidence={},
         )
         second = await service.handle(
-            user_id=user_id, rule_id="smoke", entity_id="binary_sensor.smoke",
-            message="m", evidence={},
+            user_id=user_id,
+            rule_id="smoke",
+            entity_id="binary_sensor.smoke",
+            message="m",
+            evidence={},
         )
         assert first is not None and second is not None and first.id == second.id
         assert len(deliveries) == 1
@@ -176,8 +180,11 @@ async def test_resume_picks_up_escalating_alerts_after_restart(tmp_path: Any) ->
     fake_time = FakeTime()
     first, _ = _make_service(database, fake_time)
     alert = await first.handle(
-        user_id=user_id, rule_id="smoke", entity_id="binary_sensor.smoke",
-        message="m", evidence={},
+        user_id=user_id,
+        rule_id="smoke",
+        entity_id="binary_sensor.smoke",
+        message="m",
+        evidence={},
     )
     await first.stop()
     assert alert is not None
@@ -243,8 +250,11 @@ async def test_engine_routes_critical_to_state_machine(tmp_path: Any) -> None:
         )
 
     smoke_state = HomeAssistantState(
-        entity_id="binary_sensor.smoke", state="on", attributes={},
-        last_changed=None, last_updated=None,
+        entity_id="binary_sensor.smoke",
+        state="on",
+        attributes={},
+        last_changed=None,
+        last_updated=None,
     )
     store = SimpleNamespace(
         current=SimpleNamespace(
@@ -328,13 +338,18 @@ async def test_l3_escalation_sends_email_with_pre_notice_and_ledger(tmp_path: An
     service, deliveries = _make_service_with_mailer(database, fake_time, mailer)
     try:
         authorization = await service.authorizations.create(
-            user_id=user_id, contact_name="张三", destination="zhang@example.com",
+            user_id=user_id,
+            contact_name="张三",
+            destination="zhang@example.com",
         )
         assert authorization.status == "active"
 
         alert = await service.handle(
-            user_id=user_id, rule_id="smoke", entity_id="binary_sensor.smoke",
-            message="【危急】烟雾告警…", evidence={},
+            user_id=user_id,
+            rule_id="smoke",
+            entity_id="binary_sensor.smoke",
+            message="【危急】烟雾告警…",
+            evidence={},
         )
         assert alert is not None
         task = service._tasks.get(alert.id)
@@ -354,7 +369,8 @@ async def test_l3_escalation_sends_email_with_pre_notice_and_ledger(tmp_path: An
         assert await service.ledger.contacted(alert.id) is True
         timeline = TimelineStore(database)
         events = await timeline.search(
-            user_id=user_id, event_types=("safety.alert_escalated",),
+            user_id=user_id,
+            event_types=("safety.alert_escalated",),
         )
         escalated = [e for e in events.events if (e.metadata or {}).get("level") == 3]
         assert escalated and escalated[0].metadata["channel"] == "email"
@@ -373,8 +389,11 @@ async def test_l3_without_authorization_stays_l2_and_notifies_user(tmp_path: Any
     service, deliveries = _make_service_with_mailer(database, fake_time, mailer)
     try:
         alert = await service.handle(
-            user_id=user_id, rule_id="smoke", entity_id="binary_sensor.smoke",
-            message="【危急】烟雾告警…", evidence={},
+            user_id=user_id,
+            rule_id="smoke",
+            entity_id="binary_sensor.smoke",
+            message="【危急】烟雾告警…",
+            evidence={},
         )
         assert alert is not None
         task = service._tasks.get(alert.id)
@@ -383,9 +402,7 @@ async def test_l3_without_authorization_stays_l2_and_notifies_user(tmp_path: Any
 
         assert mailer.sent == []
         assert await service.ledger.contacted(alert.id) is False
-        notice = next(
-            (d for d in deliveries if "未配置预授权紧急联系人" in str(d["text"])), None
-        )
+        notice = next((d for d in deliveries if "未配置预授权紧急联系人" in str(d["text"])), None)
         assert notice is not None
     finally:
         await service.stop()
@@ -402,11 +419,16 @@ async def test_l3_mail_failure_records_ledger_and_revoke(tmp_path: Any) -> None:
     service, _ = _make_service_with_mailer(database, fake_time, mailer)
     try:
         await service.authorizations.create(
-            user_id=user_id, contact_name="李四", destination="li@example.com",
+            user_id=user_id,
+            contact_name="李四",
+            destination="li@example.com",
         )
         alert = await service.handle(
-            user_id=user_id, rule_id="smoke", entity_id="binary_sensor.smoke",
-            message="【危急】烟雾告警…", evidence={},
+            user_id=user_id,
+            rule_id="smoke",
+            entity_id="binary_sensor.smoke",
+            message="【危急】烟雾告警…",
+            evidence={},
         )
         assert alert is not None
         task = service._tasks.get(alert.id)
@@ -416,6 +438,7 @@ async def test_l3_mail_failure_records_ledger_and_revoke(tmp_path: Any) -> None:
         from sqlalchemy import select as sa_select
 
         from app.db import SafetyAlertEscalationRecord
+
         async with database.sessions() as session:
             rows: list[SafetyAlertEscalationRecord] = list(
                 await session.scalars(sa_select(SafetyAlertEscalationRecord))
@@ -441,15 +464,22 @@ async def test_activity_inactivity_reminds_within_window_and_respects_cooldown(
     database = await _database(tmp_path)
     user_id = uuid7()
     async with database.sessions.begin() as session:
-        session.add(AppUserRecord(
-            id=user_id, display_name="Owner", status="active", timezone="Asia/Shanghai",
-        ))
+        session.add(
+            AppUserRecord(
+                id=user_id,
+                display_name="Owner",
+                status="active",
+                timezone="Asia/Shanghai",
+            )
+        )
 
     class FakeTime2:
         def __init__(self) -> None:
             self.now = datetime(2026, 9, 13, 13, 0, tzinfo=UTC)  # 北京 21:00，窗口内
+
         def clock(self) -> datetime:
             return self.now
+
         async def sleep(self, seconds: float) -> None:
             self.now += timedelta(seconds=seconds)
 
@@ -460,15 +490,23 @@ async def test_activity_inactivity_reminds_within_window_and_respects_cooldown(
         deliveries.append({"text": text, **kwargs})
         return SimpleNamespace(user_id=user_id, conversation_id=None)
 
-    config = SimpleNamespace(current=SimpleNamespace(config=SimpleNamespace(
-        safety=SafetyConfig(enabled=True, inactivity_hours=12.0),
-    )))
+    config = SimpleNamespace(
+        current=SimpleNamespace(
+            config=SimpleNamespace(
+                safety=SafetyConfig(enabled=True, inactivity_hours=12.0),
+            )
+        )
+    )
     tracker = ActivityTracker()
     # 最后活动 = 24h 前（超阈值）
     tracker.record(user_id, fake_time.now - timedelta(hours=24))
     scheduler = SafetyActivityScheduler(
-        database, config, cast(Any, deliver), tracker,
-        clock=fake_time.clock, sleeper=fake_time.sleep,
+        database,
+        config,
+        cast(Any, deliver),
+        tracker,
+        clock=fake_time.clock,
+        sleeper=fake_time.sleep,
     )
     safety_config = config.current.config.safety
     try:
@@ -497,24 +535,39 @@ async def test_activity_silent_outside_window_or_when_device_recent(tmp_path: An
     database = await _database(tmp_path)
     user_id = uuid7()
     async with database.sessions.begin() as session:
-        session.add(AppUserRecord(
-            id=user_id, display_name="Owner", status="active", timezone="Asia/Shanghai",
-        ))
+        session.add(
+            AppUserRecord(
+                id=user_id,
+                display_name="Owner",
+                status="active",
+                timezone="Asia/Shanghai",
+            )
+        )
         # 桌面设备 1 小时前有心跳 → 设备信号刷新活动
         from app.db import DeviceClientRecord
-        session.add(DeviceClientRecord(
-            id=uuid7(), owner_user_id=user_id, name="Mac", alias=None,
-            client_type="desktop", credential_hash="x" * 64,
-            capabilities=[], granted_capabilities=[],
-            paired_at=datetime(2026, 9, 1, 0, 0, tzinfo=UTC),
-            last_seen_at=datetime(2026, 9, 13, 12, 0, tzinfo=UTC),  # 北京 20:00，1h 前心跳
-        ))
+
+        session.add(
+            DeviceClientRecord(
+                id=uuid7(),
+                owner_user_id=user_id,
+                name="Mac",
+                alias=None,
+                client_type="desktop",
+                credential_hash="x" * 64,
+                capabilities=[],
+                granted_capabilities=[],
+                paired_at=datetime(2026, 9, 1, 0, 0, tzinfo=UTC),
+                last_seen_at=datetime(2026, 9, 13, 12, 0, tzinfo=UTC),  # 北京 20:00，1h 前心跳
+            )
+        )
 
     class FakeTime3:
         def __init__(self) -> None:
             self.now = datetime(2026, 9, 13, 13, 0, tzinfo=UTC)  # 北京 21:00，窗口内
+
         def clock(self) -> datetime:
             return self.now
+
         async def sleep(self, seconds: float) -> None:
             self.now += timedelta(seconds=seconds)
 
@@ -525,14 +578,22 @@ async def test_activity_silent_outside_window_or_when_device_recent(tmp_path: An
         deliveries.append({"text": text, **kwargs})
         return SimpleNamespace(user_id=user_id, conversation_id=None)
 
-    config = SimpleNamespace(current=SimpleNamespace(config=SimpleNamespace(
-        safety=SafetyConfig(enabled=True, inactivity_hours=12.0),
-    )))
+    config = SimpleNamespace(
+        current=SimpleNamespace(
+            config=SimpleNamespace(
+                safety=SafetyConfig(enabled=True, inactivity_hours=12.0),
+            )
+        )
+    )
     tracker = ActivityTracker()
     tracker.record(user_id, fake_time.now - timedelta(hours=30))
     scheduler = SafetyActivityScheduler(
-        database, config, cast(Any, deliver), tracker,
-        clock=fake_time.clock, sleeper=fake_time.sleep,
+        database,
+        config,
+        cast(Any, deliver),
+        tracker,
+        clock=fake_time.clock,
+        sleeper=fake_time.sleep,
     )
     safety_config = config.current.config.safety
     try:
@@ -566,17 +627,25 @@ async def test_chat_safety_api_lists_and_acks_alerts(tmp_path: Any) -> None:
     password = "correct horse battery staple"
     auth = AuthService(database)
     async with database.sessions.begin() as session:
-        session.add(AppUserRecord(
-            id=uuid7(), display_name="Owner", status="active", timezone="Asia/Shanghai",
-        ))
+        session.add(
+            AppUserRecord(
+                id=uuid7(),
+                display_name="Owner",
+                status="active",
+                timezone="Asia/Shanghai",
+            )
+        )
     await auth.setup(display_name="Owner", password=password)
     login = await auth.login(password=password)
 
     fake_time = FakeTime()
     service, _ = _make_service(database, fake_time)
     alert = await service.handle(
-        user_id=login.principal.user_id, rule_id="smoke", entity_id="binary_sensor.smoke",
-        message="【危急】厨房烟感触发了烟雾告警…", evidence={},
+        user_id=login.principal.user_id,
+        rule_id="smoke",
+        entity_id="binary_sensor.smoke",
+        message="【危急】厨房烟感触发了烟雾告警…",
+        evidence={},
     )
     assert alert is not None
     # FakeTime 的 sleep 即时推进：后台升级链会在首个 await 处瞬间走完生命周期并把
@@ -614,3 +683,37 @@ async def test_chat_safety_api_lists_and_acks_alerts(tmp_path: Any) -> None:
     assert after.json()["total"] == 0
     await service.stop()
     await database.close()
+
+
+async def test_ack_cancellation_remains_owned_until_cleanup_finishes(tmp_path: Any) -> None:
+    database = await _database(tmp_path)
+    service, _ = _make_service(database, FakeTime())
+    entered, cleaning, release, cleaned = (asyncio.Event() for _ in range(4))
+
+    async def escalation() -> None:
+        try:
+            entered.set()
+            await asyncio.Event().wait()
+        finally:
+            cleaning.set()
+            await release.wait()
+            cleaned.set()
+
+    task = asyncio.create_task(escalation())
+    alert_id = uuid7()
+    service._tasks[alert_id] = task
+    try:
+        await entered.wait()
+        service._cancel_task(alert_id)
+        await cleaning.wait()
+        assert service._tasks.get(alert_id) is task
+        stopping = asyncio.create_task(service.stop())
+        await asyncio.sleep(0)
+        assert not stopping.done()
+        release.set()
+        await stopping
+        assert cleaned.is_set()
+    finally:
+        release.set()
+        await service.stop()
+        await database.close()

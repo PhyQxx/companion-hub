@@ -14,6 +14,7 @@ from sqlalchemy.exc import IntegrityError
 from app.db import (
     ConversationRecord,
     Database,
+    DeletionLedgerRecord,
     EventRecord,
     MessageRecord,
     TimelineEventRecord,
@@ -54,6 +55,7 @@ class TimelineStore:
         assistant_text: str,
         assistant_occurred_at: datetime,
         privacy_level: PrivacyLevel,
+        enforce_sources: bool = False,
     ) -> tuple[TimelineEvent, ...]:
         privacy = PrivacyLevel(privacy_level)
         if privacy is PrivacyLevel.L3:
@@ -71,6 +73,7 @@ class TimelineStore:
                 text=text,
                 privacy_level=privacy,
                 occurred_at=occurred_at,
+                enforce_sources=enforce_sources,
             )
             if item is not None:
                 created.append(item)
@@ -86,14 +89,13 @@ class TimelineStore:
         text: str,
         privacy_level: PrivacyLevel,
         occurred_at: datetime,
+        enforce_sources: bool = False,
     ) -> TimelineEvent | None:
         privacy = PrivacyLevel(privacy_level)
         if privacy is PrivacyLevel.L3:
             return None
         summary = (
-            _index_summary(text)
-            if privacy in {PrivacyLevel.L0, PrivacyLevel.L1}
-            else "L2 对话消息"
+            _index_summary(text) if privacy in {PrivacyLevel.L0, PrivacyLevel.L1} else "L2 对话消息"
         )
         record = TimelineEventRecord(
             user_id=user_id,
@@ -110,7 +112,7 @@ class TimelineStore:
             keywords=_keywords(summary) if privacy is not PrivacyLevel.L2 else [],
             metadata_json={},
         )
-        return await self._insert(record)
+        return await self._insert(record, enforce_sources=enforce_sources)
 
     async def index_event_record(self, event: EventRecord) -> TimelineEvent | None:
         record = timeline_record_from_event(event)
@@ -260,16 +262,20 @@ class TimelineStore:
         offset: int = 0,
         candidate_limit: int = 300,
     ) -> TimelineSearchResult:
-        statement = _event_filter(
-            user_id=user_id,
-            start_at=start_at,
-            end_at=end_at,
-            actors=actors,
-            source_types=source_types,
-            event_types=event_types,
-            conversation_id=conversation_id,
-            privacy_levels=privacy_levels,
-        ).order_by(TimelineEventRecord.occurred_at.desc()).limit(candidate_limit)
+        statement = (
+            _event_filter(
+                user_id=user_id,
+                start_at=start_at,
+                end_at=end_at,
+                actors=actors,
+                source_types=source_types,
+                event_types=event_types,
+                conversation_id=conversation_id,
+                privacy_levels=privacy_levels,
+            )
+            .order_by(TimelineEventRecord.occurred_at.desc())
+            .limit(candidate_limit)
+        )
         async with self._database.sessions() as session:
             records = list(await session.scalars(statement))
 
@@ -277,10 +283,7 @@ class TimelineStore:
             selected = records[offset : offset + limit]
         else:
             query_tokens = _token_set(query)
-            scored = [
-                (_score(record, query_tokens), record)
-                for record in records
-            ]
+            scored = [(_score(record, query_tokens), record) for record in records]
             scored = [item for item in scored if item[0] > 0]
             scored.sort(key=lambda item: (item[0], item[1].occurred_at), reverse=True)
             selected = [record for _, record in scored[offset : offset + limit]]
@@ -406,9 +409,36 @@ class TimelineStore:
             )
         return int(cast(CursorResult[Any], result).rowcount or 0)
 
-    async def _insert(self, record: TimelineEventRecord) -> TimelineEvent | None:
+    async def _insert(
+        self, record: TimelineEventRecord, *, enforce_sources: bool = False
+    ) -> TimelineEvent | None:
         try:
             async with self._database.sessions.begin() as session:
+                if enforce_sources:
+                    conversation = await session.scalar(
+                        select(ConversationRecord)
+                        .where(
+                            ConversationRecord.id == record.conversation_id,
+                            ConversationRecord.user_id == record.user_id,
+                        )
+                        .with_for_update()
+                    )
+                    message = await session.get(MessageRecord, UUID(record.source_id))
+                    deleted = await session.scalar(
+                        select(DeletionLedgerRecord.id)
+                        .where(
+                            DeletionLedgerRecord.entity_kind == "message",
+                            DeletionLedgerRecord.entity_id == str(record.conversation_id),
+                        )
+                        .limit(1)
+                    )
+                    if (
+                        conversation is None
+                        or message is None
+                        or deleted is not None
+                        or message.conversation_id != record.conversation_id
+                    ):
+                        raise ValueError("source_deleted")
                 session.add(record)
                 await session.flush()
                 await session.refresh(record)

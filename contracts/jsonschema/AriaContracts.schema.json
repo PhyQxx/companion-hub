@@ -1624,6 +1624,153 @@
       "title": "PrivacyLevel",
       "type": "string"
     },
+    "RunEventView": {
+      "additionalProperties": false,
+      "properties": {
+        "event_id": {
+          "format": "uuid",
+          "title": "Event Id",
+          "type": "string"
+        },
+        "kind": {
+          "title": "Kind",
+          "type": "string"
+        },
+        "occurred_at": {
+          "format": "date-time",
+          "title": "Occurred At",
+          "type": "string"
+        },
+        "payload": {
+          "additionalProperties": true,
+          "title": "Payload",
+          "type": "object"
+        },
+        "privacy_level": {
+          "title": "Privacy Level",
+          "type": "string"
+        },
+        "schema_version": {
+          "title": "Schema Version",
+          "type": "integer"
+        },
+        "seq": {
+          "title": "Seq",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "event_id",
+        "seq",
+        "kind",
+        "schema_version",
+        "payload",
+        "privacy_level",
+        "occurred_at"
+      ],
+      "title": "RunEventView",
+      "type": "object"
+    },
+    "RunView": {
+      "additionalProperties": false,
+      "properties": {
+        "cancel_epoch": {
+          "title": "Cancel Epoch",
+          "type": "integer"
+        },
+        "config_version": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Config Version"
+        },
+        "conversation_id": {
+          "anyOf": [
+            {
+              "format": "uuid",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Conversation Id"
+        },
+        "created_at": {
+          "format": "date-time",
+          "title": "Created At",
+          "type": "string"
+        },
+        "id": {
+          "format": "uuid",
+          "title": "Id",
+          "type": "string"
+        },
+        "job_ids": {
+          "items": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "title": "Job Ids",
+          "type": "array"
+        },
+        "persona_version": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Persona Version"
+        },
+        "plan_ids": {
+          "items": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "title": "Plan Ids",
+          "type": "array"
+        },
+        "privacy_level": {
+          "title": "Privacy Level",
+          "type": "string"
+        },
+        "state_version": {
+          "title": "State Version",
+          "type": "integer"
+        },
+        "status": {
+          "title": "Status",
+          "type": "string"
+        },
+        "updated_at": {
+          "format": "date-time",
+          "title": "Updated At",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "conversation_id",
+        "status",
+        "state_version",
+        "cancel_epoch",
+        "privacy_level",
+        "config_version",
+        "persona_version",
+        "created_at",
+        "updated_at"
+      ],
+      "title": "RunView",
+      "type": "object"
+    },
     "SourceRef": {
       "additionalProperties": false,
       "properties": {
@@ -1945,6 +2092,12 @@
     },
     "OutputIntent": {
       "$ref": "#/$defs/OutputIntent"
+    },
+    "RunEventView": {
+      "$ref": "#/$defs/RunEventView"
+    },
+    "RunView": {
+      "$ref": "#/$defs/RunView"
     }
   },
   "title": "AriaContracts",

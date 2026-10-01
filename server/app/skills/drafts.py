@@ -203,6 +203,8 @@ class SkillDraftAssistant:
         text: str,
         turn_id: UUID | None,
         backend: CompletionBackend,
+        strict: bool = False,
+        source_owner_id: UUID | None = None,
     ) -> SkillDraftView | None:
         """Detect document-bearing requests after a turn and draft a skill."""
         if not _DOC_MARKERS.search(text):
@@ -215,7 +217,12 @@ class SkillDraftAssistant:
             # 提取结果必须逐字出自用户消息，防止模型补全不存在的接口。
             return None
         return await self._propose(
-            source, system_name=system_name, source_kind="harvest", turn_id=turn_id
+            source,
+            system_name=system_name,
+            source_kind="harvest",
+            turn_id=turn_id,
+            strict=strict,
+            source_owner_id=source_owner_id,
         )
 
     async def _extract(self, text: str, *, backend: CompletionBackend) -> tuple[str, str] | None:
@@ -266,6 +273,8 @@ class SkillDraftAssistant:
         system_name: str,
         source_kind: str,
         turn_id: UUID | None,
+        strict: bool = False,
+        source_owner_id: UUID | None = None,
     ) -> SkillDraftView | None:
         try:
             proposal = await self._generator.generate(source, system_name=system_name)
@@ -278,6 +287,8 @@ class SkillDraftAssistant:
             )
             return None
         except Exception:
+            if strict:
+                raise
             logger.warning(
                 "skill draft generation failed system=%s turn=%s",
                 system_name,
@@ -290,6 +301,7 @@ class SkillDraftAssistant:
             system_name=system_name,
             source=source_kind,
             turn_id=str(turn_id) if turn_id is not None else None,
+            source_owner_id=source_owner_id,
         )
 
     @staticmethod

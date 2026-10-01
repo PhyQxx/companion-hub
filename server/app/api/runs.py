@@ -1,0 +1,53 @@
+from typing import Annotated
+from uuid import UUID
+
+from fastapi import APIRouter, Depends, HTTPException, Query
+
+from app.auth import AuthService, ChatPrincipal
+from app.chat import ChatService
+from app.schemas.runs import RunEventView, RunView
+
+from .auth import ChatSessionGuard
+
+
+def create_runs_router(service: ChatService, auth_service: AuthService) -> APIRouter:
+    guard = ChatSessionGuard(auth_service)
+    router = APIRouter(prefix="/api/v1/runs", tags=["runs"])
+
+    @router.get("", response_model=list[RunView])
+    async def list_runs(
+        principal: Annotated[ChatPrincipal, Depends(guard)],
+        before_id: UUID | None = None,
+        limit: Annotated[int, Query(ge=1, le=100)] = 50,
+    ) -> list[RunView]:
+        return await service.runs.list_runs(
+            user_id=principal.user_id, before_id=before_id, limit=limit
+        )
+
+    @router.get("/{run_id}", response_model=RunView)
+    async def get_run(run_id: UUID, principal: Annotated[ChatPrincipal, Depends(guard)]) -> RunView:
+        try:
+            return await service.runs.get(run_id, user_id=principal.user_id)
+        except LookupError as error:
+            raise HTTPException(404, "run not found") from error
+
+    @router.get("/{run_id}/events", response_model=list[RunEventView])
+    async def events(
+        run_id: UUID,
+        principal: Annotated[ChatPrincipal, Depends(guard)],
+        after_seq: Annotated[int, Query(ge=0)] = 0,
+    ) -> list[RunEventView]:
+        try:
+            return await service.runs.events(run_id, user_id=principal.user_id, after_seq=after_seq)
+        except LookupError as error:
+            raise HTTPException(404, "run not found") from error
+
+    @router.post("/{run_id}/cancel", response_model=RunView)
+    async def cancel(run_id: UUID, principal: Annotated[ChatPrincipal, Depends(guard)]) -> RunView:
+        try:
+            await service.cancel_run(run_id, user_id=principal.user_id)
+            return await service.runs.get(run_id, user_id=principal.user_id)
+        except LookupError as error:
+            raise HTTPException(404, "run not found") from error
+
+    return router

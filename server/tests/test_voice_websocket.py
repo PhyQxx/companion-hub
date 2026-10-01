@@ -600,6 +600,7 @@ def test_voice_websocket_limits_turn_context_window(tmp_path: Path) -> None:
             max_context_messages: int | None = None,
             client_location: ClientLocation | None = None,
             llm_route: LLMRoute = LLMRoute.DIALOGUE,
+            client_request_id: str | None = None,
         ) -> PendingTurn:
             self.seen_context_windows.append(max_context_messages)
             assert llm_route is LLMRoute.VOICE
@@ -611,6 +612,7 @@ def test_voice_websocket_limits_turn_context_window(tmp_path: Path) -> None:
                 max_context_messages=max_context_messages,
                 client_location=client_location,
                 llm_route=llm_route,
+                client_request_id=client_request_id,
             )
 
     def spy_factory(

@@ -80,6 +80,7 @@ class GoalTracker:
         text: str,
         privacy_level: PrivacyLevel,
         backend: ExtractionBackend | None = None,
+        strict: bool = False,
     ) -> list[GoalView]:
         if privacy_level is PrivacyLevel.L3 or backend is None or not text.strip():
             return []
@@ -95,9 +96,14 @@ class GoalTracker:
             json_mode=True,
         )
         try:
+            result = await backend.complete(request)
+        except Exception:
+            if strict:
+                raise
+            return []
+        try:
             from app.memory.extraction import _load_json_object
 
-            result = await backend.complete(request)
             payload = _commitment_list_adapter.validate_python(
                 _load_json_object(str(getattr(result, "text", "")))
             )

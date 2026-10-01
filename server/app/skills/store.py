@@ -12,7 +12,11 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 
 from app.db import (
+    ConversationRecord,
     Database,
+    DeletionLedgerRecord,
+    InteractionTurnRecord,
+    MessageRecord,
     SkillDraftRecord,
     SkillRecord,
     SkillRunRecord,
@@ -387,6 +391,7 @@ class SkillStore:
         turn_id: str | None = None,
         target_skill_id: UUID | None = None,
         base_version: int | None = None,
+        source_owner_id: UUID | None = None,
     ) -> SkillDraftView | None:
         """Persist a proposal for admin review; returns None when already pending.
 
@@ -401,6 +406,42 @@ class SkillStore:
         ).hexdigest()
         moment = datetime.now(UTC)
         async with self._database.sessions() as session:
+            if source_owner_id is not None:
+                turn = await session.get(InteractionTurnRecord, UUID(turn_id or ""))
+                if turn is None or turn.state != "completed":
+                    raise ValueError("source_deleted")
+                conversation = await session.scalar(
+                    select(ConversationRecord)
+                    .where(
+                        ConversationRecord.id == turn.conversation_id,
+                        ConversationRecord.user_id == source_owner_id,
+                    )
+                    .with_for_update()
+                )
+                message = await session.get(MessageRecord, turn.input_message_id)
+                deleted = await session.scalar(
+                    select(DeletionLedgerRecord.id)
+                    .where(
+                        DeletionLedgerRecord.entity_kind == "message",
+                        DeletionLedgerRecord.entity_id == str(turn.conversation_id),
+                    )
+                    .limit(1)
+                )
+                if conversation is None or message is None or deleted is not None:
+                    raise ValueError("source_deleted")
+                # Retry after an interrupted receipt must not create another
+                # model-variant proposal for the same source turn and pipeline.
+                prior = await session.scalar(
+                    select(SkillDraftRecord.id)
+                    .where(
+                        SkillDraftRecord.turn_id == turn_id,
+                        SkillDraftRecord.source == source,
+                    )
+                    .limit(1)
+                )
+                if prior is not None:
+                    return None
+
             existing = await session.scalar(
                 select(SkillDraftRecord)
                 .where(SkillDraftRecord.dedupe_key == dedupe_key)

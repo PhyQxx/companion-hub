@@ -60,7 +60,16 @@ class LLMMessage(StrictModel):
         return self
 
 
+class LLMContextPart(StrictModel):
+    source: str
+    content: str
+    protected: bool = True
+    priority: int = 0
+
+
 class CompletionRequest(StrictModel):
+    # Internal composition metadata; providers serialize only messages/tools.
+    context_parts: list[LLMContextPart] = Field(default_factory=list)
     trace_id: UUID
     messages: Annotated[list[LLMMessage], Field(min_length=1, max_length=256)]
     privacy_level: PrivacyLevel
@@ -81,6 +90,7 @@ class ModelUsage(StrictModel):
 
 
 class CompletionResult(StrictModel):
+    context_budget: dict[str, int | str] = Field(default_factory=dict)
     text: str
     provider: TokenName
     model: str
@@ -106,9 +116,7 @@ class ModelEndpoint(StrictModel):
     # 不叠加时 512 token 会被推理耗尽，message.content 恒为空。
     reasoning_overhead_tokens: Annotated[int, Field(ge=0, le=131_072)] = 0
     base_url: AnyHttpUrl
-    secret_ref: Annotated[
-        str, Field(pattern=r"^env:[A-Z][A-Z0-9_]{2,127}$")
-    ] | None = None
+    secret_ref: Annotated[str, Field(pattern=r"^env:[A-Z][A-Z0-9_]{2,127}$")] | None = None
     secret_value: Annotated[str, Field(max_length=1024)] | None = None
     runs_local: bool
     max_privacy_level: PrivacyLevel

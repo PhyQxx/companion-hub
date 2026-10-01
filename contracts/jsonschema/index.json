@@ -10,6 +10,8 @@
     "EndpointCapabilities": "EndpointCapabilities.schema.json",
     "EphemeralSignal": "EphemeralSignal.schema.json",
     "InputEnvelope": "InputEnvelope.schema.json",
-    "OutputIntent": "OutputIntent.schema.json"
+    "OutputIntent": "OutputIntent.schema.json",
+    "RunEventView": "RunEventView.schema.json",
+    "RunView": "RunView.schema.json"
   }
 }

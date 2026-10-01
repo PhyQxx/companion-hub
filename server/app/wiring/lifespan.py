@@ -124,6 +124,9 @@ def _core_modules(deps: LifespanDeps) -> ModuleRegistry:
     async def recover_conversation() -> None:
         if deps.runtime_chat_service is not None:
             await deps.runtime_chat_service.recover_incomplete_turns()
+            start_postcommit = getattr(deps.runtime_chat_service, "start_postcommit_worker", None)
+            if start_postcommit is not None:
+                start_postcommit()
         if deps.turn_coordinator is not None:
             # 重启后把不安全的未完成回合标记为 cancelled，并清理遗留音频/麦克风租约
             recovered_turns = await deps.turn_coordinator.recover_after_restart()

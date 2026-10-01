@@ -13,7 +13,7 @@ from uuid import UUID
 from pydantic import Field, JsonValue
 from sqlalchemy import or_, select
 
-from app.db import ActionPlanRecord, ActionStepRecord, AppUserRecord, Database
+from app.db import ActionPlanRecord, ActionStepRecord, AppUserRecord, Database, TaskRunRecord
 from app.ids import uuid7
 from app.schemas.common import StrictModel, TokenName
 from app.tools import ToolResult
@@ -244,6 +244,7 @@ class ActionPlanService:
         plan_kind: str = "standard",
         source_plan_id: UUID | None = None,
         compensates_step_ids: list[UUID] | None = None,
+        source_turn_id: UUID | None = None,
     ) -> ActionPlanView:
         if not 1 <= len(invocations) <= 10:
             raise ValueError("action plans require between 1 and 10 steps")
@@ -344,6 +345,12 @@ class ActionPlanService:
             )
             if user_exists is None:
                 raise LookupError("active user not found")
+            if source_turn_id is not None:
+                run = await session.get(TaskRunRecord, source_turn_id)
+                if run is not None:
+                    if run.user_id != user_id:
+                        raise PermissionError("task_run_owner_mismatch")
+                    plan.task_run_id = run.id
             session.add(plan)
             session.add_all(step_records)
         view = _plan_view(plan, step_records)
@@ -670,9 +677,7 @@ class ActionPlanService:
                 try:
                     callback(plan_id, user_id)
                 except Exception:
-                    logger.warning(
-                        "plan completion callback failed: %s", plan_id, exc_info=True
-                    )
+                    logger.warning("plan completion callback failed: %s", plan_id, exc_info=True)
         return view
 
     async def _claim_next_step(

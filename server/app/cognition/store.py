@@ -14,6 +14,7 @@ from app.db import (
     CognitiveGoalRecord,
     ConversationRecord,
     Database,
+    DeletionLedgerRecord,
     MessageRecord,
     ReflectionCandidateRecord,
 )
@@ -124,20 +125,6 @@ class CognitiveStore:
                 message_id = UUID(source_id)
             except ValueError as error:
                 raise ValueError("goal message evidence must be a valid message id") from error
-            async with self.database.sessions() as session:
-                evidence = await session.scalar(
-                    select(MessageRecord.id)
-                    .join(
-                        ConversationRecord,
-                        ConversationRecord.id == MessageRecord.conversation_id,
-                    )
-                    .where(
-                        MessageRecord.id == message_id,
-                        ConversationRecord.user_id == user_id,
-                    )
-                )
-            if evidence is None:
-                raise ValueError("goal message evidence does not belong to the user")
         moment = now or datetime.now(UTC)
         record = CognitiveGoalRecord(
             id=uuid7(),
@@ -153,6 +140,42 @@ class CognitiveStore:
             updated_at=moment,
         )
         async with self.database.sessions.begin() as session:
+            if source_kind == "message":
+                source_conversation_id = await session.scalar(
+                    select(MessageRecord.conversation_id).where(
+                        MessageRecord.id == message_id,
+                    )
+                )
+                conversation = await session.scalar(
+                    select(ConversationRecord)
+                    .where(
+                        ConversationRecord.id == source_conversation_id,
+                        ConversationRecord.user_id == user_id,
+                    )
+                    .with_for_update()
+                )
+                evidence = await session.get(MessageRecord, message_id)
+                deleted = await session.scalar(
+                    select(DeletionLedgerRecord.id)
+                    .where(
+                        DeletionLedgerRecord.entity_kind == "message",
+                        DeletionLedgerRecord.entity_id == str(source_conversation_id),
+                    )
+                    .limit(1)
+                )
+                if conversation is None or evidence is None or deleted is not None:
+                    raise ValueError("goal message evidence does not belong to the user")
+                existing = await session.scalar(
+                    select(CognitiveGoalRecord)
+                    .where(
+                        CognitiveGoalRecord.user_id == user_id,
+                        CognitiveGoalRecord.source_kind == source_kind,
+                        CognitiveGoalRecord.source_id == source_id,
+                    )
+                    .limit(1)
+                )
+                if existing is not None:
+                    return _goal(existing)
             session.add(record)
         return _goal(record)
 

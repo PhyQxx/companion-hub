@@ -1121,3 +1121,70 @@ def test_cached_router_builder_reuses_by_config_fingerprint() -> None:
     )
     builder(another)
     assert len(builder._cache) == 2
+
+
+@pytest.mark.parametrize("streaming", [False, True])
+async def test_fallback_refits_original_context_for_each_endpoint(streaming: bool) -> None:
+    from app.llm.contracts import LLMMessage
+
+    cloud, private = FakeProvider("cloud", fail=True), FakeProvider("private")
+    endpoints = {
+        "cloud": endpoint(local=False).model_copy(update={"max_context_tokens": 2000}),
+        "private": endpoint(local=True, max_privacy="L2").model_copy(
+            update={"max_context_tokens": 10000}
+        ),
+    }
+    backend = LLMRouter(
+        endpoints=endpoints,
+        routes={
+            LLMRoute.DIALOGUE: RoutePolicy(primary="cloud", fallbacks=["private"]),
+            LLMRoute.UTILITY: RoutePolicy(primary="cloud"),
+            LLMRoute.PRIVATE: RoutePolicy(primary="private"),
+        },
+        providers={"cloud": cloud, "private": private},
+    )
+    original = request("L1").model_copy(
+        update={
+            "messages": [
+                LLMMessage(role="system", content="policy"),
+                LLMMessage(role="user", content="old" * 1000),
+                LLMMessage(role="assistant", content="old reply"),
+                LLMMessage(role="user", content="current"),
+            ]
+        }
+    )
+
+    async def delta(value: str) -> None:
+        pass
+
+    result = (
+        await backend.stream(original, delta) if streaming else await backend.complete(original)
+    )
+    assert len(cloud.requests[0].messages) == 2
+    assert private.requests[0].messages == original.messages
+    assert result.context_budget["excluded_messages"] == 0
+
+
+@pytest.mark.parametrize("streaming", [False, True])
+async def test_oversized_context_never_calls_provider(streaming: bool) -> None:
+    from app.llm.contracts import LLMMessage
+
+    cloud = FakeProvider("cloud")
+    backend = router(cloud=cloud)
+    original = request("L1").model_copy(
+        update={
+            "messages": [
+                LLMMessage(role="user", content="sensitive" * 5000),
+            ]
+        }
+    )
+
+    async def delta(value: str) -> None:
+        pass
+
+    with pytest.raises(LLMRouteExhausted, match="context_window_exceeded"):
+        if streaming:
+            await backend.stream(original, delta)
+        else:
+            await backend.complete(original)
+    assert cloud.requests == []

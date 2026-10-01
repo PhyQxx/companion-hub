@@ -588,7 +588,16 @@ async def test_chat_persists_turn_and_uses_recent_context(
 
     assert [message.role for message in messages] == ["user", "assistant", "user", "assistant"]
     assert [message.seq for message in messages] == [1, 2, 3, 4]
-    assert first.assistant_message.decision_meta == {
+    meta = first.assistant_message.decision_meta
+    assert meta is not None
+    assert meta["context_budget"] == {}
+    assert isinstance(meta["context_sources"], list)
+    assert "hello" not in str(meta["context_sources"])
+    assert {
+        key: value
+        for key, value in meta.items()
+        if key not in {"context_sources", "context_budget", "task_run_id"}
+    } == {
         "schema_version": 1,
         "config_version": 1,
         "persona_version": 0,
@@ -2018,6 +2027,7 @@ async def test_conversation_summary_updates_after_threshold(tmp_path: Path) -> N
             # 未覆盖的尾部由下一次触发补齐
             assert record.summary_until_seq is not None and record.summary_until_seq >= 10
     finally:
+        await service.drain_background_work()
         await database.close()
 
 
@@ -2037,6 +2047,7 @@ async def test_conversation_summary_injected_beyond_context_window(tmp_path: Pat
         assert "【此前对话要点" in system_prompt
         assert "reply from sum-model" in system_prompt
     finally:
+        await service.drain_background_work()
         await database.close()
 
 
@@ -2054,6 +2065,7 @@ async def test_conversation_summary_not_injected_within_window(tmp_path: Path) -
         )
         assert "此前对话要点" not in requests[0].messages[0].content
     finally:
+        await service.drain_background_work()
         await database.close()
 
 
@@ -2320,3 +2332,70 @@ async def test_skill_learning_attributes_correction_to_previous_reply(
         else []
     )
     assert observed[0] == expected
+
+
+async def test_lower_privacy_turn_excludes_private_history_and_summary(tmp_path: Path) -> None:
+    service, database, _ = await _summary_service(tmp_path)
+    try:
+        user = await create_user(database)
+        conversation = await service.create_conversation(user_id=user.id, title="privacy")
+        private = await service.start_turn(
+            conversation.id,
+            user_id=user.id,
+            text="private-history-marker",
+            privacy_level=PrivacyLevel.L2,
+        )
+        await service.cancel_turn(private.generation_id, user_id=user.id)
+        async with database.sessions() as session, session.begin():
+            record = await session.get(ConversationRecord, conversation.id)
+            assert record is not None
+            record.summary_text = "private-summary-marker"
+            record.summary_until_seq = 1
+        public = await service.start_turn(
+            conversation.id,
+            user_id=user.id,
+            text="public question",
+            privacy_level=PrivacyLevel.L1,
+        )
+        contents = " ".join(message.content for message in public.request.messages)
+        assert "private-history-marker" not in contents
+        assert "private-summary-marker" not in contents
+        assert public.context_manifest[-1]["reason"] == "privacy_filtered"
+        await service.cancel_turn(public.generation_id, user_id=user.id)
+    finally:
+        await service.drain_background_work()
+        await database.close()
+
+
+async def test_summary_refresh_inherits_privacy_of_previous_summary(tmp_path: Path) -> None:
+    service, database, requests = await _summary_service(tmp_path)
+    try:
+        user = await create_user(database)
+        conversation = await service.create_conversation(user_id=user.id, title="summary privacy")
+        async with database.sessions() as session, session.begin():
+            record = await session.get(ConversationRecord, conversation.id)
+            assert record is not None
+            record.summary_text = "previous-private-summary"
+            record.summary_until_seq = 1
+            record.last_seq = 15
+            for seq in range(1, 16):
+                session.add(
+                    MessageRecord(
+                        id=uuid7(),
+                        turn_id=uuid7(),
+                        conversation_id=conversation.id,
+                        seq=seq,
+                        role="user",
+                        content=f"message-{seq}",
+                        privacy_level="L2" if seq == 1 else "L1",
+                        created_at=datetime.now(UTC),
+                    )
+                )
+        await service._update_conversation_summary(conversation.id)
+        assert requests
+        assert requests[0].privacy_level == PrivacyLevel.L2
+        assert requests[0].route == LLMRoute.PRIVATE
+        assert "previous-private-summary" in requests[0].messages[-1].content
+    finally:
+        await service.drain_background_work()
+        await database.close()

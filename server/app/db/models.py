@@ -835,6 +835,11 @@ class InteractionTurnRecord(Base):
         Index("ix_turn_conversation_state", "conversation_id", "state", "created_at"),
     )
 
+    task_run_id: Mapped[UUID | None] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey("task_run.id", ondelete="SET NULL"),
+        index=True,
+    )
     id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True)
     conversation_id: Mapped[UUID] = mapped_column(
         Uuid(as_uuid=True), ForeignKey("conversation.id", ondelete="RESTRICT"), nullable=False
@@ -871,6 +876,11 @@ class ActionPlanRecord(Base):
         Index("ix_action_plan_user_status", "user_id", "status", "created_at"),
     )
 
+    task_run_id: Mapped[UUID | None] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey("task_run.id", ondelete="SET NULL"),
+        index=True,
+    )
     id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True)
     user_id: Mapped[UUID] = mapped_column(
         Uuid(as_uuid=True), ForeignKey("app_user.id", ondelete="CASCADE"), nullable=False
@@ -1063,6 +1073,11 @@ class JobRecord(Base):
         Index("ix_job_idempotency", "idempotency_key"),
     )
 
+    task_run_id: Mapped[UUID | None] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey("task_run.id", ondelete="SET NULL"),
+        index=True,
+    )
     id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True)
     kind: Mapped[str] = mapped_column(String(64), nullable=False)
     owner: Mapped[str] = mapped_column(String(160), nullable=False, server_default="local-user")
@@ -2076,3 +2091,51 @@ class CalendarOAuthTokenRecord(Base):
     obtained_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
+
+
+class TaskRunRecord(Base):
+    __tablename__ = "task_run"
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('accepted','running','succeeded','failed','cancelled')",
+            name="ck_task_run_status",
+        ),
+        CheckConstraint("privacy_level IN ('L0','L1','L2')", name="ck_task_run_privacy"),
+        UniqueConstraint("user_id", "request_id", name="uq_task_run_user_request"),
+        Index("ix_task_run_user_created", "user_id", "created_at"),
+    )
+    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True)
+    user_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
+    conversation_id: Mapped[UUID | None] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("conversation.id", ondelete="CASCADE")
+    )
+    parent_run_id: Mapped[UUID | None] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("task_run.id", ondelete="SET NULL")
+    )
+    request_id: Mapped[str | None] = mapped_column(String(160))
+    contract: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    status: Mapped[str] = mapped_column(String(16), nullable=False)
+    state_version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    event_seq: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    cancel_epoch: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    privacy_level: Mapped[str] = mapped_column(String(2), nullable=False)
+    config_version: Mapped[int | None] = mapped_column(Integer)
+    persona_version: Mapped[int | None] = mapped_column(Integer)
+    deadline: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class TaskRunEventRecord(Base):
+    __tablename__ = "task_run_event"
+    __table_args__ = (UniqueConstraint("run_id", "seq", name="uq_task_run_event_seq"),)
+    event_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True)
+    run_id: Mapped[UUID] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("task_run.id", ondelete="CASCADE"), nullable=False
+    )
+    seq: Mapped[int] = mapped_column(Integer, nullable=False)
+    kind: Mapped[str] = mapped_column(String(80), nullable=False)
+    schema_version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    payload: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False, default=dict)
+    privacy_level: Mapped[str] = mapped_column(String(2), nullable=False)
+    occurred_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)

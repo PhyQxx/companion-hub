@@ -39,12 +39,8 @@ class TestJobEngine:
         assert fetched.id == job.id
 
     async def test_idempotency(self, engine: JobEngine) -> None:
-        job1 = await engine.submit(
-            "test", {}, idempotency_key="unique-key-001"
-        )
-        job2 = await engine.submit(
-            "test", {}, idempotency_key="unique-key-001"
-        )
+        job1 = await engine.submit("test", {}, idempotency_key="unique-key-001")
+        job2 = await engine.submit("test", {}, idempotency_key="unique-key-001")
         assert job1.id == job2.id
 
     async def test_claim(self, engine: JobEngine) -> None:
@@ -199,3 +195,56 @@ class TestJobEngine:
         assert after is not None
         assert after.status == "queued"
         assert after.lease_owner is None
+
+
+async def test_old_claim_cannot_overwrite_new_worker_result(engine: JobEngine) -> None:
+    from datetime import UTC, datetime, timedelta
+
+    from sqlalchemy import update
+
+    from app.db import JobRecord
+
+    submitted = await engine.submit("test", {}, max_attempts=3)
+    old = await engine.claim("old")
+    assert old is not None
+    old_step = await engine.start_step(old.id, "derive")
+    async with engine._database.sessions.begin() as session:
+        await session.execute(
+            update(JobRecord)
+            .where(JobRecord.id == old.id)
+            .values(
+                lease_expires_at=datetime.now(UTC) - timedelta(seconds=1),
+            )
+        )
+    await engine.expire_stale_leases()
+    new = await engine.claim("new")
+    assert new is not None and new.attempts > old.attempts
+    assert not await engine.succeed(submitted.id, worker_id="old", claim_version=old.attempts)
+    assert not await engine.cancel(submitted.id, worker_id="old", claim_version=old.attempts)
+    assert not await engine.cancel(submitted.id, worker_id="new", claim_version=old.attempts)
+    await engine.fail_step(old_step, error_code="late_failure")
+    current = await engine.get(submitted.id)
+    assert current is not None and current.status == "admitted"
+    assert await engine.succeed(submitted.id, worker_id="new", claim_version=new.attempts)
+
+
+async def test_expired_cancellation_is_never_requeued(engine: JobEngine) -> None:
+    from sqlalchemy import update
+
+    from app.db import JobRecord
+
+    job = await engine.submit("test", {})
+    await engine.claim("worker")
+    assert await engine.cancel(job.id)
+    async with engine._database.sessions.begin() as session:
+        await session.execute(
+            update(JobRecord)
+            .where(JobRecord.id == job.id)
+            .values(
+                lease_expires_at=datetime.now(UTC) - timedelta(seconds=1),
+            )
+        )
+    await engine.expire_stale_leases()
+    current = await engine.get(job.id)
+    assert current is not None and current.status == "cancelled"
+    assert await engine.claim("other") is None

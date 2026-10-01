@@ -1690,3 +1690,63 @@ async def test_turn_extractor_ignores_unit_mention_unrelated_to_body() -> None:
         privacy_level=PrivacyLevel.L1,
     )
     assert [item for item in candidates if item.fact_key == "profile.height"] == []
+
+
+async def test_context_reference_survives_access_but_rejects_deleted_or_foreign_source(
+    database: Database,
+    store: MemoryStore,
+    user: AppUserRecord,
+) -> None:
+    from app.chat.context_sources import (
+        ContextSourceInvalidated,
+        validate_references,
+        version_stamp,
+    )
+    from app.harness.context import ContextReference
+
+    entry = await store.add(candidate("exact fact"), user_id=user.id)
+    reference = ContextReference(
+        kind="memory",
+        source_id=str(entry.id),
+        owner_id=str(user.id),
+        privacy_level=entry.privacy_level,
+        version=version_stamp(entry.updated_at),
+    )
+    await store.record_access([entry.id])
+    accessed = await store.get(entry.id)
+    assert accessed.updated_at == entry.updated_at
+    assert accessed.access_count == entry.access_count + 1
+    async with database.sessions() as session:
+        await validate_references(session, (reference,), owner_id=user.id, privacy_level="L1")
+        with pytest.raises(ContextSourceInvalidated):
+            await validate_references(session, (reference,), owner_id=uuid7(), privacy_level="L1")
+    await store.hard_delete(entry.id, actor="user")
+    async with database.sessions() as session:
+        with pytest.raises(ContextSourceInvalidated):
+            await validate_references(session, (reference,), owner_id=user.id, privacy_level="L1")
+
+
+async def test_context_reference_rejects_new_revision(
+    database: Database,
+    store: MemoryStore,
+    user: AppUserRecord,
+) -> None:
+    from app.chat.context_sources import (
+        ContextSourceInvalidated,
+        validate_references,
+        version_stamp,
+    )
+    from app.harness.context import ContextReference
+
+    entry = await store.add(candidate("original fact"), user_id=user.id)
+    reference = ContextReference(
+        kind="memory",
+        source_id=str(entry.id),
+        owner_id=str(user.id),
+        privacy_level=entry.privacy_level,
+        version=version_stamp(entry.updated_at),
+    )
+    await store.set_status(entry.id, MemoryStatus.ARCHIVED)
+    async with database.sessions() as session:
+        with pytest.raises(ContextSourceInvalidated):
+            await validate_references(session, (reference,), owner_id=user.id, privacy_level="L1")

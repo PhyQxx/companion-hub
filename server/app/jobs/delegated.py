@@ -117,9 +117,7 @@ class DelegatedJobWorker:
                 )
                 if job is None:
                     with contextlib.suppress(asyncio.TimeoutError):
-                        await asyncio.wait_for(
-                            self._stop.wait(), timeout=self._poll_seconds
-                        )
+                        await asyncio.wait_for(self._stop.wait(), timeout=self._poll_seconds)
                     continue
                 await self._execute(job)
             except asyncio.CancelledError:
@@ -159,9 +157,7 @@ class DelegatedJobWorker:
             await self._engine.confirm_cancelled(job.id, self._worker_id)
             return
         except Exception as error:
-            logger.warning(
-                "delegated job %s (%s) failed", job.id, job.kind, exc_info=True
-            )
+            logger.warning("delegated job %s (%s) failed", job.id, job.kind, exc_info=True)
             await self._engine.fail_step(
                 step_id,
                 error_code="handler_error",
@@ -283,9 +279,7 @@ class WebResearchHandler:
         return result.text.strip()[:1_000]
 
 
-async def cancel_turn_delegations(
-    engine: JobEngine, database: Database, turn_id: UUID
-) -> int:
+async def cancel_turn_delegations(engine: JobEngine, database: Database, turn_id: UUID) -> int:
     """取消由指定回合委派的未完结 deleg 任务（取消回合时联动）。
 
     delegate_task 以回合 id 作幂等键并把 turn_id 存入 payload；用户取消
@@ -297,9 +291,7 @@ async def cancel_turn_delegations(
 
     async with database.sessions() as session:
         records = list(
-            await session.scalars(
-                select(JobRecord).where(JobRecord.kind.like("deleg.%"))
-            )
+            await session.scalars(select(JobRecord).where(JobRecord.kind.like("deleg.%")))
         )
     cancelled = 0
     for record in records:
@@ -377,6 +369,8 @@ class DelegateTaskTool:
             kind,
             payload,
             idempotency_key=f"deleg-{context.turn_id}",
+            owner=str(context.user_id),
+            source_turn_id=context.turn_id,
             resource_class=DELEG_RESOURCE_CLASS,
             max_attempts=2,
         )

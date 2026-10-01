@@ -76,6 +76,8 @@ class SkillRevisionLearner:
         turn_id: UUID | None,
         runs: Sequence[TurnSkillRun],
         backend: CompletionBackend,
+        strict: bool = False,
+        source_owner_id: UUID | None = None,
     ) -> SkillDraftView | None:
         """纠正 → 修订草稿；任何门槛不满足返回 None（静默，不影响回合）。"""
         if not runs or not _CORRECTION_MARKERS.search(text):
@@ -132,6 +134,8 @@ class SkillRevisionLearner:
             )
             return None
         except Exception:
+            if strict:
+                raise
             logger.warning(
                 "skill revision generation failed skill=%s turn=%s",
                 skill_name,
@@ -146,6 +150,7 @@ class SkillRevisionLearner:
             turn_id=str(turn_id) if turn_id is not None else None,
             target_skill_id=target.id,
             base_version=target.version,
+            source_owner_id=source_owner_id,
         )
         if draft is None:
             return None

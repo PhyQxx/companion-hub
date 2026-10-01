@@ -62,6 +62,8 @@
   "skill_suggestion",
   "skill_version",
   "task_item",
+  "task_run",
+  "task_run_event",
   "timeline_event",
   "ui_preference",
   "ui_theme",

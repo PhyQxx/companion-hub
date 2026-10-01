@@ -119,6 +119,7 @@ class ProposeActionTool:
         try:
             plan = await plan_service.create_plan(
                 user_id=context.user_id,
+                source_turn_id=context.turn_id,
                 invocations=[_invocation(args.action_id, dict(args.arguments))],
                 title=f"提议：{registered.definition.label}"[:240],
                 idempotency_key=f"propose-{context.turn_id}-{args.action_id}",

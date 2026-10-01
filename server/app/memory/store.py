@@ -5,6 +5,7 @@ PostgreSQL 的 vector 列（迁移 0009，双写），检索按方言自动选�
 pgvector ANN 或进程内余弦。删除操作只经 hard_delete* 入口进入，
 保证台账语义一致；重放工具走无台账的 purge_* 变体避免台账自我膨胀。
 """
+
 from __future__ import annotations
 
 import hashlib
@@ -18,10 +19,12 @@ from sqlalchemy import Select, bindparam, delete, func, or_, select, text, updat
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db import (
+    ConversationRecord,
     Database,
     DeletionLedgerRecord,
     MemoryRecord,
     MemorySourceRecord,
+    MessageRecord,
 )
 from app.schemas.common import PrivacyLevel
 
@@ -63,9 +66,7 @@ def _list_filter(
     if user_id is not None:
         query = query.where(MemoryRecord.user_id == user_id)
     if subject_kind is not None:
-        query = query.where(
-            MemoryRecord.subject_kind == MemorySubjectKind(subject_kind).value
-        )
+        query = query.where(MemoryRecord.subject_kind == MemorySubjectKind(subject_kind).value)
     if subject_key is not None:
         query = query.where(MemoryRecord.subject_key == subject_key)
     if fact_key is not None:
@@ -122,6 +123,7 @@ class MemoryStore:
         actor: str = "system",
         status: MemoryStatus = MemoryStatus.ACTIVE,
         conflict_with: int | None = None,
+        enforce_sources: bool = False,
     ) -> MemoryEntry:
         privacy = PrivacyLevel(candidate.privacy_level)
         # L3（原始传感器遥测）在任何路径下都禁止成为持久记忆
@@ -130,6 +132,35 @@ class MemoryStore:
         vector = (await self._embedding_provider.embed([candidate.content]))[0]
         now = datetime.now(UTC)
         async with self._database.sessions.begin() as session:
+            if enforce_sources:
+                await self._guard_sources(session, candidate.sources, user_id=user_id)
+                # A replay of the same extracted fact/source cannot create a
+                # second episodic record or count as independent support.
+                message_ids = [
+                    source.source_id
+                    for source in candidate.sources
+                    if source.source_kind == "message"
+                ]
+                if message_ids:
+                    existing = await session.scalar(
+                        select(MemoryRecord)
+                        .join(
+                            MemorySourceRecord,
+                            MemorySourceRecord.memory_id == MemoryRecord.id,
+                        )
+                        .where(
+                            MemoryRecord.user_id == user_id,
+                            MemoryRecord.content == candidate.content,
+                            MemoryRecord.type == str(candidate.type),
+                            MemoryRecord.subject_key == candidate.subject_key,
+                            MemorySourceRecord.source_kind == "message",
+                            MemorySourceRecord.source_id.in_(message_ids),
+                        )
+                        .limit(1)
+                    )
+                    if existing is not None:
+                        return self._entry(existing)
+
             record = MemoryRecord(
                 user_id=user_id,
                 subject_kind=MemorySubjectKind(candidate.subject_kind).value,
@@ -260,9 +291,7 @@ class MemoryStore:
     ) -> list[RetrievalCandidate]:
         query = select(MemoryRecord)
         if subject_kind is not None:
-            query = query.where(
-                MemoryRecord.subject_kind == MemorySubjectKind(subject_kind).value
-            )
+            query = query.where(MemoryRecord.subject_kind == MemorySubjectKind(subject_kind).value)
         if subject_key is not None:
             query = query.where(MemoryRecord.subject_key == subject_key)
         if subject_scopes:
@@ -319,8 +348,7 @@ class MemoryStore:
             (MemoryRecord.valid_to.is_(None) | (MemoryRecord.valid_to > valid_at)),
             or_(
                 *[
-                    (MemoryRecord.subject_kind == kind.value)
-                    & (MemoryRecord.subject_key == key)
+                    (MemoryRecord.subject_kind == kind.value) & (MemoryRecord.subject_key == key)
                     for kind, key in subject_scopes
                 ]
             ),
@@ -417,12 +445,27 @@ class MemoryStore:
         *,
         sources: Sequence[MemorySourceRef],
         importance_step: float,
+        source_owner_id: UUID | None = None,
     ) -> MemoryEntry:
         now = datetime.now(UTC)
         async with self._database.sessions.begin() as session:
+            if source_owner_id is not None:
+                await self._guard_sources(session, sources, user_id=source_owner_id)
+
             record = await session.get(MemoryRecord, memory_id, with_for_update=True)
             if record is None:
                 raise LookupError(f"memory not found: {memory_id}")
+            if source_owner_id is not None:
+                old_sources = {
+                    (row.source_kind, row.source_id)
+                    for row in await session.scalars(
+                        select(MemorySourceRecord).where(MemorySourceRecord.memory_id == memory_id)
+                    )
+                }
+                if all(
+                    (str(source.source_kind), source.source_id) in old_sources for source in sources
+                ):
+                    return self._entry(record)
             record.importance = min(1.0, record.importance + importance_step)
             record.access_count += 1
             record.last_accessed_at = now
@@ -435,16 +478,17 @@ class MemoryStore:
             return
         now = datetime.now(UTC)
         async with self._database.sessions.begin() as session:
-            records = list(
-                await session.scalars(
-                    select(MemoryRecord)
-                    .where(MemoryRecord.id.in_(list(memory_ids)))
-                    .with_for_update()
+            # Access telemetry must not advance the content revision used by
+            # context snapshots; explicit assignment suppresses ORM onupdate.
+            await session.execute(
+                update(MemoryRecord)
+                .where(MemoryRecord.id.in_(list(memory_ids)))
+                .values(
+                    access_count=MemoryRecord.access_count + 1,
+                    last_accessed_at=now,
+                    updated_at=MemoryRecord.updated_at,
                 )
             )
-            for record in records:
-                record.access_count += 1
-                record.last_accessed_at = now
 
     async def set_status(
         self,
@@ -552,9 +596,7 @@ class MemoryStore:
             old.updated_at = now
         return self._entry(replacement)
 
-    async def resolve_conflict(
-        self, memory_id: int, *, adopt: bool, actor: str
-    ) -> MemoryEntry:
+    async def resolve_conflict(self, memory_id: int, *, adopt: bool, actor: str) -> MemoryEntry:
         now = datetime.now(UTC)
         async with self._database.sessions.begin() as session:
             record = await session.get(MemoryRecord, memory_id, with_for_update=True)
@@ -608,9 +650,7 @@ class MemoryStore:
             deleted_ids=tuple(deleted_ids),
         )
 
-    async def memory_ids_by_source(
-        self, source_kind: str, source_ids: Sequence[str]
-    ) -> list[int]:
+    async def memory_ids_by_source(self, source_kind: str, source_ids: Sequence[str]) -> list[int]:
         source_id_list = list(source_ids)
         if not source_id_list:
             return []
@@ -642,17 +682,33 @@ class MemoryStore:
         即使该会话从未沉淀过记忆也会留下一行，保证备份重放句柄稳定。
         """
         now = datetime.now(UTC)
-        seed_ids = await self.memory_ids_by_source(source_kind, source_ids)
         async with self._database.sessions.begin() as session:
-            deleted_ids = (
-                await self._collect_lineage_ids(session, seed_ids) if seed_ids else []
+            if entity_kind == "message":
+                try:
+                    conversation_id = UUID(entity_id)
+                except ValueError:
+                    conversation_id = None
+                if conversation_id is not None:
+                    await session.scalar(
+                        select(ConversationRecord.id)
+                        .where(ConversationRecord.id == conversation_id)
+                        .with_for_update()
+                    )
+            seed_ids = list(
+                await session.scalars(
+                    select(MemorySourceRecord.memory_id)
+                    .where(
+                        MemorySourceRecord.source_kind == source_kind,
+                        MemorySourceRecord.source_id.in_(list(source_ids)),
+                    )
+                    .distinct()
+                )
             )
+            deleted_ids = await self._collect_lineage_ids(session, seed_ids) if seed_ids else []
             if deleted_ids:
                 await self._purge_memory_ids(session, deleted_ids)
             if not deleted_ids and not always_record:
-                return DeletionReceipt(
-                    ledger_id=0, entity_id=entity_id, deleted_ids=()
-                )
+                return DeletionReceipt(ledger_id=0, entity_id=entity_id, deleted_ids=())
             ledger_id = await self._record_ledger(
                 session, entity_kind, entity_id, deleted_ids, actor, reason, now
             )
@@ -699,9 +755,7 @@ class MemoryStore:
             return [
                 row
                 for row in await session.scalars(
-                    select(MemoryRecord.id).where(
-                        MemoryRecord.id.in_(list(memory_ids))
-                    )
+                    select(MemoryRecord.id).where(MemoryRecord.id.in_(list(memory_ids)))
                 )
             ]
 
@@ -733,8 +787,7 @@ class MemoryStore:
     async def count_deletion_ledger(self) -> int:
         async with self._database.sessions() as session:
             return int(
-                await session.scalar(select(func.count()).select_from(DeletionLedgerRecord))
-                or 0
+                await session.scalar(select(func.count()).select_from(DeletionLedgerRecord)) or 0
             )
 
     async def _collect_lineage_ids(
@@ -765,9 +818,7 @@ class MemoryStore:
             frontier = successors
         return sorted(related)
 
-    async def _purge_memory_ids(
-        self, session: AsyncSession, deleted_ids: Sequence[int]
-    ) -> None:
+    async def _purge_memory_ids(self, session: AsyncSession, deleted_ids: Sequence[int]) -> None:
         """物理删除记忆行：自身来源、衍生链接、冲突指针与行本体。
 
         注意必须显式删除 memory_source 行：sqlite 测试环境不强制外键
@@ -788,9 +839,7 @@ class MemoryStore:
             .where(MemoryRecord.conflict_with.in_(deleted_ids))
             .values(conflict_with=None)
         )
-        await session.execute(
-            delete(MemoryRecord).where(MemoryRecord.id.in_(deleted_ids))
-        )
+        await session.execute(delete(MemoryRecord).where(MemoryRecord.id.in_(deleted_ids)))
 
     @staticmethod
     async def _record_ledger(
@@ -848,6 +897,59 @@ class MemoryStore:
             text("UPDATE memory SET embedding_vec = CAST(:vec AS vector) WHERE id = :mid"),
             {"vec": _vector_literal(vector), "mid": memory_id},
         )
+
+    async def _guard_sources(
+        self,
+        session: AsyncSession,
+        sources: Sequence[MemorySourceRef],
+        *,
+        user_id: UUID,
+    ) -> None:
+        message_ids = [
+            UUID(source.source_id) for source in sources if source.source_kind == "message"
+        ]
+        if not message_ids:
+            raise ValueError("durable_turn_requires_message_sources")
+        conversation_ids = list(
+            await session.scalars(
+                select(MessageRecord.conversation_id)
+                .where(MessageRecord.id.in_(message_ids))
+                .distinct()
+            )
+        )
+        conversations = list(
+            await session.scalars(
+                select(ConversationRecord)
+                .where(
+                    ConversationRecord.id.in_(conversation_ids),
+                    ConversationRecord.user_id == user_id,
+                )
+                .order_by(ConversationRecord.id)
+                .with_for_update()
+            )
+        )
+        if len(conversations) != len(conversation_ids):
+            raise ValueError("source_owner_mismatch")
+        live_ids = set(
+            await session.scalars(
+                select(MessageRecord.id).where(
+                    MessageRecord.id.in_(message_ids),
+                    MessageRecord.conversation_id.in_(conversation_ids),
+                )
+            )
+        )
+        if live_ids != set(message_ids):
+            raise ValueError("source_deleted")
+        deleted = await session.scalar(
+            select(DeletionLedgerRecord.id)
+            .where(
+                DeletionLedgerRecord.entity_kind == "message",
+                DeletionLedgerRecord.entity_id.in_([str(item) for item in conversation_ids]),
+            )
+            .limit(1)
+        )
+        if deleted is not None:
+            raise ValueError("source_deleted")
 
     async def _write_sources(
         self,
