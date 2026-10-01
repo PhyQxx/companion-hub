@@ -338,6 +338,15 @@ export type SignalId = string;
 export type AdapterId1 = string;
 export type AdapterInstanceId2 = string;
 export type EndpointId3 = string;
+export type Kind = string;
+export type SourceId = string;
+export type EvidenceRefs = EvidenceRef[];
+export type ExecutionStatus = "pending" | "running" | "succeeded" | "failed" | "cancelled" | "unknown_outcome";
+export type ReasonCode2 = string | null;
+export type RetryClass = "safe_read" | "manual_reconcile" | "never";
+export type SideEffectState = "none" | "not_started" | "submitted" | "confirmed" | "unknown";
+export type ValidationLevel = "V0" | "V1" | "V2" | "V3" | "V4";
+export type ValidationStatus = "unverified" | "passed" | "inconclusive";
 export type CausationId = string | null;
 /**
  * @minItems 1
@@ -357,7 +366,7 @@ export type Type14 = "asset_ref";
 export type ConversationId = string | null;
 export type CorrelationId = string;
 export type EventId = string;
-export type Kind = string;
+export type Kind1 = string;
 export type OccurredAt2 = string;
 export type Priority = "low" | "normal" | "high" | "critical";
 export type ProtoVersion = 1;
@@ -508,11 +517,14 @@ export type Prefer =
 export type TurnId1 = string | null;
 export type UserId1 = string;
 export type EventId1 = string;
-export type Kind1 = string;
+export type Kind2 = string;
 export type OccurredAt3 = string;
 export type PrivacyLevel2 = string;
 export type SchemaVersion2 = number;
 export type Seq = number;
+export type PlanId = string;
+export type StepId = string;
+export type ActionOutcomes = RunActionOutcome[];
 export type CancelEpoch = number;
 export type ConfigVersion = number | null;
 export type ConversationId2 = string | null;
@@ -530,6 +542,11 @@ export type UpdatedAt = string;
  * via the `definition` "Priority".
  */
 export type Priority2 = "low" | "normal" | "high" | "critical";
+/**
+ * This interface was referenced by `AriaContracts`'s JSON-Schema
+ * via the `definition` "ValidationLevel".
+ */
+export type ValidationLevel1 = "V0" | "V1" | "V2" | "V3" | "V4";
 
 export interface AriaContracts {
   AdapterHealth?: AdapterHealth;
@@ -539,6 +556,7 @@ export interface AriaContracts {
   DeliveryReceipt?: DeliveryReceipt;
   EndpointCapabilities?: EndpointCapabilities;
   EphemeralSignal?: EphemeralSignal;
+  ExecutionOutcome?: ExecutionOutcome;
   InputEnvelope?: InputEnvelope;
   OutputIntent?: OutputIntent;
   RunEventView?: RunEventView;
@@ -840,6 +858,27 @@ export interface SourceRef {
 }
 /**
  * This interface was referenced by `AriaContracts`'s JSON-Schema
+ * via the `definition` "ExecutionOutcome".
+ */
+export interface ExecutionOutcome {
+  evidence_refs?: EvidenceRefs;
+  execution_status: ExecutionStatus;
+  reason_code?: ReasonCode2;
+  retry_class: RetryClass;
+  side_effect_state: SideEffectState;
+  validation_level?: ValidationLevel;
+  validation_status: ValidationStatus;
+}
+/**
+ * This interface was referenced by `AriaContracts`'s JSON-Schema
+ * via the `definition` "EvidenceRef".
+ */
+export interface EvidenceRef {
+  kind: Kind;
+  source_id: SourceId;
+}
+/**
+ * This interface was referenced by `AriaContracts`'s JSON-Schema
  * via the `definition` "InputEnvelope".
  */
 export interface InputEnvelope {
@@ -849,7 +888,7 @@ export interface InputEnvelope {
   correlation_id: CorrelationId;
   event_id: EventId;
   extensions?: Extensions;
-  kind: Kind;
+  kind: Kind1;
   occurred_at: OccurredAt2;
   priority?: Priority;
   privacy_level: PrivacyLevel;
@@ -951,7 +990,7 @@ export interface TargetSelector {
  */
 export interface RunEventView {
   event_id: EventId1;
-  kind: Kind1;
+  kind: Kind2;
   occurred_at: OccurredAt3;
   payload: Payload;
   privacy_level: PrivacyLevel2;
@@ -966,6 +1005,7 @@ export interface Payload {
  * via the `definition` "RunView".
  */
 export interface RunView {
+  action_outcomes?: ActionOutcomes;
   cancel_epoch: CancelEpoch;
   config_version: ConfigVersion;
   conversation_id: ConversationId2;
@@ -978,4 +1018,13 @@ export interface RunView {
   state_version: StateVersion;
   status: Status;
   updated_at: UpdatedAt;
+}
+/**
+ * This interface was referenced by `AriaContracts`'s JSON-Schema
+ * via the `definition` "RunActionOutcome".
+ */
+export interface RunActionOutcome {
+  outcome: ExecutionOutcome;
+  plan_id: PlanId;
+  step_id: StepId;
 }

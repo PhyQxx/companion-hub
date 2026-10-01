@@ -36,6 +36,7 @@ from app.db import (
     TaskRunRecord,
 )
 from app.harness.context import ContextAssembler, ContextBlocks, ContextReference
+from app.harness.loop import CompletionFrame, LoopOutcome, run_agent_loop
 from app.ids import uuid7
 from app.integrations.mcp.chat_tools import McpChatToolProvider, McpReadToolHandler
 from app.llm import CompletionRequest, CompletionResult, LLMMessage, LLMRoute, ToolCall
@@ -650,44 +651,10 @@ class ChatService:
                 )
                 result = await backend.complete(consistency_request)
             else:
-                # 有界工具循环（docs/09 §1 BTL）：每轮执行一组调用（BTL-02：
-                # 只读安全集内可并行，含写动作的组合拒绝执行让模型自我修正）；
-                # 未到最后轮次的跟进补全保留工具目录（tool_choice=auto）
-                # 允许模型链式调用与自我修正，最后一轮强制 tool_choice=none
-                # 收束为纯文本。预览类工具（mail_send 回执）保持确定性直答。
-                request = pending.request
-                result = await backend.complete(request)
-                result = absorb_text_tool_calls(request, result)
-                rounds_left = pending.config.tools.max_tool_rounds
-                while result.tool_calls and rounds_left > 0:
-                    rounds_left -= 1
-                    executions = await self._execute_tool_call(pending, result.tool_calls)
-                    tool_executions = (*tool_executions, *executions)
-                    request = self._tool_followup_request(
-                        request,
-                        result,
-                        executions,
-                        allow_followup_tools=rounds_left > 0,
-                    )
-                    direct_reply = (
-                        _render_mail_send_receipt(executions[0].result)
-                        if len(executions) == 1
-                        else None
-                    )
-                    if direct_reply is not None:
-                        result = result.model_copy(
-                            update={
-                                "text": direct_reply,
-                                "tool_calls": [],
-                                "finish_reason": "stop",
-                            }
-                        )
-                        break
-                    if pending.generation_id in self._cancelled_generations:
-                        raise TurnCancelled("generation_cancelled")
-                    result = await backend.complete(request)
-                    result = absorb_text_tool_calls(request, result)
-                consistency_request = request
+                outcome = await self._run_agent_loop(pending, backend)
+                result = outcome.result
+                tool_executions = outcome.executions
+                consistency_request = outcome.request
             consistency = await self._memory_consistency_guard.enforce(
                 result=result,
                 request=consistency_request,
@@ -1321,6 +1288,7 @@ class ChatService:
 
         async def guarded_delta(delta: str) -> None:
             nonlocal emitted
+            self._check_cancelled(pending)
             if not emitted:
                 await self._transition(pending.turn_id, {"thinking"}, "streaming")
                 emitted = True
@@ -1332,6 +1300,7 @@ class ChatService:
 
         async def filtered_delta(delta: str) -> None:
             nonlocal emitted
+            self._check_cancelled(pending)
             for visible in stream_filter.feed(delta):
                 if buffer_for_consistency:
                     if not emitted:
@@ -1389,99 +1358,16 @@ class ChatService:
                     pending.request, deterministic_call, execution
                 )
                 result = await backend.stream(consistency_request, filtered_delta)
-            elif pending.request.tools:
-                # 有界工具循环（docs/09 §1 BTL）：带工具的补全先缓冲——中间
-                # 轮次可能继续调用工具，其前导文本按 v1 语义丢弃；确定是
-                # 最后一轮（模型不再调用或轮次耗尽）后才对前端流式输出。
-                def make_buffer() -> tuple[list[str], Callable[[str], Awaitable[None]]]:
-                    chunks: list[str] = []
-
-                    async def buffer(delta: str) -> None:
-                        if delta:
-                            chunks.append(delta)
-
-                    return chunks, buffer
-
-                initial_chunks, buffer_delta = make_buffer()
-                request = pending.request
-                rounds_left = pending.config.tools.max_tool_rounds
-                result = await backend.stream(request, buffer_delta)
-                result = absorb_text_tool_calls(request, result)
-                while result.tool_calls and rounds_left > 0:
-                    rounds_left -= 1
-                    if on_tool_event is not None:
-                        for call in result.tool_calls:
-                            await on_tool_event(
-                                {
-                                    "type": "tool.started",
-                                    "tool": call.function.name,
-                                    "label": _tool_label(call.function.name),
-                                }
-                            )
-                    executions = await self._execute_tool_call(pending, result.tool_calls)
-                    if on_tool_event is not None:
-                        for execution in executions:
-                            await on_tool_event(
-                                {
-                                    "type": "tool.finished",
-                                    "tool": execution.result.tool_name,
-                                    "ok": execution.result.ok,
-                                    "latency_ms": round(execution.result.latency_ms, 1),
-                                    "reason_code": execution.result.reason_code,
-                                }
-                            )
-                    tool_executions = (*tool_executions, *executions)
-                    request = self._tool_followup_request(
-                        request,
-                        result,
-                        executions,
-                        allow_followup_tools=rounds_left > 0,
-                    )
-                    if len(executions) == 1 and executions[0].result.tool_name.startswith("pnkx_"):
-                        direct_reply = _render_pnkx_tool_reply(executions[0].result)
-                        await filtered_delta(direct_reply)
-                        result = result.model_copy(
-                            update={
-                                "text": direct_reply,
-                                "tool_calls": [],
-                                "finish_reason": "stop",
-                            }
-                        )
-                        break
-                    mail_receipt = (
-                        _render_mail_send_receipt(executions[0].result)
-                        if len(executions) == 1
-                        else None
-                    )
-                    if mail_receipt is not None:
-                        await filtered_delta(mail_receipt)
-                        result = result.model_copy(
-                            update={
-                                "text": mail_receipt,
-                                "tool_calls": [],
-                                "finish_reason": "stop",
-                            }
-                        )
-                        break
-                    if pending.generation_id in self._cancelled_generations:
-                        raise TurnCancelled("generation_cancelled")
-                    if rounds_left == 0:
-                        result = await backend.stream(request, filtered_delta)
-                        break
-                    round_chunks, round_buffer = make_buffer()
-                    result = await backend.stream(request, round_buffer)
-                    result = absorb_text_tool_calls(request, result)
-                    if not result.tool_calls:
-                        for chunk in round_chunks:
-                            await filtered_delta(chunk)
-                        break
-                    # 模型还想继续调用工具：丢弃本轮前导文本，进入下一轮
-                else:
-                    for chunk in initial_chunks:
-                        await filtered_delta(chunk)
-                consistency_request = request
             else:
-                result = await backend.stream(pending.request, filtered_delta)
+                outcome = await self._run_agent_loop(
+                    pending,
+                    backend,
+                    on_delta=filtered_delta,
+                    on_tool_event=on_tool_event,
+                )
+                result = outcome.result
+                tool_executions = outcome.executions
+                consistency_request = outcome.request
             for visible in stream_filter.finish():
                 if buffer_for_consistency:
                     if not emitted:
@@ -1517,6 +1403,98 @@ class ChatService:
             raise
         finally:
             self._cancelled_generations.discard(pending.generation_id)
+
+    async def _run_agent_loop(
+        self,
+        pending: PendingTurn,
+        backend: CompletionBackend,
+        *,
+        on_delta: Callable[[str], Awaitable[None]] | None = None,
+        on_tool_event: Callable[[dict[str, object]], Awaitable[None]] | None = None,
+    ) -> LoopOutcome[ToolExecution]:
+        async def complete(request: CompletionRequest, final: bool) -> CompletionFrame:
+            await self._validate_context(pending)
+            self._check_cancelled(pending)
+            if on_delta is None:
+                return CompletionFrame(await backend.complete(request))
+            if final:
+                return CompletionFrame(await backend.stream(request, on_delta))
+            chunks: list[str] = []
+
+            async def buffer(delta: str) -> None:
+                if delta:
+                    chunks.append(delta)
+
+            return CompletionFrame(await backend.stream(request, buffer), tuple(chunks))
+
+        async def execute(calls: list[ToolCall]) -> list[ToolExecution]:
+            if on_tool_event is not None:
+                for call in calls:
+                    await on_tool_event(
+                        {
+                            "type": "tool.started",
+                            "tool": call.function.name,
+                            "label": _tool_label(call.function.name),
+                        }
+                    )
+            executions = await self._execute_tool_call(pending, calls)
+            if on_tool_event is not None:
+                for execution in executions:
+                    await on_tool_event(
+                        {
+                            "type": "tool.finished",
+                            "tool": execution.result.tool_name,
+                            "ok": execution.result.ok,
+                            "latency_ms": round(execution.result.latency_ms, 1),
+                            "reason_code": execution.result.reason_code,
+                        }
+                    )
+            return executions
+
+        def followup(
+            request: CompletionRequest,
+            result: CompletionResult,
+            executions: list[ToolExecution],
+            allow_tools: bool,
+        ) -> CompletionRequest:
+            return self._tool_followup_request(
+                request, result, executions, allow_followup_tools=allow_tools
+            )
+
+        def direct_reply(executions: list[ToolExecution]) -> str | None:
+            if len(executions) != 1:
+                return None
+            receipt = executions[0].result
+            # Keep the existing streaming PNKX renderer; ordinary text uses its
+            # model followup. Receipt policy is application-owned, not harness.
+            if on_delta is not None and receipt.tool_name.startswith("pnkx_"):
+                return _render_pnkx_tool_reply(receipt)
+            return _render_mail_send_receipt(receipt)
+
+        def check_cancelled() -> None:
+            self._check_cancelled(pending)
+
+        async def deliver(frame: CompletionFrame) -> None:
+            if on_delta is not None:
+                for chunk in frame.buffered_chunks:
+                    check_cancelled()
+                    await on_delta(chunk)
+
+        return await run_agent_loop(
+            pending.request,
+            max_tool_rounds=pending.config.tools.max_tool_rounds,
+            complete=complete,
+            normalize=absorb_text_tool_calls,
+            execute=execute,
+            followup=followup,
+            direct_reply=direct_reply,
+            check_cancelled=check_cancelled,
+            deliver=deliver,
+        )
+
+    def _check_cancelled(self, pending: PendingTurn) -> None:
+        if pending.generation_id in self._cancelled_generations:
+            raise TurnCancelled("generation_cancelled")
 
     async def _execute_tool_call(
         self,
@@ -1565,6 +1543,17 @@ class ChatService:
         pending: PendingTurn,
         call: ToolCall,
     ) -> ToolExecution:
+        self._check_cancelled(pending)
+        if call.function.name not in pending.tool_names:
+            return ToolExecution(
+                call_id=call.id,
+                result=ToolResult(
+                    ok=False,
+                    tool_name=call.function.name,
+                    reason_code="tool_not_mounted",
+                    latency_ms=0,
+                ),
+            )
         context = ToolContext(
             privacy_level=pending.request.privacy_level,
             user_id=pending.user_id,

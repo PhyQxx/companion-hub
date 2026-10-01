@@ -1422,10 +1422,12 @@ async def _publish_loop_config(store: DatabaseConfigStore, *, max_tool_rounds: i
     await store.publish(draft.version, actor="test")
 
 
+@pytest.mark.parametrize("streaming", [False, True])
 async def test_tool_loop_chains_read_tools_across_rounds(
     database: Database,
     store: DatabaseConfigStore,
     monkeypatch: pytest.MonkeyPatch,
+    streaming: bool,
 ) -> None:
     """多轮循环：中间轮保留工具目录（tool_choice=auto），模型自然收笔后
     中间轮前导文本被丢弃、终答正常流出，全部轮次进 decision_meta。"""
@@ -1447,21 +1449,27 @@ async def test_tool_loop_chains_read_tools_across_rounds(
     async def capture_tool_event(event: dict[str, object]) -> None:
         tool_events.append(event)
 
-    pending = await service.start_turn(
-        conversation.id,
-        user_id=user.id,
-        text="济南天气怎么样，附近有什么超市",
-        privacy_level=PrivacyLevel.L1,
-    )
-    result = await service.run_stream(pending, _append_chat_delta(deltas), capture_tool_event)
+    if streaming:
+        pending = await service.start_turn(
+            conversation.id,
+            user_id=user.id,
+            text="济南天气怎么样，附近有什么超市",
+            privacy_level=PrivacyLevel.L1,
+        )
+        result = await service.run_stream(pending, _append_chat_delta(deltas), capture_tool_event)
+    else:
+        result = await service.send_message(
+            conversation.id,
+            user_id=user.id,
+            text="济南天气怎么样，附近有什么超市",
+            privacy_level=PrivacyLevel.L1,
+        )
 
-    assert deltas == ["济南多云 29 度，附近有超市。"]
-    assert [event["type"] for event in tool_events] == [
-        "tool.started",
-        "tool.finished",
-        "tool.started",
-        "tool.finished",
-    ]
+    assert result.assistant_message.content == "济南多云 29 度，附近有超市。"
+    assert deltas == (["济南多云 29 度，附近有超市。"] if streaming else [])
+    assert [event["type"] for event in tool_events] == (
+        ["tool.started", "tool.finished", "tool.started", "tool.finished"] if streaming else []
+    )
     assert len(backend.requests) == 3
     intermediate = backend.requests[1]
     assert intermediate.tools
@@ -1477,10 +1485,12 @@ async def test_tool_loop_chains_read_tools_across_rounds(
     assert rounds == ["get_weather", "search_nearby"]
 
 
+@pytest.mark.parametrize("streaming", [False, True])
 async def test_tool_loop_stops_at_configured_round_cap(
     database: Database,
     store: DatabaseConfigStore,
     monkeypatch: pytest.MonkeyPatch,
+    streaming: bool,
 ) -> None:
     """轮次耗尽强制收束：最后一次跟进补全移除工具目录并 tool_choice=none，
     模型再想调用也只执行到配置的轮数。"""
@@ -1497,12 +1507,21 @@ async def test_tool_loop_stops_at_configured_round_cap(
     user = await create_user(database)
     conversation = await service.create_conversation(user_id=user.id, title="cap")
 
-    turn = await service.send_message(
-        conversation.id,
-        user_id=user.id,
-        text="济南天气怎么样",
-        privacy_level=PrivacyLevel.L1,
-    )
+    if streaming:
+        pending = await service.start_turn(
+            conversation.id,
+            user_id=user.id,
+            text="济南天气怎么样",
+            privacy_level=PrivacyLevel.L1,
+        )
+        turn = await service.run_stream(pending, _append_chat_delta([]))
+    else:
+        turn = await service.send_message(
+            conversation.id,
+            user_id=user.id,
+            text="济南天气怎么样",
+            privacy_level=PrivacyLevel.L1,
+        )
 
     assert turn.assistant_message.content == "按你给的两条信息，济南今天多云。"
     assert len(backend.requests) == 3
@@ -2399,3 +2418,26 @@ async def test_summary_refresh_inherits_privacy_of_previous_summary(tmp_path: Pa
     finally:
         await service.drain_background_work()
         await database.close()
+
+
+async def test_unmounted_tool_cannot_reach_executor(
+    database: Database, store: DatabaseConfigStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from dataclasses import replace
+
+    def forbidden_runtime(*args: object) -> None:
+        raise AssertionError("unmounted tool reached executor")
+
+    monkeypatch.setattr("app.chat.service.build_query_tool_runtime", forbidden_runtime)
+    service = ChatService(database, store, router_builder=lambda config: FakeRouter("reply", []))
+    user = await create_user(database)
+    conversation = await service.create_conversation(user_id=user.id, title="mount")
+    pending = await service.start_turn(
+        conversation.id, user_id=user.id, text="hello", privacy_level=PrivacyLevel.L1
+    )
+    execution = await service._execute_single_call(
+        replace(pending, tool_names=()),
+        ToolCall(id="unsolicited", function={"name": "get_weather", "arguments": {}}),
+    )
+    assert not execution.result.ok
+    assert execution.result.reason_code == "tool_not_mounted"

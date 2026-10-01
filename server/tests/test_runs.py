@@ -231,3 +231,50 @@ async def test_client_request_id_does_not_restart_accepted_turn(tmp_path: Path) 
     finally:
         await service.drain_background_work()
         await database.close()
+
+
+async def test_run_api_authentication_owner_scope_and_event_cursor(tmp_path: Path) -> None:
+    from fastapi import FastAPI
+    from httpx import ASGITransport, AsyncClient
+
+    from app.api.runs import create_runs_router
+    from app.auth import AuthService
+
+    service, database, _ = await _summary_service(tmp_path)
+    try:
+        auth = AuthService(database)
+        owner = await auth.setup(display_name="owner", password="correct horse battery staple")
+        other = await create_user(database)
+        own = await service.create_conversation(user_id=owner.principal.user_id, title="own")
+        foreign = await service.create_conversation(user_id=other.id, title="foreign")
+        own_turn = await service.send_message(
+            own.id, user_id=owner.principal.user_id, text="hello", privacy_level=PrivacyLevel.L1
+        )
+        foreign_turn = await service.send_message(
+            foreign.id, user_id=other.id, text="hello", privacy_level=PrivacyLevel.L1
+        )
+        app = FastAPI()
+        app.include_router(create_runs_router(service, auth))
+        headers = {"Authorization": f"Bearer {owner.access_token}"}
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            assert (await client.get("/api/v1/runs")).status_code == 401
+            runs = await client.get("/api/v1/runs", headers=headers)
+            assert runs.status_code == 200
+            assert [run["id"] for run in runs.json()] == [str(own_turn.assistant_message.turn_id)]
+            run_id = own_turn.assistant_message.turn_id
+            events = await client.get(f"/api/v1/runs/{run_id}/events?after_seq=2", headers=headers)
+            assert events.status_code == 200
+            assert [event["seq"] for event in events.json()] == [3]
+            other_id = foreign_turn.assistant_message.turn_id
+            assert (
+                await client.get(f"/api/v1/runs/{other_id}", headers=headers)
+            ).status_code == 404
+            assert (
+                await client.post(f"/api/v1/runs/{other_id}/cancel", headers=headers)
+            ).status_code == 404
+            assert (
+                await client.get(f"/api/v1/runs/{other_id}/events", headers=headers)
+            ).status_code == 404
+    finally:
+        await service.drain_background_work()
+        await database.close()

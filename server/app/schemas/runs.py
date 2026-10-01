@@ -4,9 +4,11 @@ from uuid import UUID
 from pydantic import Field
 
 from .common import StrictModel
+from .execution import RunActionOutcome
 
 
 class RunView(StrictModel):
+    action_outcomes: list[RunActionOutcome] = Field(default_factory=list)
     job_ids: list[UUID] = Field(default_factory=list)
     plan_ids: list[UUID] = Field(default_factory=list)
     id: UUID

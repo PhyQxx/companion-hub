@@ -6,9 +6,19 @@ from uuid import UUID
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db import ActionPlanRecord, Database, JobRecord, TaskRunEventRecord, TaskRunRecord
+from app.db import (
+    ActionPlanRecord,
+    ActionStepRecord,
+    Database,
+    JobRecord,
+    TaskRunEventRecord,
+    TaskRunRecord,
+)
 from app.ids import uuid7
+from app.schemas.execution import RunActionOutcome
 from app.schemas.runs import RunEventView, RunView
+
+from .outcomes import action_outcome
 
 _TRANSITIONS = {
     "accepted": {"running", "failed", "cancelled"},
@@ -68,6 +78,22 @@ class RunStore:
             view = self._view(row)
             return view.model_copy(
                 update={
+                    "action_outcomes": [
+                        RunActionOutcome(
+                            plan_id=step.plan_id,
+                            step_id=step.id,
+                            outcome=action_outcome(step),
+                        )
+                        for step in await session.scalars(
+                            select(ActionStepRecord)
+                            .join(ActionPlanRecord, ActionPlanRecord.id == ActionStepRecord.plan_id)
+                            .where(
+                                ActionPlanRecord.task_run_id == run_id,
+                                ActionPlanRecord.user_id == user_id,
+                            )
+                            .order_by(ActionStepRecord.plan_id, ActionStepRecord.position)
+                        )
+                    ],
                     "job_ids": list(
                         await session.scalars(
                             select(JobRecord.id).where(

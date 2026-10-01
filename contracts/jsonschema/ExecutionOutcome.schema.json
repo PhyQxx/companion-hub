@@ -1,0 +1,109 @@
+{
+  "$defs": {
+    "EvidenceRef": {
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "title": "Kind",
+          "type": "string"
+        },
+        "source_id": {
+          "title": "Source Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "source_id"
+      ],
+      "title": "EvidenceRef",
+      "type": "object"
+    },
+    "ValidationLevel": {
+      "enum": [
+        "V0",
+        "V1",
+        "V2",
+        "V3",
+        "V4"
+      ],
+      "title": "ValidationLevel",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "evidence_refs": {
+      "items": {
+        "$ref": "#/$defs/EvidenceRef"
+      },
+      "title": "Evidence Refs",
+      "type": "array"
+    },
+    "execution_status": {
+      "enum": [
+        "pending",
+        "running",
+        "succeeded",
+        "failed",
+        "cancelled",
+        "unknown_outcome"
+      ],
+      "title": "Execution Status",
+      "type": "string"
+    },
+    "reason_code": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Reason Code"
+    },
+    "retry_class": {
+      "enum": [
+        "safe_read",
+        "manual_reconcile",
+        "never"
+      ],
+      "title": "Retry Class",
+      "type": "string"
+    },
+    "side_effect_state": {
+      "enum": [
+        "none",
+        "not_started",
+        "submitted",
+        "confirmed",
+        "unknown"
+      ],
+      "title": "Side Effect State",
+      "type": "string"
+    },
+    "validation_level": {
+      "$ref": "#/$defs/ValidationLevel",
+      "default": "V0"
+    },
+    "validation_status": {
+      "enum": [
+        "unverified",
+        "passed",
+        "inconclusive"
+      ],
+      "title": "Validation Status",
+      "type": "string"
+    }
+  },
+  "required": [
+    "execution_status",
+    "side_effect_state",
+    "validation_status",
+    "retry_class"
+  ],
+  "title": "ExecutionOutcome",
+  "type": "object"
+}

@@ -9,6 +9,7 @@
     "DeliveryReceipt": "DeliveryReceipt.schema.json",
     "EndpointCapabilities": "EndpointCapabilities.schema.json",
     "EphemeralSignal": "EphemeralSignal.schema.json",
+    "ExecutionOutcome": "ExecutionOutcome.schema.json",
     "InputEnvelope": "InputEnvelope.schema.json",
     "OutputIntent": "OutputIntent.schema.json",
     "RunEventView": "RunEventView.schema.json",
