@@ -41,6 +41,7 @@ jobs:
             desktop/pnpm-lock.yaml
             web/pnpm-lock.yaml
       - run: uv sync --dev --locked
+      - run: uv run python server/scripts/check_architecture.py
       - run: uv run ruff check server
       - run: uv run mypy server/app server/tests
       - run: uv run pytest

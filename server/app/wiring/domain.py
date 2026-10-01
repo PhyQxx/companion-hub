@@ -109,6 +109,9 @@ from app.workflows import WorkflowService, WorkflowStore
 from app.workflows.drafts import PlanDistiller, WorkflowDraftStore
 from app.xiaoai_config import XiaoAiConfigMaterializer
 
+from .modules.memory import build_memory
+from .modules.skills import build_skills
+
 
 def _parse_brief_time(raw: str) -> dt_time:
     hour, minute = raw.split(":", 1)
@@ -230,22 +233,18 @@ def assemble_domain(
         dispatcher_enabled = os.getenv("ARIA_RUN_DISPATCHER", "false").lower() == "true"
     worker = None
     mcp_manager = McpManager(runtime_config) if runtime_config is not None else None
-    skill_store = SkillStore(runtime_database) if runtime_database is not None else None
-    skill_connections = (
-        SkillConnectionStore(runtime_database) if runtime_database is not None else None
-    )
-    skill_credentials = (
-        SkillCredentialStore(runtime_database) if runtime_database is not None else None
-    )
-    skill_http_client = (
-        SkillHttpClient(skill_connections, credentials=skill_credentials)
-        if skill_connections is not None
-        else None
-    )
+    skills_module = build_skills(runtime_database, runtime_config)
+    skill_store = skills_module.store
+    skill_connections = skills_module.connections
+    skill_credentials = skills_module.credentials
+    skill_http_client = skills_module.http_client
+    skill_tool_provider = skills_module.tools
+    skill_generator = skills_module.generator
     activity_tracker = ActivityTracker()
-    persona_store = PersonaStore(runtime_database) if runtime_database is not None else None
-    memory_store = MemoryStore(runtime_database) if runtime_database is not None else None
-    timeline_store = TimelineStore(runtime_database) if runtime_database is not None else None
+    memory_module = build_memory(runtime_database)
+    persona_store = memory_module.persona
+    memory_store = memory_module.memory
+    timeline_store = memory_module.timeline
     device_registry = DeviceRegistry(runtime_database) if runtime_database is not None else None
     device_command_store = (
         DeviceCommandStore(runtime_database) if runtime_database is not None else None
@@ -636,16 +635,6 @@ def assemble_domain(
         if runtime_config is not None or (pnkx_base_url and pnkx_integration_token)
         else None
     )
-    skill_tool_provider = (
-        SkillToolProvider(
-            skill_store,
-            connections=skill_connections,
-            http_client=skill_http_client,
-        )
-        if skill_store is not None
-        else None
-    )
-    skill_generator = SkillDraftGenerator(runtime_config) if runtime_config is not None else None
     # 只读网页抓取工具：配置实时读取，挂载与隐私门在 ChatService 内按回合判定
     web_fetch_tool = (
         FetchWebpageTool(lambda: runtime_config.current.config.tools.web_fetch)

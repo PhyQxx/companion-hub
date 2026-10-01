@@ -1,0 +1,121 @@
+{
+  "status": "reviewed A1 reference; chains describe responsibility flow, not a dynamic trace",
+  "paths": [
+    {
+      "name": "chat-context",
+      "chain": [
+        "ChatService.start_turn",
+        "ContextAssembler.assemble",
+        "LLMRouter",
+        "ChatService._commit_turn"
+      ],
+      "regression": "server/tests/test_chat.py::test_chat_persists_turn_and_uses_recent_context"
+    },
+    {
+      "name": "voice-window",
+      "chain": [
+        "VoiceWebSocket",
+        "TurnCoordinator",
+        "ChatService.start_turn",
+        "ContextAssembler.assemble"
+      ],
+      "regression": "server/tests/test_chat.py::test_start_turn_supports_smaller_context_window_for_voice"
+    },
+    {
+      "name": "voice-interrupt",
+      "chain": [
+        "VoiceWebSocket",
+        "TurnCoordinator",
+        "ChatService.cancel_turn",
+        "TTS"
+      ],
+      "regression": "server/tests/test_voice_websocket.py::test_voice_websocket_barge_in_cancels_turn_and_tts"
+    },
+    {
+      "name": "private-profile",
+      "chain": [
+        "MemoryStore",
+        "ChatService._assistant_profile_overrides",
+        "ContextAssembler.assemble",
+        "LLMRouter"
+      ],
+      "regression": "server/tests/test_chat.py::test_l2_assistant_profile_override_never_enters_public_prompt"
+    },
+    {
+      "name": "summary-watermark",
+      "chain": [
+        "ChatService.start_turn",
+        "ContextAssembler.summary_block",
+        "CompletionRequest"
+      ],
+      "regression": "server/tests/test_chat.py::test_conversation_summary_injected_beyond_context_window"
+    },
+    {
+      "name": "bounded-tools",
+      "chain": [
+        "ChatService",
+        "ToolExecutor",
+        "LLMRouter",
+        "ChatService._commit_turn"
+      ],
+      "regression": "server/tests/test_chat.py::test_tool_loop_stops_at_configured_round_cap"
+    },
+    {
+      "name": "private-tool-egress",
+      "chain": [
+        "ToolExecutor",
+        "EgressGuard",
+        "ToolHandler"
+      ],
+      "regression": "server/tests/test_tools.py::test_executor_blocks_l2_before_provider_call"
+    },
+    {
+      "name": "confirmed-plan",
+      "chain": [
+        "ProposeActionTool",
+        "ActionRegistry",
+        "ActionPlanService",
+        "ToolActionRunner"
+      ],
+      "regression": "server/tests/test_action_plan.py::test_plan_requires_confirmation_then_becomes_ready"
+    },
+    {
+      "name": "unknown-write",
+      "chain": [
+        "ActionPlanService",
+        "ToolActionRunner",
+        "ActionResult"
+      ],
+      "regression": "server/tests/test_action_plan.py::test_timeout_becomes_unknown_outcome_without_retry"
+    },
+    {
+      "name": "skill-learning",
+      "chain": [
+        "ChatService._skill_learning_evidence",
+        "SkillRevisionLearner",
+        "SkillStore"
+      ],
+      "regression": "server/tests/test_chat.py::test_skill_learning_attributes_correction_to_previous_reply"
+    },
+    {
+      "name": "workflow-replay",
+      "chain": [
+        "PlanDistiller",
+        "ToolExecutor",
+        "WorkflowDraftStore",
+        "WorkflowService"
+      ],
+      "regression": "server/tests/test_workflow_drafts.py::test_approve_gate_and_workflow_creation"
+    },
+    {
+      "name": "core-shutdown",
+      "chain": [
+        "build_lifespan",
+        "ModuleRegistry",
+        "ChatService.drain_background_work",
+        "SkillHttpClient.close"
+      ],
+      "regression": "server/tests/test_harness_architecture.py::test_lifespan_drains_conversation_before_closing_skill_client"
+    }
+  ]
+}

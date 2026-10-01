@@ -25,13 +25,10 @@ from sqlalchemy import (
     text,
     true,
 )
-from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
+from sqlalchemy.orm import Mapped, mapped_column
 
-BIGINT_PK = BigInteger().with_variant(Integer, "sqlite")
-
-
-class Base(DeclarativeBase):
-    pass
+from .base import BIGINT_PK as BIGINT_PK
+from .base import Base as Base
 
 
 class EventRecord(Base):

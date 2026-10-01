@@ -9,6 +9,7 @@ install:
 	uv sync --dev
 
 lint:
+	uv run python server/scripts/check_architecture.py
 	uv run ruff check server
 	uv run mypy server/app server/tests
 

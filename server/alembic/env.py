@@ -9,7 +9,7 @@ from sqlalchemy.engine import Connection
 from sqlalchemy.ext.asyncio import async_engine_from_config
 
 from alembic import context
-from app.db import Base
+from app.db.registry import registered_metadata
 
 config = context.config
 if config.config_file_name is not None:
@@ -19,7 +19,7 @@ database_url = os.getenv("ARIA_DATABASE_URL")
 if database_url:
     config.set_main_option("sqlalchemy.url", database_url)
 
-target_metadata = Base.metadata
+target_metadata = registered_metadata()
 
 
 def _include_object(object, name, type_, reflected, compare_to):

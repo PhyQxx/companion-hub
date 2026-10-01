@@ -68,7 +68,6 @@ from app.home_assistant import (
     SearchDevicesTool,
 )
 from app.home_scene import HomeSceneListTool, HomeSceneRunTool
-from app.integrations.mcp.chat_tools import McpChatToolProvider
 from app.mail import (
     MailAttachmentStore,
     MailOutboxStore,
@@ -104,6 +103,7 @@ from app.voice import ConfigVoiceSource
 from app.workflows import WorkflowRunTool, WorkflowSaveTool
 
 from .domain import DomainAssembly
+from .modules.conversation import build_conversation
 from .proactive import register_awareness_loops, register_proactive_stack
 
 
@@ -367,27 +367,9 @@ def assemble_runtime(
         if capability_providers
         else None
     )
-    runtime_chat_service = ChatService(
-        runtime_database,
-        runtime_config,
-        persona_store=domain.persona_store,
-        memory_store=domain.memory_store,
-        memory_extractor=domain.memory_extractor,
-        timeline_store=domain.timeline_store,
-        history_recall_service=domain.history_recall,
-        capability_provider=capability_provider,
-        device_tools=device_tools,
-        mcp_tools=(
-            McpChatToolProvider(domain.mcp_manager) if domain.mcp_manager is not None else None
-        ),
-        skill_tools=domain.skill_tool_provider,
-        skill_drafts=domain.skill_draft_assistant,
-        skill_learner=domain.skill_learner,
-        web_fetch=domain.web_fetch_tool,
-        cognitive_cycle=domain.cognitive_cycle,
-        avatar_store=domain.avatar_store,
-        goal_tracker=domain.goal_tracker,
-        action_registry=domain.action_registry,
+    runtime_chat_service = build_conversation(
+        runtime_database, runtime_config, domain=domain,
+        capability_provider=capability_provider, device_tools=device_tools,
     )
     app.state.auth_service = auth_service
     app.state.chat_service = runtime_chat_service

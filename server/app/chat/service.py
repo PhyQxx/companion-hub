@@ -30,6 +30,7 @@ from app.db import (
     InteractionTurnRecord,
     MessageRecord,
 )
+from app.harness.context import ContextAssembler, ContextBlocks
 from app.ids import uuid7
 from app.integrations.mcp.chat_tools import McpChatToolProvider, McpReadToolHandler
 from app.llm import CompletionRequest, CompletionResult, LLMMessage, LLMRoute, ToolCall
@@ -435,6 +436,7 @@ class ChatService:
         self._safety = safety
         # SAFE-01：聊天/语音回合即活动信号（装配后注入）
         self._activity_tracker = None
+        self._context_assembler = ContextAssembler()
         self._memory_consistency_guard = MemoryConsistencyGuard()
         self._memory_retriever = MemoryRetriever(memory_store) if memory_store else None
         self._memory_ingester = (
@@ -1039,49 +1041,32 @@ class ChatService:
             tool_names = (*tool_names, self._web_fetch.name)
             tool_definitions.append(self._web_fetch.definition())
         card_skill_unavailable = _has_pnkx_card_intent(text) and not skill_handlers
-        # CTX：对话超出 20 条窗口且摘要覆盖到窗口之前时注入要点；
-        # 摘要与窗口部分重叠是可接受的冗余（≤500 字）
-        summary_block = ""
-        if (
-            (pending_summary := conversation_summary) is not None
-            and history
-            and history[0].seq > 1
-            and pending_summary[1] >= history[0].seq - 1
-        ):
-            summary_block = (
-                f"【此前对话要点（截至第 {pending_summary[1]} 条消息）】\n{pending_summary[0]}"
-            )
         request = CompletionRequest(
             trace_id=turn_id,
-            messages=[
-                LLMMessage(
-                    role="system",
-                    content=persona.render_system_prompt(profile_overrides=profile_overrides)
-                    + structured_reply_instruction(persona)
-                    + f"\n\n{time_block}"
-                    + f"\n\n{reality_block}"
-                    + (f"\n\n{action_catalog_block}" if action_catalog_block else "")
-                    + (f"\n\n{recent_device_block}" if recent_device_block else "")
-                    + (f"\n\n{memory_block}" if memory_block else "")
-                    + (f"\n\n{screen_activity_block}" if screen_activity_block else "")
-                    + (f"\n\n{browser_activity_block}" if browser_activity_block else "")
-                    + (f"\n\n{history_block}" if history_block else "")
-                    + (f"\n\n{summary_block}" if summary_block else "")
-                    + (f"\n\n{skill_guidance}" if skill_guidance else "")
-                    + (
-                        "\n\n【情侣卡券】本轮没有可用的卡券查询工具。请如实说明暂时无法读取卡券，"
+            messages=self._context_assembler.assemble(
+                system_prompt=persona.render_system_prompt(profile_overrides=profile_overrides),
+                reply_instruction=structured_reply_instruction(persona),
+                history=history,
+                conversation_summary=conversation_summary,
+                blocks=ContextBlocks(
+                    time=time_block,
+                    reality=reality_block,
+                    action_catalog=action_catalog_block,
+                    recent_device=recent_device_block,
+                    memory=memory_block,
+                    screen_activity=screen_activity_block,
+                    browser_activity=browser_activity_block,
+                    history_recall=history_block,
+                    skill_guidance=skill_guidance,
+                    unavailable_capability=(
+                        "【情侣卡券】本轮没有可用的卡券查询工具。请如实说明暂时无法读取卡券，"
                         "需要在技能中心配置并启用对应的 Bearer API 连接，且使用 L1 会话；"
                         "不得改用 PNKX 生活工具或猜测卡券数据。"
                         if card_skill_unavailable
                         else ""
                     ),
                 ),
-                *[
-                    LLMMessage(role=message.role, content=message.content)
-                    for message in history
-                    if message.role in {"user", "assistant"}
-                ],
-            ],
+            ),
             privacy_level=privacy_level,
             route=llm_route,
             temperature=0.7,
