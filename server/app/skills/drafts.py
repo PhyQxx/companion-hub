@@ -18,7 +18,7 @@ import json
 import logging
 import re
 from time import perf_counter
-from typing import Any
+from typing import Any, TypedDict
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -31,6 +31,7 @@ from app.tools.webfetch import FetchWebpageArgs, FetchWebpageTool
 
 from .connections import SkillConnectionError, SkillConnectionStore, SkillHttpClient
 from .generator import MAX_SOURCE_CHARS, CompletionBackend, SkillDraftGenerator
+from .models import SkillApiManifest, SkillOperation
 from .store import SkillDraftView, SkillStore
 
 logger = logging.getLogger(__name__)
@@ -320,8 +321,146 @@ async def verify_skill_draft(
     试跑走与运行时完全相同的连接白名单与认证闸门；结果只记录状态与
     原因码，不落任何响应内容。
     """
+    if draft.target_skill_id is not None:
+        return await _verify_revision(
+            draft, store=store, connections=connections, http_client=http_client
+        )
     ok, reason = await _probe_draft(draft, connections=connections, http_client=http_client)
     return await store.mark_draft_verified(draft.id, ok=ok, reason=reason)
+
+
+class _ProbeResult(TypedDict):
+    status: str
+    reason: str | None
+
+
+class _ContractCheck(TypedDict):
+    operation: str
+    before: _ProbeResult
+    after: _ProbeResult
+
+
+async def _verify_revision(
+    draft: SkillDraftView,
+    *,
+    store: SkillStore,
+    connections: SkillConnectionStore,
+    http_client: SkillHttpClient,
+) -> SkillDraftView:
+    """Compare changed contracts with their immutable baseline, never raw responses.
+
+    A successful unrelated GET cannot validate a revision. Operations needing
+    user input, writes, and description-only changes remain inconclusive.
+    This checks reachability only; it is not task replay or semantic evaluation.
+    """
+    assert draft.target_skill_id is not None
+    target = await store.get(draft.target_skill_id)
+    baseline = (
+        next(
+            (
+                version
+                for version in await store.versions(draft.target_skill_id)
+                if version.version == draft.base_version
+            ),
+            None,
+        )
+        if target is not None
+        else None
+    )
+    if target is None or baseline is None or target.version != draft.base_version:
+        return await store.mark_draft_verified(
+            draft.id,
+            ok=False,
+            reason="revision_baseline_stale",
+            report={"scope": "changed_contracts", "outcome": "inconclusive", "checks": []},
+        )
+    old_api, new_api = baseline.api, draft.document.api
+    old_ops = {item.name: item for item in old_api.operations} if old_api else {}
+    new_ops = {item.name: item for item in new_api.operations} if new_api else {}
+    auth_changed = bool(
+        old_api
+        and new_api
+        and (old_api.auth != new_api.auth or old_api.connection != new_api.connection)
+    )
+    names = sorted(
+        name
+        for name in old_ops.keys() | new_ops.keys()
+        if old_ops.get(name) != new_ops.get(name) or auth_changed
+    )
+    checks: list[_ContractCheck] = []
+    for name in names:
+        old, new = old_ops.get(name), new_ops.get(name)
+        before = await _probe_operation(
+            old_api,
+            old,
+            skill_id=draft.target_skill_id,
+            connections=connections,
+            http_client=http_client,
+        )
+        after = await _probe_operation(
+            new_api,
+            new,
+            skill_id=draft.target_skill_id,
+            connections=connections,
+            http_client=http_client,
+        )
+        checks.append({"operation": name, "before": before, "after": after})
+    # Missing/unsafe/parameterized checks are not evidence of improvement.
+    statuses = [check["after"]["status"] for check in checks]
+    comparable = [
+        check
+        for check in checks
+        if check["before"]["status"] != "skipped" and check["after"]["status"] != "skipped"
+    ]
+    regressed = any(
+        check["before"]["status"] == "passed" and check["after"]["status"] == "failed"
+        for check in comparable
+    )
+    improved = any(
+        check["before"]["status"] == "failed" and check["after"]["status"] == "passed"
+        for check in comparable
+    )
+    complete = bool(statuses) and all(status == "passed" for status in statuses)
+    if regressed:
+        outcome = "regressed"
+    elif not complete or len(comparable) != len(checks):
+        outcome = "inconclusive"
+    else:
+        outcome = "improved" if improved else "unchanged"
+    reason = None if complete else "revision_checks_incomplete"
+    if "failed" in statuses:
+        reason = "revision_probe_failed"
+    return await store.mark_draft_verified(
+        draft.id,
+        ok=complete,
+        reason=reason,
+        report={
+            "scope": "changed_contracts",
+            "base_version": draft.base_version,
+            "outcome": outcome,
+            "checks": checks,
+        },
+    )
+
+
+async def _probe_operation(
+    api: SkillApiManifest | None,
+    operation: SkillOperation | None,
+    *,
+    skill_id: UUID | None,
+    connections: SkillConnectionStore,
+    http_client: SkillHttpClient,
+) -> _ProbeResult:
+    if api is None or operation is None:
+        return {"status": "skipped", "reason": "operation_absent"}
+    if operation.risk != "read" or operation.method != "GET":
+        return {"status": "skipped", "reason": "write_operation_not_probed"}
+    if any(spec.required for spec in operation.parameters.values()):
+        return {"status": "skipped", "reason": "operation_requires_input"}
+    ok, reason = await _probe_contract(
+        api, operation, skill_id=skill_id, connections=connections, http_client=http_client
+    )
+    return {"status": "passed" if ok else "failed", "reason": reason}
 
 
 async def _probe_draft(
@@ -344,6 +483,23 @@ async def _probe_draft(
     )
     if operation is None:
         return False, "draft_operation_needs_path_values"
+    return await _probe_contract(
+        api,
+        operation,
+        skill_id=draft.target_skill_id,
+        connections=connections,
+        http_client=http_client,
+    )
+
+
+async def _probe_contract(
+    api: SkillApiManifest,
+    operation: SkillOperation,
+    *,
+    skill_id: UUID | None,
+    connections: SkillConnectionStore,
+    http_client: SkillHttpClient,
+) -> tuple[bool, str | None]:
     connection = await connections.get(api.connection)
     if connection is None or not connection.enabled:
         return False, "connection_disabled"
@@ -352,7 +508,7 @@ async def _probe_draft(
     if connection.auth_type == "login_bearer":
         if api.auth is None or api.auth.path not in connection.allowed_auth_paths:
             return False, "connection_auth_path_denied"
-        if not await http_client.credentials_ready(draft.target_skill_id, connection):
+        if not await http_client.credentials_ready(skill_id, connection):
             return False, "connection_credentials_missing"
     elif api.auth is not None:
         return False, "connection_auth_mismatch"
@@ -363,11 +519,11 @@ async def _probe_draft(
             operation.path,
             params={},
             auth=api.auth,
-            skill_id=draft.target_skill_id,
+            skill_id=skill_id,
         )
     except SkillConnectionError as error:
         return False, error.reason_code
     except Exception:
-        logger.warning("skill draft verification crashed draft=%s", draft.id, exc_info=True)
+        logger.warning("skill draft verification crashed", exc_info=True)
         return False, "draft_verification_failed"
     return True, None

@@ -1844,6 +1844,20 @@ class ChatService:
                     "outcome": "success" if execution.result.ok else "failed",
                     "reason_code": execution.result.reason_code,
                     "provider": execution.result.provider,
+                    **(
+                        {
+                            "skill_version": next(
+                                (
+                                    handler.skill_version
+                                    for handler in pending.skill_handlers
+                                    if handler.name == execution.result.tool_name
+                                ),
+                                None,
+                            )
+                        }
+                        if execution.result.tool_name.startswith("skill.")
+                        else {}
+                    ),
                     "result_count": _tool_result_count(execution.result),
                     "cache_hit": execution.result.cache_hit,
                     # docs/05 地图/天气章节 §6.2: 只记解析来源枚举, 不记坐标或原始地址。
@@ -2011,21 +2025,9 @@ class ChatService:
         )
         # 技能沉淀收割：后台检测文档型需求并生成待审阅草稿，失败静默
         self._spawn_background(self._harvest_skill_draft(pending))
-        if self._skill_learner is not None and tool_executions:
-            # S4 学习收割：本回合技能执行证据 + 用户纠正 → 修订候选，失败静默
-            skill_runs = [
-                TurnSkillRun(
-                    tool_name=execution.result.tool_name,
-                    ok=execution.result.ok,
-                    reason_code=execution.result.reason_code,
-                )
-                for execution in tool_executions
-                if execution.result.tool_name.startswith("skill.")
-            ]
-            if skill_runs:
-                self._spawn_background(
-                    self._harvest_skill_revision(pending, skill_runs)
-                )
+        if self._skill_learner is not None:
+            # 纠正通常发生在下一轮；仅读取同会话紧邻的已完成助手回合。
+            self._spawn_background(self._harvest_skill_revision(pending))
         if summary_due and pending.conversation_id not in self._summary_updates_in_flight:
             # CTX：达到阈值才派生摘要维护（同会话同时至多一个），失败静默
             self._summary_updates_in_flight.add(pending.conversation_id)
@@ -2133,11 +2135,13 @@ class ChatService:
         except Exception:
             logger.warning("skill draft harvest failed for turn %s", pending.turn_id, exc_info=True)
 
-    async def _harvest_skill_revision(
-        self, pending: PendingTurn, skill_runs: list[TurnSkillRun]
-    ) -> None:
+    async def _harvest_skill_revision(self, pending: PendingTurn) -> None:
         assert self._skill_learner is not None
         try:
+            # 无纠正信号不读库、不调用模型。
+            if not self._skill_learner.has_correction(pending.user_message.content):
+                return
+            skill_runs = await self._skill_learning_evidence(pending)
             await self._skill_learner.harvest(
                 text=pending.user_message.content,
                 turn_id=pending.turn_id,
@@ -2148,6 +2152,57 @@ class ChatService:
             logger.warning(
                 "skill revision harvest failed for turn %s", pending.turn_id, exc_info=True
             )
+
+    async def _skill_learning_evidence(self, pending: PendingTurn) -> list[TurnSkillRun]:
+        """Use the immediately preceding reply; never borrow another user's runs.
+
+        This is the result the user saw before correcting it. Only when there
+        is no preceding reply do we fall back to this turn's own execution.
+        """
+        async with self._database.sessions() as session:
+            previous = await session.scalar(
+                select(MessageRecord)
+                .join(ConversationRecord, ConversationRecord.id == MessageRecord.conversation_id)
+                .join(InteractionTurnRecord, InteractionTurnRecord.id == MessageRecord.turn_id)
+                .where(
+                    MessageRecord.conversation_id == pending.conversation_id,
+                    ConversationRecord.user_id == pending.user_id,
+                    MessageRecord.seq < pending.user_message.seq,
+                    MessageRecord.role == "assistant",
+                    InteractionTurnRecord.state == "completed",
+                )
+                .order_by(MessageRecord.seq.desc())
+                .limit(1)
+            )
+            record = previous
+            if record is None:
+                record = await session.scalar(
+                    select(MessageRecord).where(
+                        MessageRecord.turn_id == pending.turn_id,
+                        MessageRecord.conversation_id == pending.conversation_id,
+                        MessageRecord.role == "assistant",
+                    )
+                )
+            if record is None:
+                return []
+            created = record.created_at.replace(tzinfo=record.created_at.tzinfo or UTC)
+            if pending.user_message.created_at - created > timedelta(minutes=30):
+                return []
+            calls = (record.decision_meta or {}).get("tool_calls", [])
+            if not isinstance(calls, list):
+                return []
+            return [
+                TurnSkillRun(
+                    tool_name=item["tool_name"],
+                    ok=item.get("outcome") == "success",
+                    reason_code=item.get("reason_code"),
+                    skill_version=item.get("skill_version"),
+                )
+                for item in calls
+                if isinstance(item, dict)
+                and isinstance(item.get("tool_name"), str)
+                and item["tool_name"].startswith("skill.")
+            ]
 
     async def _extract_commitments(
         self,

@@ -102,6 +102,7 @@ class SkillDraftView(BaseModel):
     skill_id: UUID | None
     target_skill_id: UUID | None = None
     base_version: int | None = None
+    verification_report: dict[str, object] | None = None
     verify_status: str | None = None
     verify_reason: str | None = None
     verified_at: datetime | None = None
@@ -122,6 +123,7 @@ def _draft_view(item: SkillDraftRecord) -> SkillDraftView:
         skill_id=item.skill_id,
         target_skill_id=item.target_skill_id,
         base_version=item.base_version,
+        verification_report=item.verification_report,
         verify_status=item.verify_status,
         verify_reason=item.verify_reason,
         verified_at=(
@@ -416,6 +418,7 @@ class SkillStore:
                 existing.skill_id = None
                 existing.target_skill_id = target_skill_id
                 existing.base_version = base_version
+                existing.verification_report = None
                 existing.verify_status = None
                 existing.verify_reason = None
                 existing.verified_at = None
@@ -559,13 +562,19 @@ class SkillStore:
             return _view(record)
 
     async def mark_draft_verified(
-        self, draft_id: UUID, *, ok: bool, reason: str | None = None
+        self,
+        draft_id: UUID,
+        *,
+        ok: bool,
+        reason: str | None = None,
+        report: dict[str, object] | None = None,
     ) -> SkillDraftView:
         """Record the outcome of a pre-approval live verification run."""
         async with self._database.sessions() as session:
             item = await session.get(SkillDraftRecord, draft_id, with_for_update=True)
             if item is None:
                 raise LookupError("skill_draft_not_found")
+            item.verification_report = report
             item.verify_status = "passed" if ok else "failed"
             item.verify_reason = reason if not ok else None
             item.verified_at = datetime.now(UTC)

@@ -96,6 +96,10 @@ class SkillReadToolHandler:
         self._store = store
         self._http_client = http_client
 
+    @property
+    def skill_version(self) -> int:
+        return self._skill_version
+
     def definition(self) -> ToolDefinition:
         return ToolDefinition(
             name=self.name,

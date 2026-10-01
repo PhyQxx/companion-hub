@@ -1,7 +1,7 @@
 """S4 自主学习闭环（docs/08 技能中心）：从对话纠正生成技能修订候选。
 
-回合提交后的后台收割：本回合执行过技能只读操作、且用户消息命中纠正
-信号时，私密路由判断纠正是否指向本回合用过的技能；命中则基于当前版
+回合提交后的后台收割：同会话上一轮（或首轮当轮）有技能执行证据、且用户消息命中纠正
+信号时，私密路由判断纠正是否指向执行证据中的技能；命中则基于当前版
 本文档 + 逐字纠正 + 运行失败原因生成修订草稿（source=learning，记录
 base_version），并自动做一次与人工试跑完全相同的只读探活。诊断自动、
 发布留人：草稿永不直接生效，审批走既有 Admin 审阅中心与 revise() 链。
@@ -46,6 +46,7 @@ class TurnSkillRun:
     tool_name: str
     ok: bool
     reason_code: str | None
+    skill_version: int | None = None
 
 
 class SkillRevisionLearner:
@@ -63,6 +64,10 @@ class SkillRevisionLearner:
         self._generator = generator
         self._connections = connections
         self._http_client = http_client
+
+    @staticmethod
+    def has_correction(text: str) -> bool:
+        return bool(_CORRECTION_MARKERS.search(text))
 
     async def harvest(
         self,
@@ -82,10 +87,20 @@ class SkillRevisionLearner:
         target = await self._store.get_by_name(skill_name)
         if target is None:
             return None
+        attributed = [item for item in runs if _skill_name_of(item.tool_name) == skill_name]
+        if any(
+            item.skill_version is not None and item.skill_version != target.version
+            for item in attributed
+        ):
+            return None
         # 基线新鲜度：该技能最近一次运行若来自旧版本，纠正针对的是旧契约
         # （技能已被修订过），不重复起草；审批侧 base_version 闸门兜底。
         recent = await self._store.runs(target.id, limit=1)
-        if recent and recent[0].skill_version != target.version:
+        if (
+            all(item.skill_version is None for item in attributed)
+            and recent
+            and recent[0].skill_version != target.version
+        ):
             logger.info(
                 "skill revision stale baseline skill=%s run_version=%s current=%s",
                 skill_name,
@@ -98,7 +113,7 @@ class SkillRevisionLearner:
         failed_runs = [
             f"{_skill_name_of(item.tool_name)}.{_operation_of(item.tool_name)}"
             f" failed: {item.reason_code}"
-            for item in runs
+            for item in attributed
             if not item.ok and item.reason_code
         ]
         try:
@@ -134,7 +149,7 @@ class SkillRevisionLearner:
         )
         if draft is None:
             return None
-        await self._auto_verify(draft)
+        draft = await self._auto_verify(draft)
         logger.info(
             "skill revision drafted skill=%s base=v%s draft=%s",
             skill_name,
@@ -150,7 +165,7 @@ class SkillRevisionLearner:
         *,
         backend: CompletionBackend,
     ) -> tuple[str, str] | None:
-        """私密路由裁决：纠正是否指向本回合用过的技能；纠正原文逐字摘录。"""
+        """私密路由裁决：纠正是否指向执行证据中的技能；纠正原文逐字摘录。"""
         ran = sorted({_skill_name_of(item.tool_name) for item in runs if item.tool_name})
         digest = "\n".join(
             f"- {_skill_name_of(item.tool_name)} · {_operation_of(item.tool_name)}"
@@ -164,7 +179,7 @@ class SkillRevisionLearner:
                     LLMMessage(
                         role="system",
                         content=(
-                            "你是技能纠正分析器。用户刚使用过以下技能操作：\n"
+                            "你是技能纠正分析器。用户此前使用过以下技能操作：\n"
                             f"{digest}\n"
                             "判断用户这条消息是否在纠正其中某个技能的用法或接口"
                             "（结果不对、调用方式不对、接口变了等）。只输出 JSON："
@@ -201,12 +216,12 @@ class SkillRevisionLearner:
             return None
         return skill_name, correction
 
-    async def _auto_verify(self, draft: SkillDraftView) -> None:
+    async def _auto_verify(self, draft: SkillDraftView) -> SkillDraftView:
         """生成即试跑：与人工「试跑」完全相同的只读探活与白名单闸门。"""
         if self._connections is None or self._http_client is None:
-            return
+            return draft
         try:
-            await verify_skill_draft(
+            return await verify_skill_draft(
                 draft,
                 store=self._store,
                 connections=self._connections,
@@ -214,6 +229,7 @@ class SkillRevisionLearner:
             )
         except Exception:
             logger.warning("skill revision auto-verify failed draft=%s", draft.id, exc_info=True)
+            return draft
 
 
 def _skill_name_of(tool_name: str) -> str:

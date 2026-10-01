@@ -2240,3 +2240,83 @@ async def test_mixed_write_calls_rejected_without_execution(
     calls = meta["tool_calls"]
     assert isinstance(calls, list) and len(calls) == 1
     assert calls[0]["outcome"] == "failed"
+
+
+@pytest.mark.parametrize("scenario", ["correction", "unrelated_reply", "expired", "other_user"])
+async def test_skill_learning_attributes_correction_to_previous_reply(
+    database: Database,
+    store: DatabaseConfigStore,
+    scenario: str,
+) -> None:
+    from app.skills.learning import SkillRevisionLearner, TurnSkillRun
+
+    observed: list[list[TurnSkillRun]] = []
+
+    class LearnerSpy:
+        has_correction = staticmethod(SkillRevisionLearner.has_correction)
+
+        async def harvest(self, *, runs: list[TurnSkillRun], **kwargs: object) -> None:
+            observed.append(runs)
+
+    service = ChatService(
+        database,
+        store,
+        router_builder=lambda config: FakeRouter("fake", []),
+        skill_learner=cast(SkillRevisionLearner, LearnerSpy()),
+    )
+    user = await create_user(database)
+    conversation = await service.create_conversation(user_id=user.id, title=None)
+    first = await service.send_message(
+        conversation.id,
+        user_id=user.id,
+        text="查询卡券",
+        privacy_level=PrivacyLevel.L1,
+    )
+    await service.drain_background_work()
+    async with database.sessions.begin() as session:
+        record = await session.get(MessageRecord, first.assistant_message.id)
+        assert record is not None
+        record.decision_meta = {
+            "tool_calls": [
+                {
+                    "tool_name": "skill.partner-coupons.coupon_list",
+                    "outcome": "failed",
+                    "reason_code": "connection_http_404",
+                    "skill_version": 3,
+                }
+            ]
+        }
+        if scenario == "expired":
+            record.created_at = datetime.now(UTC) - timedelta(minutes=31)
+    if scenario == "unrelated_reply":
+        await service.send_message(
+            conversation.id,
+            user_id=user.id,
+            text="聊点别的",
+            privacy_level=PrivacyLevel.L1,
+        )
+        await service.drain_background_work()
+    if scenario == "other_user":
+        user = await create_user(database, "Other")
+        conversation = await service.create_conversation(user_id=user.id, title=None)
+    await service.send_message(
+        conversation.id,
+        user_id=user.id,
+        text="查询不对，接口改了",
+        privacy_level=PrivacyLevel.L1,
+    )
+    await service.drain_background_work()
+    assert len(observed) == 1
+    expected = (
+        [
+            TurnSkillRun(
+                "skill.partner-coupons.coupon_list",
+                False,
+                "connection_http_404",
+                skill_version=3,
+            )
+        ]
+        if scenario == "correction"
+        else []
+    )
+    assert observed[0] == expected

@@ -12,8 +12,8 @@ from app.db import Base, Database, create_database
 from app.llm import CompletionRequest, CompletionResult, LLMRoute
 from app.skills.generator import SkillDraftGenerator, SkillProposal
 from app.skills.learning import SkillRevisionLearner, TurnSkillRun
-from app.skills.models import SkillApiManifest, SkillDocument, SkillOperation
-from app.skills.store import SkillStore
+from app.skills.models import SkillApiManifest, SkillDocument, SkillOperation, SkillParameter
+from app.skills.store import SkillDraftView, SkillStore
 
 USER_TEXT = "查出来的卡券不对，过期日期字段变了，改成 GET /coupons/search 关键词搜"
 
@@ -151,8 +151,7 @@ async def test_harvest_ignores_noise_without_llm_call(database: Database) -> Non
     learner = SkillRevisionLearner(store, SkillDraftGenerator(backend=NeverBackend()))
     # 没有技能执行证据：不收割
     assert (
-        await learner.harvest(text=USER_TEXT, turn_id=None, runs=[], backend=NeverBackend())
-        is None
+        await learner.harvest(text=USER_TEXT, turn_id=None, runs=[], backend=NeverBackend()) is None
     )
     # 有执行但消息无纠正信号：不调用模型
     calm = "好的，谢谢，卡券列表很清楚。"
@@ -211,8 +210,9 @@ async def test_harvest_auto_verifies_draft(
     store = await _seed_skill(database)
     probed: list[object] = []
 
-    async def fake_verify(draft: object, **kwargs: object) -> None:
+    async def fake_verify(draft: SkillDraftView, **kwargs: object) -> SkillDraftView:
         probed.append(draft)
+        return draft
 
     monkeypatch.setattr("app.skills.learning.verify_skill_draft", fake_verify)
     backend = QueuedBackend([_decide_response(), _revision_response()])
@@ -251,9 +251,7 @@ async def test_generate_revision_rejects_connection_switch(database: Database) -
     )
     generator = SkillDraftGenerator(backend=backend)
     with pytest.raises(ValueError, match="revision_connection_mismatch"):
-        await generator.generate_revision(
-            BASE_DOCUMENT, correction=USER_TEXT, run_notes=[]
-        )
+        await generator.generate_revision(BASE_DOCUMENT, correction=USER_TEXT, run_notes=[])
 
 
 @pytest.mark.asyncio
@@ -330,3 +328,211 @@ async def test_pending_revision_exists(database: Database) -> None:
         base_version=1,
     )
     assert await store.pending_revision_exists(skill.id)
+
+
+@pytest.mark.asyncio
+async def test_attributed_version_is_not_overridden_by_unrelated_latest_run(
+    database: Database,
+) -> None:
+    store = await _seed_skill(database)
+    skill = await store.get_by_name("partner-coupons")
+    assert skill is not None
+    await store.record_run(
+        skill_id=skill.id,
+        skill_version=9,
+        connection_id="partner-system",
+        operation="coupon_list",
+        ok=False,
+        reason_code="upstream_404",
+        latency_ms=1,
+    )
+    backend = QueuedBackend([_decide_response(), _revision_response()])
+    learner = SkillRevisionLearner(store, SkillDraftGenerator(backend=backend))
+    draft = await learner.harvest(
+        text=USER_TEXT,
+        turn_id=None,
+        runs=[TurnSkillRun(RUN.tool_name, False, "upstream_404", skill_version=1)],
+        backend=backend,
+    )
+    assert draft is not None
+
+
+@pytest.mark.asyncio
+async def test_attributed_old_version_is_rejected(database: Database) -> None:
+    store = await _seed_skill(database)
+    backend = QueuedBackend([_decide_response()])
+    learner = SkillRevisionLearner(store, SkillDraftGenerator(backend=backend))
+    assert (
+        await learner.harvest(
+            text=USER_TEXT,
+            turn_id=None,
+            runs=[TurnSkillRun(RUN.tool_name, False, "upstream_404", skill_version=9)],
+            backend=backend,
+        )
+        is None
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("before_status", "after_status", "required", "expected", "passed"),
+    [
+        (404, 200, False, "improved", True),
+        (200, 404, False, "regressed", False),
+        (200, 200, False, "unchanged", True),
+        (404, 404, False, "inconclusive", False),
+        (404, 200, True, "inconclusive", False),
+    ],
+)
+async def test_revision_verifies_changed_operation_and_persists_comparison(
+    database: Database,
+    before_status: int,
+    after_status: int,
+    required: bool,
+    expected: str,
+    passed: bool,
+) -> None:
+    import httpx
+
+    from app.skills.connections import SkillConnection, SkillConnectionStore, SkillHttpClient
+    from app.skills.drafts import verify_skill_draft
+
+    store = await _seed_skill(database)
+    target = await store.get_by_name("partner-coupons")
+    assert target is not None and BASE_DOCUMENT.api is not None
+    changed = BASE_DOCUMENT.api.operations[0].model_copy(
+        update={
+            "path": "/coupons/search",
+            "parameters": {"keyword": SkillParameter(type="string", required=True)}
+            if required
+            else {},
+        }
+    )
+    document = BASE_DOCUMENT.model_copy(
+        update={
+            "api": BASE_DOCUMENT.api.model_copy(
+                update={
+                    "operations": [
+                        changed,
+                        SkillOperation(
+                            name="health",
+                            description="探活",
+                            method="GET",
+                            path="/health",
+                            risk="read",
+                        ),
+                    ]
+                }
+            ),
+        }
+    )
+    assert document.api is not None
+    # Keep an unrelated operation in both versions. It must never be probed.
+    baseline = BASE_DOCUMENT.model_copy(
+        update={
+            "api": BASE_DOCUMENT.api.model_copy(
+                update={
+                    "operations": [
+                        BASE_DOCUMENT.api.operations[0],
+                        document.api.operations[1],
+                    ]
+                }
+            ),
+        }
+    )
+    target = await store.revise(target.id, baseline)
+    draft = await store.save_draft(
+        SkillProposal(document=document, warnings=[], evidence=[], executable=False),
+        system_name="partner-system",
+        source="learning",
+        target_skill_id=target.id,
+        base_version=target.version,
+    )
+    assert draft is not None
+    connections = SkillConnectionStore(database)
+    await connections.put(
+        SkillConnection(
+            id="partner-system",
+            base_url="https://partner.example",
+            auth_type="none",
+            allowed_paths=["/coupons", "/coupons/search", "/health"],
+            enabled=True,
+        )
+    )
+    paths: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        paths.append(request.url.path)
+        assert request.url.path != "/health"
+        status = before_status if request.url.path == "/coupons" else after_status
+        return httpx.Response(status, json={"private_payload": "must-not-persist"})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        result = await verify_skill_draft(
+            draft,
+            store=store,
+            connections=connections,
+            http_client=SkillHttpClient(connections, client=client),
+        )
+    assert result.verify_status == ("passed" if passed else "failed")
+    assert result.verification_report is not None
+    assert result.verification_report["outcome"] == expected
+    assert paths == (["/coupons"] if required else ["/coupons", "/coupons/search"])
+    persisted = await store.get_draft(draft.id)
+    assert persisted is not None and persisted.verification_report == result.verification_report
+    assert "must-not-persist" not in persisted.model_dump_json()
+    current = await store.get(target.id)
+    assert current is not None and current.version == target.version
+    await store.dismiss_draft(draft.id)
+    reopened = await store.save_draft(
+        SkillProposal(document=document, warnings=[], evidence=[], executable=False),
+        system_name="partner-system",
+        source="learning",
+        target_skill_id=target.id,
+        base_version=target.version,
+    )
+    assert reopened is not None and reopened.verification_report is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("stale", [False, True])
+async def test_revision_does_not_probe_description_only_or_stale_contracts(
+    database: Database,
+    stale: bool,
+) -> None:
+    from app.skills.connections import SkillConnectionStore, SkillHttpClient
+    from app.skills.drafts import verify_skill_draft
+
+    store = await _seed_skill(database)
+    target = await store.get_by_name("partner-coupons")
+    assert target is not None
+    document = BASE_DOCUMENT.model_copy(update={"instructions": "改为先查询再解释。"})
+    draft = await store.save_draft(
+        SkillProposal(document=document, warnings=[], evidence=[], executable=False),
+        system_name="partner-system",
+        source="learning",
+        target_skill_id=target.id,
+        base_version=target.version,
+    )
+    assert draft is not None
+    if stale:
+        await store.revise(target.id, document)
+    connections = SkillConnectionStore(database)
+    # No connections configured: an unrelated GET would fail differently.
+    client = SkillHttpClient(connections)
+    try:
+        result = await verify_skill_draft(
+            draft,
+            store=store,
+            connections=connections,
+            http_client=client,
+        )
+    finally:
+        await client.close()
+    assert result.verify_status == "failed"
+    assert result.verify_reason == (
+        "revision_baseline_stale" if stale else "revision_checks_incomplete"
+    )
+    assert result.verification_report is not None
+    assert result.verification_report["checks"] == []
+    assert result.verification_report["outcome"] == "inconclusive"

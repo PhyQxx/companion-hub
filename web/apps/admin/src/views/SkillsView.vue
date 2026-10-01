@@ -86,6 +86,11 @@ interface SkillDraft {
   skill_id: string | null;
   target_skill_id: string | null;
   base_version: number | null;
+  verification_report: {
+    scope: string;
+    outcome: "improved" | "regressed" | "unchanged" | "inconclusive";
+    checks: { operation: string; before: { status: string; reason: string | null }; after: { status: string; reason: string | null } }[];
+  } | null;
   verify_status: "passed" | "failed" | null;
   verify_reason: string | null;
   verified_at: string | null;
@@ -334,6 +339,14 @@ async function verifyDraft(id: string) {
     verifyingId.value = "";
   }
 }
+
+const comparisonLabels: Record<string, string> = {
+  improved: "可达性改善", regressed: "可达性退步", unchanged: "可达性无变化",
+  inconclusive: "证据不足，尚不能判断改进效果",
+};
+const probeLabels: Record<string, string> = {
+  passed: "通过", failed: "未通过", skipped: "未验证",
+};
 
 function draftTargetName(draft: SkillDraft): string {
   return items.value.find((item) => item.id === draft.target_skill_id)?.name ?? "未知技能";
@@ -999,6 +1012,19 @@ onUnmounted(() => {
                     <li v-for="(change, index) in revisionDiff(row as SkillDraft)" :key="index">{{ change }}</li>
                   </ul>
                 </template>
+                <template v-if="row.verification_report">
+                  <h3>修订验证：{{ comparisonLabels[row.verification_report.outcome] }}</h3>
+                  <p class="hint">仅验证改动接口的可达性；尚未验证任务结果正确性或历史任务回放。必填参数与写操作不会自动试跑。</p>
+                  <el-table :data="row.verification_report.checks" size="small">
+                    <el-table-column prop="operation" label="改动操作" />
+                    <el-table-column label="原版本">
+                      <template #default="{ row: check }">{{ probeLabels[check.before.status] }}<small v-if="check.before.reason">{{ check.before.reason }}</small></template>
+                    </el-table-column>
+                    <el-table-column label="修订候选">
+                      <template #default="{ row: check }">{{ probeLabels[check.after.status] }}<small v-if="check.after.reason">{{ check.after.reason }}</small></template>
+                    </el-table-column>
+                  </el-table>
+                </template>
                 <h3>使用说明</h3>
                 <p class="hint" style="white-space: pre-wrap">{{ row.document.instructions }}</p>
                 <template v-if="row.warnings.length">
@@ -1035,7 +1061,7 @@ onUnmounted(() => {
           </el-table-column>
           <el-table-column label="试跑" width="150">
             <template #default="{ row }">
-              <el-tag v-if="row.verify_status === 'passed'" size="small" type="success">通过</el-tag>
+              <el-tag v-if="row.verify_status === 'passed'" size="small" type="success">只读探活通过</el-tag>
               <el-tooltip v-else-if="row.verify_status === 'failed'" :content="row.verify_reason ?? ''" placement="top">
                 <el-tag size="small" type="danger">未通过</el-tag>
               </el-tooltip>
