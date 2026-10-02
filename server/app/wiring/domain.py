@@ -343,7 +343,7 @@ def assemble_domain(
         else None
     )
     if action_plan_service is not None and plan_completion_reporter is not None:
-        action_plan_service.add_completion_callback(plan_completion_reporter.on_plan_completed)
+        action_plan_service.add_completion_enqueuer(plan_completion_reporter.enqueue_in_session)
     propose_action_tool = (
         ProposeActionTool(
             lambda: action_plan_service,

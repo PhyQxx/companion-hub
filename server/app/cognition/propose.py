@@ -20,10 +20,14 @@ from typing import Annotated, Any, cast
 from uuid import NAMESPACE_URL, UUID, uuid5
 
 from pydantic import BaseModel, ConfigDict, Field, JsonValue
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config.models import RunBudgetConfig
-from app.db import TaskRunRecord
+from app.context.repository import version_stamp
+from app.db import ActionPlanRecord, TaskRunRecord
 from app.harness.budget import budget_scope, tool_budget_scope
+from app.jobs import JobEngine
+from app.jobs.maintenance import MaintenanceSourceGone, MaintenanceWorker
 from app.llm import ToolDefinition
 from app.runs.budget import RunModelBudget
 from app.runs.delivery import deliver_once, recover_expired_deliveries
@@ -203,21 +207,52 @@ class PlanCompletionReporter:
         self._background: set[asyncio.Task[None]] = set()
         self._budget_loader = budget_loader or RunBudgetConfig
         self._stopped = False
+        self._started = False
+        self._worker = MaintenanceWorker(
+            plan_service.database, self._process, resource_class="plan-completion-report"
+        )
+
+    async def enqueue_in_session(self, session: AsyncSession, plan_id: UUID, user_id: UUID) -> None:
+        """Commit a content-free report obligation alongside completed plan state."""
+        plan = await session.get(ActionPlanRecord, plan_id)
+        if plan is None or plan.user_id != user_id or plan.status != "completed":
+            raise ValueError("report_source_invalid")
+        await JobEngine(self._plan_service.database).submit_in_session(
+            session,
+            "plan.completed.report",
+            {
+                "plan_id": str(plan_id),
+                "user_id": str(user_id),
+                "source_version": version_stamp(plan.updated_at),
+                "source_parent_id": str(plan.task_run_id) if plan.task_run_id else None,
+            },
+            owner=str(user_id),
+            idempotency_key=f"plan:{user_id}:{plan_id}:report",
+            resource_class="plan-completion-report",
+            task_run_id=plan.task_run_id,
+        )
 
     def start(self) -> None:
         self._stopped = False
+        self._started = True
+        if self._deliver is not None:
+            self._worker.start()
 
     async def stop(self) -> None:
         self._stopped = True
+        self._started = False
         tasks = tuple(self._background)
         for task in tasks:
             task.cancel()
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
+        await self._worker.stop()
 
     def set_deliver(self, deliver: ProactiveDeliver) -> None:
         """main 装配后期注入主动汇报通道。"""
         self._deliver = deliver
+        if self._started and not self._stopped:
+            self._worker.start()
 
     def on_plan_completed(self, plan_id: UUID, user_id: UUID) -> None:
         if self._stopped:
@@ -231,23 +266,77 @@ class PlanCompletionReporter:
     async def drain(self) -> None:
         """等待后台汇报任务完成；测试断言与优雅停机使用。"""
         if self._background:
-            await asyncio.gather(*self._background)
+            await asyncio.gather(*self._background, return_exceptions=True)
+        if self._deliver is not None and not self._stopped:
+            await self._worker.process_ready()
 
-    async def _report(self, plan_id: UUID, user_id: UUID) -> None:
+    async def _process(self, kind: str, payload: dict[str, Any], owner: str) -> None:
+        if (
+            self._stopped
+            or self._deliver is None
+            or kind != "plan.completed.report"
+            or payload.get("user_id") != owner
+            or not isinstance(payload.get("source_version"), str)
+            or (
+                payload.get("source_parent_id") is not None
+                and not isinstance(payload.get("source_parent_id"), str)
+            )
+        ):
+            raise MaintenanceSourceGone()
+        try:
+            plan_id, user_id = UUID(payload["plan_id"]), UUID(owner)
+        except (KeyError, ValueError, TypeError) as error:
+            raise MaintenanceSourceGone() from error
+        task = asyncio.create_task(
+            self._report(
+                plan_id,
+                user_id,
+                raise_errors=True,
+                expected_source=(payload["source_version"], payload.get("source_parent_id")),
+            )
+        )
+        self._background.add(task)
+        try:
+            await task
+        except asyncio.CancelledError as error:
+            raise MaintenanceSourceGone() from error
+        finally:
+            self._background.discard(task)
+
+    async def _report(
+        self,
+        plan_id: UUID,
+        user_id: UUID,
+        *,
+        raise_errors: bool = False,
+        expected_source: tuple[str, str | None] | None = None,
+    ) -> None:
         if self._deliver is None or self._stopped:
             return
         try:
-            view = await self._plan_service.get_plan(user_id=user_id, plan_id=plan_id)
+            try:
+                view = await self._plan_service.get_plan(user_id=user_id, plan_id=plan_id)
+            except LookupError as error:
+                if raise_errors:
+                    raise MaintenanceSourceGone() from error
+                return
             if view is None or view.status != "completed":
+                if raise_errors:
+                    raise MaintenanceSourceGone()
                 return
             database = self._plan_service.database
             await recover_expired_deliveries(database)
             async with database.sessions() as session:
-                from app.db import ActionPlanRecord
-
                 plan = await session.get(ActionPlanRecord, plan_id)
                 if plan is None or plan.user_id != user_id:
+                    if raise_errors:
+                        raise MaintenanceSourceGone()
                     return
+                if expected_source is not None and expected_source != (
+                    version_stamp(plan.updated_at),
+                    str(plan.task_run_id) if plan.task_run_id else None,
+                ):
+                    raise MaintenanceSourceGone()
                 text = completion_text(view, include_details=plan.task_run_id is not None)
                 parent = (
                     await session.get(TaskRunRecord, plan.task_run_id) if plan.task_run_id else None
@@ -310,4 +399,6 @@ class PlanCompletionReporter:
                     run_id=uuid5(NAMESPACE_URL, f"aria:plan-report:{user_id}:{plan_id}"),
                 )
         except Exception:
+            if raise_errors:
+                raise
             logger.warning("plan completion report failed: %s", plan_id, exc_info=True)

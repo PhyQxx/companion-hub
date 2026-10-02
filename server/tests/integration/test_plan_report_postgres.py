@@ -4,6 +4,7 @@ import os
 
 import pytest
 from sqlalchemy.engine import make_url
+from test_plan_report_outbox import test_multiple_workers_claim_one_obligation as check_outbox
 from test_plan_report_runs import (
     test_same_completed_plan_has_one_report_across_reporters as check_report,
 )
@@ -29,6 +30,7 @@ async def test_postgres_plan_completion_report_claim() -> None:
         async with database.engine.begin() as connection:
             await connection.run_sync(Base.metadata.create_all)
         await check_report(database)
+        await check_outbox(database)
     finally:
         database.engine.update_execution_options(schema_translate_map=None)
         if created:
