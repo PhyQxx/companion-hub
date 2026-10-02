@@ -1,0 +1,180 @@
+{
+  "$defs": {
+    "BillingComparison": {
+      "additionalProperties": false,
+      "properties": {
+        "bill_currency": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Bill Currency"
+        },
+        "billed_micros": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Billed Micros"
+        },
+        "call_id": {
+          "anyOf": [
+            {
+              "format": "uuid",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Call Id"
+        },
+        "endpoint": {
+          "title": "Endpoint",
+          "type": "string"
+        },
+        "held_micros": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Held Micros"
+        },
+        "ledger_currency": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Ledger Currency"
+        },
+        "receipt_sha256": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Receipt Sha256"
+        },
+        "status": {
+          "enum": [
+            "matched",
+            "amount_mismatch",
+            "currency_mismatch",
+            "ledger_unknown",
+            "ambiguous_receipt",
+            "missing_receipt",
+            "ledger_only",
+            "bill_only"
+          ],
+          "title": "Status",
+          "type": "string"
+        }
+      },
+      "required": [
+        "status",
+        "endpoint"
+      ],
+      "title": "BillingComparison",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "bill_declared_complete": {
+      "title": "Bill Declared Complete",
+      "type": "boolean"
+    },
+    "bill_sha256": {
+      "title": "Bill Sha256",
+      "type": "string"
+    },
+    "budget_effect": {
+      "const": "none",
+      "default": "none",
+      "title": "Budget Effect",
+      "type": "string"
+    },
+    "comparisons": {
+      "items": {
+        "$ref": "#/$defs/BillingComparison"
+      },
+      "title": "Comparisons",
+      "type": "array"
+    },
+    "counts": {
+      "additionalProperties": {
+        "type": "integer"
+      },
+      "title": "Counts",
+      "type": "object"
+    },
+    "coverage": {
+      "const": "recorded_budgeted_model_calls",
+      "default": "recorded_budgeted_model_calls",
+      "title": "Coverage",
+      "type": "string"
+    },
+    "evidence": {
+      "const": "operator_supplied_bill_unverified",
+      "default": "operator_supplied_bill_unverified",
+      "title": "Evidence",
+      "type": "string"
+    },
+    "ledger_sha256": {
+      "title": "Ledger Sha256",
+      "type": "string"
+    },
+    "period_end": {
+      "format": "date-time",
+      "title": "Period End",
+      "type": "string"
+    },
+    "period_start": {
+      "format": "date-time",
+      "title": "Period Start",
+      "type": "string"
+    },
+    "validation_level": {
+      "const": "V2",
+      "default": "V2",
+      "title": "Validation Level",
+      "type": "string"
+    }
+  },
+  "required": [
+    "period_start",
+    "period_end",
+    "bill_declared_complete",
+    "ledger_sha256",
+    "bill_sha256",
+    "counts",
+    "comparisons"
+  ],
+  "title": "BillingReport",
+  "type": "object"
+}

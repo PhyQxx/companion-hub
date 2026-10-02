@@ -252,16 +252,68 @@ export type SchemaRef = "aria.agent-reply/1";
 export type SchemaVersion1 = 1;
 export type Text = string;
 export type TtsText = string;
+export type DeclaredComplete = boolean;
+export type BilledMicros = string;
+export type Currency = string;
+export type Endpoint = string;
+export type ProviderRequestId = string;
+/**
+ * @maxItems 1000
+ */
+export type Lines = BillLine[];
+export type PeriodEnd = string;
+export type PeriodStart = string;
+export type BillDeclaredComplete = boolean;
+export type BillSha256 = string;
+export type BudgetEffect = "none";
+export type BillCurrency = string | null;
+export type BilledMicros1 = string | null;
+export type CallId = string | null;
+export type Endpoint1 = string;
+export type HeldMicros = string | null;
+export type LedgerCurrency = string | null;
+export type ReceiptSha256 = string | null;
+export type Status =
+  | "matched"
+  | "amount_mismatch"
+  | "currency_mismatch"
+  | "ledger_unknown"
+  | "ambiguous_receipt"
+  | "missing_receipt"
+  | "ledger_only"
+  | "bill_only";
+export type Comparisons = BillingComparison[];
 export type Coverage = "recorded_budgeted_model_calls";
-export type ChargedMicros = string;
-export type Currency = string | null;
+export type Evidence = "operator_supplied_bill_unverified";
+export type LedgerSha256 = string;
+export type PeriodEnd1 = string;
+export type PeriodStart1 = string;
+export type ValidationLevel = "V2";
+export type PeriodEnd2 = string;
+export type PeriodStart2 = string;
+export type Coverage1 = "recorded_budgeted_model_calls";
+export type CallId1 = string;
+export type ChargedMicros = string | null;
+export type Currency1 = string | null;
+export type Endpoint2 = string;
+export type ProviderRequestId1 = string | null;
+export type State = "reserved" | "estimated" | "unknown";
+/**
+ * @maxItems 10000
+ */
+export type Lines1 = LedgerLine[];
+export type PeriodEnd3 = string;
+export type PeriodStart3 = string;
+export type Coverage2 = "recorded_budgeted_model_calls";
+export type ChargedMicros1 = string;
+export type Currency2 = string | null;
 export type EstimatedCalls = number;
 export type ReservedCalls = number;
 export type UnknownCalls = number;
 export type UnpricedCalls = number;
 export type Currencies = CostCurrencyView[];
-export type PeriodEnd = string;
-export type PeriodStart = string;
+export type PeriodEnd4 = string;
+export type PeriodStart4 = string;
 export type Timezone = "UTC";
 export type Validation = "estimate_not_provider_bill";
 export type AdapterInstanceId = string;
@@ -329,8 +381,8 @@ export type DeliveryStatus =
 export type Channels = string[];
 export type ReasonCode2 = string | null;
 export type RunId = string;
-export type Status = "not_started" | "running" | "returned" | "not_delivered" | "unknown" | "cancelled";
-export type ValidationLevel = "V0" | "V1";
+export type Status1 = "not_started" | "running" | "returned" | "not_delivered" | "unknown" | "cancelled";
+export type ValidationLevel1 = "V0" | "V1";
 export type EndpointId2 = string;
 export type ObservedAt = string;
 export type Channel = string;
@@ -362,7 +414,7 @@ export type ExecutionStatus = "pending" | "running" | "succeeded" | "failed" | "
 export type ReasonCode3 = string | null;
 export type RetryClass = "safe_read" | "manual_reconcile" | "never";
 export type SideEffectState = "none" | "not_started" | "submitted" | "confirmed" | "unknown";
-export type ValidationLevel1 = "V0" | "V1" | "V2" | "V3" | "V4";
+export type ValidationLevel2 = "V0" | "V1" | "V2" | "V3" | "V4";
 export type ValidationStatus = "unverified" | "passed" | "inconclusive";
 /**
  * This interface was referenced by `AriaContracts`'s JSON-Schema
@@ -580,8 +632,8 @@ export type CreatedAt1 = string;
 export type Kind3 = string;
 export type ReasonCode5 = string | null;
 export type SourceId1 = string;
-export type Status1 = string;
-export type ValidationLevel2 = string;
+export type Status2 = string;
+export type ValidationLevel3 = string;
 export type Criteria = RunCriterionView[];
 export type Failed = number;
 export type Inconclusive = number;
@@ -589,14 +641,14 @@ export type Passed = number;
 export type Pending = number;
 export type Required = number;
 export type Scope = string;
-export type Status2 = string;
+export type Status3 = string;
 export type Id1 = string;
 export type JobIds = string[];
 export type PersonaVersion = number | null;
 export type PlanIds = string[];
 export type PrivacyLevel3 = string;
 export type StateVersion = number;
-export type Status3 = string;
+export type Status4 = string;
 export type UpdatedAt = string;
 export type Expected1 =
   | []
@@ -802,12 +854,16 @@ export type Priority2 = "low" | "normal" | "high" | "critical";
  * This interface was referenced by `AriaContracts`'s JSON-Schema
  * via the `definition` "ValidationLevel".
  */
-export type ValidationLevel3 = "V0" | "V1" | "V2" | "V3" | "V4";
+export type ValidationLevel4 = "V0" | "V1" | "V2" | "V3" | "V4";
 
 export interface AriaContracts {
   AdapterHealth?: AdapterHealth;
   AdapterManifest?: AdapterManifest;
   AgentReply?: AgentReply;
+  BillingEvidence?: BillingEvidence;
+  BillingReport?: BillingReport;
+  CostPeriod?: CostPeriod;
+  CostSnapshot?: CostSnapshot;
   CostSummaryView?: CostSummaryView;
   DeliveryPlan?: DeliveryPlan;
   DeliveryReceipt?: DeliveryReceipt;
@@ -924,13 +980,97 @@ export interface AgentAction {
 }
 /**
  * This interface was referenced by `AriaContracts`'s JSON-Schema
+ * via the `definition` "BillingEvidence".
+ */
+export interface BillingEvidence {
+  declared_complete?: DeclaredComplete;
+  lines: Lines;
+  period_end: PeriodEnd;
+  period_start: PeriodStart;
+}
+/**
+ * This interface was referenced by `AriaContracts`'s JSON-Schema
+ * via the `definition` "BillLine".
+ */
+export interface BillLine {
+  billed_micros: BilledMicros;
+  currency: Currency;
+  endpoint: Endpoint;
+  provider_request_id: ProviderRequestId;
+}
+/**
+ * This interface was referenced by `AriaContracts`'s JSON-Schema
+ * via the `definition` "BillingReport".
+ */
+export interface BillingReport {
+  bill_declared_complete: BillDeclaredComplete;
+  bill_sha256: BillSha256;
+  budget_effect?: BudgetEffect;
+  comparisons: Comparisons;
+  counts: Counts;
+  coverage?: Coverage;
+  evidence?: Evidence;
+  ledger_sha256: LedgerSha256;
+  period_end: PeriodEnd1;
+  period_start: PeriodStart1;
+  validation_level?: ValidationLevel;
+}
+/**
+ * This interface was referenced by `AriaContracts`'s JSON-Schema
+ * via the `definition` "BillingComparison".
+ */
+export interface BillingComparison {
+  bill_currency?: BillCurrency;
+  billed_micros?: BilledMicros1;
+  call_id?: CallId;
+  endpoint: Endpoint1;
+  held_micros?: HeldMicros;
+  ledger_currency?: LedgerCurrency;
+  receipt_sha256?: ReceiptSha256;
+  status: Status;
+}
+export interface Counts {
+  [k: string]: number;
+}
+/**
+ * This interface was referenced by `AriaContracts`'s JSON-Schema
+ * via the `definition` "CostPeriod".
+ */
+export interface CostPeriod {
+  period_end: PeriodEnd2;
+  period_start: PeriodStart2;
+}
+/**
+ * This interface was referenced by `AriaContracts`'s JSON-Schema
+ * via the `definition` "CostSnapshot".
+ */
+export interface CostSnapshot {
+  coverage?: Coverage1;
+  lines: Lines1;
+  period_end: PeriodEnd3;
+  period_start: PeriodStart3;
+}
+/**
+ * This interface was referenced by `AriaContracts`'s JSON-Schema
+ * via the `definition` "LedgerLine".
+ */
+export interface LedgerLine {
+  call_id: CallId1;
+  charged_micros: ChargedMicros;
+  currency: Currency1;
+  endpoint: Endpoint2;
+  provider_request_id: ProviderRequestId1;
+  state: State;
+}
+/**
+ * This interface was referenced by `AriaContracts`'s JSON-Schema
  * via the `definition` "CostSummaryView".
  */
 export interface CostSummaryView {
-  coverage?: Coverage;
+  coverage?: Coverage2;
   currencies?: Currencies;
-  period_end: PeriodEnd;
-  period_start: PeriodStart;
+  period_end: PeriodEnd4;
+  period_start: PeriodStart4;
   timezone?: Timezone;
   validation?: Validation;
 }
@@ -939,8 +1079,8 @@ export interface CostSummaryView {
  * via the `definition` "CostCurrencyView".
  */
 export interface CostCurrencyView {
-  charged_micros: ChargedMicros;
-  currency: Currency;
+  charged_micros: ChargedMicros1;
+  currency: Currency2;
   estimated_calls: EstimatedCalls;
   reserved_calls: ReservedCalls;
   unknown_calls: UnknownCalls;
@@ -1086,8 +1226,8 @@ export interface DeliveryRunOutcome {
   channels?: Channels;
   reason_code?: ReasonCode2;
   run_id: RunId;
-  status: Status;
-  validation_level?: ValidationLevel;
+  status: Status1;
+  validation_level?: ValidationLevel1;
 }
 /**
  * This interface was referenced by `AriaContracts`'s JSON-Schema
@@ -1162,7 +1302,7 @@ export interface ExecutionOutcome {
   reason_code?: ReasonCode3;
   retry_class: RetryClass;
   side_effect_state: SideEffectState;
-  validation_level?: ValidationLevel1;
+  validation_level?: ValidationLevel2;
   validation_status: ValidationStatus;
 }
 /**
@@ -1346,7 +1486,7 @@ export interface RunView {
   plan_ids?: PlanIds;
   privacy_level: PrivacyLevel3;
   state_version: StateVersion;
-  status: Status3;
+  status: Status4;
   updated_at: UpdatedAt;
 }
 /**
@@ -1387,7 +1527,7 @@ export interface RunGoalView {
   pending?: Pending;
   required?: Required;
   scope?: Scope;
-  status?: Status2;
+  status?: Status3;
 }
 /**
  * This interface was referenced by `AriaContracts`'s JSON-Schema
@@ -1397,8 +1537,8 @@ export interface RunCriterionView {
   kind: Kind3;
   reason_code?: ReasonCode5;
   source_id: SourceId1;
-  status: Status1;
-  validation_level?: ValidationLevel2;
+  status: Status2;
+  validation_level?: ValidationLevel3;
 }
 /**
  * This interface was referenced by `AriaContracts`'s JSON-Schema

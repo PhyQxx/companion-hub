@@ -1,0 +1,26 @@
+{
+  "validation_level": "V2",
+  "evidence": "operator_supplied_bill_unverified",
+  "budget_effect": "none",
+  "coverage": "recorded_budgeted_model_calls",
+  "period_start": "2026-10-01T00:00:00Z",
+  "period_end": "2026-10-02T00:00:00Z",
+  "bill_declared_complete": true,
+  "ledger_sha256": "e54573ced62bb0f06bc9d475fd8a05ce51e0ac2be4fbd609002967e60d4ccfae",
+  "bill_sha256": "a281a511eaa3acb2def3e4db5514b2d7496779e4db60fc56d8b303a487122d9e",
+  "counts": {
+    "amount_mismatch": 1
+  },
+  "comparisons": [
+    {
+      "status": "amount_mismatch",
+      "call_id": "01a0fa00-0000-7000-8000-000000000001",
+      "receipt_sha256": "6c85702ffd3bacdaa782c7ffba3746c5821c7ad802ca654409e067b5a7f1441b",
+      "endpoint": "synthetic_fixture",
+      "ledger_currency": "CNY",
+      "bill_currency": "CNY",
+      "held_micros": "100",
+      "billed_micros": "90"
+    }
+  ]
+}

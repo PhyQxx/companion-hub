@@ -1,0 +1,113 @@
+{
+  "$defs": {
+    "LedgerLine": {
+      "additionalProperties": false,
+      "properties": {
+        "call_id": {
+          "format": "uuid",
+          "title": "Call Id",
+          "type": "string"
+        },
+        "charged_micros": {
+          "anyOf": [
+            {
+              "maxLength": 19,
+              "pattern": "^(0|[1-9]\\d{0,18})$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Charged Micros"
+        },
+        "currency": {
+          "anyOf": [
+            {
+              "pattern": "^[A-Z]{3}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Currency"
+        },
+        "endpoint": {
+          "maxLength": 160,
+          "minLength": 1,
+          "pattern": "^[a-z][a-z0-9_-]*(\\.[a-z0-9_-]+)*$",
+          "title": "Endpoint",
+          "type": "string"
+        },
+        "provider_request_id": {
+          "anyOf": [
+            {
+              "maxLength": 200,
+              "minLength": 1,
+              "pattern": "^[\\x21-\\x7e]+$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Provider Request Id"
+        },
+        "state": {
+          "enum": [
+            "reserved",
+            "estimated",
+            "unknown"
+          ],
+          "title": "State",
+          "type": "string"
+        }
+      },
+      "required": [
+        "call_id",
+        "endpoint",
+        "provider_request_id",
+        "currency",
+        "charged_micros",
+        "state"
+      ],
+      "title": "LedgerLine",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "coverage": {
+      "const": "recorded_budgeted_model_calls",
+      "default": "recorded_budgeted_model_calls",
+      "title": "Coverage",
+      "type": "string"
+    },
+    "lines": {
+      "items": {
+        "$ref": "#/$defs/LedgerLine"
+      },
+      "maxItems": 10000,
+      "title": "Lines",
+      "type": "array"
+    },
+    "period_end": {
+      "format": "date-time",
+      "title": "Period End",
+      "type": "string"
+    },
+    "period_start": {
+      "format": "date-time",
+      "title": "Period Start",
+      "type": "string"
+    }
+  },
+  "required": [
+    "period_start",
+    "period_end",
+    "lines"
+  ],
+  "title": "CostSnapshot",
+  "type": "object"
+}

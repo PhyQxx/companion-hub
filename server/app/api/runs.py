@@ -5,6 +5,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 
 from app.auth import AuthService, ChatPrincipal
 from app.chat import ChatService
+from app.schemas.billing import BillingEvidence, BillingReport, CostPeriod, CostSnapshot
 from app.schemas.costs import CostSummaryView
 from app.schemas.runs import RunEventView, RunView
 
@@ -31,6 +32,26 @@ def create_runs_router(service: ChatService, auth_service: AuthService) -> APIRo
         days: Annotated[int, Query(ge=1, le=366)] = 30,
     ) -> CostSummaryView:
         return await service.runs.cost_summary(user_id=principal.user_id, days=days)
+
+    @router.post("/costs/snapshot", response_model=CostSnapshot)
+    async def cost_snapshot(
+        period: CostPeriod,
+        principal: Annotated[ChatPrincipal, Depends(guard)],
+    ) -> CostSnapshot:
+        try:
+            return await service.runs.cost_snapshot(user_id=principal.user_id, period=period)
+        except ValueError as error:
+            raise HTTPException(422, "billing_period_too_large") from error
+
+    @router.post("/costs/reconcile", response_model=BillingReport)
+    async def reconcile_bill(
+        evidence: BillingEvidence,
+        principal: Annotated[ChatPrincipal, Depends(guard)],
+    ) -> BillingReport:
+        try:
+            return await service.runs.reconcile_bill(user_id=principal.user_id, evidence=evidence)
+        except ValueError as error:
+            raise HTTPException(422, "billing_period_too_large") from error
 
     @router.get("/{run_id}", response_model=RunView)
     async def get_run(run_id: UUID, principal: Annotated[ChatPrincipal, Depends(guard)]) -> RunView:

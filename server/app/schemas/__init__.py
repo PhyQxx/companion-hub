@@ -6,6 +6,7 @@ from .adapter import (
     AdapterState,
     EndpointCapabilities,
 )
+from .billing import BillingEvidence, BillingReport, CostPeriod, CostSnapshot
 from .common import PrivacyLevel
 from .costs import CostSummaryView
 from .delivery_run import DeliveryRunOutcome
@@ -29,6 +30,10 @@ SCHEMA_MODELS = (
     AgentReply,
     RunView,
     CostSummaryView,
+    BillingEvidence,
+    BillingReport,
+    CostPeriod,
+    CostSnapshot,
     DeliveryRunOutcome,
     RunEventView,
     ExecutionOutcome,
@@ -46,6 +51,10 @@ __all__ = [
     "AdapterState",
     "AgentAction",
     "AgentReply",
+    "BillingEvidence",
+    "BillingReport",
+    "CostPeriod",
+    "CostSnapshot",
     "CostSummaryView",
     "DeliveryPlan",
     "DeliveryReceipt",

@@ -1,0 +1,15 @@
+{
+  "period_start": "2026-10-01T00:00:00Z",
+  "period_end": "2026-10-02T00:00:00Z",
+  "coverage": "recorded_budgeted_model_calls",
+  "lines": [
+    {
+      "call_id": "01a0fa00-0000-7000-8000-000000000001",
+      "endpoint": "synthetic_fixture",
+      "provider_request_id": "fixture-request-1",
+      "currency": "CNY",
+      "charged_micros": "100",
+      "state": "estimated"
+    }
+  ]
+}

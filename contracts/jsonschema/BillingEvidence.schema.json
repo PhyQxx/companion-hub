@@ -1,0 +1,75 @@
+{
+  "$defs": {
+    "BillLine": {
+      "additionalProperties": false,
+      "properties": {
+        "billed_micros": {
+          "maxLength": 19,
+          "pattern": "^(0|[1-9]\\d{0,18})$",
+          "title": "Billed Micros",
+          "type": "string"
+        },
+        "currency": {
+          "pattern": "^[A-Z]{3}$",
+          "title": "Currency",
+          "type": "string"
+        },
+        "endpoint": {
+          "maxLength": 160,
+          "minLength": 1,
+          "pattern": "^[a-z][a-z0-9_-]*(\\.[a-z0-9_-]+)*$",
+          "title": "Endpoint",
+          "type": "string"
+        },
+        "provider_request_id": {
+          "maxLength": 200,
+          "minLength": 1,
+          "pattern": "^[\\x21-\\x7e]+$",
+          "title": "Provider Request Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "endpoint",
+        "provider_request_id",
+        "currency",
+        "billed_micros"
+      ],
+      "title": "BillLine",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "declared_complete": {
+      "default": false,
+      "title": "Declared Complete",
+      "type": "boolean"
+    },
+    "lines": {
+      "items": {
+        "$ref": "#/$defs/BillLine"
+      },
+      "maxItems": 1000,
+      "title": "Lines",
+      "type": "array"
+    },
+    "period_end": {
+      "format": "date-time",
+      "title": "Period End",
+      "type": "string"
+    },
+    "period_start": {
+      "format": "date-time",
+      "title": "Period Start",
+      "type": "string"
+    }
+  },
+  "required": [
+    "period_start",
+    "period_end",
+    "lines"
+  ],
+  "title": "BillingEvidence",
+  "type": "object"
+}

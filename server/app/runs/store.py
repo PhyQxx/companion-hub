@@ -18,6 +18,7 @@ from app.db import (
     TaskRunRecord,
 )
 from app.ids import uuid7
+from app.schemas.billing import BillingEvidence, BillingReport, CostPeriod, CostSnapshot
 from app.schemas.costs import CostSummaryView
 from app.schemas.execution import RunActionOutcome
 from app.schemas.runs import RunBudgetView, RunEventView, RunView
@@ -80,6 +81,16 @@ class RunStore:
         from .costs import cost_summary
 
         return await cost_summary(self._database, user_id=user_id, days=days)
+
+    async def cost_snapshot(self, *, user_id: UUID, period: CostPeriod) -> CostSnapshot:
+        from .billing import cost_snapshot
+
+        return await cost_snapshot(self._database, user_id=user_id, period=period)
+
+    async def reconcile_bill(self, *, user_id: UUID, evidence: BillingEvidence) -> BillingReport:
+        from .billing import reconcile_bill
+
+        return await reconcile_bill(self._database, user_id=user_id, evidence=evidence)
 
     async def cancel_background(self, run_id: UUID, *, user_id: UUID) -> bool:
         async with self._database.sessions.begin() as session:

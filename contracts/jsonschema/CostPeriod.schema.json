@@ -1,0 +1,21 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "period_end": {
+      "format": "date-time",
+      "title": "Period End",
+      "type": "string"
+    },
+    "period_start": {
+      "format": "date-time",
+      "title": "Period Start",
+      "type": "string"
+    }
+  },
+  "required": [
+    "period_start",
+    "period_end"
+  ],
+  "title": "CostPeriod",
+  "type": "object"
+}

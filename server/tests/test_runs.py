@@ -296,6 +296,33 @@ async def test_run_api_authentication_owner_scope_and_event_cursor(tmp_path: Pat
             assert (
                 await client.get("/api/v1/runs/costs?days=0", headers=headers)
             ).status_code == 422
+            period = {"period_start": "2026-01-01T00:00:00Z", "period_end": "2027-01-01T00:00:00Z"}
+            assert (
+                await client.post("/api/v1/runs/costs/snapshot", json=period)
+            ).status_code == 401
+            snapshot = await client.post(
+                "/api/v1/runs/costs/snapshot", json=period, headers=headers
+            )
+            assert snapshot.status_code == 200
+            assert [line["currency"] for line in snapshot.json()["lines"]] == ["CNY"]
+            assert snapshot.json()["lines"][0]["charged_micros"] == "100"
+            evidence = {**period, "declared_complete": False, "lines": []}
+            assert (
+                await client.post("/api/v1/runs/costs/reconcile", json=evidence)
+            ).status_code == 401
+            reconciliation = await client.post(
+                "/api/v1/runs/costs/reconcile", json=evidence, headers=headers
+            )
+            assert reconciliation.status_code == 200
+            assert reconciliation.json()["counts"] == {"missing_receipt": 1}
+            assert reconciliation.json()["budget_effect"] == "none"
+            assert (
+                await client.post(
+                    "/api/v1/runs/costs/snapshot",
+                    json={**period, "period_end": "2030-01-01T00:00:00Z"},
+                    headers=headers,
+                )
+            ).status_code == 422
             runs = await client.get("/api/v1/runs", headers=headers)
             assert runs.status_code == 200
             assert [run["id"] for run in runs.json()] == [str(own_turn.assistant_message.turn_id)]

@@ -1,0 +1,13 @@
+{
+  "period_start": "2026-10-01T00:00:00Z",
+  "period_end": "2026-10-02T00:00:00Z",
+  "declared_complete": true,
+  "lines": [
+    {
+      "endpoint": "synthetic_fixture",
+      "provider_request_id": "fixture-request-1",
+      "currency": "CNY",
+      "billed_micros": "90"
+    }
+  ]
+}
