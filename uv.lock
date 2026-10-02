@@ -171,6 +171,7 @@ dependencies = [
     { name = "pywebpush" },
     { name = "pyyaml" },
     { name = "sqlalchemy", extra = ["asyncio"] },
+    { name = "tokenizers" },
     { name = "uvicorn", extra = ["standard"] },
     { name = "websockets" },
 ]
@@ -215,6 +216,7 @@ requires-dist = [
     { name = "pyyaml", specifier = ">=6.0,<7" },
     { name = "sherpa-onnx", marker = "extra == 'voice'", specifier = ">=1.10,<2" },
     { name = "sqlalchemy", extras = ["asyncio"], specifier = ">=2.0.41,<3" },
+    { name = "tokenizers", specifier = ">=0.23,<1" },
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.35,<1" },
     { name = "websockets", specifier = ">=15,<18" },
 ]

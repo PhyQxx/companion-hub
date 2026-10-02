@@ -8,6 +8,7 @@ from contextlib import asynccontextmanager, suppress
 from dataclasses import dataclass
 
 from app.harness.budget import BudgetDenied, current_budget
+from app.harness.tokenizer import ContextTokenizerUnavailable
 from app.harness.window import ContextWindowExceeded, fit_window
 from app.observability import TraceRecorder
 from app.privacy import EgressBlocked, EgressDestination, EgressGuard
@@ -121,14 +122,18 @@ class LLMRouter:
                 continue
             provider = self._providers[endpoint_name]
             try:
-                fitted = fit_window(routed_request, endpoint)
-            except ContextWindowExceeded:
+                fitted = (
+                    await asyncio.to_thread(fit_window, routed_request, endpoint)
+                    if endpoint.context_tokenizer is not None
+                    else fit_window(routed_request, endpoint)
+                )
+            except (ContextWindowExceeded, ContextTokenizerUnavailable) as error:
                 failures += 1
                 failure_details.append(
                     LLMEndpointFailure(
                         endpoint=endpoint_name,
                         attempt=0,
-                        error_type="ContextWindowExceeded",
+                        error_type=type(error).__name__,
                     )
                 )
                 continue
@@ -213,6 +218,12 @@ class LLMRouter:
             )
             raise LLMRouteExhausted("no_privacy_compatible_model")
         if failure_details and all(
+            failure.error_type == "ContextTokenizerUnavailable" for failure in failure_details
+        ):
+            raise LLMRouteExhausted(
+                "context_tokenizer_unavailable", failures=tuple(failure_details)
+            )
+        if failure_details and all(
             failure.error_type == "ContextWindowExceeded" for failure in failure_details
         ):
             raise LLMRouteExhausted("context_window_exceeded", failures=tuple(failure_details))
@@ -263,14 +274,18 @@ class LLMRouter:
                 continue
             provider = self._providers[endpoint_name]
             try:
-                fitted = fit_window(routed_request, endpoint)
-            except ContextWindowExceeded:
+                fitted = (
+                    await asyncio.to_thread(fit_window, routed_request, endpoint)
+                    if endpoint.context_tokenizer is not None
+                    else fit_window(routed_request, endpoint)
+                )
+            except (ContextWindowExceeded, ContextTokenizerUnavailable) as error:
                 failures += 1
                 failure_details.append(
                     LLMEndpointFailure(
                         endpoint=endpoint_name,
                         attempt=0,
-                        error_type="ContextWindowExceeded",
+                        error_type=type(error).__name__,
                     )
                 )
                 continue
@@ -364,6 +379,12 @@ class LLMRouter:
                 privacy.value,
             )
             raise LLMRouteExhausted("no_privacy_compatible_model")
+        if failure_details and all(
+            failure.error_type == "ContextTokenizerUnavailable" for failure in failure_details
+        ):
+            raise LLMRouteExhausted(
+                "context_tokenizer_unavailable", failures=tuple(failure_details)
+            )
         if failure_details and all(
             failure.error_type == "ContextWindowExceeded" for failure in failure_details
         ):

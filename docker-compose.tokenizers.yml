@@ -1,0 +1,11 @@
+services:
+  hub:
+    environment:
+      ARIA_TOKENIZER_DIR: /var/lib/aria/tokenizers
+    volumes:
+      - type: bind
+        source: ${ARIA_TOKENIZER_HOST_DIR:?Set ARIA_TOKENIZER_HOST_DIR to an existing tokenizer directory}
+        target: /var/lib/aria/tokenizers
+        read_only: true
+        bind:
+          create_host_path: false

@@ -455,6 +455,7 @@ function generationFailureText(reason: unknown, prefix = "生成失败"): string
   const messages: Record<string, string> = {
     user_model_concurrency_exhausted: "同时处理的任务较多，请稍后再试。",
     budget_owner_invalid: "账户当前无法处理任务，请重新登录后重试。",
+    context_tokenizer_unavailable: "模型的本地分词配置不可用，请在管理界面核对文件和指纹。",
     daily_cost_budget_exhausted: "今天已达到模型费用预留上限，请稍后再试或在管理界面调整限额。",
     monthly_cost_budget_exhausted: "本月已达到模型费用预留上限，请核对用量或在管理界面调整限额。",
     cost_pricing_unavailable: "当前模型没有与限额匹配的完整计价信息，请在管理界面补齐价格和币种。",

@@ -115,7 +115,15 @@ class CompletionResult(StrictModel):
     tool_calls: Annotated[list[ToolCall], Field(max_length=8)] = Field(default_factory=list)
 
 
+class ContextTokenizer(StrictModel):
+    id: TokenName
+    sha256: Annotated[str, Field(pattern=r"^[a-f0-9]{64}$")]
+    safety_multiplier: Annotated[float, Field(ge=1, le=32, allow_inf_nan=False)] = 1.25
+    protocol_reserve_tokens: Annotated[int, Field(ge=256, le=131072)] = 256
+
+
 class ModelEndpoint(StrictModel):
+    context_tokenizer: ContextTokenizer | None = None
     enabled: bool = True
     kind: ModelKind = ModelKind.TEXT
     provider: TokenName

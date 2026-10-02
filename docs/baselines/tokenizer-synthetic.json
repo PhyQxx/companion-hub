@@ -1,0 +1,33 @@
+{
+  "version": 1,
+  "validation_level": "V2",
+  "semantic_validation": "unverified",
+  "usage_provenance": "operator_declared_synthetic_fixture",
+  "provider_protocol_validation": "unverified",
+  "provider": "fixture",
+  "model": "synthetic-word-level",
+  "corpus_sha256": "38a88a486fa3f029bcfd39470a46faaf5242a625cd622f37360429c9d699c744",
+  "tokenizer_id": "synthetic-word-level",
+  "tokenizer_sha256": "60251ed1edcb3ac0b0d9921a145035c5d1596f11c031f40e7ba12873d6852661",
+  "tokenizer_library_version": "0.23.1",
+  "estimator": "native_json_estimate_v1",
+  "safety_multiplier": 1.25,
+  "protocol_reserve_tokens": 256,
+  "all_cases_within_estimate": true,
+  "max_underestimate_tokens": 0,
+  "suggested_protocol_reserve_for_this_corpus": 256,
+  "cases": [
+    {
+      "id": "mixed",
+      "estimated_input_with_protocol": 295,
+      "declared_prompt_tokens": 32,
+      "underestimate_tokens": 0
+    },
+    {
+      "id": "repeated",
+      "estimated_input_with_protocol": 341,
+      "declared_prompt_tokens": 96,
+      "underestimate_tokens": 0
+    }
+  ]
+}

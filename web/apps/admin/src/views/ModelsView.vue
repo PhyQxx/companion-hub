@@ -6,7 +6,10 @@ import { useRoute } from "vue-router";
 
 type ModelKind = "text" | "vision" | "image_generation" | "video_generation";
 
+interface HubContextTokenizer { id: string; sha256: string; safety_multiplier: number; protocol_reserve_tokens: number }
+
 interface HubModel {
+  context_tokenizer?: HubContextTokenizer | null;
   name?: string;
   kind?: ModelKind;
   provider: string;
@@ -27,6 +30,11 @@ interface HubModel {
   input_cost_per_million?: number | null;
   output_cost_per_million?: number | null;
   cost_currency?: string | null;
+}
+
+function setNativeTokenizer(enabled: string | number | boolean) {
+  const model = draft.value.models[activeModelTab.value];
+  if (model) model.context_tokenizer = enabled ? { id: "", sha256: "", safety_multiplier: 1.25, protocol_reserve_tokens: 256 } : null;
 }
 
 function selectModel(index: number) {
@@ -98,6 +106,7 @@ function draftModelToEndpoint(m: DraftModel): HubModel {
     input_cost_per_million: m.input_cost_per_million ?? null,
     output_cost_per_million: m.output_cost_per_million ?? null,
     cost_currency: m.cost_currency.trim().toUpperCase() || null,
+    context_tokenizer: m.context_tokenizer,
   };
   if (m.secret_mode === "value" && m.secret_value) {
     endpoint.secret_value = m.secret_value;
@@ -270,6 +279,7 @@ interface HubVoiceConfig {
   tts: HubVoiceTts[];
 }
 interface DraftModel {
+  context_tokenizer: HubContextTokenizer | null;
   key: string;
   enabled: boolean;
   kind: ModelKind;
@@ -393,6 +403,7 @@ const defaultModel = (): DraftModel => ({
   input_cost_per_million: undefined,
   output_cost_per_million: undefined,
   cost_currency: "",
+  context_tokenizer: null,
 });
 
 const defaultRoute = (): DraftRoute => ({ primary: "", fallbacks: [], timeout_ms: null });
@@ -653,6 +664,7 @@ function hubConfigToDraft(config: HubConfig | undefined | null): DraftState {
       input_cost_per_million: m.input_cost_per_million ?? undefined,
       output_cost_per_million: m.output_cost_per_million ?? undefined,
       cost_currency: m.cost_currency ?? "",
+      context_tokenizer: m.context_tokenizer ? { ...m.context_tokenizer } : null,
     };
   });
   const routes: Record<string, DraftRoute> = {};
@@ -742,6 +754,7 @@ function draftToHubConfig(d: DraftState): HubConfig {
       input_cost_per_million: m.input_cost_per_million ?? null,
       output_cost_per_million: m.output_cost_per_million ?? null,
       cost_currency: m.cost_currency.trim().toUpperCase() || null,
+    context_tokenizer: m.context_tokenizer,
     };
     if (m.secret_mode === "value" && m.secret_value) {
       endpoint.secret_value = m.secret_value;
@@ -1620,6 +1633,13 @@ onActivated(() => {
                     <label class="field"><span>重试次数</span><el-input-number v-model="draft.models[activeModelTab].max_retries" :min="0" :max="3" controls-position="right" /></label>
                     <label class="field"><span>max_tokens</span><el-input-number v-model="draft.models[activeModelTab].max_tokens" :min="1" :max="131072" controls-position="right" /></label>
                     <label class="field"><span>上下文 tokens</span><el-input-number v-model="draft.models[activeModelTab].max_context_tokens" :min="1" controls-position="right" /></label>
+                    <label class="field"><span>使用本地分词文件</span><el-switch :model-value="!!draft.models[activeModelTab].context_tokenizer" @change="setNativeTokenizer" /></label>
+                    <template v-if="draft.models[activeModelTab].context_tokenizer">
+                      <label class="field"><span>分词文件 ID</span><el-input v-model="draft.models[activeModelTab].context_tokenizer!.id" placeholder="目录内的 ID.json" /></label>
+                      <label class="field"><span>文件 SHA-256</span><el-input v-model="draft.models[activeModelTab].context_tokenizer!.sha256" placeholder="64 位小写十六进制指纹" /></label>
+                      <label class="field"><span>计数安全系数</span><el-input-number v-model="draft.models[activeModelTab].context_tokenizer!.safety_multiplier" :min="1" :max="32" :step="0.05" /></label>
+                      <label class="field"><span>协议预留 tokens</span><el-input-number v-model="draft.models[activeModelTab].context_tokenizer!.protocol_reserve_tokens" :min="256" :max="131072" /></label>
+                    </template>
                     <label class="field"><span>计价币种（如 CNY、USD）</span><el-input v-model="draft.models[activeModelTab].cost_currency" placeholder="未填写时不跨端点汇总" maxlength="3" /></label>
                     <label class="field"><span>输入单价 / 百万 tokens（留空为未知）</span><el-input-number v-model="draft.models[activeModelTab].input_cost_per_million" :min="0" :step="0.01" controls-position="right" /></label>
                     <label class="field"><span>输出单价 / 百万 tokens（留空为未知）</span><el-input-number v-model="draft.models[activeModelTab].output_cost_per_million" :min="0" :step="0.01" controls-position="right" /></label>

@@ -1,0 +1,30 @@
+{
+  "version": 1,
+  "synthetic": true,
+  "provider": "fixture",
+  "model": "synthetic-word-level",
+  "cases": [
+    {
+      "id": "mixed",
+      "messages": [
+        {
+          "role": "user",
+          "content": "hello world 你好"
+        }
+      ],
+      "prompt_tokens": 32,
+      "usage_known": true
+    },
+    {
+      "id": "repeated",
+      "messages": [
+        {
+          "role": "user",
+          "content": "hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello "
+        }
+      ],
+      "prompt_tokens": 96,
+      "usage_known": true
+    }
+  ]
+}
