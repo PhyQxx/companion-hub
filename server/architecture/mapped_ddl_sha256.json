@@ -1,0 +1,294 @@
+{
+  "action_plan": {
+    "postgresql": "7dfdbafc7dcb7a42ba6bdd251ea417adb6f17b926f54daf7d3bfbccbacf35ab3",
+    "sqlite": "cc39a4bc104441a51e2434438d4519ccb61e2107094d315ffa71eb3f2fa17019"
+  },
+  "action_result": {
+    "postgresql": "0ad6467d41135ae2afc089a0d9645e18a2809b4f60f323f4e45acb9f3dbab673",
+    "sqlite": "c23d44af64f5fa5702e9316aa029137ef36c013cb3012eb0d8bbb8efff77c6c3"
+  },
+  "action_step": {
+    "postgresql": "d1f9c7fb1281a839f8c232fd60073145aa3619e163e6610d3c996547b741729d",
+    "sqlite": "1159e8a01071d0c519be670f3251bc51952f349ef26bf9fc77e989bbbb285ced"
+  },
+  "app_user": {
+    "postgresql": "ec9caee00a05fbd807aa7611fa9e470e84de12a36d1fdb6e41728e4f1c9a5a9d",
+    "sqlite": "1b425a4515cd475a6c75c088d9e829aa408c2a995085de4ce0d434f1f7f31bbb"
+  },
+  "asset": {
+    "postgresql": "753620614ea5549bc58120c0f4463ab3ca6dd2529b375c835a3e3ad52daa0147",
+    "sqlite": "518e3540116be5c89f164dc46c78046d94b318d9125bbac1cfecfa260421fba1"
+  },
+  "asset_derivation": {
+    "postgresql": "15025f36b5f0d2f88ac9b4400f48dba65be9dcce622094f918e5c814f3ba58c1",
+    "sqlite": "a2dfffc952f6ced415cfe4c1fcc4ad68e2e1957540489f7299084d237e5605d7"
+  },
+  "asset_reference": {
+    "postgresql": "d2ae32e8f752d0a570d6eaa867fb307775e9681d58b4d022aacde720aefcce16",
+    "sqlite": "d8135b81dcf401f0956b5db07ab96847c0bcf7a9f7f5922de64cd40675fbea31"
+  },
+  "auth_credential": {
+    "postgresql": "4647a3cdf3d419b04aa2cbee604a18c4ac6081a5253ab554837561cfda6d318b",
+    "sqlite": "5d1636109d5306444c9c65e6789132399e631ed0c5d690de3a43223e1f3092ee"
+  },
+  "auth_session": {
+    "postgresql": "2c2aa03c8e74c4c40ce0958df032a67d5b4470ff6163834315e4b3943cf042c6",
+    "sqlite": "d4ff042801f7c03159380918ee426ad30e95b38947080a541201b45049ba42db"
+  },
+  "avatar_instance": {
+    "postgresql": "881b227e8f72f81e30bc62749e5d9cf01f9650779125a608d008a9aa2002bbd5",
+    "sqlite": "a54cf5fce85d69d2c3be30a2c75287f13f755e4e90582d70c690703408693a31"
+  },
+  "avatar_pack": {
+    "postgresql": "bfcd1b80a61db5ee6372ef131f53c2c952f12de68b3899bf725a8b72dc457f42",
+    "sqlite": "2573936313575c2867219cc7a43d8117a7cb26a9131eb5268cab102b6b9c7dd0"
+  },
+  "calendar_event": {
+    "postgresql": "4960ede4462422b1fa3722047b35acde4de0c0cd95c990b9984337b16fe460fc",
+    "sqlite": "6105614f6785bad69c5451d79b948653d9330270f61a74e2d25cef6cd328942d"
+  },
+  "calendar_oauth_token": {
+    "postgresql": "f4badf4b283b47c539cf4c84796845f88de1e8212ff00979a007fab9105e915f",
+    "sqlite": "2fe923a7df2e1a3e1b29e464b57d5bf6171a14a994a71dc77ee51cc21c89c5e1"
+  },
+  "cognitive_decision": {
+    "postgresql": "925b0da1417b8a66df6eb68e875b92aace154949d19b857a71dc37770d5e4f80",
+    "sqlite": "36086d2f04ecaa984d0de25de48c390151dda0ce5b4f242fd0b845ff4664f9ae"
+  },
+  "cognitive_feedback": {
+    "postgresql": "d65c30b9734d7f79cb9f0dd9cefe6b32b8b01b283331731d13af62d1c9125484",
+    "sqlite": "5d1598cb110f3c23169fb0c742425f4ac5378f03af5c8b538d0a66169714f382"
+  },
+  "cognitive_goal": {
+    "postgresql": "3f0c5e2967098d5bfce745d3c149de2c932a0c93aa33c29bcf431f79241dab25",
+    "sqlite": "e0cee836d7e35694aa274d5d6e03c4c7ccb61c31544bfb5b501f25214d3cf53d"
+  },
+  "config_pointer": {
+    "postgresql": "4d885c8f0af6fc8aab02e721402b61eef41b5486efbec50076b830bd9f49d996",
+    "sqlite": "fc34203b5698af6c3240d3c92e9b3377f4320d2a7e6be5432b067ac52c05ddab"
+  },
+  "config_version": {
+    "postgresql": "62e84709b0cd429482c36fac8d381b4e2dafc79ee45c359e319a49059960f49a",
+    "sqlite": "12e685bc023995d0c94c3cf6e2c8bc3ef59c57d18023c07cd5e3ea7246b9c862"
+  },
+  "consumer_inbox": {
+    "postgresql": "157a41bcdaefbedc7405b20cfd7e513ec0ddfc5a96bc95f12b59293ca69f4ea1",
+    "sqlite": "30dc64f17d474176dbcc874987b7fcb36964130083e9a8a31e09b9fdce107753"
+  },
+  "contact": {
+    "postgresql": "55480f534ca34233aaf1c4ba1e2dfe83bae01b2025094d3422d7860d6ae67a8f",
+    "sqlite": "1e82cb463c9f105a552dec38bc638a3ae2ad1673f177e3434eea2d296d00e5a3"
+  },
+  "conversation": {
+    "postgresql": "596a26c998bd2f1e79d0a40da63144e25a2a7337920e935bed4d39778a06c292",
+    "sqlite": "5ddf8ae6483b72d7467bf98ba53d515aed34107ba28e6a3b5947991ba5534a86"
+  },
+  "daily_brief": {
+    "postgresql": "ba15e2053119d51525967f724b5445cc0e7ebb391113d4a84809621d930418b8",
+    "sqlite": "3ed3767c52518b97feafff4853f4c56c4244cead65421048d9812983ba77f797"
+  },
+  "daily_review": {
+    "postgresql": "995377d9ba78c8976a9698365413129a39ec13e28a87b8a0d3aae98f3ed6e1ba",
+    "sqlite": "e7868269d2a546d7e674c1988e2bdcd3b161bc76d496e2ff447f70423762d435"
+  },
+  "dead_letter": {
+    "postgresql": "4acb450807230215f19b050a7fc7a09482a52aac00478248b0ea24df8cad4c92",
+    "sqlite": "a259e0e58bcd2c3155f707514b4865fbb3cce3a629a32150b19a104605989f29"
+  },
+  "deletion_ledger": {
+    "postgresql": "8d61bec4629a03bc35ec5e74cf610a4bbff818d20bfb25aff1a37f0ac2125ed9",
+    "sqlite": "10f9779e994e89266bd522ee40aacf4eb81cfbcfff0b5b8c257a9952c79820de"
+  },
+  "device_client": {
+    "postgresql": "348945a77381a9c72b3eea5afcc474f8148cedaccc45748bad453a90d36aac7c",
+    "sqlite": "d0445f8a1605be61c11bab0bb36dd646131acb024cbe820568c3aa9d2010a8c9"
+  },
+  "device_command": {
+    "postgresql": "e04834796459760679a2df08d281bb6d6aa2ac3487f06b42fa6ae4325b41ac6d",
+    "sqlite": "2db562a6186995cbee6ca5001c432226ba5b0867c0c4c0f9a145cb12bf10ffdb"
+  },
+  "device_pairing_code": {
+    "postgresql": "05db86d8f00977fa33cfa48761652581f54dd76b4c477f1e531490536f55a2c1",
+    "sqlite": "9cbf6bfe0d58bba7ad471a07b6408a1764a5b5a865c6224e96c0be75bfdb855d"
+  },
+  "event": {
+    "postgresql": "70116c67130bfc886ea7fb67b45cd99c2211d82519e89d05d2c280999dc2fe21",
+    "sqlite": "95ac2af431b7f1923399d260f869d65f6663c5d49e881d814cc8db8fc32902fa"
+  },
+  "home_assistant_proactive_log": {
+    "postgresql": "eb3e168b02ae93520bccf5de09ccc1b182724debc47f1a5b509f30fccb35c66c",
+    "sqlite": "def26c352ff9bf29e34caa99b907da74016a1793eb92680f6cc448af2cd22e1b"
+  },
+  "home_scene": {
+    "postgresql": "2857b9ce0a4f16351b3721be9127c2f6d2f737b47752089af0773e8d65374d8b",
+    "sqlite": "689ebf50f0d908a9edd4c0346963e1ae5e3e4062d3016c0c03bc4eba7dc7a249"
+  },
+  "interaction_turn": {
+    "postgresql": "feb89f193f2b4237c902034405e3c8789c2bc7ab8027f73d873408af804390ae",
+    "sqlite": "d0e7a5d5aacbe6edcc2c57fd7072851b9c3e50ee15ce72f935db5c28e82480ef"
+  },
+  "job": {
+    "postgresql": "bd3177318821323e5de21462d0c428589ea4e38868d08746b725e402fd122964",
+    "sqlite": "f82991a7248c26ddd52a39b073100405fc0c6fa82655f01ee556f527e93f74b2"
+  },
+  "job_artifact": {
+    "postgresql": "26b16208602f250d4eb59b92dcd1dfdfff8616b6d9bffe0d35cdef1045627b46",
+    "sqlite": "ee4e72a5b3a9de9b94276583c0e1a2b3129764eb03c1c1c042854e7e5ec13a15"
+  },
+  "job_step": {
+    "postgresql": "27238cc690647c461ca7d67cc02a78413f9c6db7efc35e1da192938f1923d179",
+    "sqlite": "293dd688b1a5f5af5bae5ea528d614b1a199c466c4c0d9621c58abb7bd45d162"
+  },
+  "mail_attachment": {
+    "postgresql": "f2471a9e1a487f8a59ac51d58164738ca47f66d7aa957db41e52b121601aa4d9",
+    "sqlite": "1499748dca1bda106b02f590d5f6fc94595e3ca593523f23b9584264757911d1"
+  },
+  "mail_outbox_log": {
+    "postgresql": "ce705019b9ade5831e24266d9c57bb14abd995bad5e4d7baa621b2ff07688129",
+    "sqlite": "a14c22c35c0cb4dd60675bbafe3704b7be28caf3b09bb908274373752a49bf92"
+  },
+  "meeting": {
+    "postgresql": "ce5aa5b3c5a17fdbbdca4a149726e0d01f5330a4fa6c450d2e83bfccad2960c0",
+    "sqlite": "cd3231c52de6cb5b6f7c5929b89c6109c8f5f4496325912f5678e0d4c006b283"
+  },
+  "meeting_action_claim": {
+    "postgresql": "43348a5f5251203576ed553d02b771ceacf27be7eec2a93cf868847d6c99bc83",
+    "sqlite": "aa2f0c674e5f1f73726cc10bf19614b291a8bc28a8b2dd50706ee86cb293628f"
+  },
+  "memory": {
+    "postgresql": "95ac2106bb4bc626871415c97f3639ef72d0f4c17469b4e982889e7c33f74581",
+    "sqlite": "179dbe427415cb13ed883a07e9327caa3694db316419bb15a6544ff4ba43b70e"
+  },
+  "memory_source": {
+    "postgresql": "c28b4ba5ca23950458263e4683a4c4ee19ff7d514518bfddea6c37501b03f32e",
+    "sqlite": "5fed179cd53d2cdac84d032650e5e897e375d9d107c1cc766f0b7f2a2694c44a"
+  },
+  "message": {
+    "postgresql": "3e45d6755772023a219a1497b5f8055f94cda883b76792e25db2fa8cce7962a6",
+    "sqlite": "1a77d94eb7d1ff542037ad5cfdc69d928d7aa8d4bfc2c469affd2aacbc25ae11"
+  },
+  "model_cost": {
+    "postgresql": "1e4b9a93cadacb5c00b6f8882bee9100614c1ae414f04b04455f04a2360a8023",
+    "sqlite": "c01107423648f4de1653fc0d3977a64638de2e7a9f37516d9764f5454aa0fdf1"
+  },
+  "model_reservation": {
+    "postgresql": "cfd277e60c72aec3ddca2f2338a9658e3eb11063ff3f70b4684a8da4d5991239",
+    "sqlite": "5b5bc207b5772fe26146c9299d8176ce4a222cd6791cd177b709df07abaa38db"
+  },
+  "outbox": {
+    "postgresql": "a4e54f77492ef5e17d05ac7776b4dc4f01613e2f83a82f878e2bebfff653c6e5",
+    "sqlite": "28a4914a6035995ae2dbb168f5f78673d941febf1cb2572c8abe897a9a2edc99"
+  },
+  "pending_mutation": {
+    "postgresql": "d1f0e80f0dfdd9a545355dc4d688a3a7a3ca90df50fffc360ea3fe3a7c01dfd9",
+    "sqlite": "d0eef1c8cd43ede8a09e46cb1265bf430046981633cfbc76390473528248ab6b"
+  },
+  "persona_avatar_binding": {
+    "postgresql": "eea173fd7085ee7829c1fa833b331a48a372ccbb746616b79078e8f070808ed5",
+    "sqlite": "607a98dda4a35daf929d9cfcbd485e2759f5bb19b611d5f2567cf75c91d10e95"
+  },
+  "persona_pointer": {
+    "postgresql": "99debd90d174778b95ab5d55cfc539245a9010be1aa92b89663dbe7f39a8f479",
+    "sqlite": "c714567939e3f3cba42cea354f8af0bef33dc839d6645fd64786ff6a4da340e3"
+  },
+  "persona_version": {
+    "postgresql": "c7ecd3135fe336a9d84c9545ca762e74b8910c6d64cb21850d4f67cd50ab48ee",
+    "sqlite": "b9eb803484ebf5ee1c429aba21b93161c32245bf348b071ed511c4fc0821e3dd"
+  },
+  "proactive_delivery_receipt": {
+    "postgresql": "2a41abc38dacdf2c939477932d57fd18502a5ff7971a8f5d302d7c4963a7882d",
+    "sqlite": "c3eb3f4dd5ecfe213fd247fbbe0bcffe4be4a8518cbddd8f0a1567c23009fc5c"
+  },
+  "push_subscription": {
+    "postgresql": "e0a08e4415e4af7576f41b15265be9df7fcfcb611176f69bce78668a6e0254e0",
+    "sqlite": "3967b746d0bd9ac2140c47cab3a53d8f5ee4524a3a84b34ecbc869c775a6159d"
+  },
+  "reflection_candidate": {
+    "postgresql": "5f851fca40eef3321f400b9e316d5965d632b2d057adb74787467369c8ca6518",
+    "sqlite": "38e065c32cace77ff6a6cccadba67b2c92ba437e2a80ae9a8395aab11c81fc44"
+  },
+  "runtime_lease": {
+    "postgresql": "4f1534e630946aaef492b1db7cce381b6eb4f722b8b2b84e2e22635d6ae0a4f3",
+    "sqlite": "2724317deae1874740894399b34492289a685aa99946994048feead27f06ce13"
+  },
+  "safety_alert": {
+    "postgresql": "40aa77da932d5d889b2b6d0b65edfdffb0e8b4e17b37f0f0bddbce59f2f3e1cf",
+    "sqlite": "e166ae880c69fc71a768e25358a5e1a179e984a28b43156cda73f5d88f1c9722"
+  },
+  "safety_alert_escalation": {
+    "postgresql": "773a9232710ca9f73f54f241e1d9abeee2e254a456fc4122d0bbce6698f9482d",
+    "sqlite": "9d44db26a3db3f0b5166f496d0454db5c3f63b667522204487cc65f80f91657f"
+  },
+  "safety_authorization": {
+    "postgresql": "66493449d881729140a31ad831170dfc9ec86cec5b78e04ad549d76b342cd2a1",
+    "sqlite": "fed8e274c14989f8bd9decf7e6e419ae643c83672983d9eb8c27332f2d4317a8"
+  },
+  "semantic_event_audit": {
+    "postgresql": "600a9775deac954bad181f8fa6629d5c24c8beab59d84f8d4f3016f6257d8d22",
+    "sqlite": "d93db0702b5ac66ab7d93c8fded0f7c11d3797a2c15e0edd28834955a0099a4a"
+  },
+  "skill": {
+    "postgresql": "f5515f09546365d9004c45f4b1e6e52bfe2c3cffb76c423e2c5a6b292d679b86",
+    "sqlite": "9cb08e48cfa4411e5d8ae3d72cb5c18fb8479f5e536418415e7243e966870b3e"
+  },
+  "skill_connection": {
+    "postgresql": "45d4bb69b4433b2005154fc44767fbb0b1993f4c4df1d75254f22e0f7447bf53",
+    "sqlite": "df472d63baccc7f52daa042c90e43e318a3c80505addec4d582f9abb4e81e89b"
+  },
+  "skill_credential": {
+    "postgresql": "3644b703e5c0e2665f1305663d9cd4901beed0940b7141e72372c36fa5e4759d",
+    "sqlite": "47f1eefb26628427965647a9c6d297c524542ed8afbb9383885c2a80f3ba2d69"
+  },
+  "skill_draft": {
+    "postgresql": "e8b639cb8ec4f6a9e6f2e49b633d78ab35b3ee706a75806cbc60dcb40f5c3bda",
+    "sqlite": "d3e6a7c1feeeec8a8baf0c387c9bd15a7781394a1ed07923ffaeaf7ded91da7b"
+  },
+  "skill_run": {
+    "postgresql": "16f2589f7307ebdedb162e22c477951dbfc24da683236be2cef79098afff0933",
+    "sqlite": "dbc20abe005bc28a2a02791cded32ee0dc8c8b486941731416f81007cf1b1ea0"
+  },
+  "skill_suggestion": {
+    "postgresql": "18d899fb9495c1661896dcb874658abca56b18a60bbc72b1918f52006ed4b042",
+    "sqlite": "ba42108afa760268f63175bc69a579f3f7030398820b66d7e6beffbc0ed64342"
+  },
+  "skill_version": {
+    "postgresql": "9c035419cb563165a50f17e8fb5a112eba62ec6162006f3e455041e3e3fa65d3",
+    "sqlite": "8031fbcbb6434a4d948f1d9f68c57be80f56abd3b7a993365d80f6c53dfa992a"
+  },
+  "task_item": {
+    "postgresql": "342b7082d092c74364e46fa9c50eaba6ad661ea5fa9ecf05b31405944bc0b2c2",
+    "sqlite": "4fdc6a88ef128e98bdc8f634e7586d7589073db707befe21a11c67a033abf6de"
+  },
+  "task_run": {
+    "postgresql": "c6284ad979409e57f5aedc83772983c619c1abb877c57c423fd831e42f739204",
+    "sqlite": "d5444128ac01070edecb1955653610fda111b4d167b5219eb3900d29c932e1ce"
+  },
+  "task_run_event": {
+    "postgresql": "7e8121aa5bde95919d9131955764dce4f5c100a38646828560d66801614b2412",
+    "sqlite": "d29a45a482479c64cbf8a737f291633ec890a1fc96cef6a3a5668c06e785ddb9"
+  },
+  "timeline_event": {
+    "postgresql": "de32085c6d0f400d8186ae9c68a40e3a5eaf2a9e091650421481843a184ce184",
+    "sqlite": "991d82b6fa4944a1ec5711ba104cf1c6417bda0baef2e6559a57c61602ff2e35"
+  },
+  "ui_preference": {
+    "postgresql": "e28f5064a0d266fb8352f00b5cc7b06486b228a57707dfc2deb857c771b62f49",
+    "sqlite": "4876afc4b9e9773c5f00ceb74913724a7bf1b8c8da18fe25911f51b436d28327"
+  },
+  "ui_theme": {
+    "postgresql": "dd638d48bbfbc7aaf82f2cdaf09b5223f5939de6072eb2420e67762bab483344",
+    "sqlite": "fbed2b9e2453e2d497840e1e8d18a39c4f88df27e1ad9a346b031f72c280399a"
+  },
+  "user_mode": {
+    "postgresql": "c74baeffb3c0d6c163676f3f03786918cd7dd4fb6197cab511dee0f1779f06dc",
+    "sqlite": "c30fb635eded2459cceeac82ff80a2327f0131703f6a3762a88a075a657ce80f"
+  },
+  "workflow": {
+    "postgresql": "916db677d5caf7c7530323dc7af8650d19884b7fc90f262856ce422f8a43cb3c",
+    "sqlite": "78e20be33952f58ea23fa7b3a6911fd5b505ab1137b6c51a3fae142b0fd8f105"
+  },
+  "workflow_draft": {
+    "postgresql": "04d396c05eb51cbd954af6a0d6cf4b4e7236df55f5669ef75aad6830e18660a1",
+    "sqlite": "c818a20a7c106f892058198964eeb251e49a1afed6985e2d1de9e8b6e78384ea"
+  }
+}

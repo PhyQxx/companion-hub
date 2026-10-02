@@ -6,8 +6,29 @@ from .base import Base
 
 
 def registered_metadata() -> MetaData:
-    # Import all mappings before returning metadata. Add domain mapping imports
-    # here as they move out of models.py; never rely on incidental service imports.
-    from . import costs, models  # noqa: F401
+    # Keep registration explicit; services and compatibility exports are optional.
+    from . import (  # noqa: F401
+        actions,
+        appearance,
+        assets,
+        calendar,
+        cognition,
+        configuration,
+        conversation,
+        costs,
+        delivery,
+        devices,
+        events,
+        home,
+        identity,
+        jobs,
+        mail,
+        meetings,
+        memory,
+        runs,
+        skills,
+        tasks,
+        workflows,
+    )
 
     return Base.metadata

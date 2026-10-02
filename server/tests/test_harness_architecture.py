@@ -4,14 +4,20 @@ from __future__ import annotations
 
 import ast
 import asyncio
+import hashlib
+import importlib
 import importlib.util
 import json
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import cast
 
 import pytest
 from fastapi import FastAPI
+from sqlalchemy.dialects import postgresql, sqlite
+from sqlalchemy.engine.interfaces import Dialect
+from sqlalchemy.schema import CreateIndex, CreateTable
 
 from app.db import Base
 from app.db.base import Base as SharedBase
@@ -331,3 +337,63 @@ def test_delivery_core_and_contracts_do_not_use_domain_orm_rows() -> None:
         and (node.module.startswith("app.db") or node.module in {"delivery_sources", "budget"})
         for node in ast.walk(contracts)
     )
+
+
+def test_domain_mapping_exports_keep_one_class_and_table_identity() -> None:
+    import app.db as public
+    import app.db.models as legacy
+
+    records = json.loads((ROOT / "server" / "architecture" / "mapped_records.json").read_text())
+    assert len(records) == len(registered_metadata().tables)
+    for name, module in records.items():
+        domain = getattr(importlib.import_module(module), name)
+        assert domain is getattr(public, name)
+        if name != "ModelCostRecord":
+            assert domain is getattr(legacy, name)
+            assert domain.__module__ == "app.db.models"
+        else:
+            assert domain.__module__ == "app.db.costs"
+        assert domain.__table__ is Base.metadata.tables[domain.__tablename__]
+        assert domain.metadata is Base.metadata
+
+
+def test_mapped_ddl_is_unchanged_for_sqlite_and_postgresql() -> None:
+    expected = json.loads((ROOT / "server" / "architecture" / "mapped_ddl_sha256.json").read_text())
+    actual: dict[str, dict[str, str]] = {}
+    for name, table in registered_metadata().tables.items():
+        actual[name] = {}
+        factories = [
+            ("sqlite", cast(Callable[[], Dialect], sqlite.dialect)),
+            ("postgresql", cast(Callable[[], Dialect], postgresql.dialect)),
+        ]
+        for label, factory in factories:
+            dialect = factory()
+            definition = {
+                "table": str(CreateTable(table).compile(dialect=dialect)),
+                "indexes": sorted(
+                    str(CreateIndex(index).compile(dialect=dialect)) for index in table.indexes
+                ),
+            }
+            actual[name][label] = hashlib.sha256(
+                json.dumps(
+                    definition, sort_keys=True, ensure_ascii=False, separators=(",", ":")
+                ).encode()
+            ).hexdigest()
+    assert actual == expected
+
+
+def test_domain_mapping_definitions_only_depend_on_shared_base() -> None:
+    records = json.loads((ROOT / "server" / "architecture" / "mapped_records.json").read_text())
+    for module in set(records.values()):
+        path = ROOT / "server" / Path(*module.split(".")).with_suffix(".py")
+        source = path.read_text()
+        dependencies = set(check_architecture.imports(source, module))
+        assert {name for name in dependencies if name.startswith("app.")} <= {
+            "app.db.base",
+            "app.db.base.Base",
+            "app.db.base.BIGINT_PK",
+        }
+        definitions = {
+            node.name for node in ast.parse(source).body if isinstance(node, ast.ClassDef)
+        }
+        assert definitions == {name for name, owner in records.items() if owner == module}
