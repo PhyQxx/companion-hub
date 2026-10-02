@@ -509,6 +509,7 @@ async def test_owned_model_deliberation_creates_a_budgeted_run(
     from test_database_config import config_yaml
     from test_llm import FakeProvider
 
+    from app.harness.budget import BudgetDenied
     from app.llm.router import LLMRouter
     from app.runs.store import RunStore
 
@@ -548,6 +549,8 @@ async def test_owned_model_deliberation_creates_a_budgeted_run(
     runs = await RunStore(database).list_runs(user_id=user_id)
     assert len(runs) == 1 and runs[0].budget_summary is not None
     assert runs[0].budget_summary.llm_attempts == 1
-    # Re-delivery uses deterministic fallback; it cannot reset the model quota.
-    await cycle.evaluate(event)
+    # Source admission also fences rule fallback, preventing a second decision.
+    with pytest.raises(BudgetDenied, match="model_run_source_already_processed"):
+        await cycle.evaluate(event)
     assert len(cloud.requests) == 1
+    assert len(await store.recent_decisions(user_id)) == 1

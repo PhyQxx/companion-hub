@@ -217,6 +217,7 @@ class RouterDeliberator:
                 "budget_owner_invalid",
                 "model_source_changed",
                 "model_source_check_failed",
+                "model_run_source_already_processed",
                 "run_deadline_exceeded",
             }:
                 raise

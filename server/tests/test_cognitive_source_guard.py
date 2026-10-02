@@ -9,20 +9,102 @@ from test_goal_delivery_runs import database as goal_database
 from test_goal_delivery_runs import seed
 
 from app.cognition import (
+    AttentionEngine,
     AttentionResult,
+    CognitiveCycle,
+    CognitiveDecision,
     CognitiveStore,
     RouterDeliberator,
+    RuleBasedDeliberator,
     SemanticEvent,
+    WorldState,
     WorldStateBuilder,
 )
 from app.config import ConfigStore
-from app.db import CognitiveGoalRecord, Database, TaskRunRecord
+from app.db import CognitiveDecisionRecord, CognitiveGoalRecord, Database, TaskRunRecord
 from app.harness.budget import BudgetDenied
 from app.ids import uuid7
 from app.llm import CompletionRequest, CompletionResult
 from app.schemas import PrivacyLevel
 
 database = goal_database
+
+
+@pytest.mark.parametrize("enabled", [True, False])
+async def test_duplicate_model_source_does_not_fall_back_to_another_decision(
+    database: Database, tmp_path: Path, enabled: bool
+) -> None:
+    owner, store, _ = await seed(database)
+    event = SemanticEvent(
+        event_id=uuid7(),
+        user_id=owner,
+        kind="user_arrived_home",
+        summary="Fixture",
+        privacy_level=PrivacyLevel.L1,
+        occurred_at=datetime.now(UTC),
+        confidence=1,
+        evidence_ids=["fixture"],
+        expires_at=datetime.now(UTC) + timedelta(minutes=5),
+    )
+    path = tmp_path / "source-claim.yaml"
+    path.write_text(config_yaml() + f"\nrun_budget:\n  enabled: {str(enabled).lower()}\n")
+    config = ConfigStore(path)
+    await config.load()
+    started, release = asyncio.Event(), asyncio.Event()
+    calls, fallbacks = 0, 0
+
+    class Backend:
+        async def complete(self, request: CompletionRequest) -> CompletionResult:
+            nonlocal calls
+            calls += 1
+            started.set()
+            await release.wait()
+            return CompletionResult(
+                text='{"decision":"inform","message":"fixture result"}',
+                provider="fixture",
+                model="fixture",
+                endpoint="fixture",
+                route=request.route,
+                latency_ms=0,
+            )
+
+    class Fallback:
+        async def deliberate(
+            self, actual: SemanticEvent, state: WorldState, attention: AttentionResult
+        ) -> CognitiveDecision:
+            nonlocal fallbacks
+            fallbacks += 1
+            return await RuleBasedDeliberator().deliberate(actual, state, attention)
+
+    cycle = CognitiveCycle(
+        store,
+        WorldStateBuilder(database, store),
+        AttentionEngine(threshold=0),
+        RouterDeliberator(
+            config, database=database, router_builder=lambda _: Backend(), fallback=Fallback()
+        ),
+    )
+    first = asyncio.create_task(cycle.evaluate(event))
+    try:
+        await asyncio.wait_for(started.wait(), 3)
+        competitors = await asyncio.wait_for(
+            asyncio.gather(*(cycle.evaluate(event) for _ in range(8)), return_exceptions=True), 5
+        )
+        assert all(
+            isinstance(result, BudgetDenied)
+            and result.reason_code == "model_run_source_already_processed"
+            for result in competitors
+        )
+    finally:
+        release.set()
+        await asyncio.wait_for(first, 3)
+    with pytest.raises(BudgetDenied, match="model_run_source_already_processed"):
+        await cycle.evaluate(event)
+    assert calls == 1 and fallbacks == 0
+    async with database.sessions() as session:
+        assert len(list(await session.scalars(select(CognitiveDecisionRecord)))) == 1
+        roots = list(await session.scalars(select(TaskRunRecord)))
+        assert len(roots) == 1 and roots[0].status == "succeeded"
 
 
 @pytest.mark.parametrize("change", ["privacy", "title", "delete", "completed", "due"])

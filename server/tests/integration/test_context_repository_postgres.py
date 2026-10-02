@@ -1,11 +1,15 @@
 """Shared context ancestry and deletion predicates on PostgreSQL UUID storage."""
 
 import os
+from pathlib import Path
 from typing import Any
 
 import pytest
 from sqlalchemy import event
 from sqlalchemy.engine import make_url
+from test_cognitive_source_guard import (
+    test_duplicate_model_source_does_not_fall_back_to_another_decision as check_duplicate,
+)
 from test_context_repository import (
     test_memory_ancestry_checks_source_and_unreplayed_deletions as check_ancestry,
 )
@@ -18,7 +22,7 @@ from app.ids import uuid7
 
 
 @pytest.mark.parametrize("change", ["conversation_intent", "private"])
-async def test_postgres_context_ancestry(change: str) -> None:
+async def test_postgres_context_ancestry(change: str, tmp_path: Path) -> None:
     url = os.getenv("ARIA_TEST_DATABASE_URL")
     if url is None:
         pytest.skip("ARIA_TEST_DATABASE_URL is not configured")
@@ -47,6 +51,7 @@ async def test_postgres_context_ancestry(change: str) -> None:
                 f"ALTER TABLE {schema}.memory ADD COLUMN embedding_vec vector(256)"
             )
         await check_ancestry(database, change)
+        await check_duplicate(database, tmp_path, enabled=change == "conversation_intent")
         await check_world_facts(database)
     finally:
         if event.contains(database.engine.sync_engine, "checkout", set_search_path):
