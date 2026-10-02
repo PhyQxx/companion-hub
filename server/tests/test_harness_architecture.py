@@ -17,6 +17,7 @@ from app.db.base import Base as SharedBase
 from app.db.models import Base as LegacyBase
 from app.db.registry import registered_metadata
 from app.harness.context import ContextAssembler, ContextBlocks
+from app.screen_awareness import ScreenAwarenessLoop
 from app.skills.connections import SkillHttpClient
 from app.wiring.lifespan import LifespanDeps, build_lifespan
 from app.wiring.registry import ModuleRegistry, ModuleSpec
@@ -282,7 +283,37 @@ async def test_lifespan_failure_still_closes_migrated_clients(phase: str) -> Non
         else None,
         skill_http_client=cast(SkillHttpClient, Client()),
     )
-    with pytest.raises(RuntimeError, match=phase):
+    expected = RuntimeError if phase == "startup" else ExceptionGroup
+    with pytest.raises(expected):
         async with build_lifespan(deps)(FastAPI()):
             assert phase == "shutdown"
     assert closed == [True]
+
+
+async def test_optional_services_degrade_and_focus_is_owned_by_lifecycle() -> None:
+    calls: list[str] = []
+
+    class Optional:
+        def start(self) -> None:
+            calls.append("optional.start")
+            raise RuntimeError("unavailable")
+
+        async def stop(self) -> None:
+            calls.append("optional.stop")
+
+    class Focus:
+        def start(self) -> None:
+            calls.append("focus.start")
+
+        async def stop(self) -> None:
+            calls.append("focus.stop")
+
+    app = FastAPI()
+    deps = LifespanDeps(
+        focus_scheduler=Focus(), screen_awareness_loop=cast(ScreenAwarenessLoop, Optional())
+    )
+    async with build_lifespan(deps)(app):
+        assert app.state.module_registry.states["screen-awareness"] == "degraded"
+        assert app.state.module_registry.states["focus"] == "ready"
+        assert app.state.module_registry.reason_codes["screen-awareness"] == "module_start_failed"
+    assert calls == ["optional.start", "optional.stop", "focus.start", "focus.stop"]

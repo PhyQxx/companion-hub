@@ -8,10 +8,12 @@
 
 from __future__ import annotations
 
+import inspect
 import logging
 from collections.abc import AsyncIterator, Callable
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from dataclasses import dataclass
+from typing import cast
 
 from fastapi import FastAPI
 
@@ -144,19 +146,73 @@ def _core_modules(deps: LifespanDeps) -> ModuleRegistry:
         if deps.runtime_chat_service is not None:
             await deps.runtime_chat_service.drain_background_work()
 
-    return ModuleRegistry(
-        [
-            ModuleSpec("skills", provides=("skill_client",), stop=close_skills),
-            ModuleSpec("memory", provides=("memory_context",), start=load_memory),
-            ModuleSpec(
-                "conversation",
-                requires=("memory", "skills"),
-                provides=("conversation",),
-                start=recover_conversation,
-                stop=drain_conversation,
-            ),
-        ]
+    specs = [
+        ModuleSpec("skills", provides=("skill_client",), stop=close_skills),
+        ModuleSpec("memory", provides=("memory_context",), start=load_memory),
+        ModuleSpec(
+            "conversation",
+            requires=("memory", "skills"),
+            provides=("conversation",),
+            start=recover_conversation,
+            stop=drain_conversation,
+        ),
+    ]
+
+    def add_service(
+        name: str,
+        service: object | None,
+        *,
+        start_method: str | None = "start",
+        stop_method: str = "stop",
+        requires: tuple[str, ...] = ("conversation",),
+        critical: bool = False,
+    ) -> None:
+        if service is None:
+            return
+
+        async def invoke(method: str) -> None:
+            callback = cast(Callable[[], object], getattr(service, method))
+            value = callback()
+            if inspect.isawaitable(value):
+                await value
+
+        async def start() -> None:
+            if start_method is not None:
+                await invoke(start_method)
+
+        async def stop() -> None:
+            await invoke(stop_method)
+
+        specs.append(ModuleSpec(name, requires=requires, critical=critical, start=start, stop=stop))
+
+    add_service(
+        "pnkx-client", deps.pnkx_life_client, start_method=None, stop_method="close", requires=()
     )
+    add_service("home-assistant", deps.home_assistant_manager, requires=("memory",))
+    add_service("mqtt", deps.mqtt_client, requires=("memory",))
+    add_service("config-watcher", deps.config_watcher, critical=True)
+    add_service("dispatcher", deps.worker, critical=True)
+    add_service("delegated-jobs", deps.deleg_worker)
+    add_service("screen-awareness", deps.screen_awareness_loop)
+    add_service("browser-awareness", deps.browser_awareness_loop)
+    add_service("mail-awareness", deps.mail_awareness_loop)
+    add_service("mcp", deps.mcp_manager)
+    add_service("safety-alerts", deps.safety_alert_service, start_method="resume", critical=True)
+    add_service("activity", deps.activity_scheduler)
+    add_service("task-reminders", deps.task_scheduler)
+    add_service("goal-reminders", deps.goal_reminder_scheduler)
+    add_service("focus", deps.focus_scheduler)
+    add_service("daily-brief", deps.daily_brief_scheduler)
+    add_service("daily-review", deps.daily_review_scheduler)
+    add_service("todo-sync", deps.todo_sync_scheduler)
+    add_service("caldav-sync", deps.caldav_sync_scheduler)
+    add_service("google-calendar-sync", deps.google_calendar_sync_scheduler)
+    add_service("skill-audit", deps.skill_audit_scheduler)
+    add_service("self-check", deps.self_check_scheduler)
+    add_service("home-proactive", deps.home_assistant_proactive, start_method=None)
+    add_service("mqtt-presence", deps.mqtt_presence_bridge, start_method=None)
+    add_service("perception", deps.perception_pipeline, start_method=None)
+    return ModuleRegistry(specs)
 
 
 def build_lifespan(
@@ -171,6 +227,8 @@ def build_lifespan(
         try:
             # Constructed clients need cleanup even when config loading fails.
             await modules.start("skills")
+            if deps.pnkx_life_client is not None:
+                await modules.start("pnkx-client")
             if deps.runtime_config is not None:
                 await deps.runtime_config.load()
                 apply_observability(deps.runtime_config.current.config)
@@ -178,48 +236,15 @@ def build_lifespan(
                     await deps.xiaoai_materializer.write()
             await modules.start("memory")
             if deps.home_assistant_manager is not None:
-                await deps.home_assistant_manager.start()
+                await modules.start("home-assistant")
             if deps.mqtt_client is not None:
-                await deps.mqtt_client.start()
+                await modules.start("mqtt")
             if deps.avatar_store is not None:
                 await deps.avatar_store.load_builtin_packs()
             if deps.theme_store is not None:
                 await deps.theme_store.load_builtin_themes()
             await modules.start("conversation")
-            if deps.config_watcher is not None:
-                await deps.config_watcher.start()
-            if deps.worker is not None:
-                await deps.worker.start()
-            if deps.deleg_worker is not None:
-                deps.deleg_worker.start()
-            if deps.screen_awareness_loop is not None:
-                deps.screen_awareness_loop.start()
-            if deps.browser_awareness_loop is not None:
-                deps.browser_awareness_loop.start()
-            if deps.mail_awareness_loop is not None:
-                deps.mail_awareness_loop.start()
-            if deps.mcp_manager is not None:
-                deps.mcp_manager.start()
-            if deps.safety_alert_service is not None:
-                await deps.safety_alert_service.resume()  # type: ignore[attr-defined]
-            if deps.activity_scheduler is not None:
-                await deps.activity_scheduler.start()  # type: ignore[attr-defined]
-            if deps.task_scheduler is not None:
-                deps.task_scheduler.start()
-            if deps.goal_reminder_scheduler is not None:
-                deps.goal_reminder_scheduler.start()
-            if deps.focus_scheduler is not None:
-                deps.focus_scheduler.start()  # type: ignore[attr-defined]
-            if deps.daily_brief_scheduler is not None:
-                deps.daily_brief_scheduler.start()
-            if deps.daily_review_scheduler is not None:
-                deps.daily_review_scheduler.start()
-            if deps.todo_sync_scheduler is not None:
-                deps.todo_sync_scheduler.start()
-            if deps.caldav_sync_scheduler is not None:
-                deps.caldav_sync_scheduler.start()
-            if deps.google_calendar_sync_scheduler is not None:
-                deps.google_calendar_sync_scheduler.start()
+            await modules.start_all()
             if deps.skill_store is not None and deps.action_registry is not None:
                 # 技能 S3：启动时把已启用技能的写操作同步进动作目录
                 try:
@@ -228,66 +253,12 @@ def build_lifespan(
                     logging.getLogger(__name__).warning(
                         "skill write action sync failed on startup", exc_info=True
                     )
-            if deps.skill_audit_scheduler is not None:
-                deps.skill_audit_scheduler.start()
-            if deps.self_check_scheduler is not None:
-                deps.self_check_scheduler.start()
             yield
         finally:
             try:
-                if deps.self_check_scheduler is not None:
-                    await deps.self_check_scheduler.stop()
-                if deps.skill_audit_scheduler is not None:
-                    await deps.skill_audit_scheduler.stop()
-                if deps.pnkx_life_client is not None:
-                    await deps.pnkx_life_client.close()
-                if deps.todo_sync_scheduler is not None:
-                    await deps.todo_sync_scheduler.stop()
-                if deps.caldav_sync_scheduler is not None:
-                    await deps.caldav_sync_scheduler.stop()
-                if deps.google_calendar_sync_scheduler is not None:
-                    await deps.google_calendar_sync_scheduler.stop()
-                if deps.daily_review_scheduler is not None:
-                    await deps.daily_review_scheduler.stop()
-                if deps.daily_brief_scheduler is not None:
-                    await deps.daily_brief_scheduler.stop()
-                if deps.goal_reminder_scheduler is not None:
-                    await deps.goal_reminder_scheduler.stop()
-                if deps.task_scheduler is not None:
-                    await deps.task_scheduler.stop()
-                if deps.screen_awareness_loop is not None:
-                    await deps.screen_awareness_loop.stop()
-                if deps.browser_awareness_loop is not None:
-                    await deps.browser_awareness_loop.stop()
-                if deps.mail_awareness_loop is not None:
-                    await deps.mail_awareness_loop.stop()
-                if deps.mcp_manager is not None:
-                    await deps.mcp_manager.stop()
-                if deps.safety_alert_service is not None:
-                    await deps.safety_alert_service.stop()  # type: ignore[attr-defined]
-                if deps.activity_scheduler is not None:
-                    await deps.activity_scheduler.stop()  # type: ignore[attr-defined]
-                if deps.home_assistant_proactive is not None:
-                    await deps.home_assistant_proactive.stop()
-                if deps.mqtt_client is not None:
-                    await deps.mqtt_client.stop()
-                if deps.mqtt_presence_bridge is not None:
-                    await deps.mqtt_presence_bridge.stop()
-                if deps.perception_pipeline is not None:
-                    await deps.perception_pipeline.stop()
-                if deps.worker is not None:
-                    await deps.worker.stop()
-                if deps.deleg_worker is not None:
-                    await deps.deleg_worker.stop()
-                if deps.home_assistant_manager is not None:
-                    await deps.home_assistant_manager.stop()
-                if deps.config_watcher is not None:
-                    await deps.config_watcher.stop()
+                await modules.stop_all()
             finally:
-                try:
-                    await modules.stop_all()
-                finally:
-                    if deps.owns_database and deps.runtime_database is not None:
-                        await deps.runtime_database.close()
+                if deps.owns_database and deps.runtime_database is not None:
+                    await deps.runtime_database.close()
 
     return lifespan

@@ -173,6 +173,14 @@ def register_frontend(
             if not worker.state.running or worker.state.last_error is not None:
                 status = "degraded"
         result: dict[str, object] = {"status": status, "version": __version__}
+        modules = getattr(app.state, "module_registry", None)
+        if modules is not None:
+            result["modules"] = {
+                name: {"state": state, "reason_code": modules.reason_codes.get(name)}
+                for name, state in modules.states.items()
+            }
+            if any(state in {"degraded", "blocked"} for state in modules.states.values()):
+                result["status"] = "degraded"
         if dispatcher is not None:
             result["dispatcher"] = dispatcher
         if config_store is not None:
