@@ -87,7 +87,8 @@ interface SkillDraft {
   target_skill_id: string | null;
   base_version: number | null;
   verification_report: {
-    scope: string;
+    scope?: string;
+    fixture_replay?: { status: string; outcome: string; validation_level: string; case_count: number; safety_passed: boolean; checks: Array<{ case_id: string; before: boolean | null; after: boolean }> };
     outcome: "improved" | "regressed" | "unchanged" | "inconclusive";
     checks: { operation: string; before: { status: string; reason: string | null }; after: { status: string; reason: string | null } }[];
   } | null;
@@ -312,6 +313,24 @@ async function approveDraft(id: string) {
   } finally {
     busy.value = false;
   }
+}
+
+const fixtureInputs = ref<Record<string, string>>({});
+const evaluatingId = ref("");
+async function evaluateDraft(id: string) {
+  evaluatingId.value = id;
+  try {
+    const body = JSON.parse(fixtureInputs.value[id] ?? "");
+    const updated = await api.request<SkillDraft>(
+      `/api/v1/admin/skills/drafts/${id}/evaluate`,
+      { method: "POST", body: JSON.stringify(body) },
+    );
+    const index = drafts.value.findIndex(item => item.id === id);
+    if (index >= 0) drafts.value[index] = updated;
+    delete fixtureInputs.value[id];
+    ok("样例回放完成。结构检查与业务目标核实分别显示，发布仍需审阅。");
+  } catch (error) { fail(error, "样例回放失败，请核对 JSON 格式与候选版本"); }
+  finally { evaluatingId.value = ""; }
 }
 
 const verifyingId = ref("");
@@ -1012,7 +1031,7 @@ onUnmounted(() => {
                     <li v-for="(change, index) in revisionDiff(row as SkillDraft)" :key="index">{{ change }}</li>
                   </ul>
                 </template>
-                <template v-if="row.verification_report">
+                <template v-if="row.verification_report?.scope === 'changed_contracts'">
                   <h3>修订验证：{{ comparisonLabels[row.verification_report.outcome] }}</h3>
                   <p class="hint">仅验证改动接口的可达性；尚未验证任务结果正确性或历史任务回放。必填参数与写操作不会自动试跑。</p>
                   <el-table :data="row.verification_report.checks" size="small">
@@ -1023,6 +1042,19 @@ onUnmounted(() => {
                     <el-table-column label="修订候选">
                       <template #default="{ row: check }">{{ probeLabels[check.after.status] }}<small v-if="check.after.reason">{{ check.after.reason }}</small></template>
                     </el-table-column>
+                  </el-table>
+                </template>
+                <h3>合成样例回放</h3>
+                <p class="hint">只检查请求结构，不访问真实接口。请使用合成参数，勿粘贴用户对话、凭据或真实数据。无样例时业务目标仍未验证。</p>
+                <el-input v-model="fixtureInputs[row.id]" type="textarea" :rows="4" aria-label="合成评测样例 JSON"
+                  placeholder='{"data_class":"synthetic","cases":[{"id":"list","operation":"list","arguments":{},"expected":{"method":"GET","path":"/items","query":{},"body":{}}}]}' />
+                <el-button size="small" :loading="evaluatingId === row.id" :disabled="!fixtureInputs[row.id]" @click="evaluateDraft(row.id)">回放合成样例</el-button>
+                <template v-if="row.verification_report?.fixture_replay">
+                  <p>结构评测：{{ row.verification_report.fixture_replay.status === 'passed' ? '通过（V2）' : row.verification_report.fixture_replay.status === 'untestable' ? '缺少样例' : '未通过' }} · {{ row.verification_report.fixture_replay.case_count }} 个样例 · 业务目标尚未核实</p>
+                  <el-table :data="row.verification_report.fixture_replay.checks" size="small">
+                    <el-table-column prop="case_id" label="样例" />
+                    <el-table-column label="原版本"><template #default="{ row: check }">{{ check.before === null ? '无基线' : check.before ? '通过' : '未通过' }}</template></el-table-column>
+                    <el-table-column label="候选"><template #default="{ row: check }">{{ check.after ? '通过' : '未通过' }}</template></el-table-column>
                   </el-table>
                 </template>
                 <h3>使用说明</h3>
@@ -1079,7 +1111,7 @@ onUnmounted(() => {
           </el-table-column>
           <el-table-column label="操作" width="190" fixed="right">
             <template #default="{ row }">
-              <el-button size="small" type="primary" plain :disabled="busy" @click="approveDraft(row.id)">
+              <el-button size="small" type="primary" plain :disabled="busy || row.verification_report?.fixture_replay?.status === 'failed'" @click="approveDraft(row.id)">
                 {{ row.target_skill_id ? "通过并建版本" : "通过" }}
               </el-button>
               <el-button size="small" type="danger" plain :disabled="busy" @click="dismissDraft(row.id)">忽略</el-button>

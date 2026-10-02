@@ -50,6 +50,7 @@ import {
 } from "./voice";
 import ToolResultCard from "./ToolResultCard.vue";
 import PlanInbox from "./PlanInbox.vue";
+import RunHistory from "./RunHistory.vue";
 import MailAttachments from "./MailAttachments.vue";
 import MailDrafts from "./MailDrafts.vue";
 import SafetyAlerts from "./SafetyAlerts.vue";
@@ -452,6 +453,8 @@ const visibleConversations = computed(() =>
 function generationFailureText(reason: unknown, prefix = "生成失败"): string {
   const code = String(reason ?? "unknown");
   const messages: Record<string, string> = {
+    user_model_concurrency_exhausted: "同时处理的任务较多，请稍后再试。",
+    budget_owner_invalid: "账户当前无法处理任务，请重新登录后重试。",
     run_budget_exhausted: "这轮回复已达到处理上限，可以缩小问题范围继续。",
     run_deadline_exceeded: "这轮回复处理超时，已停止生成。",
     budget_admission_failed: "暂时无法确认处理额度，这轮回复已停止。",
@@ -1719,6 +1722,8 @@ async function installPwa() {
       <ConfirmationDrafts v-if="token && privacy === 'L1'" :key="token" :token="token" />
 
       <PlanInbox v-if="token && privacy === 'L1'" :key="token" :token="token" :refresh-key="planRefresh" />
+
+      <RunHistory v-if="token" :key="token" :token="token" :refresh-key="planRefresh" />
 
       <footer class="composer">
         <p v-if="activeConversationArchived" class="archived-notice">此会话已归档。恢复后可以继续发送消息。</p>

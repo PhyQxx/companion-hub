@@ -465,6 +465,7 @@ export function ensureLive2DRuntime(): Promise<AriaLive2DRuntime | null> {
 }
 
 export interface SystemHealth {
+  modules?: Record<string, { state: string; reason_code: string | null }>;
   status: string;
   version: string;
   persona?: {
@@ -750,6 +751,53 @@ export interface SafetyAlertItem {
   expires_at: string;
 }
 
+export interface TaskRun {
+  id: string;
+  conversation_id: string | null;
+  status: string;
+  state_version: number;
+  cancel_epoch: number;
+  privacy_level: string;
+  config_version: number | null;
+  persona_version: number | null;
+  created_at: string;
+  updated_at: string;
+  job_ids: string[];
+  plan_ids: string[];
+  budget_summary: {
+    enabled: boolean;
+    max_llm_attempts: number;
+    max_tokens: number;
+    llm_attempts: number;
+    charged_tokens: number;
+    unsettled_calls: number | null;
+    unknown_usage_calls: number | null;
+  } | null;
+  action_outcomes: Array<{
+    plan_id: string;
+    step_id: string;
+    outcome: {
+      execution_status: string;
+      side_effect_state: string;
+      validation_status: string;
+      validation_level: string;
+      retry_class: string;
+      reason_code: string | null;
+      evidence_refs: Array<{ kind: string; source_id: string }>;
+    };
+  }>;
+}
+
+export interface TaskRunEvent {
+  event_id: string;
+  seq: number;
+  kind: string;
+  schema_version: number;
+  payload: Record<string, unknown>;
+  privacy_level: string;
+  occurred_at: string;
+}
+
 export class ChatApi {
   /** 会话过期钩子：任一实例收到 401 时触发一次，供 UI 登出并提示重新登录。 */
   static onUnauthorized: ((path: string) => void) | null = null;
@@ -771,6 +819,25 @@ export class ChatApi {
       throw new ApiError(response.status, describeDetail(detail, `HTTP ${response.status}`));
     }
     return body as T;
+  }
+
+  listRuns(token: string, before?: string) {
+    const query = before ? `?before_id=${encodeURIComponent(before)}` : "";
+    return this.request<TaskRun[]>(`/api/v1/runs${query}`, { method: "GET" }, token);
+  }
+
+  getRun(token: string, id: string) {
+    return this.request<TaskRun>(`/api/v1/runs/${encodeURIComponent(id)}`, { method: "GET" }, token);
+  }
+
+  runEvents(token: string, id: string, afterSeq = 0) {
+    return this.request<TaskRunEvent[]>(
+      `/api/v1/runs/${encodeURIComponent(id)}/events?after_seq=${afterSeq}`, { method: "GET" }, token,
+    );
+  }
+
+  cancelRun(token: string, id: string) {
+    return this.request<TaskRun>(`/api/v1/runs/${encodeURIComponent(id)}/cancel`, { method: "POST" }, token);
   }
 
   authStatus() {
