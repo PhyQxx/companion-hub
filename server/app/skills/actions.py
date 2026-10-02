@@ -23,7 +23,7 @@ from app.cognition.action_registry import (
 from app.schemas import PrivacyLevel
 
 from .models import SkillOperation
-from .runtime import _TYPES
+from .requests import _TYPES
 from .store import SkillView
 
 SKILL_ACTION_PREFIX = "skill."

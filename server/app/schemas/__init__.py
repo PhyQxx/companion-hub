@@ -7,9 +7,11 @@ from .adapter import (
     EndpointCapabilities,
 )
 from .common import PrivacyLevel
+from .evaluation import FixtureEvaluationRequest
 from .execution import ExecutionOutcome, ValidationLevel
 from .input import EphemeralSignal, InputEnvelope
 from .output import DeliveryPlan, DeliveryReceipt, OutputIntent
+from .policy import PolicyDecision
 from .reply import AgentAction, AgentReply
 from .runs import RunEventView, RunView
 
@@ -26,6 +28,8 @@ SCHEMA_MODELS = (
     RunView,
     RunEventView,
     ExecutionOutcome,
+    FixtureEvaluationRequest,
+    PolicyDecision,
 )
 
 __all__ = [
@@ -42,8 +46,10 @@ __all__ = [
     "EndpointCapabilities",
     "EphemeralSignal",
     "ExecutionOutcome",
+    "FixtureEvaluationRequest",
     "InputEnvelope",
     "OutputIntent",
+    "PolicyDecision",
     "PrivacyLevel",
     "RunEventView",
     "RunView",

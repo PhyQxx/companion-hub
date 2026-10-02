@@ -6,43 +6,21 @@ import logging
 import re
 from time import perf_counter
 from typing import Any
-from urllib.parse import quote
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, create_model
+from pydantic import BaseModel
 
 from app.llm import ToolDefinition
 from app.schemas import PrivacyLevel
 from app.tools.contracts import ToolContext, ToolResult
 
 from .connections import SkillConnectionError, SkillConnectionStore, SkillHttpClient
-from .models import SkillOperation, SkillParameter
+from .models import SkillOperation
+from .requests import arguments_model_for, prepare_request
 from .store import SkillStore, SkillView
 
 _TOKENS = re.compile(r"[a-z0-9_]{2,}")
-_SAFE_PATH_VALUE = re.compile(r"^[A-Za-z0-9_-]{1,128}$")
 logger = logging.getLogger(__name__)
-_TYPES: dict[str, type[Any]] = {
-    "string": str,
-    "integer": int,
-    "number": float,
-    "boolean": bool,
-}
-
-
-def arguments_model_for(operation: SkillOperation) -> type[BaseModel]:
-    fields: dict[str, Any] = {}
-    for name, parameter in operation.parameters.items():
-        field_type = _TYPES[parameter.type]
-        fields[name] = (
-            field_type if parameter.required else field_type | None,
-            ... if parameter.required else None,
-        )
-    return create_model(
-        "SkillArgs_" + operation.name,
-        __config__=ConfigDict(extra="forbid"),
-        **fields,
-    )
 
 
 def _relevance(text: str, skill: SkillView, operation: SkillOperation) -> int:
@@ -124,25 +102,18 @@ class SkillReadToolHandler:
         )
         if operation is None or operation != self._operation or operation.risk != "read":
             return await self._finish(False, started, "skill_operation_changed")
-        values = arguments.model_dump(exclude_none=True)
-        path = operation.path
-        params: dict[str, str | int] = {}
-        for name, value in values.items():
-            spec: SkillParameter = operation.parameters[name]
-            if spec.location == "path":
-                if not _SAFE_PATH_VALUE.fullmatch(str(value)):
-                    return await self._finish(False, started, "invalid_path_parameter")
-                path = path.replace("{" + name + "}", quote(str(value), safe=""))
-            else:
-                params[name] = str(value).lower() if isinstance(value, bool) else value
+        try:
+            request = prepare_request(operation, arguments.model_dump(exclude_none=True))
+        except ValueError as error:
+            return await self._finish(False, started, str(error))
         try:
             if self._http_client is None:
                 return await self._finish(False, started, "connection_unavailable")
             payload = await self._http_client.skill_get(
                 self._connection_id,
                 operation.path,
-                path,
-                params=params,
+                request.path,
+                params=request.query,
                 auth=current.api.auth,
                 skill_id=self._skill_id,
             )

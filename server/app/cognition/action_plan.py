@@ -15,10 +15,11 @@ from sqlalchemy import or_, select
 
 from app.db import ActionPlanRecord, ActionStepRecord, AppUserRecord, Database, TaskRunRecord
 from app.ids import uuid7
+from app.privacy.service import PolicyService
 from app.schemas.common import StrictModel, TokenName
 from app.tools import ToolResult
 
-from .action_registry import ActionRegistry, ConfirmationPolicy
+from .action_registry import ActionRegistry
 
 logger = logging.getLogger(__name__)
 
@@ -283,9 +284,12 @@ class ActionPlanService:
         awaiting_confirmation = False
         for position, item in enumerate(compiled, start=1):
             definition = item.definition
-            requires_confirmation = definition.confirmation_policy == ConfirmationPolicy.ALWAYS or (
-                definition.confirmation_policy == ConfirmationPolicy.PREAUTHORIZED
-                and definition.action_id not in self._preauthorized
+            requires_confirmation = (
+                PolicyService.confirmation(
+                    str(definition.confirmation_policy),
+                    preauthorized=definition.action_id in self._preauthorized,
+                ).action
+                == "require_confirmation"
             )
             status = (
                 ActionStepStatus.AWAITING_CONFIRMATION.value

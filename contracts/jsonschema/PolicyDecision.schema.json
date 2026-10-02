@@ -1,0 +1,52 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "action": {
+      "enum": [
+        "allow",
+        "deny",
+        "require_confirmation",
+        "local_only",
+        "redact",
+        "degrade"
+      ],
+      "title": "Action",
+      "type": "string"
+    },
+    "phase": {
+      "enum": [
+        "intake",
+        "context",
+        "model",
+        "tool",
+        "action",
+        "delivery"
+      ],
+      "title": "Phase",
+      "type": "string"
+    },
+    "policy_version": {
+      "default": "policy-v1",
+      "title": "Policy Version",
+      "type": "string"
+    },
+    "reason_code": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Reason Code"
+    }
+  },
+  "required": [
+    "action",
+    "phase"
+  ],
+  "title": "PolicyDecision",
+  "type": "object"
+}

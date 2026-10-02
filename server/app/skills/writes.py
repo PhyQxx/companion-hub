@@ -8,23 +8,20 @@
 from __future__ import annotations
 
 import logging
-import re
 from time import perf_counter
 from typing import Any, cast
-from urllib.parse import quote
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, ValidationError
+from pydantic import BaseModel, ConfigDict
 
 from app.llm import ToolDefinition
 from app.schemas import PrivacyLevel
 from app.tools.contracts import ToolContext, ToolResult
 
 from .connections import SkillConnectionError, SkillConnectionStore, SkillHttpClient
-from .runtime import arguments_model_for
+from .requests import prepare_request
 from .store import SkillStore
 
-_SAFE_PATH_VALUE = re.compile(r"^[A-Za-z0-9_-]{1,128}$")
 logger = logging.getLogger(__name__)
 
 
@@ -76,34 +73,19 @@ class SkillWriteToolHandler:
         meta = (skill.id, skill.version, skill.api.connection, operation.name)
         # 参数按实时契约重新校验：计划创建与执行之间技能可能已改版。
         try:
-            values = (
-                arguments_model_for(operation)
-                .model_validate(args.model_dump(exclude={"skill_name", "operation"}))
-                .model_dump(exclude_none=True)
+            request = prepare_request(
+                operation, args.model_dump(exclude={"skill_name", "operation"})
             )
-        except ValidationError:
-            return await self._finish(False, started, meta, "skill_arguments_invalid")
-        path = operation.path
-        query: dict[str, str | int] = {}
-        body: dict[str, object] = {}
-        for name, value in values.items():
-            spec = operation.parameters[name]
-            if spec.location == "path":
-                if not _SAFE_PATH_VALUE.fullmatch(str(value)):
-                    return await self._finish(False, started, meta, "invalid_path_parameter")
-                path = path.replace("{" + name + "}", quote(str(value), safe=""))
-            elif spec.location == "body":
-                body[name] = value
-            else:
-                query[name] = str(value).lower() if isinstance(value, bool) else value
+        except ValueError as error:
+            return await self._finish(False, started, meta, str(error))
         try:
             payload = await self._http_client.skill_write(
                 skill.api.connection,
                 operation.path,
-                path,
+                request.path,
                 method=operation.method,
-                json_body=body or None,
-                params=query,
+                json_body=request.body or None,
+                params=request.query,
                 auth=skill.api.auth,
                 skill_id=skill.id,
                 idempotency_key=context.idempotency_key,

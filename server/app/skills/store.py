@@ -10,6 +10,7 @@ from uuid import UUID
 from pydantic import BaseModel, ConfigDict
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db import (
     ConversationRecord,
@@ -24,7 +25,9 @@ from app.db import (
     SkillVersionRecord,
 )
 from app.ids import uuid7
+from app.schemas.evaluation import FixtureEvaluationRequest
 
+from .evaluation import document_hash, evaluate_fixture
 from .generator import SkillProposal
 from .models import SkillApiManifest, SkillDocument
 
@@ -531,28 +534,64 @@ class SkillStore:
             await session.commit()
             return _draft_view(item)
 
-    async def approve_draft(self, draft_id: UUID) -> SkillView:
-        async with self._database.sessions() as session:
+    async def evaluate_draft(
+        self, draft_id: UUID, corpus: FixtureEvaluationRequest
+    ) -> SkillDraftView:
+        """Pure fixture replay bound to the locked draft and current base version."""
+        async with self._database.sessions.begin() as session:
             item = await session.get(SkillDraftRecord, draft_id, with_for_update=True)
             if item is None:
                 raise LookupError("skill_draft_not_found")
             if item.status != "pending":
                 raise ValueError("skill_draft_already_reviewed")
-            document = SkillDocument.model_validate(item.document)
-            target_skill_id = item.target_skill_id
-            base_version = item.base_version
-        if target_skill_id is not None:
-            skill = await self.revise(target_skill_id, document, base_version=base_version)
-        else:
-            skill = await self.create(document, source="generated")
-        async with self._database.sessions() as session:
-            item = await session.get(SkillDraftRecord, draft_id, with_for_update=True)
-            if item is not None and item.status == "pending":
+            baseline = None
+            if item.target_skill_id is not None:
+                target = await session.get(SkillRecord, item.target_skill_id, with_for_update=True)
+                if target is None or target.version != item.base_version:
+                    raise ValueError("skill_version_changed")
+                baseline = _view(target).document
+            report = evaluate_fixture(
+                baseline,
+                SkillDocument.model_validate(item.document),
+                corpus,
+                base_version=item.base_version,
+            )
+            item.verification_report = {
+                **(item.verification_report or {}),
+                "fixture_replay": report,
+            }
+            return _draft_view(item)
+
+    async def approve_draft(self, draft_id: UUID) -> SkillView:
+        try:
+            async with self._database.sessions.begin() as session:
+                item = await session.get(SkillDraftRecord, draft_id, with_for_update=True)
+                if item is None:
+                    raise LookupError("skill_draft_not_found")
+                if item.status != "pending":
+                    raise ValueError("skill_draft_already_reviewed")
+                document = SkillDocument.model_validate(item.document)
+                fixture = (item.verification_report or {}).get("fixture_replay")
+                if fixture is not None:
+                    if fixture.get("candidate_hash") != document_hash(document):
+                        raise ValueError("skill_evaluation_stale")
+                    if fixture.get("status") == "failed":
+                        raise ValueError("skill_fixture_failed")
+                if item.target_skill_id is not None:
+                    skill = await self._revise_in_session(
+                        session,
+                        item.target_skill_id,
+                        document,
+                        base_version=item.base_version,
+                    )
+                else:
+                    skill = await self._create_in_session(session, document, source="generated")
                 item.status = "approved"
                 item.skill_id = skill.id
                 item.reviewed_at = datetime.now(UTC)
-                await session.commit()
-        return skill
+                return skill
+        except IntegrityError as error:
+            raise ValueError("skill_name_exists") from error
 
     async def revise(
         self,
@@ -565,42 +604,53 @@ class SkillStore:
 
         修订保持技能身份：名称沿用现有技能，其余内容以修订文档为准。
         """
-        async with self._database.sessions() as session:
-            record = await session.get(SkillRecord, skill_id, with_for_update=True)
-            if record is None:
-                raise LookupError("skill_not_found")
-            if record.enabled:
-                raise ValueError("disable_skill_before_edit")
-            if base_version is not None and base_version != record.version:
-                raise ValueError("skill_version_changed")
-            record.description = document.description
-            record.instructions = document.instructions
-            record.api_manifest = document.api.model_dump(mode="json") if document.api else None
-            record.content_hash = hashlib.sha256(
-                (
-                    record.name
-                    + record.description
-                    + record.instructions
-                    + (document.api.model_dump_json() if document.api else "")
-                ).encode("utf-8")
-            ).hexdigest()
-            moment = datetime.now(UTC)
-            record.version += 1
-            record.updated_at = moment
-            session.add(
-                SkillVersionRecord(
-                    id=uuid7(),
-                    skill_id=record.id,
-                    version=record.version,
-                    description=record.description,
-                    instructions=record.instructions,
-                    api_manifest=record.api_manifest,
-                    content_hash=record.content_hash,
-                    created_at=moment,
-                )
+        async with self._database.sessions.begin() as session:
+            return await self._revise_in_session(
+                session, skill_id, document, base_version=base_version
             )
-            await session.commit()
-            return _view(record)
+
+    async def _revise_in_session(
+        self,
+        session: AsyncSession,
+        skill_id: UUID,
+        document: SkillDocument,
+        *,
+        base_version: int | None,
+    ) -> SkillView:
+        record = await session.get(SkillRecord, skill_id, with_for_update=True)
+        if record is None:
+            raise LookupError("skill_not_found")
+        if record.enabled:
+            raise ValueError("disable_skill_before_edit")
+        if base_version is not None and base_version != record.version:
+            raise ValueError("skill_version_changed")
+        record.description = document.description
+        record.instructions = document.instructions
+        record.api_manifest = document.api.model_dump(mode="json") if document.api else None
+        record.content_hash = hashlib.sha256(
+            (
+                record.name
+                + record.description
+                + record.instructions
+                + (document.api.model_dump_json() if document.api else "")
+            ).encode("utf-8")
+        ).hexdigest()
+        moment = datetime.now(UTC)
+        record.version += 1
+        record.updated_at = moment
+        session.add(
+            SkillVersionRecord(
+                id=uuid7(),
+                skill_id=record.id,
+                version=record.version,
+                description=record.description,
+                instructions=record.instructions,
+                api_manifest=record.api_manifest,
+                content_hash=record.content_hash,
+                created_at=moment,
+            )
+        )
+        return _view(record)
 
     async def mark_draft_verified(
         self,
@@ -615,7 +665,11 @@ class SkillStore:
             item = await session.get(SkillDraftRecord, draft_id, with_for_update=True)
             if item is None:
                 raise LookupError("skill_draft_not_found")
-            item.verification_report = report
+            fixture = (item.verification_report or {}).get("fixture_replay")
+            item.verification_report = {
+                **(report or {}),
+                **({"fixture_replay": fixture} if fixture else {}),
+            } or None
             item.verify_status = "passed" if ok else "failed"
             item.verify_reason = reason if not ok else None
             item.verified_at = datetime.now(UTC)
@@ -655,6 +709,27 @@ class SkillStore:
         content_hash: str | None = None,
         source_markdown: str | None = None,
     ) -> SkillView:
+        try:
+            async with self._database.sessions.begin() as session:
+                return await self._create_in_session(
+                    session,
+                    document,
+                    source=source,
+                    content_hash=content_hash,
+                    source_markdown=source_markdown,
+                )
+        except IntegrityError as error:
+            raise ValueError("skill_name_exists") from error
+
+    async def _create_in_session(
+        self,
+        session: AsyncSession,
+        document: SkillDocument,
+        *,
+        source: str,
+        content_hash: str | None = None,
+        source_markdown: str | None = None,
+    ) -> SkillView:
         moment = datetime.now(UTC)
         digest = (
             content_hash or hashlib.sha256(document.model_dump_json().encode("utf-8")).hexdigest()
@@ -673,25 +748,20 @@ class SkillStore:
             created_at=moment,
             updated_at=moment,
         )
-        async with self._database.sessions() as session:
-            session.add(record)
-            session.add(
-                SkillVersionRecord(
-                    id=uuid7(),
-                    skill_id=record.id,
-                    version=1,
-                    description=record.description,
-                    instructions=record.instructions,
-                    api_manifest=record.api_manifest,
-                    content_hash=digest,
-                    created_at=moment,
-                )
+        session.add(record)
+        session.add(
+            SkillVersionRecord(
+                id=uuid7(),
+                skill_id=record.id,
+                version=1,
+                description=record.description,
+                instructions=record.instructions,
+                api_manifest=record.api_manifest,
+                content_hash=digest,
+                created_at=moment,
             )
-            try:
-                await session.commit()
-            except IntegrityError as error:
-                await session.rollback()
-                raise ValueError("skill_name_exists") from error
+        )
+        await session.flush()
         return _view(record)
 
     async def set_enabled(self, skill_id: UUID, enabled: bool) -> SkillView:

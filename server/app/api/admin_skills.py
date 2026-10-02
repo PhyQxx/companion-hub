@@ -13,6 +13,7 @@ from sqlalchemy.exc import DBAPIError
 from app.cognition.action_registry import ActionRegistry
 from app.schemas import PrivacyLevel
 from app.schemas.common import StrictModel
+from app.schemas.evaluation import FixtureEvaluationRequest
 from app.skills import SkillApiManifest, SkillDocument, import_skill_zip
 from app.skills.actions import sync_skill_actions
 from app.skills.connections import (
@@ -279,6 +280,15 @@ def create_admin_skills_router(
         return await verify_skill_draft(
             draft, store=store, connections=connections, http_client=http_client
         )
+
+    @router.post("/drafts/{draft_id}/evaluate", response_model=SkillDraftView)
+    async def evaluate_draft(draft_id: UUID, body: FixtureEvaluationRequest) -> SkillDraftView:
+        try:
+            return await store.evaluate_draft(draft_id, body)
+        except LookupError as error:
+            raise HTTPException(status_code=404, detail=str(error)) from error
+        except ValueError as error:
+            raise HTTPException(status_code=409, detail=str(error)) from error
 
     @router.post("/drafts/{draft_id}/approve", response_model=SkillView)
     async def approve_draft(draft_id: UUID) -> SkillView:

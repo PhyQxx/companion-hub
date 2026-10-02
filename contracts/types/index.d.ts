@@ -347,6 +347,22 @@ export type RetryClass = "safe_read" | "manual_reconcile" | "never";
 export type SideEffectState = "none" | "not_started" | "submitted" | "confirmed" | "unknown";
 export type ValidationLevel = "V0" | "V1" | "V2" | "V3" | "V4";
 export type ValidationStatus = "unverified" | "passed" | "inconclusive";
+/**
+ * This interface was referenced by `AriaContracts`'s JSON-Schema
+ * via the `definition` "JsonValue".
+ */
+export type JsonValue = unknown;
+export type Expected = {
+  [k: string]: JsonValue;
+} | null;
+export type ExpectedReason = ("operation_missing" | "skill_arguments_invalid" | "invalid_path_parameter") | null;
+export type Id = string;
+export type Operation = string;
+/**
+ * @maxItems 50
+ */
+export type Cases = FixtureCase[];
+export type DataClass = "synthetic";
 export type CausationId = string | null;
 /**
  * @minItems 1
@@ -516,6 +532,10 @@ export type Prefer =
     ];
 export type TurnId1 = string | null;
 export type UserId1 = string;
+export type Action = "allow" | "deny" | "require_confirmation" | "local_only" | "redact" | "degrade";
+export type Phase = "intake" | "context" | "model" | "tool" | "action" | "delivery";
+export type PolicyVersion = string;
+export type ReasonCode3 = string | null;
 export type EventId1 = string;
 export type Kind2 = string;
 export type OccurredAt3 = string;
@@ -536,7 +556,7 @@ export type CancelEpoch = number;
 export type ConfigVersion = number | null;
 export type ConversationId2 = string | null;
 export type CreatedAt1 = string;
-export type Id = string;
+export type Id1 = string;
 export type JobIds = string[];
 export type PersonaVersion = number | null;
 export type PlanIds = string[];
@@ -564,8 +584,10 @@ export interface AriaContracts {
   EndpointCapabilities?: EndpointCapabilities;
   EphemeralSignal?: EphemeralSignal;
   ExecutionOutcome?: ExecutionOutcome;
+  FixtureEvaluationRequest?: FixtureEvaluationRequest;
   InputEnvelope?: InputEnvelope;
   OutputIntent?: OutputIntent;
+  PolicyDecision?: PolicyDecision;
   RunEventView?: RunEventView;
   RunView?: RunView;
   [k: string]: unknown;
@@ -886,6 +908,28 @@ export interface EvidenceRef {
 }
 /**
  * This interface was referenced by `AriaContracts`'s JSON-Schema
+ * via the `definition` "FixtureEvaluationRequest".
+ */
+export interface FixtureEvaluationRequest {
+  cases: Cases;
+  data_class: DataClass;
+}
+/**
+ * This interface was referenced by `AriaContracts`'s JSON-Schema
+ * via the `definition` "FixtureCase".
+ */
+export interface FixtureCase {
+  arguments?: Arguments;
+  expected?: Expected;
+  expected_reason?: ExpectedReason;
+  id: Id;
+  operation: Operation;
+}
+export interface Arguments {
+  [k: string]: JsonValue;
+}
+/**
+ * This interface was referenced by `AriaContracts`'s JSON-Schema
  * via the `definition` "InputEnvelope".
  */
 export interface InputEnvelope {
@@ -993,6 +1037,16 @@ export interface TargetSelector {
 }
 /**
  * This interface was referenced by `AriaContracts`'s JSON-Schema
+ * via the `definition` "PolicyDecision".
+ */
+export interface PolicyDecision {
+  action: Action;
+  phase: Phase;
+  policy_version?: PolicyVersion;
+  reason_code?: ReasonCode3;
+}
+/**
+ * This interface was referenced by `AriaContracts`'s JSON-Schema
  * via the `definition` "RunEventView".
  */
 export interface RunEventView {
@@ -1018,7 +1072,7 @@ export interface RunView {
   config_version: ConfigVersion;
   conversation_id: ConversationId2;
   created_at: CreatedAt1;
-  id: Id;
+  id: Id1;
   job_ids?: JobIds;
   persona_version: PersonaVersion;
   plan_ids?: PlanIds;

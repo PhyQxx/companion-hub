@@ -8,6 +8,7 @@ from datetime import UTC, datetime, timedelta
 from uuid import UUID
 
 from app.cognition import CognitiveCycle, SemanticEvent
+from app.privacy.service import PolicyService
 
 from .models import PerceptionDisposition, PerceptionResult
 from .policy import ProactivePolicy
@@ -181,7 +182,10 @@ class PerceptionPipeline:
                 reason_code="cross_source_duplicate",
                 merged_into_event_id=duplicate.event_id,
             )
-        rejection = await self._policy.reject_reason(event, now=now)
+        policy_decision = PolicyService.rejection(
+            await self._policy.reject_reason(event, now=now), phase="delivery"
+        )
+        rejection = policy_decision.reason_code
         if rejection is not None:
             decision = await self._cycle.suppress(event, rejection)
             self._recent[key] = (event.event_id, now)

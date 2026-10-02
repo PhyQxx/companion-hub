@@ -10,8 +10,10 @@
     "EndpointCapabilities": "EndpointCapabilities.schema.json",
     "EphemeralSignal": "EphemeralSignal.schema.json",
     "ExecutionOutcome": "ExecutionOutcome.schema.json",
+    "FixtureEvaluationRequest": "FixtureEvaluationRequest.schema.json",
     "InputEnvelope": "InputEnvelope.schema.json",
     "OutputIntent": "OutputIntent.schema.json",
+    "PolicyDecision": "PolicyDecision.schema.json",
     "RunEventView": "RunEventView.schema.json",
     "RunView": "RunView.schema.json"
   }

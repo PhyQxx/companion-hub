@@ -11,6 +11,7 @@ from app.harness.budget import BudgetDenied, current_budget
 from app.harness.window import ContextWindowExceeded, fit_window
 from app.observability import TraceRecorder
 from app.privacy import EgressBlocked, EgressDestination, EgressGuard
+from app.privacy.service import PolicyService
 from app.schemas import PrivacyLevel
 
 from .contracts import (
@@ -82,6 +83,7 @@ class LLMRouter:
         self._routes = dict(routes)
         self._providers = dict(providers)
         self._egress = egress or EgressGuard()
+        self._policy = PolicyService(egress=self._egress)
         self._traces = traces
         self._validate_configuration()
 
@@ -104,13 +106,14 @@ class LLMRouter:
                 rejected_for_tools += 1
                 continue
             try:
-                self._egress.authorize(
+                self._policy.authorize(
                     privacy,
                     EgressDestination(
                         name=endpoint_name,
                         runs_local=endpoint.runs_local,
                         max_privacy_level=PrivacyLevel(endpoint.max_privacy_level),
                     ),
+                    phase="model",
                 )
             except EgressBlocked:
                 rejected_for_privacy += 1
@@ -245,13 +248,14 @@ class LLMRouter:
                 rejected_for_tools += 1
                 continue
             try:
-                self._egress.authorize(
+                self._policy.authorize(
                     privacy,
                     EgressDestination(
                         name=endpoint_name,
                         runs_local=endpoint.runs_local,
                         max_privacy_level=PrivacyLevel(endpoint.max_privacy_level),
                     ),
+                    phase="model",
                 )
             except EgressBlocked:
                 rejected_for_privacy += 1

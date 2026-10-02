@@ -6,6 +6,7 @@ from pydantic import ValidationError
 
 from app.llm import ToolCall
 from app.privacy import EgressBlocked, EgressDestination, EgressGuard
+from app.privacy.service import PolicyService
 from app.schemas import PrivacyLevel
 
 from .contracts import ToolContext, ToolExecution, ToolResult
@@ -17,6 +18,7 @@ class ToolExecutor:
     def __init__(self, registry: ToolRegistry, *, egress: EgressGuard | None = None) -> None:
         self._registry = registry
         self._egress = egress or EgressGuard()
+        self._policy = PolicyService(egress=self._egress)
 
     async def execute(self, call: ToolCall, context: ToolContext) -> ToolExecution:
         started = perf_counter()
@@ -27,7 +29,7 @@ class ToolExecutor:
                 result=self._failure(call.function.name, "tool_not_found", started),
             )
         try:
-            self._egress.authorize(
+            self._policy.authorize(
                 context.privacy_level,
                 EgressDestination(
                     name=handler.name,
@@ -36,6 +38,7 @@ class ToolExecutor:
                         getattr(handler, "max_privacy_level", PrivacyLevel.L1)
                     ),
                 ),
+                phase="tool",
             )
         except EgressBlocked:
             return ToolExecution(

@@ -1118,6 +1118,93 @@
       "title": "FilePart",
       "type": "object"
     },
+    "FixtureCase": {
+      "additionalProperties": false,
+      "properties": {
+        "arguments": {
+          "additionalProperties": {
+            "$ref": "#/$defs/JsonValue"
+          },
+          "title": "Arguments",
+          "type": "object"
+        },
+        "expected": {
+          "anyOf": [
+            {
+              "additionalProperties": {
+                "$ref": "#/$defs/JsonValue"
+              },
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Expected"
+        },
+        "expected_reason": {
+          "anyOf": [
+            {
+              "enum": [
+                "operation_missing",
+                "skill_arguments_invalid",
+                "invalid_path_parameter"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Expected Reason"
+        },
+        "id": {
+          "maxLength": 64,
+          "minLength": 1,
+          "pattern": "^[a-zA-Z0-9_-]+$",
+          "title": "Id",
+          "type": "string"
+        },
+        "operation": {
+          "maxLength": 50,
+          "minLength": 1,
+          "title": "Operation",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "operation"
+      ],
+      "title": "FixtureCase",
+      "type": "object"
+    },
+    "FixtureEvaluationRequest": {
+      "additionalProperties": false,
+      "properties": {
+        "cases": {
+          "items": {
+            "$ref": "#/$defs/FixtureCase"
+          },
+          "maxItems": 50,
+          "title": "Cases",
+          "type": "array"
+        },
+        "data_class": {
+          "const": "synthetic",
+          "title": "Data Class",
+          "type": "string"
+        }
+      },
+      "required": [
+        "data_class",
+        "cases"
+      ],
+      "title": "FixtureEvaluationRequest",
+      "type": "object"
+    },
     "ImagePart": {
       "additionalProperties": false,
       "properties": {
@@ -1410,6 +1497,7 @@
       "title": "InteractionPart",
       "type": "object"
     },
+    "JsonValue": {},
     "NotificationPart": {
       "additionalProperties": false,
       "properties": {
@@ -1621,6 +1709,58 @@
       ],
       "title": "OutputKind",
       "type": "string"
+    },
+    "PolicyDecision": {
+      "additionalProperties": false,
+      "properties": {
+        "action": {
+          "enum": [
+            "allow",
+            "deny",
+            "require_confirmation",
+            "local_only",
+            "redact",
+            "degrade"
+          ],
+          "title": "Action",
+          "type": "string"
+        },
+        "phase": {
+          "enum": [
+            "intake",
+            "context",
+            "model",
+            "tool",
+            "action",
+            "delivery"
+          ],
+          "title": "Phase",
+          "type": "string"
+        },
+        "policy_version": {
+          "default": "policy-v1",
+          "title": "Policy Version",
+          "type": "string"
+        },
+        "reason_code": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Reason Code"
+        }
+      },
+      "required": [
+        "action",
+        "phase"
+      ],
+      "title": "PolicyDecision",
+      "type": "object"
     },
     "Presentation": {
       "additionalProperties": false,
@@ -2298,11 +2438,17 @@
     "ExecutionOutcome": {
       "$ref": "#/$defs/ExecutionOutcome"
     },
+    "FixtureEvaluationRequest": {
+      "$ref": "#/$defs/FixtureEvaluationRequest"
+    },
     "InputEnvelope": {
       "$ref": "#/$defs/InputEnvelope"
     },
     "OutputIntent": {
       "$ref": "#/$defs/OutputIntent"
+    },
+    "PolicyDecision": {
+      "$ref": "#/$defs/PolicyDecision"
     },
     "RunEventView": {
       "$ref": "#/$defs/RunEventView"
