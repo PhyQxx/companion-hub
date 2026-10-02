@@ -48,7 +48,7 @@ class CognitiveCycle:
         else:
             decision = await self.deliberator.deliberate(event, state, attention)
         if event.privacy_level != PrivacyLevel.L3:
-            await self.store.save_decision(decision)
+            await self.store.save_decision(decision, event=event, state=state)
         return decision
 
     async def suppress(self, event: SemanticEvent, *reason_codes: str) -> CognitiveDecision:
@@ -69,5 +69,5 @@ class CognitiveCycle:
             created_at=datetime.now(UTC),
         )
         if event.privacy_level != PrivacyLevel.L3:
-            await self.store.save_decision(decision)
+            await self.store.save_decision(decision, event=event)
         return decision

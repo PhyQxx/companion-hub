@@ -4,10 +4,11 @@ from datetime import UTC, datetime, timedelta
 from typing import Any, Literal, cast
 from uuid import UUID
 
-from sqlalchemy import and_, or_, select, update
+from sqlalchemy import and_, func, or_, select, update
 from sqlalchemy.engine import CursorResult
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.context.repository import ContextSourceInvalidated, validate_references
 from app.db import (
     ActionResultRecord,
     AppUserRecord,
@@ -38,6 +39,8 @@ from .models import (
     GoalStatus,
     GoalView,
     ReflectionCandidate,
+    SemanticEvent,
+    WorldState,
 )
 from .reflection import FeedbackSummary
 
@@ -52,8 +55,61 @@ class CognitiveStore:
     def __init__(self, database: Database) -> None:
         self.database = database
 
-    async def save_decision(self, decision: CognitiveDecision) -> None:
+    async def save_decision(
+        self,
+        decision: CognitiveDecision,
+        *,
+        event: SemanticEvent | None = None,
+        state: WorldState | None = None,
+    ) -> None:
+        if state is not None and event is None:
+            raise ValueError("decision_event_required")
+        if event is not None and (
+            decision.user_id != event.user_id
+            or decision.event_id != event.event_id
+            or decision.conversation_id != event.conversation_id
+            or decision.trigger_kind != event.kind
+            or decision.evidence_ids != event.evidence_ids
+            or _aware_or_none(decision.expires_at) != _aware_or_none(event.expires_at)
+        ):
+            raise BudgetDenied("decision_source_mismatch")
+        if event is not None and event.privacy_level == PrivacyLevel.L3:
+            raise BudgetDenied("decision_privacy_denied")
         async with self.database.sessions.begin() as session:
+            if decision.conversation_id is not None:
+                # Match deletion's source -> Job order. The no-op write also
+                # fences SQLite, where SELECT FOR UPDATE does not lock rows.
+                source = await session.scalar(
+                    update(ConversationRecord)
+                    .where(
+                        ConversationRecord.id == decision.conversation_id,
+                        ConversationRecord.user_id == decision.user_id,
+                    )
+                    .values(id=ConversationRecord.id)
+                    .returning(ConversationRecord.id)
+                )
+                if source is None:
+                    raise BudgetDenied("decision_source_missing")
+                deleted = await session.scalar(
+                    select(DeletionLedgerRecord.id)
+                    .where(
+                        DeletionLedgerRecord.entity_kind == "message",
+                        func.lower(func.replace(DeletionLedgerRecord.entity_id, "-", ""))
+                        == source.hex,
+                    )
+                    .limit(1)
+                )
+                if deleted is not None:
+                    raise BudgetDenied("decision_source_changed")
+            await assert_current_claim(session)
+            owner = await session.get(AppUserRecord, decision.user_id)
+            if owner is None or owner.status != "active":
+                raise BudgetDenied("budget_owner_invalid")
+            if state is not None and event is not None:
+                expiry = _aware_or_none(event.expires_at)
+                if expiry is not None and expiry <= datetime.now(UTC):
+                    raise BudgetDenied("decision_expired")
+                await self.validate_world_snapshot(session, event, state)
             session.add(
                 CognitiveDecisionRecord(
                     id=decision.id,
@@ -346,32 +402,65 @@ class CognitiveStore:
         goals: list[GoalView],
         *,
         privacy_level: PrivacyLevel,
+        session: AsyncSession | None = None,
     ) -> None:
         identifiers = {goal.id for goal in goals}
         if len(identifiers) != len(goals) or len(goals) > 16:
             raise BudgetDenied("model_source_changed")
         if not identifiers:
             return
-        async with self.database.sessions() as session:
-            records = list(
-                await session.scalars(
-                    select(CognitiveGoalRecord).where(
-                        CognitiveGoalRecord.id.in_(identifiers),
-                        CognitiveGoalRecord.user_id == user_id,
-                        CognitiveGoalRecord.status == GoalStatus.ACTIVE.value,
-                        goal_visibility(privacy_level),
-                        or_(
-                            CognitiveGoalRecord.expires_at.is_(None),
-                            CognitiveGoalRecord.expires_at > datetime.now(UTC),
-                        ),
-                    )
+        if session is None:
+            async with self.database.sessions() as own_session:
+                await self.validate_goal_snapshots(
+                    user_id, goals, privacy_level=privacy_level, session=own_session
+                )
+            return
+        records = list(
+            await session.scalars(
+                select(CognitiveGoalRecord).where(
+                    CognitiveGoalRecord.id.in_(identifiers),
+                    CognitiveGoalRecord.user_id == user_id,
+                    CognitiveGoalRecord.status == GoalStatus.ACTIVE.value,
+                    goal_visibility(privacy_level),
+                    or_(
+                        CognitiveGoalRecord.expires_at.is_(None),
+                        CognitiveGoalRecord.expires_at > datetime.now(UTC),
+                    ),
                 )
             )
+        )
         snapshots = {goal.id: goal for goal in goals}
         if len(records) != len(goals) or any(
             _goal(record) != snapshots[record.id] for record in records
         ):
             raise BudgetDenied("model_source_changed")
+
+    async def validate_world_snapshot(
+        self,
+        session: AsyncSession,
+        event: SemanticEvent,
+        state: WorldState,
+    ) -> None:
+        refs = state.context_references
+        expected = {("memory", value) for value in state.memory_evidence_ids} | {
+            ("timeline", value) for value in state.timeline_evidence_ids
+        }
+        if (
+            len(refs) > 8
+            or len(refs) != len(expected)
+            or any(not ref.included or ref.kind not in {"memory", "timeline"} for ref in refs)
+            or {(ref.kind, ref.source_id) for ref in refs} != expected
+        ):
+            raise BudgetDenied("model_source_changed")
+        try:
+            await validate_references(
+                session, refs, owner_id=event.user_id, privacy_level=str(event.privacy_level)
+            )
+        except ContextSourceInvalidated as error:
+            raise BudgetDenied("model_source_changed") from error
+        await self.validate_goal_snapshots(
+            event.user_id, state.active_goals, privacy_level=event.privacy_level, session=session
+        )
 
     async def _stop_goal_deliveries(
         self, session: AsyncSession, user_id: UUID, goal_id: UUID

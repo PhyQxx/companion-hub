@@ -6,7 +6,6 @@ from collections.abc import Callable
 from typing import Protocol
 
 from app.config import ConfigStore, DatabaseConfigStore, HubConfig
-from app.context.repository import ContextSourceInvalidated, validate_references
 from app.db import Database
 from app.harness.budget import BudgetDenied
 from app.ids import uuid7
@@ -164,33 +163,10 @@ class RouterDeliberator:
 
             async def validate_sources() -> None:
                 if self._database is not None:
-                    refs = state.context_references
-                    expected = {("memory", value) for value in state.memory_evidence_ids} | {
-                        ("timeline", value) for value in state.timeline_evidence_ids
-                    }
-                    if (
-                        len(refs) > 8
-                        or len(refs) != len(expected)
-                        or any(
-                            not ref.included or ref.kind not in {"memory", "timeline"}
-                            for ref in refs
+                    async with self._database.sessions() as session:
+                        await CognitiveStore(self._database).validate_world_snapshot(
+                            session, event, state
                         )
-                        or {(ref.kind, ref.source_id) for ref in refs} != expected
-                    ):
-                        raise BudgetDenied("model_source_changed")
-                    try:
-                        async with self._database.sessions() as session:
-                            await validate_references(
-                                session,
-                                refs,
-                                owner_id=event.user_id,
-                                privacy_level=str(event.privacy_level),
-                            )
-                    except ContextSourceInvalidated as error:
-                        raise BudgetDenied("model_source_changed") from error
-                    await CognitiveStore(self._database).validate_goal_snapshots(
-                        event.user_id, state.active_goals, privacy_level=event.privacy_level
-                    )
 
             result = (
                 await complete_with_run(
