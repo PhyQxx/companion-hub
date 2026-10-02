@@ -18,11 +18,10 @@ from datetime import UTC, datetime, timedelta
 from typing import Any, Protocol
 from uuid import UUID
 
-from sqlalchemy import select
-
 from app.cognition.models import CognitiveDecision, SemanticEvent
 from app.config import ConfigStore, DatabaseConfigStore, HubConfig
-from app.db import AppUserRecord, Database
+from app.context.owners import observation_owner
+from app.db import Database
 from app.ids import uuid7
 from app.llm import CompletionRequest, CompletionResult, LLMMessage, LLMRoute
 from app.llm.factory import build_router
@@ -303,11 +302,7 @@ class MailAwarenessLoop:
             await self._observe(config, owner, message, now)
 
     async def _resolve_owner(self) -> UUID | None:
-        async with self._database.sessions() as session:
-            owner = await session.scalar(
-                select(AppUserRecord.id).order_by(AppUserRecord.created_at)
-            )
-        return UUID(str(owner)) if owner is not None else None
+        return await observation_owner(self._database)
 
     async def _observe(self, config: Any, owner: UUID, message: MailSummary, now: datetime) -> None:
         observation_id = uuid7()

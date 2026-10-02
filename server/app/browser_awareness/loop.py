@@ -20,11 +20,11 @@ from urllib.parse import urlsplit
 from uuid import UUID
 
 from pydantic import ValidationError
-from sqlalchemy import select
 
 from app.cognition.models import CognitiveDecision, SemanticEvent
 from app.config import ConfigStore, DatabaseConfigStore, HubConfig
-from app.db import AppUserRecord, Database
+from app.context.owners import observation_owner
+from app.db import Database
 from app.ids import uuid7
 from app.llm import CompletionRequest, CompletionResult, LLMMessage, LLMRoute
 from app.llm.factory import build_router
@@ -369,11 +369,7 @@ class BrowserAwarenessLoop:
         return tab_digest(hint.origin, hint.title) == self.state.last_hash
 
     async def _resolve_owner(self) -> UUID | None:
-        async with self._database.sessions() as session:
-            owner = await session.scalar(
-                select(AppUserRecord.id).order_by(AppUserRecord.created_at)
-            )
-        return UUID(str(owner)) if owner is not None else None
+        return await observation_owner(self._database)
 
     async def _resolve_device(self, owner: UUID) -> BrowserDevice | None:
         from app.devices import (

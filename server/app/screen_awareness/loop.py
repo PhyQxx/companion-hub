@@ -21,10 +21,9 @@ from typing import Any, Protocol, cast
 from uuid import UUID
 
 from PIL import Image
-from sqlalchemy import select
 
 from app.cognition.models import CognitiveDecision, SemanticEvent
-from app.db import AppUserRecord
+from app.context.owners import observation_owner
 from app.ids import uuid7
 from app.memory.consolidation import MemoryIngester
 from app.memory.models import (
@@ -292,11 +291,7 @@ class ScreenAwarenessLoop:
             await self._capture_display(config, owner, device, int(display))
 
     async def _resolve_owner(self) -> UUID | None:
-        async with self._database.sessions() as session:
-            owner = await session.scalar(
-                select(AppUserRecord.id).order_by(AppUserRecord.created_at)
-            )
-        return UUID(str(owner)) if owner is not None else None
+        return await observation_owner(self._database)
 
     async def _resolve_device(self, owner: UUID) -> MonitorDevice | None:
         from app.devices import (
@@ -336,10 +331,7 @@ class ScreenAwarenessLoop:
 
         digest = perceptual_hash(image)
         threshold = config.unchanged_skip_threshold or DEFAULT_UNCHANGED_THRESHOLD
-        if (
-            state.last_hash is not None
-            and hamming_distance(state.last_hash, digest) <= threshold
-        ):
+        if state.last_hash is not None and hamming_distance(state.last_hash, digest) <= threshold:
             return
         state.last_hash = digest
 
@@ -381,9 +373,7 @@ class ScreenAwarenessLoop:
         if analysis.notable and config.proactive_enabled:
             self._submit_proactive(owner, observation_id, digest, analysis, display)
 
-    async def _capture_bytes(
-        self, device: MonitorDevice, display: int, owner: UUID
-    ) -> bytes:
+    async def _capture_bytes(self, device: MonitorDevice, display: int, owner: UUID) -> bytes:
         command_args: dict[str, Any] = (
             {"target": "main_display"}
             if display == 1
