@@ -61,6 +61,10 @@ class RunModelBudget:
         )
 
     @property
+    def run_id(self) -> UUID:
+        return self._run_id
+
+    @property
     def owner_id(self) -> UUID:
         return self._user_id
 

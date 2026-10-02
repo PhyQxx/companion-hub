@@ -28,6 +28,7 @@ const goalLabels: Record<string, string> = {
   inconclusive: "证据不足，待核对", not_declared: "未声明完成判据",
 };
 const criterionLabels: Record<string, string> = {
+  delivery_channels_returned: "通道返回结果（不代表用户已读）",
   reply_committed: "回复保存", action_plan_verified: "操作核实", delegated_result: "委派结果", model_result_returned: "模型结果",
 };
 const active = (run: TaskRun) => ["accepted", "running"].includes(run.status) || (run.goal?.pending ?? 0) > 0;

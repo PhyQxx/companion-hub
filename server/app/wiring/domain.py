@@ -53,6 +53,7 @@ from app.cognition import (
 )
 from app.commute import CommuteService
 from app.config import ConfigStore, ConfigWatcher, DatabaseConfigStore
+from app.config.models import RunBudgetConfig
 from app.contacts import ContactStore
 from app.db import Database
 from app.devices import DeviceCommandStore, DeviceRegistry
@@ -541,6 +542,11 @@ def assemble_domain(
             cognitive_store,
             contact_store=contact_store,
             calendar_store=calendar_store,
+            budget_loader=lambda: (
+                runtime_config.current.config.run_budget
+                if runtime_config is not None
+                else RunBudgetConfig()
+            ),
             weather_fetcher=fetch_brief_weather,
             commute_fetcher=fetch_brief_commute,
             timezone_name=os.getenv("ARIA_DEFAULT_TIMEZONE", "Asia/Shanghai"),
@@ -563,6 +569,11 @@ def assemble_domain(
             task_store,
             cognitive_store,
             calendar_store=calendar_store,
+            budget_loader=lambda: (
+                runtime_config.current.config.run_budget
+                if runtime_config is not None
+                else RunBudgetConfig()
+            ),
             timezone_name=os.getenv("ARIA_DEFAULT_TIMEZONE", "Asia/Shanghai"),
         )
         if runtime_database is not None and task_store is not None and cognitive_store is not None

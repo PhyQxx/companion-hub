@@ -1422,7 +1422,7 @@ class DailyBriefRecord(Base):
     text: Mapped[str] = mapped_column(Text, nullable=False)
     status: Mapped[str] = mapped_column(String(16), nullable=False, default="pending")
     delivered_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-    channels: Mapped[list[dict[str, Any]] | None] = mapped_column(JSON)
+    channels: Mapped[list[str] | None] = mapped_column(JSON)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
@@ -1458,7 +1458,7 @@ class DailyReviewRecord(Base):
     text: Mapped[str] = mapped_column(Text, nullable=False)
     status: Mapped[str] = mapped_column(String(16), nullable=False, default="pending")
     delivered_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-    channels: Mapped[list[dict[str, Any]] | None] = mapped_column(JSON)
+    channels: Mapped[list[str] | None] = mapped_column(JSON)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )

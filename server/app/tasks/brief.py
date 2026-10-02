@@ -23,14 +23,17 @@ from uuid import UUID
 from zoneinfo import ZoneInfo
 
 from pydantic import Field
-from sqlalchemy import select, update
+from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 
 from app.cognition.store import CognitiveStore
+from app.config.models import RunBudgetConfig
 from app.contacts.store import ContactStore
-from app.db import AppUserRecord, DailyBriefRecord, Database
+from app.db import AppUserRecord, DailyBriefRecord, Database, TaskRunRecord
 from app.ids import uuid7
+from app.runs.delivery import deliver_once, outcome
 from app.schemas.common import PrivacyLevel, StrictModel
+from app.schemas.delivery_run import DeliveryRunOutcome
 from app.tasks.models import TaskStatus
 from app.tasks.store import TaskStore
 
@@ -49,6 +52,7 @@ class BriefFact(StrictModel):
 
 
 class BriefView(StrictModel):
+    delivery_outcome: DeliveryRunOutcome | None = None
     id: UUID
     user_id: UUID
     brief_date: date
@@ -92,9 +96,10 @@ def _aware(value: datetime | None) -> datetime | None:
     return value if value.tzinfo is not None else value.replace(tzinfo=UTC)
 
 
-def _to_view(record: DailyBriefRecord) -> BriefView:
+def _to_view(record: DailyBriefRecord, run: TaskRunRecord | None = None) -> BriefView:
     channels = record.channels or []
     return BriefView(
+        delivery_outcome=outcome(run),
         id=record.id,
         user_id=record.user_id,
         brief_date=record.brief_date,
@@ -120,7 +125,9 @@ class DailyBriefService:
         commute_fetcher: Callable[[UUID], Any] | None = None,
         timezone_name: str = "Asia/Shanghai",
         clock: Callable[[], datetime] | None = None,
+        budget_loader: Callable[[], RunBudgetConfig] | None = None,
     ) -> None:
+        self._budget_loader = budget_loader or RunBudgetConfig
         self._database = database
         self._tasks = task_store
         self._goals = cognitive_store
@@ -148,7 +155,17 @@ class DailyBriefService:
                     DailyBriefRecord.brief_date == brief_date,
                 )
             )
-        return _to_view(record) if record is not None else None
+            run = (
+                await session.scalar(
+                    select(TaskRunRecord).where(
+                        TaskRunRecord.id == record.id,
+                        TaskRunRecord.user_id == user_id,
+                    )
+                )
+                if record is not None
+                else None
+            )
+        return _to_view(record, run) if record is not None else None
 
     async def latest_brief(self, user_id: UUID) -> BriefView | None:
         async with self._database.sessions() as session:
@@ -158,17 +175,38 @@ class DailyBriefService:
                 .order_by(DailyBriefRecord.brief_date.desc())
                 .limit(1)
             )
-        return _to_view(record) if record is not None else None
+            run = (
+                await session.scalar(
+                    select(TaskRunRecord).where(
+                        TaskRunRecord.id == record.id,
+                        TaskRunRecord.user_id == user_id,
+                    )
+                )
+                if record is not None
+                else None
+            )
+        return _to_view(record, run) if record is not None else None
 
     async def recent_briefs(self, user_id: UUID, *, limit: int = 30) -> list[BriefView]:
         async with self._database.sessions() as session:
-            records = await session.scalars(
-                select(DailyBriefRecord)
-                .where(DailyBriefRecord.user_id == user_id)
-                .order_by(DailyBriefRecord.brief_date.desc())
-                .limit(limit)
+            records = list(
+                await session.scalars(
+                    select(DailyBriefRecord)
+                    .where(DailyBriefRecord.user_id == user_id)
+                    .order_by(DailyBriefRecord.brief_date.desc())
+                    .limit(limit)
+                )
             )
-        return [_to_view(record) for record in records]
+            runs = {
+                run.id: run
+                for run in await session.scalars(
+                    select(TaskRunRecord).where(
+                        TaskRunRecord.user_id == user_id,
+                        TaskRunRecord.id.in_([record.id for record in records]),
+                    )
+                )
+            }
+        return [_to_view(record, runs.get(record.id)) for record in records]
 
     async def build(self, user_id: UUID, *, brief_date: date | None = None) -> BriefView:
         """采集事实并落库；同日已存在直接返回（幂等）。"""
@@ -352,32 +390,26 @@ class DailyBriefService:
         brief = await self.build(user_id, brief_date=brief_date)
         if brief.status == "delivered":
             return brief
-        now = self._clock()
-        channels: list[str] | None = None
-        try:
-            channels = await deliverer(
+
+        async def dispatch() -> list[str] | None:
+            return await deliverer(
                 brief.text,
                 user_id=user_id,
                 brief_id=brief.id,
                 privacy_level=PrivacyLevel.L1,
                 trigger_kind=TRIGGER_KIND_BRIEF,
             )
-        except Exception:
-            channels = None
-        async with self._database.sessions.begin() as session:
-            await session.execute(
-                update(DailyBriefRecord)
-                .where(
-                    DailyBriefRecord.id == brief.id,
-                    DailyBriefRecord.status == "pending",
-                )
-                .values(
-                    status="delivered",
-                    delivered_at=now,
-                    channels=channels or [],
-                    updated_at=now,
-                )
-            )
+
+        await deliver_once(
+            self._database,
+            table=DailyBriefRecord,
+            source_id=brief.id,
+            user_id=user_id,
+            text=brief.text,
+            entry="brief.delivery",
+            config=self._budget_loader(),
+            dispatch=dispatch,
+        )
         updated = await self.get_brief(user_id, brief.brief_date)
         assert updated is not None
         return updated

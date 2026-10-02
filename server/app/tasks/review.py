@@ -19,13 +19,16 @@ from uuid import UUID
 from zoneinfo import ZoneInfo
 
 from pydantic import Field
-from sqlalchemy import select, update
+from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 
 from app.cognition.store import CognitiveStore
-from app.db import AppUserRecord, DailyReviewRecord, Database
+from app.config.models import RunBudgetConfig
+from app.db import AppUserRecord, DailyReviewRecord, Database, TaskRunRecord
 from app.ids import uuid7
+from app.runs.delivery import deliver_once, outcome
 from app.schemas.common import PrivacyLevel, StrictModel
+from app.schemas.delivery_run import DeliveryRunOutcome
 from app.tasks.models import TaskStatus
 from app.tasks.store import TaskStore
 
@@ -45,6 +48,7 @@ class ReviewItem(StrictModel):
 
 
 class ReviewView(StrictModel):
+    delivery_outcome: DeliveryRunOutcome | None = None
     id: UUID
     user_id: UUID
     review_date: date
@@ -72,8 +76,9 @@ def _aware(value: datetime | None) -> datetime | None:
     return value if value.tzinfo is not None else value.replace(tzinfo=UTC)
 
 
-def _to_view(record: DailyReviewRecord) -> ReviewView:
+def _to_view(record: DailyReviewRecord, run: TaskRunRecord | None = None) -> ReviewView:
     return ReviewView(
+        delivery_outcome=outcome(run),
         id=record.id,
         user_id=record.user_id,
         review_date=record.review_date,
@@ -96,7 +101,9 @@ class DailyReviewService:
         calendar_store: Any | None = None,
         timezone_name: str = "Asia/Shanghai",
         clock: Callable[[], datetime] | None = None,
+        budget_loader: Callable[[], RunBudgetConfig] | None = None,
     ) -> None:
+        self._budget_loader = budget_loader or RunBudgetConfig
         self._database = database
         self._tasks = task_store
         self._goals = cognitive_store
@@ -121,7 +128,17 @@ class DailyReviewService:
                     DailyReviewRecord.review_date == review_date,
                 )
             )
-        return _to_view(record) if record is not None else None
+            run = (
+                await session.scalar(
+                    select(TaskRunRecord).where(
+                        TaskRunRecord.id == record.id,
+                        TaskRunRecord.user_id == user_id,
+                    )
+                )
+                if record is not None
+                else None
+            )
+        return _to_view(record, run) if record is not None else None
 
     async def latest_review(self, user_id: UUID) -> ReviewView | None:
         async with self._database.sessions() as session:
@@ -131,17 +148,38 @@ class DailyReviewService:
                 .order_by(DailyReviewRecord.review_date.desc())
                 .limit(1)
             )
-        return _to_view(record) if record is not None else None
+            run = (
+                await session.scalar(
+                    select(TaskRunRecord).where(
+                        TaskRunRecord.id == record.id,
+                        TaskRunRecord.user_id == user_id,
+                    )
+                )
+                if record is not None
+                else None
+            )
+        return _to_view(record, run) if record is not None else None
 
     async def recent_reviews(self, user_id: UUID, *, limit: int = 30) -> list[ReviewView]:
         async with self._database.sessions() as session:
-            records = await session.scalars(
-                select(DailyReviewRecord)
-                .where(DailyReviewRecord.user_id == user_id)
-                .order_by(DailyReviewRecord.review_date.desc())
-                .limit(limit)
+            records = list(
+                await session.scalars(
+                    select(DailyReviewRecord)
+                    .where(DailyReviewRecord.user_id == user_id)
+                    .order_by(DailyReviewRecord.review_date.desc())
+                    .limit(limit)
+                )
             )
-        return [_to_view(record) for record in records]
+            runs = {
+                run.id: run
+                for run in await session.scalars(
+                    select(TaskRunRecord).where(
+                        TaskRunRecord.user_id == user_id,
+                        TaskRunRecord.id.in_([record.id for record in records]),
+                    )
+                )
+            }
+        return [_to_view(record, runs.get(record.id)) for record in records]
 
     async def build(self, user_id: UUID, *, review_date: date | None = None) -> ReviewView:
         """采集当日事实并落库；同日已存在直接返回（幂等，不覆盖修正）。"""
@@ -305,7 +343,8 @@ class DailyReviewService:
             record.items = [item.model_dump(mode="json") for item in items]
             record.text = compose_review_text(record.review_date, items)
             record.updated_at = self._clock()
-        return _to_view(record)
+            run = await session.get(TaskRunRecord, record.id)
+        return _to_view(record, run)
 
     async def deliver(
         self,
@@ -318,32 +357,26 @@ class DailyReviewService:
         review = await self.build(user_id, review_date=review_date)
         if review.status == "delivered":
             return review
-        now = self._clock()
-        channels: list[str] | None = None
-        try:
-            channels = await deliverer(
+
+        async def dispatch() -> list[str] | None:
+            return await deliverer(
                 review.text,
                 user_id=user_id,
                 review_id=review.id,
                 privacy_level=PrivacyLevel.L1,
                 trigger_kind=TRIGGER_KIND_REVIEW,
             )
-        except Exception:
-            channels = None
-        async with self._database.sessions.begin() as session:
-            await session.execute(
-                update(DailyReviewRecord)
-                .where(
-                    DailyReviewRecord.id == review.id,
-                    DailyReviewRecord.status == "pending",
-                )
-                .values(
-                    status="delivered",
-                    delivered_at=now,
-                    channels=channels or [],
-                    updated_at=now,
-                )
-            )
+
+        await deliver_once(
+            self._database,
+            table=DailyReviewRecord,
+            source_id=review.id,
+            user_id=user_id,
+            text=review.text,
+            entry="review.delivery",
+            config=self._budget_loader(),
+            dispatch=dispatch,
+        )
         updated = await self.get_review(user_id, review.review_date)
         assert updated is not None
         return updated

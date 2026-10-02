@@ -8,6 +8,7 @@
     "CostSummaryView": "CostSummaryView.schema.json",
     "DeliveryPlan": "DeliveryPlan.schema.json",
     "DeliveryReceipt": "DeliveryReceipt.schema.json",
+    "DeliveryRunOutcome": "DeliveryRunOutcome.schema.json",
     "EndpointCapabilities": "EndpointCapabilities.schema.json",
     "EphemeralSignal": "EphemeralSignal.schema.json",
     "ExecutionOutcome": "ExecutionOutcome.schema.json",

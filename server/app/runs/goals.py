@@ -32,6 +32,31 @@ def goal_view(
                 validation_level="V1" if state == "passed" else "V0",
             )
         )
+    elif root == "delivery_channels_returned":
+        dispatch = run.contract.get("dispatch_state")
+        reason = run.contract.get("delivery_reason")
+        reported = bool(run.contract.get("delivery_channels"))
+        if run.status in {"accepted", "running"}:
+            state = "pending"
+        elif dispatch == "unknown" or (
+            dispatch == "started" and run.status in {"failed", "cancelled"}
+        ):
+            state, reason = "inconclusive", "delivery_outcome_unknown"
+        elif reported and run.status != "succeeded":
+            state, reason = "inconclusive", "delivery_returned_after_stop"
+        elif run.status == "succeeded" and dispatch == "returned" and reported:
+            state = "passed"
+        else:
+            state = "failed"
+        criteria.append(
+            RunCriterionView(
+                kind=root,
+                source_id=run.id,
+                status=state,
+                validation_level="V1" if reported else "V0",
+                reason_code=str(reason) if reason else None,
+            )
+        )
     elif root == "model_result_returned":
         state = (
             "inconclusive"

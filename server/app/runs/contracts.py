@@ -20,6 +20,8 @@ async def lock_source_run(session: AsyncSession, run_id: UUID, *, user_id: UUID)
         raise PermissionError("task_run_owner_mismatch")
     if row.contract.get("criterion") == "model_result_returned":
         raise ValueError("model_only_run_cannot_enroll_work")
+    if row.contract.get("criterion") == "delivery_channels_returned":
+        raise ValueError("delivery_only_run_cannot_enroll_work")
     if row.conversation_id is not None:
         conversation = await session.scalar(
             select(ConversationRecord)

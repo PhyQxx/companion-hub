@@ -58,6 +58,7 @@ from app.memory import (
 from app.persona import PersonaConfig, PersonaStore
 from app.runs.budget import RunModelBudget, recover_stale_reservations
 from app.runs.completion import recover_expired_model_runs
+from app.runs.delivery import recover_expired_deliveries
 from app.runs.resources import recover_tool_reservations
 from app.runs.store import RunStore, append_run_event, transition_run
 from app.schemas import PrivacyLevel
@@ -2054,6 +2055,7 @@ class ChatService:
 
         await recover_tool_reservations(self._database)
         await recover_expired_model_runs(self._database)
+        await recover_expired_deliveries(self._database)
         await recover_stale_reservations(self._database)
 
     def start_postcommit_worker(self) -> None:

@@ -1,0 +1,56 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "channels": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Channels",
+      "type": "array"
+    },
+    "reason_code": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Reason Code"
+    },
+    "run_id": {
+      "format": "uuid",
+      "title": "Run Id",
+      "type": "string"
+    },
+    "status": {
+      "enum": [
+        "not_started",
+        "running",
+        "returned",
+        "not_delivered",
+        "unknown",
+        "cancelled"
+      ],
+      "title": "Status",
+      "type": "string"
+    },
+    "validation_level": {
+      "default": "V0",
+      "enum": [
+        "V0",
+        "V1"
+      ],
+      "title": "Validation Level",
+      "type": "string"
+    }
+  },
+  "required": [
+    "run_id",
+    "status"
+  ],
+  "title": "DeliveryRunOutcome",
+  "type": "object"
+}

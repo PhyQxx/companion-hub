@@ -326,6 +326,11 @@ export type ReasonCode1 = string | null;
  */
 export type DeliveryStatus =
   "planned" | "sending" | "accepted" | "playing" | "delivered" | "dropped" | "failed" | "cancelled" | "unknown_outcome";
+export type Channels = string[];
+export type ReasonCode2 = string | null;
+export type RunId = string;
+export type Status = "not_started" | "running" | "returned" | "not_delivered" | "unknown" | "cancelled";
+export type ValidationLevel = "V0" | "V1";
 export type EndpointId2 = string;
 export type ObservedAt = string;
 export type Channel = string;
@@ -354,10 +359,10 @@ export type Kind = string;
 export type SourceId = string;
 export type EvidenceRefs = EvidenceRef[];
 export type ExecutionStatus = "pending" | "running" | "succeeded" | "failed" | "cancelled" | "unknown_outcome";
-export type ReasonCode2 = string | null;
+export type ReasonCode3 = string | null;
 export type RetryClass = "safe_read" | "manual_reconcile" | "never";
 export type SideEffectState = "none" | "not_started" | "submitted" | "confirmed" | "unknown";
-export type ValidationLevel = "V0" | "V1" | "V2" | "V3" | "V4";
+export type ValidationLevel1 = "V0" | "V1" | "V2" | "V3" | "V4";
 export type ValidationStatus = "unverified" | "passed" | "inconclusive";
 /**
  * This interface was referenced by `AriaContracts`'s JSON-Schema
@@ -547,7 +552,7 @@ export type UserId1 = string;
 export type Action = "allow" | "deny" | "require_confirmation" | "local_only" | "redact" | "degrade";
 export type Phase = "intake" | "context" | "model" | "tool" | "action" | "delivery";
 export type PolicyVersion = string;
-export type ReasonCode3 = string | null;
+export type ReasonCode4 = string | null;
 export type EventId1 = string;
 export type Kind2 = string;
 export type OccurredAt3 = string;
@@ -573,10 +578,10 @@ export type ConfigVersion = number | null;
 export type ConversationId2 = string | null;
 export type CreatedAt1 = string;
 export type Kind3 = string;
-export type ReasonCode4 = string | null;
+export type ReasonCode5 = string | null;
 export type SourceId1 = string;
-export type Status = string;
-export type ValidationLevel1 = string;
+export type Status1 = string;
+export type ValidationLevel2 = string;
 export type Criteria = RunCriterionView[];
 export type Failed = number;
 export type Inconclusive = number;
@@ -584,14 +589,14 @@ export type Passed = number;
 export type Pending = number;
 export type Required = number;
 export type Scope = string;
-export type Status1 = string;
+export type Status2 = string;
 export type Id1 = string;
 export type JobIds = string[];
 export type PersonaVersion = number | null;
 export type PlanIds = string[];
 export type PrivacyLevel3 = string;
 export type StateVersion = number;
-export type Status2 = string;
+export type Status3 = string;
 export type UpdatedAt = string;
 export type Expected1 =
   | []
@@ -797,7 +802,7 @@ export type Priority2 = "low" | "normal" | "high" | "critical";
  * This interface was referenced by `AriaContracts`'s JSON-Schema
  * via the `definition` "ValidationLevel".
  */
-export type ValidationLevel2 = "V0" | "V1" | "V2" | "V3" | "V4";
+export type ValidationLevel3 = "V0" | "V1" | "V2" | "V3" | "V4";
 
 export interface AriaContracts {
   AdapterHealth?: AdapterHealth;
@@ -806,6 +811,7 @@ export interface AriaContracts {
   CostSummaryView?: CostSummaryView;
   DeliveryPlan?: DeliveryPlan;
   DeliveryReceipt?: DeliveryReceipt;
+  DeliveryRunOutcome?: DeliveryRunOutcome;
   EndpointCapabilities?: EndpointCapabilities;
   EphemeralSignal?: EphemeralSignal;
   ExecutionOutcome?: ExecutionOutcome;
@@ -1074,6 +1080,17 @@ export interface DeliveryReceipt {
 }
 /**
  * This interface was referenced by `AriaContracts`'s JSON-Schema
+ * via the `definition` "DeliveryRunOutcome".
+ */
+export interface DeliveryRunOutcome {
+  channels?: Channels;
+  reason_code?: ReasonCode2;
+  run_id: RunId;
+  status: Status;
+  validation_level?: ValidationLevel;
+}
+/**
+ * This interface was referenced by `AriaContracts`'s JSON-Schema
  * via the `definition` "EndpointCapabilities".
  */
 export interface EndpointCapabilities {
@@ -1142,10 +1159,10 @@ export interface SourceRef {
 export interface ExecutionOutcome {
   evidence_refs?: EvidenceRefs;
   execution_status: ExecutionStatus;
-  reason_code?: ReasonCode2;
+  reason_code?: ReasonCode3;
   retry_class: RetryClass;
   side_effect_state: SideEffectState;
-  validation_level?: ValidationLevel;
+  validation_level?: ValidationLevel1;
   validation_status: ValidationStatus;
 }
 /**
@@ -1293,7 +1310,7 @@ export interface PolicyDecision {
   action: Action;
   phase: Phase;
   policy_version?: PolicyVersion;
-  reason_code?: ReasonCode3;
+  reason_code?: ReasonCode4;
 }
 /**
  * This interface was referenced by `AriaContracts`'s JSON-Schema
@@ -1329,7 +1346,7 @@ export interface RunView {
   plan_ids?: PlanIds;
   privacy_level: PrivacyLevel3;
   state_version: StateVersion;
-  status: Status2;
+  status: Status3;
   updated_at: UpdatedAt;
 }
 /**
@@ -1370,7 +1387,7 @@ export interface RunGoalView {
   pending?: Pending;
   required?: Required;
   scope?: Scope;
-  status?: Status1;
+  status?: Status2;
 }
 /**
  * This interface was referenced by `AriaContracts`'s JSON-Schema
@@ -1378,10 +1395,10 @@ export interface RunGoalView {
  */
 export interface RunCriterionView {
   kind: Kind3;
-  reason_code?: ReasonCode4;
+  reason_code?: ReasonCode5;
   source_id: SourceId1;
-  status: Status;
-  validation_level?: ValidationLevel1;
+  status: Status1;
+  validation_level?: ValidationLevel2;
 }
 /**
  * This interface was referenced by `AriaContracts`'s JSON-Schema
