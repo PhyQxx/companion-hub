@@ -556,13 +556,26 @@ export type CancelEpoch = number;
 export type ConfigVersion = number | null;
 export type ConversationId2 = string | null;
 export type CreatedAt1 = string;
+export type Kind3 = string;
+export type ReasonCode4 = string | null;
+export type SourceId1 = string;
+export type Status = string;
+export type ValidationLevel1 = string;
+export type Criteria = RunCriterionView[];
+export type Failed = number;
+export type Inconclusive = number;
+export type Passed = number;
+export type Pending = number;
+export type Required = number;
+export type Scope = string;
+export type Status1 = string;
 export type Id1 = string;
 export type JobIds = string[];
 export type PersonaVersion = number | null;
 export type PlanIds = string[];
 export type PrivacyLevel3 = string;
 export type StateVersion = number;
-export type Status = string;
+export type Status2 = string;
 export type UpdatedAt = string;
 export type Expected1 =
   | []
@@ -768,7 +781,7 @@ export type Priority2 = "low" | "normal" | "high" | "critical";
  * This interface was referenced by `AriaContracts`'s JSON-Schema
  * via the `definition` "ValidationLevel".
  */
-export type ValidationLevel1 = "V0" | "V1" | "V2" | "V3" | "V4";
+export type ValidationLevel2 = "V0" | "V1" | "V2" | "V3" | "V4";
 
 export interface AriaContracts {
   AdapterHealth?: AdapterHealth;
@@ -1268,13 +1281,14 @@ export interface RunView {
   config_version: ConfigVersion;
   conversation_id: ConversationId2;
   created_at: CreatedAt1;
+  goal?: RunGoalView | null;
   id: Id1;
   job_ids?: JobIds;
   persona_version: PersonaVersion;
   plan_ids?: PlanIds;
   privacy_level: PrivacyLevel3;
   state_version: StateVersion;
-  status: Status;
+  status: Status2;
   updated_at: UpdatedAt;
 }
 /**
@@ -1298,6 +1312,31 @@ export interface RunBudgetView {
   max_tokens: MaxTokens;
   unknown_usage_calls?: UnknownUsageCalls;
   unsettled_calls?: UnsettledCalls;
+}
+/**
+ * This interface was referenced by `AriaContracts`'s JSON-Schema
+ * via the `definition` "RunGoalView".
+ */
+export interface RunGoalView {
+  criteria?: Criteria;
+  failed?: Failed;
+  inconclusive?: Inconclusive;
+  passed?: Passed;
+  pending?: Pending;
+  required?: Required;
+  scope?: Scope;
+  status?: Status1;
+}
+/**
+ * This interface was referenced by `AriaContracts`'s JSON-Schema
+ * via the `definition` "RunCriterionView".
+ */
+export interface RunCriterionView {
+  kind: Kind3;
+  reason_code?: ReasonCode4;
+  source_id: SourceId1;
+  status: Status;
+  validation_level?: ValidationLevel1;
 }
 /**
  * This interface was referenced by `AriaContracts`'s JSON-Schema

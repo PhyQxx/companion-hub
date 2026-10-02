@@ -87,6 +87,7 @@ async def test_propose_a2_creates_awaiting_confirmation_plan(
 ) -> None:
     tool, service = _tool(database)
     turn_id = uuid4()
+    await _source_run(database, turn_id, user_id)
     result = await tool.execute(
         tool.arguments_model.model_validate(
             {
@@ -121,11 +122,13 @@ async def test_propose_a2_creates_awaiting_confirmation_plan(
 
 async def test_propose_a1_creates_ready_plan(database: Database, user_id: UUID) -> None:
     tool, service = _tool(database)
+    turn_id = uuid4()
+    await _source_run(database, turn_id, user_id)
     result = await tool.execute(
         tool.arguments_model.model_validate(
             {"action_id": "test.low_write", "arguments": {"target": "x"}, "note": "低风险"}
         ),
-        _context(user_id, uuid4()),
+        _context(user_id, turn_id),
     )
     assert result.ok
     plan = await service.get_plan(user_id=user_id, plan_id=UUID(result.data["plan_id"]))
@@ -254,3 +257,22 @@ async def test_completion_reporter_delivers_after_plan_completes(
     assert "全部成功" in text
     assert kwargs["target_user_id"] == user_id
     assert kwargs["rule_id"] == "plan.completed"
+
+
+async def _source_run(database: Database, run_id: UUID, user_id: UUID) -> None:
+    from datetime import UTC, datetime
+
+    from app.db import TaskRunRecord
+
+    async with database.sessions.begin() as session:
+        session.add(
+            TaskRunRecord(
+                id=run_id,
+                user_id=user_id,
+                contract={"criterion": "reply_committed", "required_work": []},
+                status="running",
+                privacy_level="L1",
+                created_at=datetime.now(UTC),
+                updated_at=datetime.now(UTC),
+            )
+        )

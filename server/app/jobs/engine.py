@@ -170,6 +170,13 @@ class JobEngine:
                 if existing.owner != owner or existing.kind != kind or existing.input != input:
                     raise ValueError("job_idempotency_conflict")
                 return self._to_view(existing)
+        required_run = None
+        if kind.startswith("deleg.") and (task_run_id is not None or source_turn_id is not None):
+            from app.runs.contracts import lock_source_run
+
+            source_id = task_run_id or source_turn_id
+            assert source_id is not None
+            required_run = await lock_source_run(session, source_id, user_id=UUID(owner))
         if task_run_id is not None or source_turn_id is not None:
             run = await session.get(TaskRunRecord, task_run_id or source_turn_id)
             if run is not None:
@@ -195,6 +202,10 @@ class JobEngine:
         )
         session.add(job)
         await session.flush()
+        if required_run is not None:
+            from app.runs.contracts import require_work
+
+            await require_work(session, required_run, kind="delegated_job", work_id=job.id)
         return self._to_view(job)
 
     async def get(self, job_id: UUID) -> JobView | None:

@@ -876,6 +876,7 @@ class ChatService:
                         "kind": "chat.reply",
                         "input_message_id": str(user_record.id),
                         "criterion": "reply_committed",
+                        "required_work": [],
                     },
                     budget=snapshot.config.run_budget.model_dump(mode="json"),
                     deadline=now
@@ -1908,6 +1909,35 @@ class ChatService:
     async def cancel_turn(
         self, generation_id: UUID, *, user_id: UUID, reason: str = "user_cancelled"
     ) -> bool:
+        # Current turns cancel their run and required work in one transaction.
+        # The nullable legacy path below remains for pre-TaskRun records.
+        async with self._database.sessions() as session:
+            source = (
+                await session.execute(
+                    select(InteractionTurnRecord.task_run_id, InteractionTurnRecord.state)
+                    .join(
+                        ConversationRecord,
+                        ConversationRecord.id == InteractionTurnRecord.conversation_id,
+                    )
+                    .where(
+                        InteractionTurnRecord.generation_id == generation_id,
+                        ConversationRecord.user_id == user_id,
+                    )
+                )
+            ).one_or_none()
+        if source is None:
+            raise LookupError("generation not found")
+        if source[1] in {"cancelled", "failed", "completed"}:
+            return False
+        if source[0] is not None:
+            cancelled, generations = await self.runs.cancel_work(
+                source[0], user_id=user_id, reason=reason
+            )
+            self._cancelled_generations.update(generations)
+            if cancelled and self._deleg_canceller is not None:
+                with contextlib.suppress(Exception):
+                    await self._deleg_canceller(source[0])
+            return cancelled
         now = datetime.now(UTC)
         async with self._database.sessions.begin() as session:
             row = (
@@ -2837,16 +2867,9 @@ class ChatService:
             )
 
     async def cancel_run(self, run_id: UUID, *, user_id: UUID) -> bool:
-        await self.runs.get(run_id, user_id=user_id)
-        async with self._database.sessions() as session:
-            generation = await session.scalar(
-                select(InteractionTurnRecord.generation_id).where(
-                    InteractionTurnRecord.task_run_id == run_id,
-                )
-            )
-        if generation is None:
-            return await self.runs.cancel_background(run_id, user_id=user_id)
-        return await self.cancel_turn(generation, user_id=user_id)
+        cancelled, generations = await self.runs.cancel_work(run_id, user_id=user_id)
+        self._cancelled_generations.update(generations)
+        return cancelled
 
     async def _validate_context(self, pending: PendingTurn) -> None:
         async with self._database.sessions() as session:

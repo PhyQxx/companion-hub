@@ -118,9 +118,7 @@ async def test_cancelled_job_is_not_claimed(database: Database, user_id: UUID) -
     assert await engine.claim("w1", resource_class=DELEG_RESOURCE_CLASS) is None
 
 
-async def test_cancel_during_execution_discards_result(
-    database: Database, user_id: UUID
-) -> None:
+async def test_cancel_during_execution_discards_result(database: Database, user_id: UUID) -> None:
     engine = JobEngine(database)
     delivered: list[str] = []
 
@@ -141,9 +139,7 @@ async def test_cancel_during_execution_discards_result(
         resource_class=DELEG_RESOURCE_CLASS,
     )
     job_id_holder["id"] = job.id
-    claimed = await engine.claim(
-        worker._worker_id, resource_class=DELEG_RESOURCE_CLASS
-    )
+    claimed = await engine.claim(worker._worker_id, resource_class=DELEG_RESOURCE_CLASS)
     assert claimed is not None
     await worker._execute(claimed)
 
@@ -159,12 +155,11 @@ def _tool_context(
     return ToolContext(privacy_level=privacy, user_id=user_id, turn_id=turn_id)
 
 
-async def test_delegate_task_tool_submits_idempotent_job(
-    database: Database, user_id: UUID
-) -> None:
+async def test_delegate_task_tool_submits_idempotent_job(database: Database, user_id: UUID) -> None:
     engine = JobEngine(database)
     tool = DelegateTaskTool(engine)
     turn_id = uuid4()
+    await _source_run(database, turn_id, user_id)
     arguments = tool.arguments_model.model_validate(
         {"kind": "web_research", "topic": "嵌入式数据库对比", "urls": ["https://example.com/a"]}
     )
@@ -191,6 +186,7 @@ async def test_delegate_task_tool_gates(database: Database, user_id: UUID) -> No
     engine = JobEngine(database)
     tool = DelegateTaskTool(engine)
     turn_id = uuid4()
+    await _source_run(database, turn_id, user_id)
 
     l2 = await tool.execute(
         tool.arguments_model.model_validate(
@@ -311,23 +307,20 @@ async def test_web_research_handler_rejects_all_failed(user_id: UUID) -> None:
         )
 
 
-async def test_cancel_turn_cascades_to_delegations(
-    database: Database, user_id: UUID
-) -> None:
+async def test_cancel_turn_cascades_to_delegations(database: Database, user_id: UUID) -> None:
     """取消回合时联动取消该回合委派的 deleg 任务，其他任务不受影响。"""
     from app.jobs import cancel_turn_delegations
 
     engine = JobEngine(database)
     tool = DelegateTaskTool(engine)
     turn_id = uuid4()
+    await _source_run(database, turn_id, user_id)
     arguments = tool.arguments_model.model_validate(
         {"kind": "web_research", "topic": "t", "urls": ["https://example.com/a"]}
     )
     executed = await tool.execute(
         arguments,
-        ToolContext(
-            privacy_level=PrivacyLevel.L1, user_id=user_id, turn_id=turn_id
-        ),
+        ToolContext(privacy_level=PrivacyLevel.L1, user_id=user_id, turn_id=turn_id),
     )
     assert executed.ok
     job_id = UUID(executed.data["job_id"])
@@ -378,3 +371,22 @@ async def test_handler_cooperative_cancel_discards_result(
     view = await engine.get(job.id)
     assert view is not None and view.status == "cancelled"
     assert delivered == []
+
+
+async def _source_run(database: Database, run_id: UUID, user_id: UUID) -> None:
+    from datetime import UTC, datetime
+
+    from app.db import TaskRunRecord
+
+    async with database.sessions.begin() as session:
+        session.add(
+            TaskRunRecord(
+                id=run_id,
+                user_id=user_id,
+                contract={"criterion": "reply_committed", "required_work": []},
+                status="running",
+                privacy_level="L1",
+                created_at=datetime.now(UTC),
+                updated_at=datetime.now(UTC),
+            )
+        )

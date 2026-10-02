@@ -14,8 +14,8 @@ from app.persona import PersonaConfig, PersonaStore
 
 
 @pytest.fixture
-async def persona_database() -> AsyncIterator[Database]:
-    database = create_database("sqlite+aiosqlite:///:memory:")
+async def persona_database(tmp_path: Path) -> AsyncIterator[Database]:
+    database = create_database(f"sqlite+aiosqlite:///{tmp_path / 'persona.db'}")
     async with database.engine.begin() as connection:
         await connection.run_sync(Base.metadata.create_all)
     try:

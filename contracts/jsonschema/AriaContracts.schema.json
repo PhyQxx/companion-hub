@@ -1943,6 +1943,48 @@
       "title": "RunBudgetView",
       "type": "object"
     },
+    "RunCriterionView": {
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "title": "Kind",
+          "type": "string"
+        },
+        "reason_code": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Reason Code"
+        },
+        "source_id": {
+          "format": "uuid",
+          "title": "Source Id",
+          "type": "string"
+        },
+        "status": {
+          "title": "Status",
+          "type": "string"
+        },
+        "validation_level": {
+          "default": "V0",
+          "title": "Validation Level",
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "source_id",
+        "status"
+      ],
+      "title": "RunCriterionView",
+      "type": "object"
+    },
     "RunEventView": {
       "additionalProperties": false,
       "properties": {
@@ -1988,6 +2030,55 @@
         "occurred_at"
       ],
       "title": "RunEventView",
+      "type": "object"
+    },
+    "RunGoalView": {
+      "additionalProperties": false,
+      "properties": {
+        "criteria": {
+          "items": {
+            "$ref": "#/$defs/RunCriterionView"
+          },
+          "title": "Criteria",
+          "type": "array"
+        },
+        "failed": {
+          "default": 0,
+          "title": "Failed",
+          "type": "integer"
+        },
+        "inconclusive": {
+          "default": 0,
+          "title": "Inconclusive",
+          "type": "integer"
+        },
+        "passed": {
+          "default": 0,
+          "title": "Passed",
+          "type": "integer"
+        },
+        "pending": {
+          "default": 0,
+          "title": "Pending",
+          "type": "integer"
+        },
+        "required": {
+          "default": 0,
+          "title": "Required",
+          "type": "integer"
+        },
+        "scope": {
+          "default": "declared_run_contract",
+          "title": "Scope",
+          "type": "string"
+        },
+        "status": {
+          "default": "not_declared",
+          "title": "Status",
+          "type": "string"
+        }
+      },
+      "title": "RunGoalView",
       "type": "object"
     },
     "RunView": {
@@ -2042,6 +2133,17 @@
           "format": "date-time",
           "title": "Created At",
           "type": "string"
+        },
+        "goal": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RunGoalView"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
         },
         "id": {
           "format": "uuid",

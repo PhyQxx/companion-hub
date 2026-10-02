@@ -17,7 +17,27 @@ class RunBudgetView(StrictModel):
     unknown_usage_calls: int | None = None
 
 
+class RunCriterionView(StrictModel):
+    kind: str
+    source_id: UUID
+    status: str
+    validation_level: str = "V0"
+    reason_code: str | None = None
+
+
+class RunGoalView(StrictModel):
+    scope: str = "declared_run_contract"
+    status: str = "not_declared"
+    required: int = 0
+    passed: int = 0
+    pending: int = 0
+    failed: int = 0
+    inconclusive: int = 0
+    criteria: list[RunCriterionView] = Field(default_factory=list)
+
+
 class RunView(StrictModel):
+    goal: RunGoalView | None = None
     budget_summary: RunBudgetView | None = None
     action_outcomes: list[RunActionOutcome] = Field(default_factory=list)
     job_ids: list[UUID] = Field(default_factory=list)

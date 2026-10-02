@@ -14,9 +14,10 @@ from pydantic import Field, JsonValue
 from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db import ActionPlanRecord, ActionStepRecord, AppUserRecord, Database, TaskRunRecord
+from app.db import ActionPlanRecord, ActionStepRecord, AppUserRecord, Database
 from app.ids import uuid7
 from app.privacy.service import PolicyService
+from app.runs.contracts import lock_source_run, require_work
 from app.schemas.common import StrictModel, TokenName
 from app.tools import ToolResult
 
@@ -357,11 +358,9 @@ class ActionPlanService:
             if user_exists is None:
                 raise LookupError("active user not found")
             if source_turn_id is not None:
-                run = await session.get(TaskRunRecord, source_turn_id)
-                if run is not None:
-                    if run.user_id != user_id:
-                        raise PermissionError("task_run_owner_mismatch")
-                    plan.task_run_id = run.id
+                source_run = await lock_source_run(session, source_turn_id, user_id=user_id)
+                plan.task_run_id = source_run.id
+                await require_work(session, source_run, kind="action_plan", work_id=plan.id)
             session.add(plan)
             session.add_all(step_records)
         view = _plan_view(plan, step_records)

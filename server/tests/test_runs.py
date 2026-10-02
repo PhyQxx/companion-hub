@@ -390,3 +390,165 @@ async def test_delete_source_purges_candidates_goals_and_stops_detached_jobs(
     finally:
         await service.drain_background_work()
         await database.close()
+
+
+async def test_completed_reply_tracks_required_work_and_stops_children(tmp_path: Path) -> None:
+    from app.jobs import JobEngine
+
+    service, database, _ = await _summary_service(tmp_path)
+    try:
+        user = await create_user(database)
+        conversation = await service.create_conversation(user_id=user.id, title="work")
+        result = await service.send_message(
+            conversation.id, user_id=user.id, text="hello", privacy_level=PrivacyLevel.L1
+        )
+        run_id = result.assistant_message.turn_id
+        engine = JobEngine(database)
+        job = await engine.submit(
+            "deleg.test", {"synthetic": True}, owner=str(user.id), source_turn_id=run_id
+        )
+        run = await service.runs.get(run_id, user_id=user.id)
+        assert run.status == "succeeded"
+        assert run.goal is not None and run.goal.status == "pending"
+        assert run.goal.passed == 1 and run.goal.pending == 1
+        events = await service.runs.events(run_id, user_id=user.id)
+        assert events[-1].kind == "run.work.required"
+        assert events[-1].payload["work_id"] == str(job.id)
+        with pytest.raises(LookupError):
+            await service.cancel_run(run_id, user_id=uuid7())
+        assert await service.cancel_run(run_id, user_id=user.id)
+        assert not await service.cancel_run(run_id, user_id=user.id)
+        fresh = await engine.get(job.id)
+        assert fresh is not None and fresh.status == "cancelled"
+        run = await service.runs.get(run_id, user_id=user.id)
+        assert run.status == "succeeded" and run.cancel_epoch == 1
+        assert run.goal is not None and run.goal.status == "failed"
+        with pytest.raises(ValueError, match="task_run_inactive"):
+            await engine.submit("deleg.test", {}, owner=str(user.id), source_turn_id=run_id)
+        await service.delete_conversation(conversation.id, user_id=user.id)
+        with pytest.raises(LookupError, match="task run not found"):
+            await engine.submit("deleg.test", {}, owner=str(user.id), source_turn_id=run_id)
+    finally:
+        await service.drain_background_work()
+        await database.close()
+
+
+@pytest.mark.parametrize(
+    ("status", "verification", "policy", "expected", "level"),
+    [
+        ("completed", "verified", "read_after_write", "passed", "V3"),
+        ("completed", "verified", "receipt", "passed", "V1"),
+        ("completed", "not_required", "none", "inconclusive", "V0"),
+        ("unknown_outcome", "inconclusive", "read_after_write", "inconclusive", "V0"),
+        ("ready", "pending", "read_after_write", "pending", "V0"),
+        ("failed", "inconclusive", "read_after_write", "failed", "V0"),
+    ],
+)
+def test_goal_uses_evidence_not_handler_completion(
+    status: str, verification: str, policy: str, expected: str, level: str
+) -> None:
+    from app.db import ActionPlanRecord, ActionStepRecord, JobRecord, TaskRunRecord
+    from app.runs.goals import goal_view
+
+    plan_id, run_id = uuid7(), uuid7()
+    run = TaskRunRecord(
+        id=run_id,
+        status="succeeded",
+        contract={
+            "criterion": "reply_committed",
+            "required_work": [{"kind": "action_plan", "id": str(plan_id)}],
+        },
+    )
+    plan = ActionPlanRecord(
+        id=plan_id,
+        status="completed"
+        if status in {"completed", "unknown_outcome"}
+        else "ready"
+        if status == "ready"
+        else "failed",
+    )
+    step = ActionStepRecord(
+        id=uuid7(),
+        plan_id=plan_id,
+        status=status,
+        risk="A1",
+        verification_status=verification,
+        verification_policy=policy,
+        verifier_id="home.entity_state",
+    )
+    # Optional maintenance failure does not become a required business criterion.
+    goal = goal_view(
+        run, [plan], [step], [JobRecord(id=uuid7(), kind="chat.postcommit", status="failed")]
+    )
+    assert goal.status == expected and goal.required == 2
+    assert goal.criteria[-1].validation_level == level
+
+
+def test_successful_delegate_is_not_semantic_proof() -> None:
+    from app.db import JobRecord, TaskRunRecord
+    from app.runs.goals import goal_view
+
+    job_id = uuid7()
+    run = TaskRunRecord(
+        id=uuid7(),
+        status="succeeded",
+        contract={"required_work": [{"kind": "delegated_job", "id": str(job_id)}]},
+    )
+    goal = goal_view(run, [], [], [JobRecord(id=job_id, status="succeeded", kind="deleg.test")])
+    assert goal.status == "inconclusive"
+    assert goal.criteria[0].reason_code == "delegated_result_unverified"
+    assert goal.criteria[0].validation_level == "V0"
+
+
+async def test_run_stop_withdraws_unstarted_actions_and_fences_active_delegate(
+    tmp_path: Path,
+) -> None:
+    from app.cognition import ActionInvocation, ActionPlanService, build_builtin_action_registry
+    from app.jobs import JobEngine
+
+    service, database, _ = await _summary_service(tmp_path)
+    try:
+        user = await create_user(database)
+        conversation = await service.create_conversation(user_id=user.id, title="stop")
+        pending = await service.start_turn(
+            conversation.id, user_id=user.id, text="hello", privacy_level=PrivacyLevel.L1
+        )
+        plans = ActionPlanService(database, build_builtin_action_registry())
+        plan = await plans.create_plan(
+            user_id=user.id,
+            source_turn_id=pending.turn_id,
+            invocations=[
+                ActionInvocation(action_id="home.light.turn_off", arguments={"target": "synthetic"})
+            ],
+            idempotency_key="synthetic-run-stop",
+        )
+        engine = JobEngine(database)
+        job = await engine.submit(
+            "deleg.test",
+            {},
+            owner=str(user.id),
+            source_turn_id=pending.turn_id,
+            resource_class="deleg",
+        )
+        claimed = await engine.claim("synthetic-worker", resource_class="deleg")
+        assert claimed is not None
+        assert await service.cancel_turn(
+            pending.generation_id, user_id=user.id, reason="voice_interrupted"
+        )
+        fresh = await plans.get_plan(user_id=user.id, plan_id=plan.id)
+        assert fresh.status == "cancelled" and fresh.cancel_requested
+        assert all(step.status == "cancelled" for step in fresh.steps)
+        assert not await engine.claim_active(job.id, "synthetic-worker", claimed.attempts)
+        with pytest.raises(ValueError, match="task_run_inactive"):
+            await plans.create_plan(
+                user_id=user.id,
+                source_turn_id=pending.turn_id,
+                invocations=[
+                    ActionInvocation(action_id="home.light.turn_off", arguments={"target": "late"})
+                ],
+            )
+        events = await service.runs.events(pending.turn_id, user_id=user.id)
+        assert sum(event.kind == "run.work.required" for event in events) == 2
+    finally:
+        await service.drain_background_work()
+        await database.close()

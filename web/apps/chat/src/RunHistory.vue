@@ -20,7 +20,14 @@ const stateLabels: Record<string, string> = {
 const validationLabels: Record<string, string> = {
   V0: "尚未核实", V1: "已受理", V2: "结构通过", V3: "目标已核实", V4: "用户已验收",
 };
-const active = (run: TaskRun) => ["accepted", "running"].includes(run.status);
+const goalLabels: Record<string, string> = {
+  passed: "已登记项目通过", pending: "关联工作仍在进行", failed: "有项目未完成",
+  inconclusive: "证据不足，待核对", not_declared: "未声明完成判据",
+};
+const criterionLabels: Record<string, string> = {
+  reply_committed: "回复保存", action_plan_verified: "操作核实", delegated_result: "委派结果",
+};
+const active = (run: TaskRun) => ["accepted", "running"].includes(run.status) || (run.goal?.pending ?? 0) > 0;
 const time = (value: string) => new Date(value).toLocaleString();
 async function refresh(more = false) {
   if (loading.value || stopped) return;
@@ -109,6 +116,17 @@ onBeforeUnmount(() => { stopped = true; selectionVersion++; });
           <span v-if="selected.budget_summary.unknown_usage_calls">有 {{ selected.budget_summary.unknown_usage_calls }} 次调用用量待核对。</span>
           <span v-if="selected.budget_summary.unsettled_calls">有 {{ selected.budget_summary.unsettled_calls }} 次调用尚未结算。</span>
         </p>
+        <section v-if="selected.goal" aria-label="任务完成判据">
+          <h3>{{ goalLabels[selected.goal.status] ?? "待核对" }}</h3>
+          <p>仅汇总已登记的判据；回复保存和任务返回不代表业务目标已核实。</p>
+          <p v-if="selected.goal.scope === 'legacy_associations'">旧记录按现有任务关联汇总。</p>
+          <ul>
+            <li v-for="item in selected.goal.criteria" :key="`${item.kind}:${item.source_id}`">
+              {{ criterionLabels[item.kind] ?? "其他判据" }} · {{ goalLabels[item.status] ?? "待核对" }}
+              <span v-if="item.status === 'passed'"> · {{ validationLabels[item.validation_level] ?? "尚未核实" }}</span>
+            </li>
+          </ul>
+        </section>
         <p>关联 {{ selected.plan_ids.length }} 个操作计划、{{ selected.job_ids.length }} 个后台任务。</p>
         <ul>
           <li v-for="item in selected.action_outcomes" :key="item.step_id">

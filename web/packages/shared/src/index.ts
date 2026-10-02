@@ -751,7 +751,19 @@ export interface SafetyAlertItem {
   expires_at: string;
 }
 
+export interface RunGoal {
+  scope: string;
+  status: string;
+  required: number;
+  passed: number;
+  pending: number;
+  failed: number;
+  inconclusive: number;
+  criteria: Array<{ kind: string; source_id: string; status: string; validation_level: string; reason_code: string | null }>;
+}
+
 export interface TaskRun {
+  goal: RunGoal | null;
   id: string;
   conversation_id: string | null;
   status: string;
