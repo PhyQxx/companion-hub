@@ -1,11 +1,51 @@
-"""Observe registered run criteria conservatively; never infer an unstated business goal."""
+"""Detach domain ORM rows before evaluating the declared run contract."""
 
 from uuid import UUID
 
+from pydantic import TypeAdapter, ValidationError
+
 from app.db import ActionPlanRecord, ActionStepRecord, JobRecord, TaskRunRecord
-from app.schemas.runs import RunCriterionView, RunGoalView
+from app.harness.criteria import (
+    JobCriteriaSnapshot,
+    PlanCriteriaSnapshot,
+    RunCriteriaSnapshot,
+    StepCriteriaSnapshot,
+    WorkRequirement,
+    evaluate_criteria,
+)
+from app.schemas.common import TokenName
+from app.schemas.runs import RunGoalView
 
 from .outcomes import action_outcome
+
+_CHANNELS = TypeAdapter(list[TokenName])
+MAX_REQUIREMENTS = 1000
+
+
+def _requirements(value: object) -> tuple[WorkRequirement, ...] | None:
+    if value is None:
+        return None  # Retain the legacy associations scope for old runs.
+    invalid = (WorkRequirement("invalid", None),)
+    if not isinstance(value, list) or len(value) > MAX_REQUIREMENTS:
+        return invalid
+    result: list[WorkRequirement] = []
+    seen: set[tuple[str, UUID]] = set()
+    for item in value:
+        if not isinstance(item, dict) or not isinstance(item.get("kind"), str):
+            return invalid
+        identifier = item.get("id")
+        if not isinstance(identifier, str):
+            return invalid
+        try:
+            work_id = UUID(identifier)
+        except ValueError:
+            return invalid
+        key = (item["kind"], work_id)
+        if key in seen:
+            return invalid
+        seen.add(key)
+        result.append(WorkRequirement(item["kind"], work_id))
+    return tuple(result)
 
 
 def goal_view(
@@ -14,182 +54,35 @@ def goal_view(
     steps: list[ActionStepRecord],
     jobs: list[JobRecord],
 ) -> RunGoalView:
-    criteria: list[RunCriterionView] = []
-    root = run.contract.get("criterion")
-    if root == "reply_committed":
-        state = (
-            "passed"
-            if run.status == "succeeded"
-            else "failed"
-            if run.status in {"failed", "cancelled"}
-            else "pending"
+    contract = run.contract
+    if not isinstance(contract, dict):
+        return evaluate_criteria(
+            RunCriteriaSnapshot(run.id, run.status, "invalid_contract", ()), (), (), ()
         )
-        criteria.append(
-            RunCriterionView(
-                kind=root,
-                source_id=run.id,
-                status=state,
-                validation_level="V1" if state == "passed" else "V0",
-            )
-        )
-    elif root == "delivery_channels_returned":
-        dispatch = run.contract.get("dispatch_state")
-        reason = run.contract.get("delivery_reason")
-        reported = bool(run.contract.get("delivery_channels"))
-        if run.status in {"accepted", "running"}:
-            state = "pending"
-        elif dispatch == "unknown" or (
-            dispatch == "started" and run.status in {"failed", "cancelled"}
-        ):
-            state, reason = "inconclusive", "delivery_outcome_unknown"
-        elif reported and run.status != "succeeded":
-            state, reason = "inconclusive", "delivery_returned_after_stop"
-        elif run.status == "succeeded" and dispatch == "returned" and reported:
-            state = "passed"
-        else:
-            state = "failed"
-        criteria.append(
-            RunCriterionView(
-                kind=root,
-                source_id=run.id,
-                status=state,
-                validation_level="V1" if reported else "V0",
-                reason_code=str(reason) if reason else None,
-            )
-        )
-    elif root == "model_result_returned":
-        state = (
-            "inconclusive"
-            if run.status == "succeeded"
-            else "failed"
-            if run.status in {"failed", "cancelled"}
-            else "pending"
-        )
-        criteria.append(
-            RunCriterionView(
-                kind=root,
-                source_id=run.id,
-                status=state,
-                reason_code="model_result_unverified" if state == "inconclusive" else None,
-            )
-        )
-    elif root not in {None, "handler_completed"}:
-        criteria.append(
-            RunCriterionView(
-                kind="unsupported_criterion",
-                source_id=run.id,
-                status="inconclusive",
-                reason_code="criterion_not_supported",
-            )
-        )
-    registered = run.contract.get("required_work")
-    # Older runs can report existing links, but do not pretend these were
-    # explicitly enrolled when the original contract was accepted.
-    legacy = registered is None
-    work = (
-        registered
-        if isinstance(registered, list)
-        else [
-            *[{"kind": "action_plan", "id": str(plan.id)} for plan in plans],
-            *[
-                {"kind": "delegated_job", "id": str(job.id)}
-                for job in jobs
-                if job.kind.startswith("deleg.")
-            ],
-        ]
-    )
-    if root == "handler_completed" and not any(
-        isinstance(item, dict) and item.get("id") == str(run.id) for item in work
-    ):
-        work = [*work, {"kind": "delegated_job", "id": str(run.id)}]
-    for item in work:
+    channels = contract.get("delivery_channels")
+    reported = False
+    if isinstance(channels, list) and 1 <= len(channels) <= 16:
         try:
-            source_id = UUID(item["id"])
-        except (ValueError, TypeError, KeyError):
-            criteria.append(
-                RunCriterionView(
-                    kind="unsupported_criterion",
-                    source_id=run.id,
-                    status="inconclusive",
-                    reason_code="criterion_invalid",
-                )
-            )
-            continue
-        if item.get("kind") == "action_plan":
-            plan = next((plan for plan in plans if plan.id == source_id), None)
-            actions = [step for step in steps if step.plan_id == source_id]
-            reason = None
-            level = "V0"
-            if plan is None:
-                state, reason = "inconclusive", "required_plan_missing"
-            elif any(step.status == "unknown_outcome" for step in actions):
-                state, reason = "inconclusive", "action_outcome_unknown"
-            elif plan.status in {"failed", "cancelled", "expired", "partially_completed"}:
-                state = "failed"
-                reason = plan.reason_code or "required_plan_not_completed"
-            elif plan.status != "completed":
-                state = "pending"
-            else:
-                outcomes = [action_outcome(step) for step in actions]
-                if outcomes and all(outcome.validation_status == "passed" for outcome in outcomes):
-                    state = "passed"
-                    level = min(str(outcome.validation_level) for outcome in outcomes)
-                else:
-                    state, reason = "inconclusive", "required_plan_unverified"
-            criteria.append(
-                RunCriterionView(
-                    kind="action_plan_verified",
-                    source_id=source_id,
-                    status=state,
-                    validation_level=level,
-                    reason_code=reason,
-                )
-            )
-        elif item.get("kind") == "delegated_job":
-            job = next((job for job in jobs if job.id == source_id), None)
-            if job is None:
-                state, reason = "inconclusive", "required_job_missing"
-            elif job.status in {"failed", "cancelled"}:
-                state, reason = "failed", job.error_code or "required_job_not_completed"
-            elif job.status == "succeeded":
-                # The handler returned, but no semantic result criterion has
-                # been registered. A generated summary is not verified fact.
-                state, reason = "inconclusive", "delegated_result_unverified"
-            else:
-                state, reason = "pending", None
-            criteria.append(
-                RunCriterionView(
-                    kind="delegated_result", source_id=source_id, status=state, reason_code=reason
-                )
-            )
-        else:
-            criteria.append(
-                RunCriterionView(
-                    kind="unsupported_criterion",
-                    source_id=source_id,
-                    status="inconclusive",
-                    reason_code="criterion_not_supported",
-                )
-            )
-    counts = {
-        state: sum(item.status == state for item in criteria)
-        for state in ("passed", "pending", "failed", "inconclusive")
-    }
-    status = (
-        "not_declared"
-        if not criteria
-        else "failed"
-        if counts["failed"]
-        else "pending"
-        if counts["pending"]
-        else "inconclusive"
-        if counts["inconclusive"]
-        else "passed"
-    )
-    return RunGoalView(
-        scope="legacy_associations" if legacy else "declared_run_contract",
-        status=status,
-        required=len(criteria),
-        criteria=criteria,
-        **counts,
+            _CHANNELS.validate_python(channels)
+            reported = True
+        except ValidationError:
+            pass
+    root = contract.get("criterion")
+    reason = contract.get("delivery_reason")
+    dispatch = contract.get("dispatch_state")
+    return evaluate_criteria(
+        RunCriteriaSnapshot(
+            id=run.id,
+            status=run.status,
+            criterion=root if isinstance(root, str) or root is None else "invalid_contract",
+            required_work=_requirements(contract.get("required_work")),
+            dispatch_state=dispatch if isinstance(dispatch, str) else None,
+            delivery_reason=reason if isinstance(reason, str) else None,
+            reported_channels=reported,
+        ),
+        tuple(PlanCriteriaSnapshot(plan.id, plan.status, plan.reason_code) for plan in plans),
+        tuple(
+            StepCriteriaSnapshot(step.plan_id, step.status, action_outcome(step)) for step in steps
+        ),
+        tuple(JobCriteriaSnapshot(job.id, job.status, job.kind, job.error_code) for job in jobs),
     )
