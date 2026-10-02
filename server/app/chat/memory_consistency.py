@@ -8,6 +8,7 @@
 该 Guard 不承担通用语义 NLI。没有显式事实陈述时保持原回复，避免把
 自然语言差异误判成冲突。
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -141,8 +142,7 @@ def _repair_request(
     instruction = (
         "\n\n【一致性修复】你上一版候选回复与本轮已确认的 active 长期记忆冲突。"
         "请重新回答用户原问题，只修正冲突事实，不解释内部记忆系统，也不要改变无关内容。"
-        "以下事实必须保持一致：\n"
-        + facts
+        "以下事实必须保持一致：\n" + facts
     )
     messages = list(request.messages)
     first = messages[0]
@@ -181,7 +181,22 @@ def _merge_usage(original: CompletionResult, repair: CompletionResult) -> Comple
         input_tokens=original.usage.input_tokens + repair.usage.input_tokens,
         output_tokens=original.usage.output_tokens + repair.usage.output_tokens,
         total_tokens=original.usage.total_tokens + repair.usage.total_tokens,
-        estimated_cost=original.usage.estimated_cost + repair.usage.estimated_cost,
+        usage_known=(
+            original.usage.usage_known is not False and repair.usage.usage_known is not False
+        ),
+        estimated_cost=(
+            original.usage.estimated_cost + repair.usage.estimated_cost
+            if original.usage.estimated_cost is not None
+            and repair.usage.estimated_cost is not None
+            and original.usage.cost_currency == repair.usage.cost_currency
+            and (original.usage.cost_currency is not None or original.endpoint == repair.endpoint)
+            else None
+        ),
+        cost_currency=(
+            original.usage.cost_currency
+            if original.usage.cost_currency == repair.usage.cost_currency
+            else None
+        ),
     )
     return repair.model_copy(
         update={

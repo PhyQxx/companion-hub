@@ -88,7 +88,8 @@ class ModelUsage(StrictModel):
     input_tokens: Annotated[int, Field(ge=0)] = 0
     output_tokens: Annotated[int, Field(ge=0)] = 0
     total_tokens: Annotated[int, Field(ge=0)] = 0
-    estimated_cost: Annotated[float, Field(ge=0)] = 0
+    estimated_cost: Annotated[float, Field(ge=0, allow_inf_nan=False)] | None = None
+    cost_currency: Annotated[str, Field(pattern=r"^[A-Z]{3}$")] | None = None
 
 
 class CompletionResult(StrictModel):
@@ -126,8 +127,9 @@ class ModelEndpoint(StrictModel):
     max_retries: Annotated[int, Field(ge=0, le=3)] = 1
     max_tokens: Annotated[int, Field(gt=0, le=131_072)] | None = None
     max_context_tokens: Annotated[int, Field(gt=0)] = 131_072
-    input_cost_per_million: Annotated[float, Field(ge=0)] = 0
-    output_cost_per_million: Annotated[float, Field(ge=0)] = 0
+    input_cost_per_million: Annotated[float, Field(ge=0, allow_inf_nan=False)] | None = None
+    output_cost_per_million: Annotated[float, Field(ge=0, allow_inf_nan=False)] | None = None
+    cost_currency: Annotated[str, Field(pattern=r"^[A-Z]{3}$")] | None = None
 
 
 class RoutePolicy(StrictModel):

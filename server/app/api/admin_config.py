@@ -549,8 +549,6 @@ def create_admin_config_router(
                     timeout_ms=endpoint.timeout_ms,
                     max_retries=0,
                     max_context_tokens=204_800,
-                    input_cost_per_million=0,
-                    output_cost_per_million=0,
                 )
                 provider = LiteLLMProvider(
                     "admin_zhipu_account_probe",

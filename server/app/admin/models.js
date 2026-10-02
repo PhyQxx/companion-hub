@@ -31,7 +31,7 @@ function renderModels() {
         ${field("密钥引用", "secret_ref", model.secret_ref || "", "text", true)}
         ${field("超时 (ms)", "timeout_ms", model.timeout_ms, "number")}${field("重试次数", "max_retries", model.max_retries, "number")}
         ${field("上下文上限", "max_context_tokens", model.max_context_tokens, "number")}${field("最大隐私级别", "max_privacy_level", model.max_privacy_level)}
-        ${field("输入单价 / 百万 token", "input_cost_per_million", model.input_cost_per_million, "number")}${field("输出单价 / 百万 token", "output_cost_per_million", model.output_cost_per_million, "number")}
+        ${field("币种（如 CNY、USD）", "cost_currency", model.cost_currency)}${field("输入单价 / 百万 token（留空为未知）", "input_cost_per_million", model.input_cost_per_million, "number")}${field("输出单价 / 百万 token（留空为未知）", "output_cost_per_million", model.output_cost_per_million, "number")}
         <label class="check"><input data-field="enabled" type="checkbox" ${model.enabled ? "checked" : ""}>启用端点</label>
         <label class="check"><input data-field="runs_local" type="checkbox" ${model.runs_local ? "checked" : ""}>本地运行</label>
         <label class="check"><input data-field="supports_json_mode" type="checkbox" ${model.supports_json_mode ? "checked" : ""}>原生 JSON 模式</label>
@@ -54,7 +54,7 @@ function collectConfig() {
   document.querySelectorAll("[data-model-card]").forEach(card => {
     const get = (name) => card.querySelector(`[data-field=${name}]`);
     const name = get("name").value.trim();
-    models[name] = {enabled:get("enabled").checked, provider:get("provider").value.trim(), model:get("model").value.trim(), supports_json_mode:get("supports_json_mode").checked, supports_tool_calling:get("supports_tool_calling").checked, base_url:get("base_url").value.trim(), secret_ref:get("secret_ref").value.trim() || null, runs_local:get("runs_local").checked, max_privacy_level:get("max_privacy_level").value.trim(), timeout_ms:Number(get("timeout_ms").value), max_retries:Number(get("max_retries").value), max_context_tokens:Number(get("max_context_tokens").value), input_cost_per_million:Number(get("input_cost_per_million").value), output_cost_per_million:Number(get("output_cost_per_million").value)};
+    models[name] = {enabled:get("enabled").checked, provider:get("provider").value.trim(), model:get("model").value.trim(), supports_json_mode:get("supports_json_mode").checked, supports_tool_calling:get("supports_tool_calling").checked, base_url:get("base_url").value.trim(), secret_ref:get("secret_ref").value.trim() || null, runs_local:get("runs_local").checked, max_privacy_level:get("max_privacy_level").value.trim(), timeout_ms:Number(get("timeout_ms").value), max_retries:Number(get("max_retries").value), max_context_tokens:Number(get("max_context_tokens").value), input_cost_per_million:get("input_cost_per_million").value.trim() ? Number(get("input_cost_per_million").value) : null, output_cost_per_million:get("output_cost_per_million").value.trim() ? Number(get("output_cost_per_million").value) : null, cost_currency:get("cost_currency").value.trim().toUpperCase() || null};
   });
   const routes = {};
   routeNames.forEach(route => { const primary = document.querySelector(`[data-route=${route}]`).value; if (!primary && route === "voice") return; const timeout = document.querySelector(`[data-field=timeout-${route}]`).value; routes[route] = {primary, fallbacks:document.querySelector(`[data-field=fallbacks-${route}]`).value.split(",").map(v => v.trim()).filter(Boolean), timeout_ms:timeout ? Number(timeout) : null}; });
@@ -79,6 +79,6 @@ async function rollback(version) { if (!confirm(`回滚到 v${version}？系统�
 
 $("#auth-form").addEventListener("submit", event => { event.preventDefault(); token = $("#admin-token").value; sessionStorage.setItem("ariaAdminToken", token); load(); });
 $("#reload").addEventListener("click", load); $("#save-draft").addEventListener("click", saveDraft);
-$("#add-model").addEventListener("click", () => { config.models[`new_endpoint_${Date.now()}`] = {enabled:false,provider:"openai_compatible",model:"model-id",supports_json_mode:false,supports_tool_calling:false,base_url:"https://example.com/v1",secret_ref:"env:MODEL_API_KEY",runs_local:false,max_privacy_level:"L1",timeout_ms:12000,max_retries:0,max_context_tokens:32768,input_cost_per_million:0,output_cost_per_million:0}; renderModels(); renderRoutes(); });
+$("#add-model").addEventListener("click", () => { config.models[`new_endpoint_${Date.now()}`] = {enabled:false,provider:"openai_compatible",model:"model-id",supports_json_mode:false,supports_tool_calling:false,base_url:"https://example.com/v1",secret_ref:"env:MODEL_API_KEY",runs_local:false,max_privacy_level:"L1",timeout_ms:12000,max_retries:0,max_context_tokens:32768,input_cost_per_million:null,output_cost_per_million:null,cost_currency:null}; renderModels(); renderRoutes(); });
 document.addEventListener("change", event => { if (event.target.matches("[data-field=name],[data-field=enabled],[data-field=runs_local]")) renderRoutes(); });
 if (token) load();

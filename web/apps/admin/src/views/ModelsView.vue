@@ -24,8 +24,9 @@ interface HubModel {
   max_retries?: number;
   max_tokens?: number | null;
   max_context_tokens?: number;
-  input_cost_per_million?: number;
-  output_cost_per_million?: number;
+  input_cost_per_million?: number | null;
+  output_cost_per_million?: number | null;
+  cost_currency?: string | null;
 }
 
 function selectModel(index: number) {
@@ -94,8 +95,9 @@ function draftModelToEndpoint(m: DraftModel): HubModel {
     max_retries: m.max_retries,
     max_tokens: m.max_tokens ?? null,
     max_context_tokens: m.max_context_tokens,
-    input_cost_per_million: m.input_cost_per_million,
-    output_cost_per_million: m.output_cost_per_million,
+    input_cost_per_million: m.input_cost_per_million ?? null,
+    output_cost_per_million: m.output_cost_per_million ?? null,
+    cost_currency: m.cost_currency.trim().toUpperCase() || null,
   };
   if (m.secret_mode === "value" && m.secret_value) {
     endpoint.secret_value = m.secret_value;
@@ -285,8 +287,9 @@ interface DraftModel {
   max_retries: number;
   max_tokens: number;
   max_context_tokens: number;
-  input_cost_per_million: number;
-  output_cost_per_million: number;
+  input_cost_per_million: number | undefined;
+  output_cost_per_million: number | undefined;
+  cost_currency: string;
 }
 
 interface DraftRoute {
@@ -383,8 +386,9 @@ const defaultModel = (): DraftModel => ({
   max_retries: 1,
   max_tokens: 2048,
   max_context_tokens: 131072,
-  input_cost_per_million: 0,
-  output_cost_per_million: 0,
+  input_cost_per_million: undefined,
+  output_cost_per_million: undefined,
+  cost_currency: "",
 });
 
 const defaultRoute = (): DraftRoute => ({ primary: "", fallbacks: [], timeout_ms: null });
@@ -640,8 +644,9 @@ function hubConfigToDraft(config: HubConfig | undefined | null): DraftState {
       max_retries: m.max_retries ?? 1,
       max_tokens: m.max_tokens ?? 2048,
       max_context_tokens: m.max_context_tokens ?? 131072,
-      input_cost_per_million: m.input_cost_per_million ?? 0,
-      output_cost_per_million: m.output_cost_per_million ?? 0,
+      input_cost_per_million: m.input_cost_per_million ?? undefined,
+      output_cost_per_million: m.output_cost_per_million ?? undefined,
+      cost_currency: m.cost_currency ?? "",
     };
   });
   const routes: Record<string, DraftRoute> = {};
@@ -725,8 +730,9 @@ function draftToHubConfig(d: DraftState): HubConfig {
       max_retries: m.max_retries,
       max_tokens: m.max_tokens ?? null,
       max_context_tokens: m.max_context_tokens,
-      input_cost_per_million: m.input_cost_per_million,
-      output_cost_per_million: m.output_cost_per_million,
+      input_cost_per_million: m.input_cost_per_million ?? null,
+      output_cost_per_million: m.output_cost_per_million ?? null,
+      cost_currency: m.cost_currency.trim().toUpperCase() || null,
     };
     if (m.secret_mode === "value" && m.secret_value) {
       endpoint.secret_value = m.secret_value;
@@ -1595,8 +1601,9 @@ onActivated(() => {
                     <label class="field"><span>重试次数</span><el-input-number v-model="draft.models[activeModelTab].max_retries" :min="0" :max="3" controls-position="right" /></label>
                     <label class="field"><span>max_tokens</span><el-input-number v-model="draft.models[activeModelTab].max_tokens" :min="1" :max="131072" controls-position="right" /></label>
                     <label class="field"><span>上下文 tokens</span><el-input-number v-model="draft.models[activeModelTab].max_context_tokens" :min="1" controls-position="right" /></label>
-                    <label class="field"><span>输入成本 / M tokens</span><el-input-number v-model="draft.models[activeModelTab].input_cost_per_million" :min="0" :step="0.01" controls-position="right" /></label>
-                    <label class="field"><span>输出成本 / M tokens</span><el-input-number v-model="draft.models[activeModelTab].output_cost_per_million" :min="0" :step="0.01" controls-position="right" /></label>
+                    <label class="field"><span>计价币种（如 CNY、USD）</span><el-input v-model="draft.models[activeModelTab].cost_currency" placeholder="未填写时不跨端点汇总" maxlength="3" /></label>
+                    <label class="field"><span>输入单价 / 百万 tokens（留空为未知）</span><el-input-number v-model="draft.models[activeModelTab].input_cost_per_million" :min="0" :step="0.01" controls-position="right" /></label>
+                    <label class="field"><span>输出单价 / 百万 tokens（留空为未知）</span><el-input-number v-model="draft.models[activeModelTab].output_cost_per_million" :min="0" :step="0.01" controls-position="right" /></label>
                   </div>
                   </div>
                 </el-tab-pane>

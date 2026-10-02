@@ -194,10 +194,25 @@ class LiteLLMProvider:
     ) -> CompletionResult:
         input_tokens = int(getattr(usage, "prompt_tokens", 0) or 0)
         output_tokens = int(getattr(usage, "completion_tokens", 0) or 0)
+        total_tokens = max(
+            int(getattr(usage, "total_tokens", 0) or 0), input_tokens + output_tokens
+        )
+        split_known = (
+            getattr(usage, "prompt_tokens", None) is not None
+            and getattr(usage, "completion_tokens", None) is not None
+            and total_tokens == input_tokens + output_tokens
+        )
+        input_rate, output_rate = (
+            self.endpoint.input_cost_per_million,
+            self.endpoint.output_cost_per_million,
+        )
+        # Missing rates or incomplete usage are unknown, including local endpoints.
+        # A configured zero is distinct from missing pricing; no currency conversion.
         estimated_cost = (
-            input_tokens * self.endpoint.input_cost_per_million
-            + output_tokens * self.endpoint.output_cost_per_million
-        ) / 1_000_000
+            (input_tokens * input_rate + output_tokens * output_rate) / 1_000_000
+            if split_known and input_rate is not None and output_rate is not None
+            else None
+        )
         return CompletionResult(
             text=text,
             provider=self.endpoint.provider,
@@ -220,6 +235,7 @@ class LiteLLMProvider:
                     )
                 ),
                 estimated_cost=estimated_cost,
+                cost_currency=self.endpoint.cost_currency,
             ),
             latency_ms=(perf_counter() - started) * 1_000,
             tool_calls=tool_calls or [],
