@@ -428,6 +428,11 @@ def assemble_domain(
         FocusScheduler(
             focus_service,
             interval_seconds=float(os.getenv("ARIA_FOCUS_INTERVAL", "120")),
+            budget_loader=lambda: (
+                runtime_config.current.config.run_budget
+                if runtime_config is not None
+                else RunBudgetConfig()
+            ),
         )
         if focus_service is not None
         else None

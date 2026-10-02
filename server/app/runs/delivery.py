@@ -312,6 +312,8 @@ async def _dispatch_with_watch(
                 or owner.status != "active"
             ):
                 raise BudgetDenied("budget_run_inactive")
+            if row.deadline and utc(row.deadline) <= datetime.now(UTC):
+                raise BudgetDenied("run_deadline_exceeded")
             await repository.inspect(session, fingerprint, run_id)
             parent_id = row.parent_run_id or row.contract.get("budget_parent_id")
             if parent_id is not None:

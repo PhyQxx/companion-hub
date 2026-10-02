@@ -9,9 +9,12 @@ from __future__ import annotations
 
 import secrets
 from collections.abc import Callable
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from uuid import UUID
 
+from app.context.repository import timeline_reference
+from app.db import Database
 from app.focus.analysis import (
     DEFAULT_LONG_WORK_MINUTES,
     DEFAULT_SWITCH_COUNT,
@@ -21,10 +24,17 @@ from app.focus.analysis import (
     FocusSignal,
     analyze_focus,
 )
+from app.harness.context import ContextReference
 from app.timeline.store import TimelineStore
 
 MAX_SESSION_MINUTES = 480
 MAX_KEYWORDS = 10
+
+
+@dataclass(frozen=True)
+class FocusEvaluation:
+    signals: tuple[FocusSignal, ...]
+    references: tuple[ContextReference, ...]
 
 
 class FocusService:
@@ -43,6 +53,10 @@ class FocusService:
         self._switch_count = switch_count
         self._clock = clock or (lambda: datetime.now(UTC))
         self._sessions: dict[str, FocusSession] = {}
+
+    @property
+    def database(self) -> Database:
+        return self._timeline.database
 
     def start_session(
         self,
@@ -102,7 +116,15 @@ class FocusService:
         *,
         now: datetime | None = None,
     ) -> tuple[FocusSignal, ...]:
-        """拉取会话窗口内的屏幕观察并做确定性分析。"""
+        return (await self.evaluate_snapshot(session, now=now)).signals
+
+    async def evaluate_snapshot(
+        self,
+        session: FocusSession,
+        *,
+        now: datetime | None = None,
+    ) -> FocusEvaluation:
+        """Capture the exact owned timeline rows used by deterministic analysis."""
         moment = now or self._clock()
         # 观察窗：固定回看上限（长时工作跨度需要会话开始前的整段序列）
         window_start = moment - timedelta(minutes=MAX_SESSION_MINUTES)
@@ -122,7 +144,7 @@ class FocusService:
             ),
             key=lambda item: item.occurred_at,
         )
-        return analyze_focus(
+        signals = analyze_focus(
             observations,
             now=moment,
             session=session,
@@ -130,6 +152,7 @@ class FocusService:
             switch_window_minutes=self._switch_window,
             switch_count=self._switch_count,
         )
+        return FocusEvaluation(signals, tuple(timeline_reference(event) for event in result.events))
 
 
 __all__ = ["MAX_SESSION_MINUTES", "FocusService"]
