@@ -370,3 +370,95 @@ async def test_nested_model_call_reuses_owned_budget_and_rejects_another_owner(
     views = await RunStore(database).list_runs(user_id=owner)
     assert len(views) == 1 and views[0].id == root_id and views[0].budget_summary is not None
     assert views[0].budget_summary.llm_attempts == 1 and len(local.requests) == 1
+
+
+async def test_model_stop_cancels_provider_without_waiting_for_response(
+    database: Database, tmp_path: Path
+) -> None:
+    owner, snapshot, request = await setup(database, tmp_path)
+    started, stopped = asyncio.Event(), asyncio.Event()
+
+    class WaitingProvider(FakeProvider):
+        async def complete(self, request: CompletionRequest) -> CompletionResult:
+            started.set()
+            try:
+                await asyncio.sleep(30)
+                return await super().complete(request)
+            finally:
+                stopped.set()
+
+    backend = router(snapshot, FakeProvider("cloud"), WaitingProvider("local"))
+    running = asyncio.create_task(
+        complete_with_run(
+            database,
+            snapshot,
+            request,
+            backend.complete,
+            user_id=owner,
+            kind="fixture.stop",
+            source_id=uuid7(),
+        )
+    )
+    try:
+        await asyncio.wait_for(started.wait(), 3)
+        view = (await RunStore(database).list_runs(user_id=owner))[0]
+        await RunStore(database).cancel_work(view.id, user_id=owner)
+        with pytest.raises(BudgetDenied, match="budget_run_inactive"):
+            await asyncio.wait_for(running, 3)
+        assert stopped.is_set()
+        async with database.sessions() as session:
+            reservations = list(await session.scalars(select(ModelReservationRecord)))
+            assert len(reservations) == 1 and reservations[0].state == "unknown"
+    finally:
+        if not running.done():
+            running.cancel()
+        await asyncio.gather(running, return_exceptions=True)
+
+
+async def test_inherited_budget_still_checks_revoked_source(
+    database: Database, tmp_path: Path
+) -> None:
+    from app.config.models import RunBudgetConfig
+    from app.harness.budget import budget_scope
+    from app.runs.budget import RunModelBudget
+
+    owner, snapshot, request = await setup(database, tmp_path)
+    root_id, now, config = uuid7(), datetime.now(UTC), RunBudgetConfig()
+    async with database.sessions.begin() as session:
+        session.add(
+            TaskRunRecord(
+                id=root_id,
+                user_id=owner,
+                status="running",
+                privacy_level="L2",
+                contract={"criterion": "reply_committed"},
+                budget=config.model_dump(mode="json"),
+                created_at=now,
+                updated_at=now,
+                deadline=now + timedelta(minutes=5),
+            )
+        )
+
+    async def revoked() -> None:
+        raise BudgetDenied("model_source_changed")
+
+    async def forbidden(request: CompletionRequest) -> CompletionResult:
+        raise AssertionError("source guard must run before the inherited call")
+
+    with (
+        budget_scope(RunModelBudget(database, run_id=root_id, user_id=owner, config=config)),
+        pytest.raises(BudgetDenied, match="model_source_changed"),
+    ):
+        await complete_with_run(
+            database,
+            snapshot,
+            request,
+            forbidden,
+            user_id=owner,
+            kind="fixture.nested",
+            source_id=uuid7(),
+            source_guard=revoked,
+        )
+    async with database.sessions() as session:
+        rows = list(await session.scalars(select(TaskRunRecord)))
+        assert len(rows) == 1 and rows[0].status == "running"

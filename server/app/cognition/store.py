@@ -22,6 +22,7 @@ from app.db import (
     TaskRunRecord,
 )
 from app.db.claims import assert_current_claim
+from app.harness.budget import BudgetDenied
 from app.ids import uuid7
 from app.runs.store import transition_run
 from app.schemas.common import PrivacyLevel
@@ -338,6 +339,39 @@ class CognitiveStore:
                 )
             )
         return [_goal(row) for row in rows]
+
+    async def validate_goal_snapshots(
+        self,
+        user_id: UUID,
+        goals: list[GoalView],
+        *,
+        privacy_level: PrivacyLevel,
+    ) -> None:
+        identifiers = {goal.id for goal in goals}
+        if len(identifiers) != len(goals) or len(goals) > 16:
+            raise BudgetDenied("model_source_changed")
+        if not identifiers:
+            return
+        async with self.database.sessions() as session:
+            records = list(
+                await session.scalars(
+                    select(CognitiveGoalRecord).where(
+                        CognitiveGoalRecord.id.in_(identifiers),
+                        CognitiveGoalRecord.user_id == user_id,
+                        CognitiveGoalRecord.status == GoalStatus.ACTIVE.value,
+                        goal_visibility(privacy_level),
+                        or_(
+                            CognitiveGoalRecord.expires_at.is_(None),
+                            CognitiveGoalRecord.expires_at > datetime.now(UTC),
+                        ),
+                    )
+                )
+            )
+        snapshots = {goal.id: goal for goal in goals}
+        if len(records) != len(goals) or any(
+            _goal(record) != snapshots[record.id] for record in records
+        ):
+            raise BudgetDenied("model_source_changed")
 
     async def _stop_goal_deliveries(
         self, session: AsyncSession, user_id: UUID, goal_id: UUID

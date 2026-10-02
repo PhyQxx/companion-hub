@@ -20,6 +20,7 @@ from app.db import (
 )
 from app.db.claims import assert_current_claim
 from app.harness.budget import BudgetDenied, budget_scope, current_budget
+from app.harness.guarded_call import guarded_call
 from app.ids import uuid7
 from app.llm.contracts import CompletionRequest, CompletionResult
 from app.schemas import PrivacyLevel
@@ -73,15 +74,47 @@ async def complete_with_run(
     source_id: UUID,
     conversation_id: UUID | None = None,
     expires_at: datetime | None = None,
+    source_guard: Callable[[], Awaitable[None]] | None = None,
 ) -> CompletionResult:
     if request.privacy_level == PrivacyLevel.L3:
         raise BudgetDenied("ephemeral_model_run_forbidden")
+
+    async def validate(run_id: UUID | None) -> None:
+        async with database.sessions() as session:
+            await assert_current_claim(session)
+            owner = await session.get(AppUserRecord, user_id)
+            if owner is None or owner.status != "active":
+                raise BudgetDenied("budget_owner_invalid")
+            if conversation_id is not None:
+                conversation = await session.get(ConversationRecord, conversation_id)
+                if conversation is None or conversation.user_id != user_id:
+                    raise BudgetDenied("run_source_not_found")
+            if run_id is not None:
+                run = await session.get(TaskRunRecord, run_id)
+                if (
+                    run is None
+                    or run.user_id != user_id
+                    or run.status in {"failed", "cancelled"}
+                    or run.contract.get("work_cancel_requested")
+                ):
+                    raise BudgetDenied("budget_run_inactive")
+                if run.deadline and utc(run.deadline) <= datetime.now(UTC):
+                    raise BudgetDenied("run_deadline_exceeded")
+        if expires_at is not None and utc(expires_at) <= datetime.now(UTC):
+            raise BudgetDenied("run_deadline_exceeded")
+        if source_guard is not None:
+            await source_guard()
+
     inherited = current_budget()
     if isinstance(inherited, RunModelBudget) and inherited.owner_id != user_id:
         raise BudgetDenied("budget_owner_invalid")
     if inherited is not None:
         # Workers already own a durable run and its cancellation/budget fence.
-        return await complete(request)
+        return await guarded_call(
+            lambda: complete(request),
+            lambda: validate(inherited.run_id if isinstance(inherited, RunModelBudget) else None),
+        )
+    await validate(None)
     await recover_expired_model_runs(database)
     now = datetime.now(UTC)
     deadline = now + timedelta(seconds=snapshot.config.run_budget.maintenance_deadline_seconds)
@@ -143,7 +176,7 @@ async def complete_with_run(
     try:
         with budget_scope(budget):
             async with asyncio.timeout(max(0, (deadline - datetime.now(UTC)).total_seconds())):
-                result = await complete(request)
+                result = await guarded_call(lambda: complete(request), lambda: validate(run_id))
         async with database.sessions.begin() as session:
             await assert_current_claim(session)
             current = await session.get(TaskRunRecord, run_id, with_for_update=True)

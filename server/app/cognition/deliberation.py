@@ -23,6 +23,7 @@ from .models import (
     Urgency,
     WorldState,
 )
+from .store import CognitiveStore
 
 COGNITIVE_POLICY_VERSION = "cognitive-v1"
 
@@ -159,6 +160,13 @@ class RouterDeliberator:
                 temperature=0,
                 json_mode=True,
             )
+
+            async def validate_sources() -> None:
+                if self._database is not None:
+                    await CognitiveStore(self._database).validate_goal_snapshots(
+                        event.user_id, state.active_goals, privacy_level=event.privacy_level
+                    )
+
             result = (
                 await complete_with_run(
                     self._database,
@@ -170,6 +178,7 @@ class RouterDeliberator:
                     source_id=event.event_id,
                     conversation_id=event.conversation_id,
                     expires_at=event.expires_at,
+                    source_guard=validate_sources,
                 )
                 if self._database is not None
                 else await backend.complete(request)
@@ -205,6 +214,8 @@ class RouterDeliberator:
                 "run_source_not_found",
                 "model_run_owner_missing",
                 "budget_owner_invalid",
+                "model_source_changed",
+                "run_deadline_exceeded",
             }:
                 raise
             return await self._fallback.deliberate(event, state, attention)
