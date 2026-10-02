@@ -129,7 +129,7 @@ async def test_grounded_memory_hits_require_actual_relevance(
     def result(hit: MemoryHit) -> RetrievalResult:
         return RetrievalResult(
             hits=(hit,),
-            policy_version="hybrid-subject-v4",
+            policy_version="hybrid-subject-v5",
             candidate_count=1,
             vector_recalled=1,
             lexical_recalled=1,
@@ -267,7 +267,7 @@ async def test_retrieval_ranks_relevant_memory_and_records_access(
         "帮我点菜，我能吃香菜吗", user_id=user.id, privacy_level=PrivacyLevel.L1, now=NOW
     )
 
-    assert result.policy_version == "hybrid-subject-v4"
+    assert result.policy_version == "hybrid-subject-v5"
     assert result.hits
     assert result.hits[0].memory.id == target.id
     assert "香菜" in MemoryRetriever.render_context(result)
@@ -849,7 +849,7 @@ async def test_chat_turn_builds_memory_loop(
     assert "【长期记忆】" in system_prompt
     assert "用户不吃香菜" in system_prompt
     memory_meta = meta_section(second.assistant_message.decision_meta, "memory")
-    assert memory_meta["policy_version"] == "hybrid-subject-v4"
+    assert memory_meta["policy_version"] == "hybrid-subject-v5"
     assert memory_meta["hits"][0]["id"] == memories[0].id
     assert memory_meta["hits"][0]["subject"] == "user"
     assert memory_meta["hits"][0]["subject_key"] == "user:self"
@@ -996,7 +996,7 @@ async def test_admin_memory_api_manages_lifecycle(
     assert edited.json()["subject"] == "user"
     assert edited.json()["subject_key"] == "user:self"
     assert detail.json()["lineage"] or True
-    assert queried.json()["policy_version"] == "hybrid-subject-v4"
+    assert queried.json()["policy_version"] == "hybrid-subject-v5"
     assert queried.json()["hits"]
     assert l3_rejected.status_code == 422
     assert archived.json()["status"] == "archived"
@@ -1752,3 +1752,40 @@ async def test_context_reference_rejects_new_revision(
     async with database.sessions() as session:
         with pytest.raises(ContextSourceInvalidated):
             await validate_references(session, (reference,), owner_id=user.id, privacy_level="L1")
+
+
+@pytest.mark.parametrize(
+    "privacy,expected",
+    [
+        (PrivacyLevel.L0, {"L0"}),
+        (PrivacyLevel.L1, {"L0", "L1"}),
+        (PrivacyLevel.L2, {"L0", "L1", "L2"}),
+        (PrivacyLevel.L3, set()),
+    ],
+)
+async def test_retrieval_respects_every_context_scope(
+    store: MemoryStore, user: AppUserRecord, privacy: PrivacyLevel, expected: set[str]
+) -> None:
+    for level in (PrivacyLevel.L0, PrivacyLevel.L1, PrivacyLevel.L2):
+        await store.add(
+            candidate(f"fixture {level} cilantro preference", privacy_level=level), user_id=user.id
+        )
+    result = await MemoryRetriever(store).retrieve(
+        "cilantro preference", user_id=user.id, privacy_level=privacy, now=NOW
+    )
+    assert {hit.memory.privacy_level for hit in result.hits} == expected
+    assert result.policy_version == "hybrid-subject-v5"
+
+
+async def test_ephemeral_retrieval_does_not_query_or_embed(
+    store: MemoryStore, user: AppUserRecord, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async def forbidden(*args: object, **kwargs: object) -> None:
+        raise AssertionError("ephemeral context must not query or embed persistent memory")
+
+    monkeypatch.setattr(store, "retrieval_candidates", forbidden)
+    monkeypatch.setattr(store.embedding_provider, "embed", forbidden)
+    result = await MemoryRetriever(store).retrieve(
+        "ephemeral fixture", user_id=user.id, privacy_level=PrivacyLevel.L3
+    )
+    assert not result.hits and result.candidate_count == 0

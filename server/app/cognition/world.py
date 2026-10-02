@@ -15,6 +15,7 @@ from app.db import (
 )
 from app.memory import MemoryRetriever
 from app.schemas import PrivacyLevel
+from app.schemas.common import persistent_privacy_levels
 from app.timeline import TimelineStore
 
 from .models import FeedbackKind, SemanticEvent, WorldState
@@ -39,12 +40,7 @@ class WorldStateBuilder:
         moment = now or datetime.now(UTC)
         since = moment - timedelta(hours=4)
         online_since = moment - timedelta(seconds=90)
-        visible_levels = {
-            PrivacyLevel.L0: ("L0",),
-            PrivacyLevel.L1: ("L0", "L1"),
-            PrivacyLevel.L2: ("L0", "L1", "L2"),
-            PrivacyLevel.L3: (),
-        }[event.privacy_level]
+        visible_levels = persistent_privacy_levels(event.privacy_level)
         async with self._database.sessions() as session:
             timezone = await session.scalar(
                 select(AppUserRecord.timezone).where(AppUserRecord.id == event.user_id)
@@ -135,11 +131,7 @@ class WorldStateBuilder:
                 timeline_result = await self._timeline_store.search(
                     user_id=event.user_id,
                     query=event.summary,
-                    privacy_levels=(
-                        (PrivacyLevel.L0, PrivacyLevel.L1, PrivacyLevel.L2)
-                        if event.privacy_level == PrivacyLevel.L2
-                        else (PrivacyLevel.L0, PrivacyLevel.L1)
-                    ),
+                    privacy_levels=visible_levels,
                     limit=4,
                 )
                 timeline_ids = [str(item.id) for item in timeline_result.events]

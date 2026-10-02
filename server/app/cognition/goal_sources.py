@@ -5,7 +5,7 @@ from sqlalchemy import cast as sql_cast
 from sqlalchemy.sql.elements import ColumnElement
 
 from app.db import CognitiveGoalRecord, ConversationRecord, DeletionLedgerRecord, MessageRecord
-from app.schemas.common import PrivacyLevel
+from app.schemas.common import PrivacyLevel, persistent_privacy_levels
 
 
 def goal_visibility(privacy: PrivacyLevel | None) -> ColumnElement[bool]:
@@ -13,11 +13,7 @@ def goal_visibility(privacy: PrivacyLevel | None) -> ColumnElement[bool]:
         return ~false()  # Owner-facing queries retain private goals.
     if privacy == PrivacyLevel.L3:
         return false()
-    levels = {PrivacyLevel.L0.value}
-    if privacy in {PrivacyLevel.L1, PrivacyLevel.L2}:
-        levels.add(PrivacyLevel.L1.value)
-    if privacy == PrivacyLevel.L2:
-        levels.add(PrivacyLevel.L2.value)
+    levels = tuple(level.value for level in persistent_privacy_levels(privacy))
     # PostgreSQL renders UUID with hyphens; SQLite stores its hex form.
     source_id = func.lower(func.replace(CognitiveGoalRecord.source_id, "-", ""))
     message_id = func.lower(func.replace(sql_cast(MessageRecord.id, String), "-", ""))

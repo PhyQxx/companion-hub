@@ -15,13 +15,13 @@ from datetime import UTC, datetime
 from typing import final
 from uuid import UUID
 
-from app.schemas.common import PrivacyLevel
+from app.schemas.common import PrivacyLevel, persistent_privacy_levels
 
 from .embeddings import cosine_similarity, lexical_cosine, text_tokens
 from .models import MemoryEntry, MemoryStatus, MemorySubjectKind, MemoryType
 from .store import MemoryStore, RetrievalCandidate
 
-RETRIEVAL_POLICY_VERSION = "hybrid-subject-v4"
+RETRIEVAL_POLICY_VERSION = "hybrid-subject-v5"
 
 DEFAULT_SUBJECT_SCOPES: tuple[tuple[MemorySubjectKind, str], ...] = (
     (MemorySubjectKind.USER, "user:self"),
@@ -95,13 +95,17 @@ class MemoryRetriever:
         subject_hint = _infer_subject_hint(query)
         fact_hints = _infer_fact_keys(query)
         fact_hint = fact_hints[0] if fact_hints else None
-        # 隐私闸门：L2 记忆只能进入强制本地路由的 L2 上下文，
-        # 绝不允许随 L0/L1 云端调用出站
-        allowed_levels = (
-            (PrivacyLevel.L0, PrivacyLevel.L1, PrivacyLevel.L2)
-            if privacy is PrivacyLevel.L2
-            else (PrivacyLevel.L0, PrivacyLevel.L1)
-        )
+        allowed_levels = persistent_privacy_levels(privacy)
+        if not allowed_levels:
+            return RetrievalResult(
+                hits=(),
+                policy_version=RETRIEVAL_POLICY_VERSION,
+                candidate_count=0,
+                vector_recalled=0,
+                lexical_recalled=0,
+                subject_hint=subject_hint,
+                fact_hint=fact_hint,
+            )
         candidates = await self._store.retrieval_candidates(
             user_id,
             subject_scopes=DEFAULT_SUBJECT_SCOPES,

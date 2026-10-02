@@ -36,6 +36,16 @@ class PrivacyLevel(StrEnum):
     L3 = "L3"
 
 
+def persistent_privacy_levels(privacy: PrivacyLevel) -> tuple[PrivacyLevel, ...]:
+    """Maximum disclosure scope for stored context; L3 has no stored context."""
+    return {
+        PrivacyLevel.L0: (PrivacyLevel.L0,),
+        PrivacyLevel.L1: (PrivacyLevel.L0, PrivacyLevel.L1),
+        PrivacyLevel.L2: (PrivacyLevel.L0, PrivacyLevel.L1, PrivacyLevel.L2),
+        PrivacyLevel.L3: (),
+    }[PrivacyLevel(privacy)]
+
+
 class Priority(StrEnum):
     LOW = "low"
     NORMAL = "normal"
