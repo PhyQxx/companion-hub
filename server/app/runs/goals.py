@@ -32,6 +32,22 @@ def goal_view(
                 validation_level="V1" if state == "passed" else "V0",
             )
         )
+    elif root == "model_result_returned":
+        state = (
+            "inconclusive"
+            if run.status == "succeeded"
+            else "failed"
+            if run.status in {"failed", "cancelled"}
+            else "pending"
+        )
+        criteria.append(
+            RunCriterionView(
+                kind=root,
+                source_id=run.id,
+                status=state,
+                reason_code="model_result_unverified" if state == "inconclusive" else None,
+            )
+        )
     elif root not in {None, "handler_completed"}:
         criteria.append(
             RunCriterionView(

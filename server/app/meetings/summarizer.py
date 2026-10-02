@@ -7,10 +7,13 @@ from typing import Protocol
 from uuid import UUID
 
 from app.config import ConfigStore, DatabaseConfigStore, HubConfig
+from app.db import Database
+from app.harness.budget import BudgetDenied
 from app.llm import CompletionRequest, CompletionResult, LLMMessage, LLMRoute
 from app.llm.factory import build_router
 from app.llm.provider import EnvSecretProvider
 from app.memory.extraction import _load_json_object
+from app.runs.completion import complete_owned_with_run
 from app.schemas import PrivacyLevel
 
 from .models import MeetingActionItem, MeetingDecision, MeetingSummary, TranscriptSegment
@@ -76,9 +79,11 @@ class LlmMeetingSummarizer:
         config_store: ConfigStore | DatabaseConfigStore,
         *,
         router_builder: Callable[[HubConfig], CompletionBackend] | None = None,
+        database: Database | None = None,
         fallback: MeetingSummarizer | None = None,
     ) -> None:
         self._config_store = config_store
+        self._database = database
         secrets = EnvSecretProvider()
         self._router_builder = router_builder or (lambda config: build_router(config, secrets))
         self._fallback = fallback or RuleBasedMeetingSummarizer()
@@ -99,38 +104,41 @@ class LlmMeetingSummarizer:
                 else self._config_store.current
             )
             backend = self._router_builder(snapshot.config)
-            result = await backend.complete(
-                CompletionRequest(
-                    trace_id=meeting_id,
-                    messages=[
-                        LLMMessage(
-                            role="system",
-                            content=(
-                                "你是会议纪要整理器。只依据转写内容输出严格 JSON："
-                                '{"summary":"摘要","decisions":[{"text":"决定",'
-                                '"evidence":"原文证据"}],"action_items":[{"title":"任务",'
-                                '"owner":"负责人或null","due_at":"ISO时间或null",'
-                                '"evidence":"原文证据"}]}。不得补造决定、负责人或期限；'
-                                "不确定的内容省略。摘要不超过 2000 字。"
-                            ),
+            request = CompletionRequest(
+                trace_id=meeting_id,
+                messages=[
+                    LLMMessage(
+                        role="system",
+                        content=(
+                            "你是会议纪要整理器。只依据转写内容输出严格 JSON："
+                            '{"summary":"摘要","decisions":[{"text":"决定",'
+                            '"evidence":"原文证据"}],"action_items":[{"title":"任务",'
+                            '"owner":"负责人或null","due_at":"ISO时间或null",'
+                            '"evidence":"原文证据"}]}。不得补造决定、负责人或期限；'
+                            "不确定的内容省略。摘要不超过 2000 字。"
                         ),
-                        LLMMessage(
-                            role="user",
-                            content=(
-                                f"会议：{title}\n转写：\n{transcript}"
-                            )[:MAX_SUMMARY_INPUT_CHARS],
-                        ),
-                    ],
-                    privacy_level=privacy_level,
-                    route=(
-                        LLMRoute.PRIVATE
-                        if privacy_level is PrivacyLevel.L2
-                        else LLMRoute.UTILITY
                     ),
-                    temperature=0.0,
-                    json_mode=True,
-                    max_tokens=4_096,
+                    LLMMessage(
+                        role="user",
+                        content=(f"会议：{title}\n转写：\n{transcript}")[:MAX_SUMMARY_INPUT_CHARS],
+                    ),
+                ],
+                privacy_level=privacy_level,
+                route=(LLMRoute.PRIVATE if privacy_level is PrivacyLevel.L2 else LLMRoute.UTILITY),
+                temperature=0.0,
+                json_mode=True,
+                max_tokens=4_096,
+            )
+            result = (
+                await complete_owned_with_run(
+                    self._database,
+                    snapshot,
+                    request,
+                    backend.complete,
+                    kind="meeting.summary",
                 )
+                if self._database is not None
+                else await backend.complete(request)
             )
             payload = MeetingSummary.model_validate(_load_json_object(result.text))
             # 模型不能把行动项直接标成已创建，也不能伪造 task_id。
@@ -142,7 +150,14 @@ class LlmMeetingSummarizer:
                     ]
                 }
             )
-        except Exception:
+        except Exception as error:
+            if isinstance(error, BudgetDenied) and error.reason_code in {
+                "budget_run_inactive",
+                "run_source_not_found",
+                "model_run_owner_missing",
+                "budget_owner_invalid",
+            }:
+                raise
             logger.warning("meeting summarization fell back meeting=%s", meeting_id, exc_info=True)
             return await self._fallback.summarize(
                 meeting_id=meeting_id,

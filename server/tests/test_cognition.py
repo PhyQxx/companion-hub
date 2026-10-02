@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from types import SimpleNamespace
 from typing import cast
 from uuid import UUID
@@ -500,3 +501,53 @@ def test_attention_honors_source_salience_and_never_lowers() -> None:
     # 非法 salience（越界/非数值）被忽略
     invalid = engine.evaluate(event(message="x", salience=1.5), state)
     assert invalid.score == plain.score
+
+
+async def test_owned_model_deliberation_creates_a_budgeted_run(
+    database: Database, user_id: UUID, tmp_path: Path
+) -> None:
+    from test_database_config import config_yaml
+    from test_llm import FakeProvider
+
+    from app.llm.router import LLMRouter
+    from app.runs.store import RunStore
+
+    path = tmp_path / "fixture.yaml"
+    path.write_text(config_yaml(), encoding="utf-8")
+    config = ConfigStore(path)
+    await config.load()
+
+    class JsonProvider(FakeProvider):
+        async def complete(self, request: CompletionRequest) -> CompletionResult:
+            result = await super().complete(request)
+            return result.model_copy(
+                update={
+                    "text": (
+                        '{"decision":"inform","reason_codes":["fixture"],'
+                        '"confidence":0.8,"urgency":"normal","message":"测试提醒"}'
+                    )
+                }
+            )
+
+    cloud, local = JsonProvider("cloud"), JsonProvider("local")
+    backend = LLMRouter(
+        endpoints=config.current.config.models,
+        routes=config.current.config.routes,
+        providers={"cloud": cloud, "local": local},
+    )
+    store = CognitiveStore(database)
+    cycle = CognitiveCycle(
+        store,
+        WorldStateBuilder(database, store),
+        AttentionEngine(),
+        RouterDeliberator(config, database=database, router_builder=lambda config: backend),
+    )
+    event = semantic_event(user_id, "user_arrived_home")
+    decision = await cycle.evaluate(event)
+    assert decision.decision == DecisionKind.INFORM
+    runs = await RunStore(database).list_runs(user_id=user_id)
+    assert len(runs) == 1 and runs[0].budget_summary is not None
+    assert runs[0].budget_summary.llm_attempts == 1
+    # Re-delivery uses deterministic fallback; it cannot reset the model quota.
+    await cycle.evaluate(event)
+    assert len(cloud.requests) == 1

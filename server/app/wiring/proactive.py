@@ -340,7 +340,7 @@ def register_awareness_loops(
         database=database,
         resolver=cast(BrowserAwarenessResolver, device_target_resolver),
         gateway=cast(BrowserAwarenessGateway, device_command_gateway),
-        analyzer=cast(BrowserAwarenessAnalyzer, LlmBrowserAnalyzer(config)),
+        analyzer=cast(BrowserAwarenessAnalyzer, LlmBrowserAnalyzer(config, database=database)),
         timeline=timeline_store,
         memory_ingester=(
             MemoryIngester(memory_store) if memory_store is not None else None
@@ -355,7 +355,7 @@ def register_awareness_loops(
         config_store=config,
         database=database,
         reader=MailClient(config),
-        analyzer=LlmMailAnalyzer(config),
+        analyzer=LlmMailAnalyzer(config, database=database),
         timeline=timeline_store,
         memory_ingester=(
             MemoryIngester(memory_store) if memory_store is not None else None

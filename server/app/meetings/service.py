@@ -6,6 +6,7 @@ from datetime import UTC, datetime
 from uuid import UUID
 
 from app.calendar import CalendarParticipant, CalendarStore
+from app.runs.completion import model_owner
 from app.schemas import PrivacyLevel
 from app.tasks import TaskKind, TaskStore, TaskTrigger
 
@@ -93,9 +94,7 @@ class MeetingService:
         for segment in segments:
             if segment.speaker.casefold() not in allowed:
                 raise ValueError("speaker must be an explicitly declared participant")
-        return await self._store.append_segments(
-            user_id, meeting_id, segments, self._clock()
-        )
+        return await self._store.append_segments(user_id, meeting_id, segments, self._clock())
 
     async def finish(self, user_id: UUID, meeting_id: UUID) -> MeetingView:
         meeting = await self._store.get(user_id, meeting_id)
@@ -103,12 +102,13 @@ class MeetingService:
             raise ValueError("only an authorized active meeting can be completed")
         if not meeting.transcript_segments:
             raise ValueError("meeting transcript is empty")
-        result = await self._summarizer.summarize(
-            meeting_id=meeting.id,
-            title=meeting.title,
-            segments=meeting.transcript_segments,
-            privacy_level=PrivacyLevel(meeting.privacy_level),
-        )
+        with model_owner(user_id):
+            result = await self._summarizer.summarize(
+                meeting_id=meeting.id,
+                title=meeting.title,
+                segments=meeting.transcript_segments,
+                privacy_level=PrivacyLevel(meeting.privacy_level),
+            )
         return await self._store.complete(
             user_id,
             meeting_id,
@@ -179,9 +179,7 @@ class MeetingService:
                     )
                 except BaseException:
                     await asyncio.shield(
-                        self._store.mark_action_unknown(
-                            user_id, meeting_id, index, self._clock()
-                        )
+                        self._store.mark_action_unknown(user_id, meeting_id, index, self._clock())
                     )
                     raise
                 await self._store.complete_action_claim(
@@ -199,9 +197,7 @@ class MeetingService:
                 status="created",
                 task_id=existing.id,
             )
-            return await self._store.set_action_created(
-                user_id, meeting_id, index, created, now
-            )
+            return await self._store.set_action_created(user_id, meeting_id, index, created, now)
 
     async def get(self, user_id: UUID, meeting_id: UUID) -> MeetingView:
         return await self._store.get(user_id, meeting_id)

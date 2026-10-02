@@ -341,7 +341,7 @@ def assemble_domain(
             ),
             AttentionEngine(),
             (
-                RouterDeliberator(runtime_config)
+                RouterDeliberator(runtime_config, database=runtime_database)
                 if runtime_config is not None
                 else RuleBasedDeliberator()
             ),
@@ -575,7 +575,7 @@ def assemble_domain(
             MeetingStore(runtime_database),
             calendar_store,
             task_store,
-            LlmMeetingSummarizer(runtime_config),
+            LlmMeetingSummarizer(runtime_config, database=runtime_database),
         )
         if runtime_database is not None
         and calendar_store is not None

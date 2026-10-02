@@ -25,7 +25,7 @@ const goalLabels: Record<string, string> = {
   inconclusive: "证据不足，待核对", not_declared: "未声明完成判据",
 };
 const criterionLabels: Record<string, string> = {
-  reply_committed: "回复保存", action_plan_verified: "操作核实", delegated_result: "委派结果",
+  reply_committed: "回复保存", action_plan_verified: "操作核实", delegated_result: "委派结果", model_result_returned: "模型结果",
 };
 const active = (run: TaskRun) => ["accepted", "running"].includes(run.status) || (run.goal?.pending ?? 0) > 0;
 const time = (value: string) => new Date(value).toLocaleString();
@@ -109,7 +109,7 @@ onBeforeUnmount(() => { stopped = true; selectionVersion++; });
       <section v-if="selected" class="run-detail" aria-label="运行详情">
         <h3>{{ stateLabels[selected.status] ?? selected.status }}</h3>
         <p>更新时间：{{ time(selected.updated_at) }}</p>
-        <p v-if="selected.status === 'succeeded' && selected.conversation_id">回复已保存；操作是否完成以各项核实结果为准。</p>
+        <p v-if="selected.status === 'succeeded' && selected.goal?.criteria.some(item => item.kind === 'reply_committed')">回复已保存；操作是否完成以各项核实结果为准。</p>
         <p v-if="selected.budget_summary">
           模型调用 {{ selected.budget_summary.llm_attempts }} / {{ selected.budget_summary.max_llm_attempts }} 次；
           用量计入 {{ selected.budget_summary.charged_tokens }} / {{ selected.budget_summary.max_tokens }} token。

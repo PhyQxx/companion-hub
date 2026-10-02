@@ -6,10 +6,14 @@ from collections.abc import Callable
 from typing import Protocol
 
 from app.config import ConfigStore, DatabaseConfigStore, HubConfig
+from app.db import Database
+from app.harness.budget import BudgetDenied
 from app.ids import uuid7
 from app.llm import CompletionRequest, CompletionResult, LLMMessage, LLMRoute
 from app.llm.factory import build_router
 from app.llm.provider import EnvSecretProvider
+from app.runs.completion import complete_with_run
+from app.schemas import PrivacyLevel
 
 from .models import (
     AttentionResult,
@@ -98,8 +102,10 @@ class RouterDeliberator:
         *,
         router_builder: Callable[[HubConfig], CompletionBackend] | None = None,
         fallback: Deliberator | None = None,
+        database: Database | None = None,
     ) -> None:
         self._config_store = config_store
+        self._database = database
         secrets = EnvSecretProvider()
         self._router_builder = router_builder or (lambda config: build_router(config, secrets))
         self._fallback = fallback or RuleBasedDeliberator()
@@ -107,7 +113,7 @@ class RouterDeliberator:
     async def deliberate(
         self, event: SemanticEvent, state: WorldState, attention: AttentionResult
     ) -> CognitiveDecision:
-        if event.passive:
+        if event.passive or event.privacy_level == PrivacyLevel.L3:
             return await self._fallback.deliberate(event, state, attention)
         try:
             snapshot = (
@@ -116,44 +122,57 @@ class RouterDeliberator:
                 else self._config_store.current
             )
             backend = self._router_builder(snapshot.config)
-            result = await backend.complete(
-                CompletionRequest(
-                    trace_id=event.event_id,
-                    messages=[
-                        LLMMessage(
-                            role="system",
-                            content=(
-                                "你是 Aria 的认知调度器。只根据给定证据决定是否打扰用户。"
-                                "输出 JSON, decision 只能是 "
-                                "ignore/record/inform/ask/suggest/escalate。"
-                                "reason_codes 是简短枚举数组, confidence 0..1, "
-                                "urgency 是 low/normal/high/critical。"
-                                "message 是可选简短中文。不得输出 act，不得虚构事实。"
-                            ),
+            request = CompletionRequest(
+                trace_id=event.event_id,
+                messages=[
+                    LLMMessage(
+                        role="system",
+                        content=(
+                            "你是 Aria 的认知调度器。只根据给定证据决定是否打扰用户。"
+                            "输出 JSON, decision 只能是 "
+                            "ignore/record/inform/ask/suggest/escalate。"
+                            "reason_codes 是简短枚举数组, confidence 0..1, "
+                            "urgency 是 low/normal/high/critical。"
+                            "message 是可选简短中文。不得输出 act，不得虚构事实。"
                         ),
-                        LLMMessage(
-                            role="user",
-                            content=json.dumps(
-                                {
-                                    "event": {
-                                        "kind": event.kind,
-                                        "summary": event.summary,
-                                        "confidence": event.confidence,
-                                        "evidence_ids": event.evidence_ids,
-                                    },
-                                    "world": state.model_dump(mode="json"),
-                                    "attention": attention.model_dump(mode="json"),
+                    ),
+                    LLMMessage(
+                        role="user",
+                        content=json.dumps(
+                            {
+                                "event": {
+                                    "kind": event.kind,
+                                    "summary": event.summary,
+                                    "confidence": event.confidence,
+                                    "evidence_ids": event.evidence_ids,
                                 },
-                                ensure_ascii=False,
-                            ),
+                                "world": state.model_dump(mode="json"),
+                                "attention": attention.model_dump(mode="json"),
+                            },
+                            ensure_ascii=False,
                         ),
-                    ],
-                    privacy_level=event.privacy_level,
-                    route=LLMRoute.DIALOGUE,
-                    max_tokens=500,
-                    temperature=0,
-                    json_mode=True,
+                    ),
+                ],
+                privacy_level=event.privacy_level,
+                route=LLMRoute.DIALOGUE,
+                max_tokens=500,
+                temperature=0,
+                json_mode=True,
+            )
+            result = (
+                await complete_with_run(
+                    self._database,
+                    snapshot,
+                    request,
+                    backend.complete,
+                    user_id=event.user_id,
+                    kind="cognition.deliberation",
+                    source_id=event.event_id,
+                    conversation_id=event.conversation_id,
+                    expires_at=event.expires_at,
                 )
+                if self._database is not None
+                else await backend.complete(request)
             )
             payload = json.loads(result.text)
             decision = DecisionKind(payload["decision"])
@@ -180,5 +199,12 @@ class RouterDeliberator:
                 expires_at=event.expires_at,
                 created_at=state.built_at,
             )
-        except Exception:
+        except Exception as error:
+            if isinstance(error, BudgetDenied) and error.reason_code in {
+                "budget_run_inactive",
+                "run_source_not_found",
+                "model_run_owner_missing",
+                "budget_owner_invalid",
+            }:
+                raise
             return await self._fallback.deliberate(event, state, attention)

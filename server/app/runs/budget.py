@@ -43,6 +43,10 @@ class RunModelBudget:
         )
 
     @property
+    def owner_id(self) -> UUID:
+        return self._user_id
+
+    @property
     def remaining_delivery_seconds(self) -> float:
         return max(0.0, (utc(self._maintenance_deadline) - datetime.now(UTC)).total_seconds())
 
@@ -157,6 +161,14 @@ class RunModelBudget:
         )
         now = datetime.now(UTC)
         async with self._database.sessions.begin() as session:
+            # Match source deletion/recovery lock order before changing usage.
+            run = await session.scalar(
+                select(TaskRunRecord)
+                .where(TaskRunRecord.id == self._run_id, TaskRunRecord.user_id == self._user_id)
+                .with_for_update()
+            )
+            if run is None:
+                return
             record = await session.scalar(
                 select(ModelReservationRecord)
                 .join(TaskRunRecord, TaskRunRecord.id == ModelReservationRecord.run_id)
