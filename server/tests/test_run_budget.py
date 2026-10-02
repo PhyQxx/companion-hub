@@ -631,3 +631,91 @@ async def test_user_concurrency_is_shared_across_runs_and_released_after_attempt
     # its conservative token charge remains accounted for.
     await winner.settle(permit.call_id, None)
     await second.reserve(endpoint="local", tokens=10, final=True)
+
+
+async def test_configuration_rollback_preserves_live_budget_and_unknown_evidence(
+    database: Database, tmp_path: Path
+) -> None:
+    """Exercise production configuration/budget stores without provider or device ports."""
+    from test_database_config import config_yaml
+
+    from app.config import DatabaseConfigStore
+    from app.db import ActionPlanRecord, ActionStepRecord, JobRecord
+    from app.jobs import JobEngine
+    from app.runs.budget import job_model_budget
+
+    bootstrap = tmp_path / "fixture.yaml"
+    bootstrap.write_text(config_yaml(), encoding="utf-8")
+    store = DatabaseConfigStore(database, bootstrap)
+    first = await store.load()
+    tight = first.config.model_copy(update={"run_budget": RunBudgetConfig(max_llm_attempts=2)})
+    draft = await store.create_draft(tight, actor="offline-drill")
+    published = await store.publish(draft.version, actor="offline-drill")
+    owner = uuid7()
+    async with database.sessions.begin() as session:
+        session.add(AppUserRecord(id=owner, display_name="Synthetic drill", status="active"))
+    jobs = JobEngine(database)
+    job = await jobs.submit(
+        "deleg.test", {"user_id": str(owner)}, owner=str(owner), resource_class="deleg"
+    )
+    claimed = await jobs.claim("offline-drill", resource_class="deleg")
+    assert claimed is not None
+    budget = await job_model_budget(database, job.id, published.config.run_budget)
+    assert budget is not None
+    permit = await budget.reserve(endpoint="fixture", tokens=20, final=True)
+    await budget.settle(permit.call_id, None)
+    plan_id, step_id = uuid7(), uuid7()
+    async with database.sessions.begin() as session:
+        session.add(
+            ActionPlanRecord(
+                id=plan_id,
+                user_id=owner,
+                task_run_id=job.id,
+                status="partially_completed",
+                idempotency_key="rollback-drill",
+                request_hash="fixture",
+                expires_at=datetime.now(UTC) + timedelta(minutes=5),
+            )
+        )
+        await session.flush()
+        session.add(
+            ActionStepRecord(
+                id=step_id,
+                plan_id=plan_id,
+                position=1,
+                action_id="fixture.write",
+                risk="A1",
+                confirmation_policy="always",
+                status="unknown_outcome",
+                arguments={},
+                tool_name="fixture",
+                tool_arguments={},
+                idempotency_key="rollback-drill-step",
+                timeout_seconds=10,
+                verification_policy="receipt",
+                verification_status="inconclusive",
+            )
+        )
+    restored = await store.rollback(first.version, actor="offline-drill")
+    restarted = DatabaseConfigStore(database, bootstrap)
+    reloaded = await restarted.load()
+    assert reloaded.version == restored.version
+    assert restored.config.run_budget.max_llm_attempts == first.config.run_budget.max_llm_attempts
+    assert restored.content_hash == first.content_hash
+    resumed = await job_model_budget(database, job.id, reloaded.config.run_budget)
+    assert resumed is not None
+    second = await resumed.reserve(endpoint="fixture", tokens=20, final=True)
+    await resumed.settle(second.call_id, ModelUsage(total_tokens=7, usage_known=True))
+    with pytest.raises(BudgetDenied, match="run_budget_exhausted"):
+        await resumed.reserve(endpoint="fixture", tokens=20, final=True)
+    async with database.sessions() as session:
+        run = await session.get(TaskRunRecord, job.id)
+        reservation = await session.get(ModelReservationRecord, permit.call_id)
+        active_job = await session.get(JobRecord, job.id)
+        unknown = await session.get(ActionStepRecord, step_id)
+        assert run is not None and run.llm_attempts == 2 and run.budget_tokens == 27
+        assert run.budget is not None and run.budget["max_llm_attempts"] == 2
+        assert reservation is not None and reservation.state == "unknown"
+        assert active_job is not None and active_job.status == claimed.status
+        assert active_job.lease_owner == "offline-drill" and active_job.attempts == claimed.attempts
+        assert unknown is not None and unknown.status == "unknown_outcome"

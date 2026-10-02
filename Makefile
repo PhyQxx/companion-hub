@@ -1,4 +1,4 @@
-.PHONY: install lint test schemas types contracts migrate compose-check infra-up infra-down llm-check llm-first-token-bench p5-backend p5-frontend desktop-check browser-check ha-check p5-real p5-real-l1 p5-real-l2 p6-voice-soak p6-voice-m2 run
+.PHONY: harness-bench install lint test schemas types contracts migrate compose-check infra-up infra-down llm-check llm-first-token-bench p5-backend p5-frontend desktop-check browser-check ha-check p5-real p5-real-l1 p5-real-l2 p6-voice-soak p6-voice-m2 run
 
 P5_REPORT ?= /tmp/aria-p5-real-model-report.json
 P5_L1_REPORT ?= /tmp/aria-p5-real-model-l1-report.json
@@ -88,3 +88,8 @@ p5-real-l2:
 
 run:
 	uv run uvicorn app.main:app --app-dir server --reload
+
+# Offline fixture only; output path is explicit to keep reports reviewable.
+harness-bench:
+	uv run python server/scripts/benchmark_harness.py --output docs/baselines/harness-c1.json
+	uv run python server/scripts/benchmark_harness.py --concurrency 4 --output docs/baselines/harness-c4.json
