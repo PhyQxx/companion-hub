@@ -26,7 +26,8 @@ def action_outcome(step: ActionStepRecord) -> ExecutionOutcome:
         level = ValidationLevel.V3
     started = step.started_at is not None or status in {"running", "succeeded", "unknown_outcome"}
     side_effect = "none" if step.risk == "A0" else "not_started"
-    if step.risk != "A0" and started:
+    admission_rejected = (step.result or {}).get("admission_status") == "not_admitted"
+    if step.risk != "A0" and started and not admission_rejected:
         side_effect = "confirmed" if level == ValidationLevel.V3 else "submitted"
         if status in {"failed", "unknown_outcome", "cancelled", "running"}:
             side_effect = "unknown"

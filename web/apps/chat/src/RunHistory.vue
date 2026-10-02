@@ -110,11 +110,17 @@ onBeforeUnmount(() => { stopped = true; selectionVersion++; });
         <h3>{{ stateLabels[selected.status] ?? selected.status }}</h3>
         <p>更新时间：{{ time(selected.updated_at) }}</p>
         <p v-if="selected.status === 'succeeded' && selected.goal?.criteria.some(item => item.kind === 'reply_committed')">回复已保存；操作是否完成以各项核实结果为准。</p>
-        <p v-if="selected.budget_summary">
+        <p v-if="selected.budget_summary && !selected.budget_summary.enabled">此运行已明确停用额度限制；没有记录可核对的调用计数。</p>
+        <p v-if="selected.budget_summary?.enabled">
           模型调用 {{ selected.budget_summary.llm_attempts }} / {{ selected.budget_summary.max_llm_attempts }} 次；
           用量计入 {{ selected.budget_summary.charged_tokens }} / {{ selected.budget_summary.max_tokens }} token。
           <span v-if="selected.budget_summary.unknown_usage_calls">有 {{ selected.budget_summary.unknown_usage_calls }} 次调用用量待核对。</span>
           <span v-if="selected.budget_summary.unsettled_calls">有 {{ selected.budget_summary.unsettled_calls }} 次调用尚未结算。</span>
+        </p>
+        <p v-if="selected.budget_summary?.enabled">
+          工具调用 {{ selected.budget_summary.tool_attempts }} / {{ selected.budget_summary.max_tool_attempts }} 次。
+          <span v-if="selected.budget_summary.unknown_tool_calls">有 {{ selected.budget_summary.unknown_tool_calls }} 次结果未知。</span>
+          <span v-if="selected.budget_summary.unsettled_tool_calls">有 {{ selected.budget_summary.unsettled_tool_calls }} 次尚未返回；计数会继续保留。</span>
         </p>
         <section v-if="selected.goal" aria-label="任务完成判据">
           <h3>{{ goalLabels[selected.goal.status] ?? "待核对" }}</h3>

@@ -281,6 +281,18 @@ def assemble_domain(
         if runtime_database is not None
         else None
     )
+    if action_plan_service is not None and runtime_database is not None:
+        from app.runs.resources import plan_tool_budget
+
+        action_plan_service.set_tool_budget_builder(
+            lambda run_id, user_id, deadline: plan_tool_budget(
+                runtime_database,
+                run_id,
+                user_id,
+                deadline,
+                runtime_config.current.config.run_budget if runtime_config is not None else None,
+            )
+        )
     # FLOW-01：惰性引用计划服务，运行时展开计划即可拿到最终注入的 runner。
     workflow_service = (
         WorkflowService(

@@ -8,6 +8,10 @@ from .execution import RunActionOutcome
 
 
 class RunBudgetView(StrictModel):
+    max_tool_attempts: int = 64
+    tool_attempts: int = 0
+    unknown_tool_calls: int = 0
+    unsettled_tool_calls: int = 0
     enabled: bool
     max_llm_attempts: int
     max_tokens: int

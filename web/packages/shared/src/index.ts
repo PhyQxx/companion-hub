@@ -777,6 +777,10 @@ export interface TaskRun {
   job_ids: string[];
   plan_ids: string[];
   budget_summary: {
+    max_tool_attempts: number;
+    tool_attempts: number;
+    unknown_tool_calls: number;
+    unsettled_tool_calls: number;
     enabled: boolean;
     max_llm_attempts: number;
     max_tokens: number;

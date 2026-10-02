@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
+
+if TYPE_CHECKING:
+    from .resources import RunToolBudget
 from uuid import UUID
 
 from sqlalchemy import func, select, update
@@ -40,6 +43,19 @@ class RunModelBudget:
         self._allow_active_parent = allow_active_parent
         self._maintenance_deadline = delivery_deadline or (
             datetime.now(UTC) + timedelta(seconds=config.maintenance_deadline_seconds)
+        )
+
+    @property
+    def tool_budget(self) -> RunToolBudget:
+        from .resources import RunToolBudget
+
+        return RunToolBudget(
+            self._database,
+            run_id=self._run_id,
+            user_id=self._user_id,
+            config=self._config,
+            maintenance=self._phase == "maintenance",
+            deadline=self._maintenance_deadline,
         )
 
     @property
@@ -278,6 +294,8 @@ async def job_model_budget(
             await session.flush()
             await append_run_event(session, row, "run.running")
             job.task_run_id = run_id
+            if not config.enabled:
+                return None
         else:
             existing = await session.get(TaskRunRecord, run_id)
             if existing is None or existing.user_id != user_id:

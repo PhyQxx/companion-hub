@@ -364,7 +364,16 @@ class RunStore:
     def _view(row: TaskRunRecord) -> RunView:
         data = {name: getattr(row, name) for name in RunView.model_fields if hasattr(row, name)}
         if row.budget:
+            usage = row.contract.get("resource_usage", {})
+            usage = usage if isinstance(usage, dict) else {}
+            attempts = int(usage.get("tool_attempts", 0))
+            unknown = int(usage.get("unknown_tool_calls", 0))
+            returned = int(usage.get("returned_tool_calls", 0))
             data["budget_summary"] = RunBudgetView(
+                max_tool_attempts=int(row.budget.get("max_tool_attempts", 64)),
+                tool_attempts=attempts,
+                unknown_tool_calls=unknown,
+                unsettled_tool_calls=max(0, attempts - unknown - returned),
                 enabled=bool(row.budget["enabled"]),
                 max_llm_attempts=int(row.budget["max_llm_attempts"]),
                 max_tokens=int(row.budget["max_tokens"]),

@@ -30,6 +30,8 @@ class ToolContext(StrictModel):
 
 
 class ToolResult(StrictModel):
+    # Executor-owned metadata: a handler cannot claim it was never admitted.
+    admission_status: Literal["not_admitted", "admitted", "unknown"] = "unknown"
     ok: bool
     tool_name: TokenName
     data: dict[str, Any] = Field(default_factory=dict)

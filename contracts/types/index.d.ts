@@ -550,8 +550,12 @@ export type Enabled = boolean;
 export type LlmAttempts = number;
 export type MaxLlmAttempts = number;
 export type MaxTokens = number;
+export type MaxToolAttempts = number;
+export type ToolAttempts = number;
+export type UnknownToolCalls = number;
 export type UnknownUsageCalls = number | null;
 export type UnsettledCalls = number | null;
+export type UnsettledToolCalls = number;
 export type CancelEpoch = number;
 export type ConfigVersion = number | null;
 export type ConversationId2 = string | null;
@@ -1310,8 +1314,12 @@ export interface RunBudgetView {
   llm_attempts: LlmAttempts;
   max_llm_attempts: MaxLlmAttempts;
   max_tokens: MaxTokens;
+  max_tool_attempts?: MaxToolAttempts;
+  tool_attempts?: ToolAttempts;
+  unknown_tool_calls?: UnknownToolCalls;
   unknown_usage_calls?: UnknownUsageCalls;
   unsettled_calls?: UnsettledCalls;
+  unsettled_tool_calls?: UnsettledToolCalls;
 }
 /**
  * This interface was referenced by `AriaContracts`'s JSON-Schema

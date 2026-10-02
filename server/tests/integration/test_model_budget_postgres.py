@@ -55,6 +55,31 @@ async def test_postgres_concurrent_budget_admission_and_settlement(
                 select(TaskRunRecord).where(TaskRunRecord.id == budget._run_id)
             )
             assert row is not None and row.llm_attempts == 1 and row.budget_tokens == 100
+        # Tool counters and append-only settlements share the same root lock.
+        tool_model = await make_budget(database, RunBudgetConfig(max_tool_attempts=1))
+        tool_port = tool_model.tool_budget
+        tool_results = await asyncio.gather(
+            *(
+                tool_port.reserve_tool(tool_name="fixture_tool", user_id=tool_model._user_id)
+                for _ in range(16)
+            ),
+            return_exceptions=True,
+        )
+        from app.harness.budget import ToolPermit
+        from app.runs.store import RunStore
+
+        tool_permits = [value for value in tool_results if isinstance(value, ToolPermit)]
+        assert len(tool_permits) == 1
+        assert all(
+            isinstance(value, BudgetDenied) for value in tool_results if value not in tool_permits
+        )
+        await asyncio.gather(
+            *(tool_port.settle_tool(tool_permits[0].call_id, reported_ok=True) for _ in range(8))
+        )
+        tool_view = await RunStore(database).get(tool_model._run_id, user_id=tool_model._user_id)
+        assert tool_view.budget_summary is not None
+        assert tool_view.budget_summary.tool_attempts == 1
+        assert tool_view.budget_summary.unsettled_tool_calls == 0
         engine = JobEngine(database)
         job = await engine.submit("deleg.test", {}, resource_class="deleg")
         claims = await asyncio.gather(
@@ -85,7 +110,6 @@ async def test_postgres_concurrent_budget_admission_and_settlement(
         from app.db.claims import assert_current_claim as original_guard
         from app.harness.claim import ExecutionClaim, claim_scope
         from app.runs.budget import job_model_budget
-        from app.runs.store import RunStore
 
         user_id = uuid7()
         async with database.sessions.begin() as session:

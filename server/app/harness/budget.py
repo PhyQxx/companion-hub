@@ -44,3 +44,37 @@ def budget_scope(budget: ModelBudget | None) -> Iterator[None]:
         yield
     finally:
         _CURRENT_BUDGET.reset(token)
+
+
+@dataclass(frozen=True, slots=True)
+class ToolPermit:
+    call_id: UUID
+    remaining_seconds: float
+
+
+class ToolBudget(Protocol):
+    async def reserve_tool(self, *, tool_name: str, user_id: UUID | None) -> ToolPermit: ...
+
+    async def settle_tool(self, call_id: UUID, *, reported_ok: bool | None) -> None: ...
+
+
+_TOOL_BUDGET: ContextVar[ToolBudget | None] = ContextVar("tool_budget", default=None)
+
+
+def current_tool_budget() -> ToolBudget | None:
+    explicit = _TOOL_BUDGET.get()
+    if explicit is not None:
+        return explicit
+    budget = current_budget()
+    from typing import cast
+
+    return cast(ToolBudget | None, getattr(budget, "tool_budget", None))
+
+
+@contextmanager
+def tool_budget_scope(budget: ToolBudget | None) -> Iterator[None]:
+    token = _TOOL_BUDGET.set(budget)
+    try:
+        yield
+    finally:
+        _TOOL_BUDGET.reset(token)

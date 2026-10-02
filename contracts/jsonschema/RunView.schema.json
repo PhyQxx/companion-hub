@@ -144,6 +144,21 @@
           "title": "Max Tokens",
           "type": "integer"
         },
+        "max_tool_attempts": {
+          "default": 64,
+          "title": "Max Tool Attempts",
+          "type": "integer"
+        },
+        "tool_attempts": {
+          "default": 0,
+          "title": "Tool Attempts",
+          "type": "integer"
+        },
+        "unknown_tool_calls": {
+          "default": 0,
+          "title": "Unknown Tool Calls",
+          "type": "integer"
+        },
         "unknown_usage_calls": {
           "anyOf": [
             {
@@ -167,6 +182,11 @@
           ],
           "default": null,
           "title": "Unsettled Calls"
+        },
+        "unsettled_tool_calls": {
+          "default": 0,
+          "title": "Unsettled Tool Calls",
+          "type": "integer"
         }
       },
       "required": [

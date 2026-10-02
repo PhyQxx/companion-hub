@@ -872,6 +872,7 @@ class MailAwarenessConfig(StrictModel):
 
 class RunBudgetConfig(StrictModel):
     enabled: bool = True
+    max_tool_attempts: Annotated[int, Field(ge=1, le=10000)] = 64
     max_llm_attempts: Annotated[int, Field(ge=2, le=100)] = 8
     max_concurrent_llm_calls: Annotated[int, Field(ge=1, le=64)] = 4
     max_tokens: Annotated[int, Field(ge=1024, le=10_000_000)] = 262_144

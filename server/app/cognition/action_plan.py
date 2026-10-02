@@ -11,10 +11,11 @@ from typing import Annotated, Literal
 from uuid import UUID
 
 from pydantic import Field, JsonValue
-from sqlalchemy import or_, select
+from sqlalchemy import or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db import ActionPlanRecord, ActionStepRecord, AppUserRecord, Database
+from app.harness.budget import BudgetDenied, ToolBudget, current_tool_budget, tool_budget_scope
 from app.ids import uuid7
 from app.privacy.service import PolicyService
 from app.runs.contracts import lock_source_run, require_work
@@ -160,11 +161,19 @@ class ActionPlanService:
         self._registry = registry
         self._preauthorized = preauthorized_action_ids
         self._runner = runner
+        self._tool_budget_builder: (
+            Callable[[UUID, UUID, datetime], Awaitable[ToolBudget | None]] | None
+        ) = None
         self._execution_listener: ExecutionListener | None = None
         self._change_listener: ChangeListener | None = None
         # DIST/BTL-03：计划全部步骤完成后的回调列表（每个回调自身转后台执行）
         self._completion_callbacks: list[PlanCompletionCallback] = []
         self._completion_enqueuers: list[PlanCompletionEnqueuer] = []
+
+    def set_tool_budget_builder(
+        self, builder: Callable[[UUID, UUID, datetime], Awaitable[ToolBudget | None]]
+    ) -> None:
+        self._tool_budget_builder = builder
 
     def set_runner(
         self,
@@ -469,7 +478,10 @@ class ActionPlanService:
         now = datetime.now(UTC)
         async with self._database.sessions.begin() as session:
             plan = await session.scalar(
-                select(ActionPlanRecord).where(ActionPlanRecord.id == plan_id).with_for_update()
+                update(ActionPlanRecord)
+                .where(ActionPlanRecord.id == plan_id, ActionPlanRecord.user_id == user_id)
+                .values(updated_at=ActionPlanRecord.updated_at)
+                .returning(ActionPlanRecord)
             )
             if plan is None or plan.user_id != user_id:
                 raise LookupError("action plan not found")
@@ -513,7 +525,27 @@ class ActionPlanService:
                 )
                 try:
                     async with asyncio.timeout(step.timeout_seconds):
-                        raw_result = await self._runner(step, user_id)
+                        tool_budget = current_tool_budget()
+                        raw_result: ActionRunResult | ToolResult
+                        try:
+                            if (
+                                plan.task_run_id is not None
+                                and self._tool_budget_builder is not None
+                            ):
+                                tool_budget = await self._tool_budget_builder(
+                                    plan.task_run_id, user_id, plan.expires_at
+                                )
+                        except BudgetDenied as error:
+                            raw_result = ToolResult(
+                                admission_status="not_admitted",
+                                ok=False,
+                                tool_name=step.tool_name,
+                                reason_code=error.reason_code,
+                                latency_ms=0,
+                            )
+                        else:
+                            with tool_budget_scope(tool_budget):
+                                raw_result = await self._runner(step, user_id)
                 except TimeoutError:
                     await self._finish_step(
                         user_id=user_id,
