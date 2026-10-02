@@ -104,6 +104,15 @@ class LifespanDeps:
 
 def _core_modules(deps: LifespanDeps) -> ModuleRegistry:
     async def load_memory() -> None:
+        if deps.memory_store is not None:
+            from app.memory.replay import import_deletion_journal, replay_deletions
+
+            if deps.memory_store.deletion_journal is not None:
+                await import_deletion_journal(
+                    deps.memory_store.database, deps.memory_store.deletion_journal
+                )
+            # Replay before retrieval or maintenance can see restored sources.
+            await replay_deletions(deps.memory_store.database, dry_run=False)
         if deps.persona_store is not None:
             await deps.persona_store.load()
         if deps.memory_store is not None and deps.runtime_config is not None:

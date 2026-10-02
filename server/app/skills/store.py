@@ -396,6 +396,7 @@ class SkillStore:
         target_skill_id: UUID | None = None,
         base_version: int | None = None,
         source_owner_id: UUID | None = None,
+        allow_active_source: bool = False,
     ) -> SkillDraftView | None:
         """Persist a proposal for admin review; returns None when already pending.
 
@@ -412,7 +413,10 @@ class SkillStore:
         async with self._database.sessions() as session:
             if source_owner_id is not None:
                 turn = await session.get(InteractionTurnRecord, UUID(turn_id or ""))
-                if turn is None or turn.state != "completed":
+                source_states = {"completed"}
+                if allow_active_source:
+                    source_states |= {"accepted", "thinking", "streaming"}
+                if turn is None or turn.state not in source_states:
                     raise ValueError("source_deleted")
                 conversation = await session.scalar(
                     select(ConversationRecord)
@@ -422,6 +426,17 @@ class SkillStore:
                     )
                     .with_for_update()
                 )
+                if conversation is None:
+                    raise ValueError("source_deleted")
+                if allow_active_source:
+                    turn = await session.get(
+                        InteractionTurnRecord,
+                        turn.id,
+                        with_for_update=True,
+                        populate_existing=True,
+                    )
+                    if turn is None or turn.state not in source_states:
+                        raise ValueError("source_deleted")
                 message = await session.get(MessageRecord, turn.input_message_id)
                 deleted = await session.scalar(
                     select(DeletionLedgerRecord.id)

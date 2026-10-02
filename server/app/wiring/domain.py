@@ -241,7 +241,10 @@ def assemble_domain(
     skill_tool_provider = skills_module.tools
     skill_generator = skills_module.generator
     activity_tracker = ActivityTracker()
-    memory_module = build_memory(runtime_database)
+    journal_path = os.getenv("ARIA_DELETION_JOURNAL_PATH")
+    memory_module = build_memory(
+        runtime_database, journal_path=Path(journal_path) if journal_path else None
+    )
     persona_store = memory_module.persona
     memory_store = memory_module.memory
     timeline_store = memory_module.timeline

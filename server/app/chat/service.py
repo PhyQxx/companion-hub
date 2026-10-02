@@ -12,7 +12,7 @@ from typing import Any, Literal, Protocol
 from uuid import UUID
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from sqlalchemy import delete, func, select, update
+from sqlalchemy import func, select, update
 from sqlalchemy.exc import IntegrityError
 
 from app.cognition import (
@@ -24,22 +24,16 @@ from app.cognition import (
 )
 from app.config import ConfigStore, DatabaseConfigStore, HubConfig
 from app.db import (
-    ActionPlanRecord,
     AppUserRecord,
     CognitiveDecisionRecord,
-    CognitiveGoalRecord,
     ConversationRecord,
     Database,
     InteractionTurnRecord,
-    JobRecord,
     MessageRecord,
-    ModelReservationRecord,
-    SkillDraftRecord,
-    TaskRunEventRecord,
     TaskRunRecord,
-    WorkflowDraftRecord,
 )
 from app.db.claims import assert_current_claim
+from app.db.deletions import purge_conversation
 from app.harness.budget import BudgetDenied, budget_scope
 from app.harness.context import ContextAssembler, ContextBlocks, ContextReference
 from app.harness.loop import CompletionFrame, LoopOutcome, run_agent_loop
@@ -1982,131 +1976,22 @@ class ChatService:
                     select(MessageRecord.id).where(MessageRecord.conversation_id == conversation_id)
                 )
             ]
-        receipt = DeletionReceipt(ledger_id=0, entity_id=str(conversation_id), deleted_ids=())
-        if self._memory_store is not None:
-            receipt = await self._memory_store.hard_delete_by_source(
-                "message",
-                message_ids,
-                entity_kind="message",
-                entity_id=str(conversation_id),
-                actor="user",
-                reason="conversation deleted by user",
-                always_record=True,
-            )
+        deletion_store = self._memory_store or MemoryStore(self._database)
+        receipt = await deletion_store.hard_delete_by_source(
+            "message",
+            message_ids,
+            entity_kind="message",
+            entity_id=str(conversation_id),
+            actor="user",
+            reason="conversation deleted by user",
+            always_record=True,
+        )
         if self._timeline_store is not None:
             # Timeline 是 Source 的派生索引，必须在原消息删除前清除，避免形成删除旁路。
             await self._timeline_store.purge_conversation(conversation_id)
         async with self._database.sessions.begin() as session:
-            conversation = await session.scalar(
-                select(ConversationRecord)
-                .where(ConversationRecord.id == conversation_id)
-                .with_for_update()
-            )
-            if conversation is None or conversation.user_id != user_id:
+            if not await purge_conversation(session, conversation_id, user_id=user_id):
                 raise LookupError("conversation not found")
-            turn_ids = list(
-                await session.scalars(
-                    select(InteractionTurnRecord.id).where(
-                        InteractionTurnRecord.conversation_id == conversation_id,
-                    )
-                )
-            )
-            run_ids = list(
-                await session.scalars(
-                    select(TaskRunRecord.id).where(
-                        TaskRunRecord.conversation_id == conversation_id,
-                    )
-                )
-            )
-            # Derived writes lock Conversation -> Job -> derived rows. Take
-            # the same order before purging candidates so cancellation and
-            # deletion cannot deadlock a worker committing its evidence.
-            if run_ids:
-                await session.scalars(
-                    select(JobRecord)
-                    .where(JobRecord.task_run_id.in_(run_ids))
-                    .order_by(JobRecord.id)
-                    .with_for_update()
-                )
-            if turn_ids:
-                await session.execute(
-                    delete(SkillDraftRecord).where(
-                        SkillDraftRecord.turn_id.in_([str(turn_id) for turn_id in turn_ids]),
-                    )
-                )
-            await session.execute(
-                delete(CognitiveGoalRecord).where(
-                    CognitiveGoalRecord.user_id == user_id,
-                    CognitiveGoalRecord.source_kind == "message",
-                    CognitiveGoalRecord.source_id.in_(message_ids),
-                )
-            )
-            await session.execute(
-                delete(InteractionTurnRecord).where(
-                    InteractionTurnRecord.conversation_id == conversation_id
-                )
-            )
-            await session.execute(
-                delete(MessageRecord).where(MessageRecord.conversation_id == conversation_id)
-            )
-            if run_ids:
-                source_plan_ids = select(ActionPlanRecord.id).where(
-                    ActionPlanRecord.task_run_id.in_(run_ids),
-                    ActionPlanRecord.user_id == user_id,
-                )
-                await session.execute(
-                    delete(WorkflowDraftRecord).where(
-                        WorkflowDraftRecord.user_id == user_id,
-                        WorkflowDraftRecord.plan_id.in_(source_plan_ids),
-                    )
-                )
-                # Derived jobs must stop rather than becoming detached tasks.
-                await session.execute(
-                    update(JobRecord)
-                    .where(
-                        JobRecord.task_run_id.in_(run_ids),
-                        JobRecord.owner == str(user_id),
-                        JobRecord.status.in_({"queued", "retry_wait", "waiting_user"}),
-                    )
-                    .values(
-                        status="cancelled",
-                        cancel_requested_at=datetime.now(UTC),
-                        completed_at=datetime.now(UTC),
-                        lease_owner=None,
-                        lease_expires_at=None,
-                    )
-                )
-                await session.execute(
-                    update(JobRecord)
-                    .where(
-                        JobRecord.task_run_id.in_(run_ids),
-                        JobRecord.owner == str(user_id),
-                        JobRecord.status.in_({"admitted", "running"}),
-                    )
-                    .values(status="cancelling", cancel_requested_at=datetime.now(UTC))
-                )
-                await session.execute(
-                    delete(ModelReservationRecord).where(ModelReservationRecord.run_id.in_(run_ids))
-                )
-                await session.execute(
-                    delete(TaskRunEventRecord).where(TaskRunEventRecord.run_id.in_(run_ids))
-                )
-                await session.execute(
-                    update(JobRecord)
-                    .where(JobRecord.task_run_id.in_(run_ids))
-                    .values(task_run_id=None, input={"source_deleted": True})
-                )
-                await session.execute(
-                    update(ActionPlanRecord)
-                    .where(ActionPlanRecord.task_run_id.in_(run_ids))
-                    .values(task_run_id=None, reason_code="source_deleted")
-                )
-            await session.execute(
-                delete(TaskRunRecord).where(
-                    TaskRunRecord.conversation_id == conversation_id,
-                )
-            )
-            await session.delete(conversation)
         return receipt
 
     async def recover_incomplete_turns(self) -> None:

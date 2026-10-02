@@ -67,6 +67,7 @@ services:
       ARIA_XIAOAI_CONFIG_PATH: /var/lib/aria/xiaoai/config.json
       # BK-01 备份状态检视：只读挂载，转储仍由 backup profile 容器执行
       ARIA_BACKUP_DIR: /backups
+      ARIA_DELETION_JOURNAL_PATH: /var/lib/aria/deletions/journal.jsonl
     depends_on:
       postgres:
         condition: service_healthy
@@ -87,6 +88,7 @@ services:
       - "8000:8000"
     volumes:
       - xiaoai-state:/var/lib/aria/xiaoai
+      - deletion-state:/var/lib/aria/deletions
       - ./backups:/backups:ro
     restart: unless-stopped
 
@@ -145,6 +147,7 @@ services:
     restart: unless-stopped
 
 volumes:
+  deletion-state:
   postgres-data:
   mosquitto-data:
   xiaoai-state:

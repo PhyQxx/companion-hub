@@ -27,6 +27,7 @@ from app.db import (
     MessageRecord,
 )
 from app.db.claims import assert_current_claim
+from app.privacy.deletion_journal import DeletionIntent, DeletionJournal
 from app.schemas.common import PrivacyLevel
 
 from .embeddings import EmbeddingProvider, HashingEmbeddingProvider, cosine_similarity
@@ -89,8 +90,10 @@ class MemoryStore:
         database: Database,
         *,
         embedding_provider: EmbeddingProvider | None = None,
+        deletion_journal: DeletionJournal | None = None,
     ) -> None:
         self._database = database
+        self.deletion_journal = deletion_journal
         self._embedding_provider: EmbeddingProvider = (
             embedding_provider or HashingEmbeddingProvider()
         )
@@ -844,8 +847,8 @@ class MemoryStore:
         )
         await session.execute(delete(MemoryRecord).where(MemoryRecord.id.in_(deleted_ids)))
 
-    @staticmethod
     async def _record_ledger(
+        self,
         session: AsyncSession,
         entity_kind: str,
         entity_id: str,
@@ -864,6 +867,15 @@ class MemoryStore:
         )
         session.add(ledger)
         await session.flush()
+        if self.deletion_journal is not None:
+            await self.deletion_journal.append(
+                DeletionIntent(
+                    entity_kind=entity_kind,
+                    entity_id=entity_id,
+                    deleted_ids=list(deleted_ids),
+                    created_at=now,
+                )
+            )
         return ledger.id
 
     async def lineage(self, memory_id: int) -> list[MemoryEntry]:

@@ -144,6 +144,8 @@ class SkillDraftAssistant:
             turn_id=str(context.turn_id) if context.turn_id is not None else None,
             target_skill_id=target.id if target is not None else None,
             base_version=target.version if target is not None else None,
+            source_owner_id=context.user_id if context.turn_id is not None else None,
+            allow_active_source=True,
         )
         if draft is None:
             return self._finish(

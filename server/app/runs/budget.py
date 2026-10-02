@@ -270,6 +270,8 @@ async def job_model_budget(
             existing = await session.get(TaskRunRecord, run_id)
             if existing is None or existing.user_id != user_id:
                 raise BudgetDenied("budget_run_not_found")
+            if existing.status not in {"accepted", "running", "succeeded"}:
+                raise BudgetDenied("budget_run_inactive")
             if not existing.budget or not existing.budget.get("enabled"):
                 return None  # Pre-budget runs preserve their recorded opt-out.
     return RunModelBudget(

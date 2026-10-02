@@ -5,7 +5,7 @@ import os
 from datetime import UTC, datetime, timedelta
 
 import pytest
-from sqlalchemy import select, update
+from sqlalchemy import select, text, update
 from sqlalchemy.engine import make_url
 from test_run_budget import make_budget
 
@@ -17,7 +17,9 @@ from app.jobs import JobEngine
 from app.llm.contracts import ModelUsage
 
 
-async def test_postgres_concurrent_budget_admission_and_settlement() -> None:
+async def test_postgres_concurrent_budget_admission_and_settlement(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     url = os.getenv("ARIA_TEST_DATABASE_URL")
     if url is None:
         pytest.skip("ARIA_TEST_DATABASE_URL is not configured")
@@ -77,6 +79,65 @@ async def test_postgres_concurrent_budget_admission_and_settlement() -> None:
         assert len(owners) == 1 and owners[0].attempts == 2
         assert not await engine.complete_step(step, worker_id=first.lease_owner, claim_version=1)
         assert not await engine.succeed(job.id, worker_id=first.lease_owner, claim_version=1)
+        # Hold a valid claim while cancelling its standalone run. The opposite
+        # Run -> Job lock order deadlocks admission's Job -> Run transaction.
+        from app.db import AppUserRecord
+        from app.db.claims import assert_current_claim as original_guard
+        from app.harness.claim import ExecutionClaim, claim_scope
+        from app.runs.budget import job_model_budget
+        from app.runs.store import RunStore
+
+        user_id = uuid7()
+        async with database.sessions.begin() as session:
+            session.add(AppUserRecord(id=user_id, display_name="Fence test", status="active"))
+        queued = await engine.submit(
+            "deleg.cancel-test",
+            {"user_id": str(user_id)},
+            owner=str(user_id),
+            resource_class="cancel-test",
+        )
+        claimed = await engine.claim("fenced-worker", resource_class="cancel-test")
+        assert claimed is not None
+        model_budget = await job_model_budget(database, queued.id, RunBudgetConfig())
+        assert model_budget is not None
+        locked, release = asyncio.Event(), asyncio.Event()
+
+        async def paused_guard(session: object) -> None:
+            await original_guard(session)  # type: ignore[arg-type]
+            locked.set()
+            await release.wait()
+
+        monkeypatch.setattr("app.runs.budget.assert_current_claim", paused_guard)
+        with claim_scope(ExecutionClaim(queued.id, "fenced-worker", claimed.attempts)):
+            admission = asyncio.create_task(
+                model_budget.reserve(endpoint="test", tokens=10, final=True)
+            )
+        await asyncio.wait_for(locked.wait(), 3)
+        cancellation = asyncio.create_task(
+            RunStore(database).cancel_background(queued.id, user_id=user_id)
+        )
+        try:
+
+            async def wait_for_blocked_job_lock() -> None:
+                while True:
+                    async with database.sessions() as session:
+                        blocked = await session.scalar(
+                            text(
+                                "SELECT count(*) FROM pg_stat_activity "
+                                "WHERE wait_event_type = 'Lock' "
+                                "AND query LIKE :pattern"
+                            ),
+                            {"pattern": f"%{schema}%job%"},
+                        )
+                    if blocked:
+                        return
+                    await asyncio.sleep(0.01)
+
+            await asyncio.wait_for(wait_for_blocked_job_lock(), 3)
+        finally:
+            release.set()
+        cancellation_results = await asyncio.wait_for(asyncio.gather(admission, cancellation), 3)
+        assert cancellation_results[1] is True
     finally:
         if created:
             async with database.engine.begin() as connection:

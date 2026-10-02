@@ -68,6 +68,17 @@ class RunStore:
 
     async def cancel_background(self, run_id: UUID, *, user_id: UUID) -> bool:
         async with self._database.sessions.begin() as session:
+            # Admission and completion lock Job before Run. Cancellation must
+            # use the same order so a model reservation cannot deadlock it.
+            await session.scalars(
+                select(JobRecord)
+                .where(
+                    JobRecord.task_run_id == run_id,
+                    JobRecord.owner == str(user_id),
+                )
+                .order_by(JobRecord.id)
+                .with_for_update()
+            )
             row = await session.scalar(
                 select(TaskRunRecord)
                 .where(
