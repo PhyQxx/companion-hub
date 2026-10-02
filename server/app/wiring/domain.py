@@ -380,6 +380,11 @@ def assemble_domain(
         task_scheduler = TaskScheduler(
             task_store,
             interval_seconds=float(os.getenv("ARIA_TASK_SCHEDULER_INTERVAL", "15")),
+            budget_loader=lambda: (
+                runtime_config.current.config.run_budget
+                if runtime_config is not None
+                else RunBudgetConfig()
+            ),
         )
         if perception_pipeline is not None:
 

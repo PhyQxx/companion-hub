@@ -89,6 +89,7 @@ class ClaimedTask(StrictModel):
     oneshot: bool
     privacy_level: PrivacyLevel
     fired_at: datetime
+    run_id: UUID | None = None
 
 
 DEFAULT_EVENT_COOLDOWN_SECONDS = 300

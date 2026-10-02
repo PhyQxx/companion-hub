@@ -290,12 +290,14 @@ async def test_recover_interrupted_marks_done_without_refire(
     assert len(claimed) == 1
     # 模拟进程在投递中途崩溃：遗留 firing，重启后直接判完成且不重复投递
     assert await store.claim_due(now=NOW + timedelta(minutes=3)) == []
-    recovered = await store.recover_interrupted(now=NOW + timedelta(minutes=4))
+    # A fresh claim may belong to another process that has not created its Run yet.
+    assert await store.recover_interrupted(now=NOW + timedelta(minutes=4)) == 0
+    recovered = await store.recover_interrupted(now=NOW + timedelta(minutes=6))
     assert recovered == 1
     view = await store.get_task(user_id, task.id)
     assert view.status == TaskStatus.DONE
     assert view.last_delivery == {"reason_code": "interrupted"}
-    assert await store.claim_due(now=NOW + timedelta(minutes=5)) == []
+    assert await store.claim_due(now=NOW + timedelta(minutes=7)) == []
 
 
 async def test_cancelled_task_never_fires(database: Database, user_id: UUID) -> None:

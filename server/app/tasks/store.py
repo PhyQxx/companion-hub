@@ -14,8 +14,9 @@ from uuid import UUID
 
 from sqlalchemy import func, select, update
 from sqlalchemy.engine import CursorResult
+from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db import Database, TaskItemRecord
+from app.db import AppUserRecord, Database, TaskItemRecord, TaskRunRecord
 from app.ids import uuid7
 from app.schemas.common import PrivacyLevel
 
@@ -67,6 +68,30 @@ class TaskStore:
     def database(self) -> Database:
         return self._database
 
+    async def _cancel_current_delivery(
+        self, session: AsyncSession, user_id: UUID, task_id: UUID
+    ) -> None:
+        from app.runs.store import transition_run
+
+        source = await session.get(TaskItemRecord, task_id)
+        if source is None or source.user_id != user_id:
+            return
+        raw_id = (source.last_delivery or {}).get("run_id")
+        try:
+            run_id = UUID(str(raw_id)) if raw_id else None
+        except ValueError:
+            return
+        if run_id is None:
+            return
+        root = await session.get(TaskRunRecord, run_id, with_for_update=True)
+        if (
+            root is not None
+            and root.user_id == user_id
+            and root.contract.get("source_id") == str(task_id)
+            and root.contract.get("criterion") == "delivery_channels_returned"
+        ):
+            await transition_run(session, root.id, "cancelled")
+
     async def create(
         self,
         *,
@@ -113,7 +138,7 @@ class TaskStore:
                 .where(
                     TaskItemRecord.user_id == user_id,
                     TaskItemRecord.source_ref == source_ref,
-                    TaskItemRecord.status == str(TaskStatus.ACTIVE),
+                    TaskItemRecord.status.in_([str(TaskStatus.ACTIVE), str(TaskStatus.FIRING)]),
                 )
                 .values(
                     status=str(TaskStatus.CANCELLED),
@@ -121,8 +146,12 @@ class TaskStore:
                     next_fire_at=None,
                     updated_at=now,
                 )
+                .returning(TaskItemRecord.id)
             )
-        return int(cast(CursorResult[Any], result).rowcount or 0)
+            identifiers = sorted(result.scalars())
+            for identifier in identifiers:
+                await self._cancel_current_delivery(session, user_id, identifier)
+        return len(identifiers)
 
     async def list_tasks(
         self,
@@ -178,9 +207,7 @@ class TaskStore:
             user_id=user_id, status=status, kind=kind, source=source, query=query
         ):
             statement = statement.where(clause)
-        statement = (
-            statement.order_by(TaskItemRecord.created_at.desc()).limit(limit).offset(offset)
-        )
+        statement = statement.order_by(TaskItemRecord.created_at.desc()).limit(limit).offset(offset)
         async with self._database.sessions() as session:
             records = (await session.execute(statement)).scalars().all()
         return [_to_view(record) for record in records]
@@ -254,6 +281,7 @@ class TaskStore:
                     updated_at=moment,
                 )
             )
+            await self._cancel_current_delivery(session, user_id, task_id)
         updated = await self._get_record(user_id, task_id)
         return _to_view(updated)
 
@@ -265,7 +293,7 @@ class TaskStore:
         now: datetime | None = None,
     ) -> TaskView:
         record = await self._get_record(user_id, task_id)
-        if record.status != str(TaskStatus.ACTIVE):
+        if record.status not in {str(TaskStatus.ACTIVE), str(TaskStatus.FIRING)}:
             raise ValueError(f"任务当前状态 {record.status} 不能取消")
         moment = now or datetime.now(UTC)
         async with self._database.sessions.begin() as session:
@@ -274,7 +302,7 @@ class TaskStore:
                 .where(
                     TaskItemRecord.id == task_id,
                     TaskItemRecord.user_id == user_id,
-                    TaskItemRecord.status == str(TaskStatus.ACTIVE),
+                    TaskItemRecord.status.in_([str(TaskStatus.ACTIVE), str(TaskStatus.FIRING)]),
                 )
                 .values(
                     status=str(TaskStatus.CANCELLED),
@@ -283,6 +311,7 @@ class TaskStore:
                     updated_at=moment,
                 )
             )
+            await self._cancel_current_delivery(session, user_id, task_id)
         updated = await self._get_record(user_id, task_id)
         return _to_view(updated)
 
@@ -295,7 +324,7 @@ class TaskStore:
         now: datetime | None = None,
     ) -> TaskView:
         record = await self._get_record(user_id, task_id)
-        if record.status != str(TaskStatus.ACTIVE):
+        if record.status not in {str(TaskStatus.ACTIVE), str(TaskStatus.FIRING)}:
             raise ValueError(f"任务当前状态 {record.status} 不能稍后提醒")
         if record.trigger_type != "time":
             raise ValueError("event 触发的任务不支持稍后提醒")
@@ -308,10 +337,11 @@ class TaskStore:
                 .where(
                     TaskItemRecord.id == task_id,
                     TaskItemRecord.user_id == user_id,
-                    TaskItemRecord.status == str(TaskStatus.ACTIVE),
+                    TaskItemRecord.status.in_([str(TaskStatus.ACTIVE), str(TaskStatus.FIRING)]),
                 )
-                .values(next_fire_at=until, updated_at=moment)
+                .values(next_fire_at=until, status=str(TaskStatus.ACTIVE), updated_at=moment)
             )
+            await self._cancel_current_delivery(session, user_id, task_id)
         updated = await self._get_record(user_id, task_id)
         return _to_view(updated)
 
@@ -387,6 +417,9 @@ class TaskStore:
                         .where(
                             TaskItemRecord.trigger_type == "time",
                             TaskItemRecord.status == str(TaskStatus.ACTIVE),
+                            TaskItemRecord.user_id.in_(
+                                select(AppUserRecord.id).where(AppUserRecord.status == "active")
+                            ),
                             TaskItemRecord.source != "pnkx",
                             TaskItemRecord.next_fire_at.is_not(None),
                             TaskItemRecord.next_fire_at <= moment,
@@ -424,6 +457,9 @@ class TaskStore:
                             TaskItemRecord.user_id == user_id,
                             TaskItemRecord.trigger_type == "event",
                             TaskItemRecord.status == str(TaskStatus.ACTIVE),
+                            TaskItemRecord.user_id.in_(
+                                select(AppUserRecord.id).where(AppUserRecord.status == "active")
+                            ),
                             TaskItemRecord.event_type == event_type,
                         )
                         .order_by(TaskItemRecord.created_at)
@@ -479,23 +515,83 @@ class TaskStore:
             )
 
     async def recover_interrupted(self, *, now: datetime | None = None) -> int:
-        """启动恢复：上次进程中断遗留的 firing 任务直接判完成，不重复投递。"""
+        """Do not reclaim another process's live Run or a newly claimed source."""
         moment = now or datetime.now(UTC)
-        async with self._database.sessions.begin() as session:
-            result = await session.execute(
-                update(TaskItemRecord)
+        count = 0
+        after: UUID | None = None
+        while True:
+            query = (
+                select(TaskItemRecord.id)
                 .where(TaskItemRecord.status == str(TaskStatus.FIRING))
-                .values(
-                    status=str(TaskStatus.DONE),
-                    completed_at=moment,
-                    next_fire_at=None,
-                    last_delivery={"reason_code": "interrupted"},
-                    updated_at=moment,
-                )
+                .order_by(TaskItemRecord.id)
+                .limit(100)
             )
-        return int(cast(CursorResult[Any], result).rowcount or 0)
+            if after is not None:
+                query = query.where(TaskItemRecord.id > after)
+            async with self._database.sessions() as session:
+                identifiers = list(await session.scalars(query))
+            if not identifiers:
+                return count
+            for identifier in identifiers:
+                async with self._database.sessions.begin() as session:
+                    row = await session.scalar(
+                        update(TaskItemRecord)
+                        .where(
+                            TaskItemRecord.id == identifier,
+                            TaskItemRecord.status == str(TaskStatus.FIRING),
+                        )
+                        .values(updated_at=TaskItemRecord.updated_at)
+                        .returning(TaskItemRecord)
+                    )
+                    if row is None:
+                        continue
+                    raw_id = (row.last_delivery or {}).get("run_id")
+                    try:
+                        run_id = UUID(str(raw_id)) if raw_id else None
+                    except ValueError:
+                        run_id = None
+                    run = (
+                        await session.get(TaskRunRecord, run_id, with_for_update=True)
+                        if run_id
+                        else None
+                    )
+                    if (
+                        run is not None
+                        and run.status in {"accepted", "running"}
+                        and run.deadline is not None
+                        and _aware(run.deadline) > moment
+                    ):
+                        continue
+                    if (
+                        run_id is not None
+                        and run is None
+                        and row.last_fired_at is not None
+                        and _aware(row.last_fired_at) + timedelta(seconds=180) > moment
+                    ):
+                        continue
+                    row.status, row.completed_at, row.next_fire_at = (
+                        str(TaskStatus.DONE),
+                        moment,
+                        None,
+                    )
+                    row.last_delivery = (
+                        {"reason_code": "interrupted"}
+                        if run is None
+                        else {
+                            "run_id": str(run.id),
+                            "fire_count": row.fire_count,
+                            "reason_code": "interrupted",
+                            "outcome": "unknown"
+                            if run.contract.get("dispatch_state") in {"started", "unknown"}
+                            else "not_started",
+                        }
+                    )
+                    row.updated_at = moment
+                    count += 1
+            after = identifiers[-1]
 
     async def _claim(self, record: TaskItemRecord, moment: datetime) -> ClaimedTask | None:
+        run_id = uuid7()
         trigger = TaskTrigger.model_validate(record.trigger_config)
         next_fire = (
             compute_next_fire(trigger, after=moment) if record.trigger_type == "time" else None
@@ -508,11 +604,19 @@ class TaskStore:
                     TaskItemRecord.id == record.id,
                     TaskItemRecord.status == str(TaskStatus.ACTIVE),
                     TaskItemRecord.fire_count == record.fire_count,
+                    TaskItemRecord.user_id.in_(
+                        select(AppUserRecord.id).where(AppUserRecord.status == "active")
+                    ),
                 )
                 .values(
                     status=str(TaskStatus.FIRING) if oneshot else str(TaskStatus.ACTIVE),
                     last_fired_at=moment,
                     fire_count=record.fire_count + 1,
+                    last_delivery={
+                        "run_id": str(run_id),
+                        "fire_count": record.fire_count + 1,
+                        "outcome": "claimed",
+                    },
                     next_fire_at=next_fire,
                     updated_at=moment,
                 )
@@ -528,6 +632,7 @@ class TaskStore:
             oneshot=oneshot,
             privacy_level=PrivacyLevel(record.privacy_level),
             fired_at=moment,
+            run_id=run_id,
         )
 
     async def _get_record(self, user_id: UUID, task_id: UUID) -> TaskItemRecord:

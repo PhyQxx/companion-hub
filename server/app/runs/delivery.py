@@ -20,6 +20,7 @@ from app.db import (
     Database,
     ModelCostRecord,
     ModelReservationRecord,
+    TaskItemRecord,
     TaskRunRecord,
 )
 from app.db.claims import assert_current_claim
@@ -30,8 +31,8 @@ from app.schemas.delivery_run import DeliveryRunOutcome
 from .budget import RunModelBudget, utc
 from .store import append_run_event, transition_run
 
-SourceTable = type[DailyBriefRecord] | type[DailyReviewRecord]
-SourceRow = DailyBriefRecord | DailyReviewRecord
+SourceTable = type[DailyBriefRecord] | type[DailyReviewRecord] | type[TaskItemRecord]
+SourceRow = DailyBriefRecord | DailyReviewRecord | TaskItemRecord
 _CHANNELS: TypeAdapter[list[str]] = TypeAdapter(Annotated[list[TokenName], Field(max_length=16)])
 
 
@@ -45,11 +46,33 @@ async def _source_lock(
 ) -> SourceRow | None:
     query = update(table).where(table.id == source_id, table.user_id == user_id)
     if pending:
-        query = query.where(table.status == "pending")
+        query = query.where(
+            table.status.in_({"active", "firing"})
+            if table is TaskItemRecord
+            else table.status == "pending"
+        )
     return cast(
         SourceRow | None,
         await session.scalar(query.values(updated_at=table.updated_at).returning(table)),
     )
+
+
+def task_delivery_text(title: str, notes: str | None) -> str:
+    return f"⏰ 提醒：{title}" + (f"\n{notes}" if notes else "")
+
+
+def _matches(source: SourceRow | None, fingerprint: str, run_id: UUID) -> bool:
+    if source is None:
+        return False
+    if isinstance(source, TaskItemRecord):
+        if source.status not in {"active", "firing"} or source.source == "pnkx":
+            return False
+        if (source.last_delivery or {}).get("run_id") != str(run_id):
+            return False
+        text = task_delivery_text(source.title, source.notes)
+    else:
+        text = source.text
+    return hashlib.sha256(text.encode()).hexdigest() == fingerprint
 
 
 def outcome(row: TaskRunRecord | None) -> DeliveryRunOutcome | None:
@@ -94,8 +117,11 @@ async def deliver_once(
     entry: str,
     config: RunBudgetConfig,
     dispatch: Callable[[], Awaitable[list[str] | None]],
+    run_id: UUID | None = None,
+    unavailable_reason: str | None = None,
 ) -> bool:
     """Return False when another attempt owns this source; never resend unknown work."""
+    identifier = run_id or source_id
     parent = current_budget()
     if isinstance(parent, RunModelBudget) and parent.owner_id != user_id:
         raise BudgetDenied("budget_owner_invalid")
@@ -112,17 +138,24 @@ async def deliver_once(
             source = await _source_lock(session, table, source_id, user_id, pending=True)
             if source is None:
                 return False
-            if hashlib.sha256(source.text.encode()).hexdigest() != fingerprint:
+            if not _matches(source, fingerprint, identifier):
                 raise BudgetDenied("delivery_source_changed")
             created = TaskRunRecord(
-                id=source_id,
+                id=identifier,
                 user_id=user_id,
                 parent_run_id=parent_id,
-                request_id=f"{entry}:{source_id}",
+                request_id=f"{entry}:{identifier}",
                 status="accepted",
-                privacy_level="L1",
+                privacy_level=source.privacy_level if isinstance(source, TaskItemRecord) else "L1",
                 contract={
                     "entry": entry,
+                    "source_id": str(source_id),
+                    "budget_parent_id": str(parent_id) if parent_id else None,
+                    **(
+                        {"source_generation": source.fire_count}
+                        if isinstance(source, TaskItemRecord)
+                        else {}
+                    ),
                     "criterion": "delivery_channels_returned",
                     "required_work": [],
                     "dispatch_state": "not_started",
@@ -142,16 +175,16 @@ async def deliver_once(
             await transition_run(session, created.id, "running")
     except IntegrityError as error:
         async with database.sessions() as session:
-            existing = await session.get(TaskRunRecord, source_id)
+            existing = await session.get(TaskRunRecord, identifier)
             if (
                 existing
                 and existing.user_id == user_id
-                and existing.request_id == f"{entry}:{source_id}"
+                and existing.request_id == f"{entry}:{identifier}"
             ):
                 return False
         raise BudgetDenied("delivery_run_identity_conflict") from error
     budget = parent or (
-        RunModelBudget(database, run_id=source_id, user_id=user_id, config=config)
+        RunModelBudget(database, run_id=identifier, user_id=user_id, config=config)
         if config.enabled
         else None
     )
@@ -162,23 +195,22 @@ async def deliver_once(
     port = None
     try:
         with budget_scope(budget):
+            if unavailable_reason:
+                raise BudgetDenied(unavailable_reason)
             port = current_tool_budget()
             if port is not None:
                 permit = await port.reserve_tool(tool_name=entry, user_id=user_id)
             async with database.sessions.begin() as session:
                 await assert_current_claim(session)
                 source = await _source_lock(session, table, source_id, user_id, pending=True)
-                row = await session.get(TaskRunRecord, source_id, with_for_update=True)
+                row = await session.get(TaskRunRecord, identifier, with_for_update=True)
                 if (
                     row is None
                     or row.status != "running"
                     or row.contract.get("work_cancel_requested")
                 ):
                     raise BudgetDenied("budget_run_inactive")
-                if (
-                    source is None
-                    or hashlib.sha256(source.text.encode()).hexdigest() != fingerprint
-                ):
+                if not _matches(source, fingerprint, identifier):
                     raise BudgetDenied("delivery_source_changed")
                 if utc(row.deadline or deadline) <= datetime.now(UTC):
                     raise BudgetDenied("run_deadline_exceeded")
@@ -198,6 +230,7 @@ async def deliver_once(
                         source_id=source_id,
                         user_id=user_id,
                         fingerprint=fingerprint,
+                        run_id=identifier,
                         dispatch=dispatch,
                     )
                     or []
@@ -216,6 +249,8 @@ async def deliver_once(
             table=table,
             source_id=source_id,
             user_id=user_id,
+            run_id=identifier,
+            fingerprint=fingerprint,
             channels=[],
             reason=reason,
             state="unknown" if started else "not_started",
@@ -231,6 +266,8 @@ async def deliver_once(
         table=table,
         source_id=source_id,
         user_id=user_id,
+        run_id=identifier,
+        fingerprint=fingerprint,
         channels=channels,
         reason=reason,
         state="returned",
@@ -244,6 +281,8 @@ async def _finish(
     table: SourceTable,
     source_id: UUID,
     user_id: UUID,
+    run_id: UUID,
+    fingerprint: str,
     channels: list[str],
     reason: str | None,
     state: str,
@@ -253,7 +292,7 @@ async def _finish(
     async with database.sessions.begin() as session:
         # Source then Run matches admission; cancellation locks only Run.
         source = await _source_lock(session, table, source_id, user_id)
-        row = await session.get(TaskRunRecord, source_id, with_for_update=True)
+        row = await session.get(TaskRunRecord, run_id, with_for_update=True)
         if row is None or row.user_id != user_id:
             return
         row.contract = {
@@ -270,9 +309,28 @@ async def _finish(
             "run.delivery.returned" if state == "returned" else "run.delivery.stopped",
             payload={"reported_channels": channels, "reason_code": reason},
         )
-        if source is not None and state != "not_started":
+        if isinstance(source, TaskItemRecord) and (source.last_delivery or {}).get("run_id") == str(
+            run_id
+        ):
+            source.last_delivery = {
+                "run_id": str(run_id),
+                "fire_count": source.fire_count,
+                "trigger_kind": row.contract["entry"],
+                "fired_at": utc(source.last_fired_at).isoformat() if source.last_fired_at else None,
+                "channels": channels,
+                "outcome": state,
+                "reason_code": f"deliver_error:{reason}"
+                if reason and reason.endswith("Error")
+                else reason,
+            }
+            source.updated_at = now
+            cancelled = cancelled or source.status == "cancelled"
+            if source.status == "firing":
+                source.status, source.completed_at, source.next_fire_at = "done", now, None
+        elif (
+            source is not None and not isinstance(source, TaskItemRecord) and state != "not_started"
+        ):
             # Compatibility: delivered historically means one terminal attempt.
-            # The new outcome is authoritative about transport success/unknown.
             source.status, source.delivered_at, source.channels, source.updated_at = (
                 "delivered",
                 now,
@@ -280,7 +338,7 @@ async def _finish(
                 now,
             )
         await transition_run(
-            session, source_id, "succeeded" if channels else "cancelled" if cancelled else "failed"
+            session, run_id, "succeeded" if channels else "cancelled" if cancelled else "failed"
         )
 
 
@@ -296,6 +354,7 @@ async def _dispatch_with_watch(
     source_id: UUID,
     user_id: UUID,
     fingerprint: str,
+    run_id: UUID,
     dispatch: Callable[[], Awaitable[list[str] | None]],
 ) -> list[str] | None:
     async def watch() -> None:
@@ -303,7 +362,7 @@ async def _dispatch_with_watch(
             await asyncio.sleep(0.25)
             async with database.sessions() as session:
                 await assert_current_claim(session)
-                row = await session.get(TaskRunRecord, source_id)
+                row = await session.get(TaskRunRecord, run_id)
                 source = cast(SourceRow | None, await session.get(table, source_id))
                 owner = await session.get(AppUserRecord, user_id)
                 if (
@@ -318,11 +377,12 @@ async def _dispatch_with_watch(
                 if (
                     source is None
                     or source.user_id != user_id
-                    or hashlib.sha256(source.text.encode()).hexdigest() != fingerprint
+                    or not _matches(source, fingerprint, run_id)
                 ):
                     raise BudgetDenied("delivery_source_changed")
-                if row.parent_run_id is not None:
-                    parent = await session.get(TaskRunRecord, row.parent_run_id)
+                parent_id = row.parent_run_id or row.contract.get("budget_parent_id")
+                if parent_id is not None:
+                    parent = await session.get(TaskRunRecord, UUID(str(parent_id)))
                     if (
                         parent is None
                         or parent.user_id != user_id

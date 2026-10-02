@@ -5,6 +5,9 @@ import os
 import pytest
 from sqlalchemy.engine import make_url
 from test_delivery_runs import test_concurrent_delivery_claims_before_transport as check_claim
+from test_task_delivery_runs import (
+    test_concurrent_task_deliveries_create_one_run as check_task_claim,
+)
 
 from app.db import Base, DailyBriefRecord, DailyReviewRecord, create_database
 from app.ids import uuid7
@@ -28,6 +31,7 @@ async def test_postgres_delivery_claim() -> None:
             await connection.run_sync(Base.metadata.create_all)
         for table in (DailyBriefRecord, DailyReviewRecord):
             await check_claim(database, table)
+        await check_task_claim(database)
     finally:
         database.engine.update_execution_options(schema_translate_map=None)
         if created:

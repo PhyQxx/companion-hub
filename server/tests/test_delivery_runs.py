@@ -262,3 +262,66 @@ async def test_changed_source_blocks_transport_even_with_budget_disabled(
         )
     async with database.sessions() as session:
         assert await session.get(TaskRunRecord, source) is None
+
+
+async def test_deleted_parent_still_stops_child_when_foreign_key_is_null(
+    database: Database,
+) -> None:
+    from sqlalchemy import delete
+
+    owner, source = await seed(database, DailyBriefRecord)
+    parent = uuid7()
+    config = RunBudgetConfig()
+    async with database.sessions.begin() as session:
+        session.add(
+            TaskRunRecord(
+                id=parent,
+                user_id=owner,
+                status="running",
+                privacy_level="L1",
+                contract={"required_work": []},
+                budget=config.model_dump(mode="json"),
+                deadline=datetime.now(UTC) + timedelta(minutes=5),
+                created_at=datetime.now(UTC),
+                updated_at=datetime.now(UTC),
+            )
+        )
+    started, cancelled = asyncio.Event(), asyncio.Event()
+
+    async def dispatch() -> list[str]:
+        started.set()
+        try:
+            await asyncio.sleep(20)
+        finally:
+            cancelled.set()
+        return ["web"]
+
+    with budget_scope(RunModelBudget(database, run_id=parent, user_id=owner, config=config)):
+        firing = asyncio.create_task(
+            deliver_once(
+                database,
+                table=DailyBriefRecord,
+                source_id=source,
+                user_id=owner,
+                text="private synthetic body",
+                entry="fixture.delivery",
+                config=config,
+                dispatch=dispatch,
+            )
+        )
+    await asyncio.wait_for(started.wait(), 3)
+    async with database.sessions.begin() as session:
+        # SET NULL is the schema's parent deletion behavior. Preserve its
+        # original identifier in the contract so deletion cannot detach limits.
+        child = await session.get(TaskRunRecord, source)
+        assert child is not None
+        child.parent_run_id = None
+        await session.flush()
+        await session.execute(delete(TaskRunRecord).where(TaskRunRecord.id == parent))
+    with pytest.raises(BudgetDenied, match="budget_run_inactive"):
+        await asyncio.wait_for(firing, 3)
+    assert cancelled.is_set()
+    async with database.sessions() as session:
+        child = await session.get(TaskRunRecord, source)
+        assert child is not None and child.contract["dispatch_state"] == "unknown"
+        assert child.budget is None
