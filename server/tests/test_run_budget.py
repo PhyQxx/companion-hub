@@ -345,7 +345,7 @@ async def test_active_stream_cannot_extend_absolute_run_deadline(database: Datab
         await session.execute(
             update(TaskRunRecord)
             .where(TaskRunRecord.id == budget._run_id)
-            .values(deadline=datetime.now(UTC) + timedelta(seconds=0.3))
+            .values(deadline=datetime.now(UTC) + timedelta(seconds=1))
         )
 
     class ContinuousProvider(FakeProvider):

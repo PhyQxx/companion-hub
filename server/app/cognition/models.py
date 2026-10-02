@@ -7,6 +7,7 @@ from uuid import UUID
 
 from pydantic import Field, JsonValue, model_validator
 
+from app.harness.context import ContextReference
 from app.schemas.common import PrivacyLevel, StrictModel
 
 
@@ -132,6 +133,7 @@ class WorldState(StrictModel):
     last_interaction_at: datetime | None = None
     active_capabilities: list[str] = Field(default_factory=list)
     active_goals: list[GoalView] = Field(default_factory=list)
+    context_references: tuple[ContextReference, ...] = Field(default=(), exclude=True)
     memory_evidence_ids: list[str] = Field(default_factory=list)
     timeline_evidence_ids: list[str] = Field(default_factory=list)
     recent_proactive_count: int = 0

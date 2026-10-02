@@ -10,6 +10,7 @@ from test_goal_delivery_runs import seed
 
 from app.cognition import (
     AttentionResult,
+    CognitiveStore,
     RouterDeliberator,
     SemanticEvent,
     WorldStateBuilder,
@@ -160,3 +161,44 @@ async def test_owned_private_goal_stays_valid_for_local_scope(database: Database
     await store.validate_goal_snapshots(owner, goals, privacy_level=PrivacyLevel.L2)
     with pytest.raises(BudgetDenied, match="model_source_changed"):
         await store.validate_goal_snapshots(owner, goals, privacy_level=PrivacyLevel.L1)
+
+
+async def test_source_check_failure_does_not_trigger_rule_fallback(
+    database: Database,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    owner, store, _ = await seed(database)
+    event = SemanticEvent(
+        event_id=uuid7(),
+        occurred_at=datetime.now(UTC),
+        user_id=owner,
+        kind="user_arrived_home",
+        summary="fixture",
+        privacy_level=PrivacyLevel.L1,
+        evidence_ids=["fixture"],
+    )
+    state = await WorldStateBuilder(database, store).build(event)
+
+    async def unavailable(*args: object, **kwargs: object) -> None:
+        raise RuntimeError("unavailable source repository")
+
+    monkeypatch.setattr(CognitiveStore, "validate_goal_snapshots", unavailable)
+
+    class Backend:
+        async def complete(self, request: CompletionRequest) -> CompletionResult:
+            raise AssertionError("unverified sources must not reach a provider")
+
+    path = tmp_path / "config.yaml"
+    path.write_text(config_yaml())
+    config = ConfigStore(path)
+    await config.load()
+    deliberator = RouterDeliberator(config, database=database, router_builder=lambda _: Backend())
+    with pytest.raises(BudgetDenied, match="model_source_check_failed"):
+        await deliberator.deliberate(
+            event,
+            state,
+            AttentionResult(
+                score=1, threshold=0.5, reason_codes=["fixture"], should_deliberate=True
+            ),
+        )

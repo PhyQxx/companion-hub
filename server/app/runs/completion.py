@@ -103,7 +103,12 @@ async def complete_with_run(
         if expires_at is not None and utc(expires_at) <= datetime.now(UTC):
             raise BudgetDenied("run_deadline_exceeded")
         if source_guard is not None:
-            await source_guard()
+            try:
+                await source_guard()
+            except BudgetDenied:
+                raise
+            except Exception as error:
+                raise BudgetDenied("model_source_check_failed") from error
 
     inherited = current_budget()
     if isinstance(inherited, RunModelBudget) and inherited.owner_id != user_id:
