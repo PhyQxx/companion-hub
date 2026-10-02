@@ -1429,7 +1429,39 @@ class ChatService:
         )
 
     def _budgeted_backend(self, pending: PendingTurn) -> CompletionBackend:
-        return BudgetedBackend(self._router_builder(pending.config), self._model_budget(pending))
+        async def validate() -> None:
+            self._check_cancelled(pending)
+            async with self._database.sessions() as session:
+                run = await session.get(TaskRunRecord, pending.turn_id)
+                owner = await session.get(AppUserRecord, pending.user_id)
+                conversation = await session.get(ConversationRecord, pending.conversation_id)
+                if (
+                    run is None
+                    or run.user_id != pending.user_id
+                    or run.conversation_id != pending.conversation_id
+                    or owner is None
+                    or owner.status != "active"
+                    or conversation is None
+                    or conversation.user_id != pending.user_id
+                ):
+                    raise TurnCancelled("generation_source_unavailable")
+                if run.status not in {"accepted", "running"} or run.contract.get(
+                    "work_cancel_requested"
+                ):
+                    raise TurnCancelled("generation_cancelled")
+                if run.deadline is not None and _aware(run.deadline) <= datetime.now(UTC):
+                    raise BudgetDenied("run_deadline_exceeded")
+                await assert_current_claim(session)
+                await validate_references(
+                    session,
+                    pending.context_references,
+                    owner_id=pending.user_id,
+                    privacy_level=str(pending.request.privacy_level),
+                )
+
+        return BudgetedBackend(
+            self._router_builder(pending.config), self._model_budget(pending), validate=validate
+        )
 
     async def _run_agent_loop(
         self,

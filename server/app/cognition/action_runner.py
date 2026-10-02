@@ -1,14 +1,16 @@
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
 from uuid import UUID
 
-from app.home_assistant.models import HomeAssistantError
-from app.home_assistant.tools import HomeStateProvider
 from app.llm import ToolCall
 from app.schemas import PrivacyLevel
 from app.tools import ToolContext, ToolExecutor, ToolResult
 
 from .action_plan import ActionRunResult, ActionStepView, ActionVerificationStatus
+
+if TYPE_CHECKING:
+    from app.home_assistant.tools import HomeStateProvider
 
 
 class ToolActionRunner:
@@ -118,6 +120,8 @@ class ToolActionRunner:
         execution: ToolResult,
         provider: HomeStateProvider,
     ) -> ActionRunResult:
+        from app.home_assistant.models import HomeAssistantError
+
         target = step.tool_arguments.get("target")
         action = step.tool_arguments.get("action")
         if not isinstance(target, str) or not isinstance(action, str):

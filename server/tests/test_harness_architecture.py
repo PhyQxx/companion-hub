@@ -8,6 +8,8 @@ import hashlib
 import importlib
 import importlib.util
 import json
+import subprocess
+import sys
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -31,6 +33,28 @@ from app.wiring.registry import ModuleRegistry, ModuleSpec
 from scripts import check_architecture
 
 ROOT = Path(__file__).resolve().parents[2]
+
+
+@pytest.mark.parametrize(
+    "module",
+    ["app.chat", "app.cognition", "app.home_assistant", "app.perception", "app.output"],
+)
+def test_domain_entry_imports_without_prior_package_initialization(module: str) -> None:
+    # An already-running pytest process hides order-sensitive package cycles.
+    subprocess.run(
+        [
+            sys.executable,
+            "-I",
+            "-c",
+            "import importlib, sys; sys.path.insert(0, sys.argv[1]); "
+            "importlib.import_module(sys.argv[2])",
+            str(ROOT / "server"),
+            module,
+        ],
+        check=True,
+        capture_output=True,
+        timeout=20,
+    )
 
 
 @dataclass(frozen=True)
