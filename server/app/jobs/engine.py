@@ -616,16 +616,24 @@ class JobEngine:
 
     async def release_ready_retries(self, *, resource_class: str) -> int:
         """Release due retries only within the caller's owned resource pool."""
+        criteria = (
+            JobRecord.resource_class == resource_class,
+            JobRecord.status == "retry_wait",
+            JobRecord.available_at <= datetime.now(UTC),
+            JobRecord.cancel_requested_at.is_(None),
+            JobRecord.attempts < JobRecord.max_attempts,
+        )
+        # An empty UPDATE still takes SQLite's writer lock. Idle maintenance
+        # pools must not block source acceptance in unrelated transactions.
+        # Close this read before writing, avoiding read-to-write lock upgrades.
+        async with self._database.sessions() as session:
+            ready = await session.scalar(select(JobRecord.id).where(*criteria).limit(1))
+        if ready is None:
+            return 0
         async with self._database.sessions.begin() as session:
             result = await session.execute(
                 update(JobRecord)
-                .where(
-                    JobRecord.resource_class == resource_class,
-                    JobRecord.status == "retry_wait",
-                    JobRecord.available_at <= datetime.now(UTC),
-                    JobRecord.cancel_requested_at.is_(None),
-                    JobRecord.attempts < JobRecord.max_attempts,
-                )
+                .where(*criteria)
                 .values(status="queued", lease_owner=None, lease_expires_at=None)
             )
             return int(cast(CursorResult[Any], result).rowcount or 0)

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from datetime import UTC, datetime, timedelta, timezone
 from typing import Any
 
@@ -25,6 +26,22 @@ async def database(tmp_db: Database) -> Database:
 @pytest.fixture
 def engine(database: Database) -> JobEngine:
     return JobEngine(database)
+
+
+async def test_idle_retry_pool_does_not_wait_for_sqlite_writer(
+    database: Database, engine: JobEngine
+) -> None:
+    async with database.engine.connect() as writer:
+        await writer.exec_driver_sql("BEGIN IMMEDIATE")
+        try:
+            assert (
+                await asyncio.wait_for(
+                    engine.release_ready_retries(resource_class="idle-fixture"), timeout=1
+                )
+                == 0
+            )
+        finally:
+            await writer.exec_driver_sql("ROLLBACK")
 
 
 class TestJobEngine:
