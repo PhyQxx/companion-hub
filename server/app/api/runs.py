@@ -5,6 +5,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 
 from app.auth import AuthService, ChatPrincipal
 from app.chat import ChatService
+from app.schemas.costs import CostSummaryView
 from app.schemas.runs import RunEventView, RunView
 
 from .auth import ChatSessionGuard
@@ -23,6 +24,13 @@ def create_runs_router(service: ChatService, auth_service: AuthService) -> APIRo
         return await service.runs.list_runs(
             user_id=principal.user_id, before_id=before_id, limit=limit
         )
+
+    @router.get("/costs", response_model=CostSummaryView)
+    async def costs(
+        principal: Annotated[ChatPrincipal, Depends(guard)],
+        days: Annotated[int, Query(ge=1, le=366)] = 30,
+    ) -> CostSummaryView:
+        return await service.runs.cost_summary(user_id=principal.user_id, days=days)
 
     @router.get("/{run_id}", response_model=RunView)
     async def get_run(run_id: UUID, principal: Annotated[ChatPrincipal, Depends(guard)]) -> RunView:

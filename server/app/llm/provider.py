@@ -236,6 +236,7 @@ class LiteLLMProvider:
                 ),
                 estimated_cost=estimated_cost,
                 cost_currency=self.endpoint.cost_currency,
+                provider_request_id=request_id if request_id and len(request_id) <= 200 else None,
             ),
             latency_ms=(perf_counter() - started) * 1_000,
             tool_calls=tool_calls or [],

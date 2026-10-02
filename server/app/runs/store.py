@@ -18,6 +18,7 @@ from app.db import (
     TaskRunRecord,
 )
 from app.ids import uuid7
+from app.schemas.costs import CostSummaryView
 from app.schemas.execution import RunActionOutcome
 from app.schemas.runs import RunBudgetView, RunEventView, RunView
 
@@ -74,6 +75,11 @@ async def append_run_event(
 class RunStore:
     def __init__(self, database: Database) -> None:
         self._database = database
+
+    async def cost_summary(self, *, user_id: UUID, days: int = 30) -> CostSummaryView:
+        from .costs import cost_summary
+
+        return await cost_summary(self._database, user_id=user_id, days=days)
 
     async def cancel_background(self, run_id: UUID, *, user_id: UUID) -> bool:
         async with self._database.sessions.begin() as session:

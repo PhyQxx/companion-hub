@@ -7,6 +7,7 @@ from .adapter import (
     EndpointCapabilities,
 )
 from .common import PrivacyLevel
+from .costs import CostSummaryView
 from .evaluation import FixtureEvaluationRequest, WorkflowFixtureRequest
 from .execution import ExecutionOutcome, ValidationLevel
 from .input import EphemeralSignal, InputEnvelope
@@ -26,6 +27,7 @@ SCHEMA_MODELS = (
     EndpointCapabilities,
     AgentReply,
     RunView,
+    CostSummaryView,
     RunEventView,
     ExecutionOutcome,
     FixtureEvaluationRequest,
@@ -42,6 +44,7 @@ __all__ = [
     "AdapterState",
     "AgentAction",
     "AgentReply",
+    "CostSummaryView",
     "DeliveryPlan",
     "DeliveryReceipt",
     "EndpointCapabilities",

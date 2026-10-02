@@ -5,6 +5,7 @@
     "AdapterHealth": "AdapterHealth.schema.json",
     "AdapterManifest": "AdapterManifest.schema.json",
     "AgentReply": "AgentReply.schema.json",
+    "CostSummaryView": "CostSummaryView.schema.json",
     "DeliveryPlan": "DeliveryPlan.schema.json",
     "DeliveryReceipt": "DeliveryReceipt.schema.json",
     "EndpointCapabilities": "EndpointCapabilities.schema.json",

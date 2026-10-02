@@ -41,6 +41,7 @@
   "memory",
   "memory_source",
   "message",
+  "model_cost",
   "model_reservation",
   "outbox",
   "pending_mutation",

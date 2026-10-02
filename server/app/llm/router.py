@@ -19,6 +19,7 @@ from .contracts import (
     CompletionResult,
     LLMRoute,
     ModelEndpoint,
+    ModelPricing,
     RoutePolicy,
 )
 from .provider import LLMProvider
@@ -400,6 +401,11 @@ class LLMRouter:
                 endpoint=endpoint,
                 tokens=tokens,
                 final=not request.tools or request.tool_choice == "none",
+                pricing=ModelPricing(
+                    input_rate=self._endpoints[endpoint].input_cost_per_million,
+                    output_rate=self._endpoints[endpoint].output_cost_per_million,
+                    currency=self._endpoints[endpoint].cost_currency,
+                ),
             )
         except BudgetDenied:
             raise

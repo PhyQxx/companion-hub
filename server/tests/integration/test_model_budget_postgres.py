@@ -11,7 +11,7 @@ from test_run_budget import make_budget
 
 from app.config.models import RunBudgetConfig
 from app.db import Base, JobRecord, TaskRunRecord, create_database
-from app.harness.budget import BudgetDenied
+from app.harness.budget import BudgetDenied, CallPermit
 from app.ids import uuid7
 from app.jobs import JobEngine
 from app.llm.contracts import ModelUsage
@@ -80,6 +80,39 @@ async def test_postgres_concurrent_budget_admission_and_settlement(
         assert tool_view.budget_summary is not None
         assert tool_view.budget_summary.tool_attempts == 1
         assert tool_view.budget_summary.unsettled_tool_calls == 0
+        from app.llm.contracts import ModelPricing
+        from app.runs.costs import cost_summary
+
+        fee_config = RunBudgetConfig(cost_currency="CNY", max_daily_cost=0.001)
+        fee_budget = await make_budget(database, fee_config)
+        fee_results = await asyncio.gather(
+            *(
+                fee_budget.reserve(
+                    endpoint="fixture",
+                    tokens=700,
+                    final=True,
+                    pricing=ModelPricing(input_rate=1, output_rate=1, currency="CNY"),
+                )
+                for _ in range(16)
+            ),
+            return_exceptions=True,
+        )
+        fee_permits = [value for value in fee_results if isinstance(value, CallPermit)]
+        assert len(fee_permits) == 1
+        await asyncio.gather(
+            *(
+                fee_budget.settle(
+                    fee_permits[0].call_id,
+                    ModelUsage(
+                        input_tokens=20, output_tokens=10, total_tokens=30, usage_known=True
+                    ),
+                )
+                for _ in range(8)
+            )
+        )
+        fee_summary = await cost_summary(database, user_id=fee_budget._user_id)
+        assert fee_summary.currencies[0].charged_micros == "30"
+        assert fee_summary.currencies[0].estimated_calls == 1
         engine = JobEngine(database)
         job = await engine.submit("deleg.test", {}, resource_class="deleg")
         claims = await asyncio.gather(

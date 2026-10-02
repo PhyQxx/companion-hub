@@ -258,6 +258,44 @@ async def test_run_api_authentication_owner_scope_and_event_cursor(tmp_path: Pat
         headers = {"Authorization": f"Bearer {owner.access_token}"}
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
             assert (await client.get("/api/v1/runs")).status_code == 401
+            assert (await client.get("/api/v1/runs/costs")).status_code == 401
+            from datetime import UTC, datetime
+
+            from app.db import ModelCostRecord
+
+            async with database.sessions.begin() as session:
+                session.add(
+                    ModelCostRecord(
+                        call_id=uuid7(),
+                        user_id=owner.principal.user_id,
+                        endpoint="fixture",
+                        currency="CNY",
+                        reserved_micros=100,
+                        charged_micros=100,
+                        state="unknown",
+                        created_at=datetime.now(UTC),
+                    )
+                )
+                session.add(
+                    ModelCostRecord(
+                        call_id=uuid7(),
+                        user_id=other.id,
+                        endpoint="fixture",
+                        currency="USD",
+                        reserved_micros=999,
+                        charged_micros=999,
+                        state="unknown",
+                        created_at=datetime.now(UTC),
+                    )
+                )
+            costs = await client.get("/api/v1/runs/costs", headers=headers)
+            assert costs.status_code == 200
+            assert costs.json()["validation"] == "estimate_not_provider_bill"
+            assert [item["currency"] for item in costs.json()["currencies"]] == ["CNY"]
+            assert costs.json()["currencies"][0]["charged_micros"] == "100"
+            assert (
+                await client.get("/api/v1/runs/costs?days=0", headers=headers)
+            ).status_code == 422
             runs = await client.get("/api/v1/runs", headers=headers)
             assert runs.status_code == 200
             assert [run["id"] for run in runs.json()] == [str(own_turn.assistant_message.turn_id)]

@@ -382,6 +382,14 @@ voice:
     #   # 音色 ID 见「声音管理」音色库；male_0018_a 属 Free 套餐可合成音色。
     #   voice: male_0018_a
 
+# 金额限额默认不设置；启用时端点必须提供同币种的完整输入/输出单价。
+# 仅覆盖已启用运行预算、经 Router 登记的模型调用；按准入的 UTC 日/月计入。
+run_budget:
+  enabled: true
+  cost_currency: null
+  max_daily_cost: null
+  max_monthly_cost: null
+
 observability:
   log_level: INFO
   trace_sample_rate: 1.0

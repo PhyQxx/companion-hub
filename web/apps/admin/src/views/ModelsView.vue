@@ -168,6 +168,7 @@ interface HubConfig {
     video_generation?: string | null;
   };
   voice?: HubVoiceConfig | null;
+  run_budget?: { cost_currency?: string | null; max_daily_cost?: number | null; max_monthly_cost?: number | null };
   tools?: HubToolsConfig;
   observability: { log_level: string; trace_sample_rate: number; retain_days: number };
 }
@@ -327,7 +328,10 @@ interface DraftVoice {
   tts: DraftVoiceTts[];
 }
 
+interface DraftCostLimits { currency: string; daily: number | undefined; monthly: number | undefined }
+
 interface DraftState {
+  cost_limits: DraftCostLimits;
   schema_version: number;
   models: DraftModel[];
   routes: Record<string, DraftRoute>;
@@ -600,6 +604,7 @@ function normalizeTools(tools: HubToolsConfig | undefined | null): HubToolsConfi
 }
 
 const draft = ref<DraftState>({
+  cost_limits: { currency: "", daily: undefined, monthly: undefined },
   schema_version: 1,
   models: [],
   routes: { dialogue: defaultRoute(), utility: defaultRoute(), private: defaultRoute() },
@@ -612,6 +617,7 @@ const draft = ref<DraftState>({
 function hubConfigToDraft(config: HubConfig | undefined | null): DraftState {
   if (!config) {
     return {
+      cost_limits: { currency: "", daily: undefined, monthly: undefined },
       schema_version: 1,
       models: [],
       routes: { dialogue: defaultRoute(), utility: defaultRoute(), private: defaultRoute() },
@@ -698,6 +704,9 @@ function hubConfigToDraft(config: HubConfig | undefined | null): DraftState {
     };
   });
   return {
+    cost_limits: { currency: config.run_budget?.cost_currency ?? "",
+      daily: config.run_budget?.max_daily_cost ?? undefined,
+      monthly: config.run_budget?.max_monthly_cost ?? undefined },
     schema_version: config.schema_version ?? 1,
     models,
     routes,
@@ -804,6 +813,8 @@ function draftToHubConfig(d: DraftState): HubConfig {
       video_generation: d.capability_models.video_generation || null,
     },
     voice: { asr: voiceAsr, tts: voiceTts },
+    run_budget: { cost_currency: d.cost_limits.currency.trim().toUpperCase() || null,
+      max_daily_cost: d.cost_limits.daily ?? null, max_monthly_cost: d.cost_limits.monthly ?? null },
     tools: d.tools,
     observability: d.observability,
   };
@@ -1469,6 +1480,14 @@ onActivated(() => {
       </el-tab-pane>
 
       <el-tab-pane label="模型服务" name="models" class="model-services-pane">
+        <div class="global-card compact-global">
+          <div class="global-head"><div><h2>模型费用限额</h2><p>按用户累计已登记模型调用，以 UTC 日/月计算；留空表示不设金额限额。启用后需要端点填写一致币种和完整价格，未知用量保留预留。估算不等于账单；未启用运行预算的调用不计入此限额。</p></div></div>
+          <div class="form-grid three global-fields">
+            <label class="field"><span>限额币种</span><el-input v-model="draft.cost_limits.currency" placeholder="如 CNY、USD" maxlength="3" /></label>
+            <label class="field"><span>每日上限（留空为不限）</span><el-input-number v-model="draft.cost_limits.daily" :min="0" :max="1000000000" :step="1" controls-position="right" /></label>
+            <label class="field"><span>每月上限（留空为不限）</span><el-input-number v-model="draft.cost_limits.monthly" :min="0" :max="1000000000" :step="10" controls-position="right" /></label>
+          </div>
+        </div>
         <div class="workspace-card">
           <aside class="models-column">
             <div class="column-head">

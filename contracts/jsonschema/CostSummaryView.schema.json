@@ -1,0 +1,95 @@
+{
+  "$defs": {
+    "CostCurrencyView": {
+      "additionalProperties": false,
+      "properties": {
+        "charged_micros": {
+          "pattern": "^\\d+$",
+          "title": "Charged Micros",
+          "type": "string"
+        },
+        "currency": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Currency"
+        },
+        "estimated_calls": {
+          "title": "Estimated Calls",
+          "type": "integer"
+        },
+        "reserved_calls": {
+          "title": "Reserved Calls",
+          "type": "integer"
+        },
+        "unknown_calls": {
+          "title": "Unknown Calls",
+          "type": "integer"
+        },
+        "unpriced_calls": {
+          "title": "Unpriced Calls",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "currency",
+        "charged_micros",
+        "estimated_calls",
+        "reserved_calls",
+        "unknown_calls",
+        "unpriced_calls"
+      ],
+      "title": "CostCurrencyView",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "coverage": {
+      "const": "recorded_budgeted_model_calls",
+      "default": "recorded_budgeted_model_calls",
+      "title": "Coverage",
+      "type": "string"
+    },
+    "currencies": {
+      "items": {
+        "$ref": "#/$defs/CostCurrencyView"
+      },
+      "title": "Currencies",
+      "type": "array"
+    },
+    "period_end": {
+      "format": "date-time",
+      "title": "Period End",
+      "type": "string"
+    },
+    "period_start": {
+      "format": "date-time",
+      "title": "Period Start",
+      "type": "string"
+    },
+    "timezone": {
+      "const": "UTC",
+      "default": "UTC",
+      "title": "Timezone",
+      "type": "string"
+    },
+    "validation": {
+      "const": "estimate_not_provider_bill",
+      "default": "estimate_not_provider_bill",
+      "title": "Validation",
+      "type": "string"
+    }
+  },
+  "required": [
+    "period_start",
+    "period_end"
+  ],
+  "title": "CostSummaryView",
+  "type": "object"
+}

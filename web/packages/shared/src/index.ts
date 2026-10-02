@@ -762,6 +762,16 @@ export interface RunGoal {
   criteria: Array<{ kind: string; source_id: string; status: string; validation_level: string; reason_code: string | null }>;
 }
 
+export interface ModelCostSummary {
+  coverage: "recorded_budgeted_model_calls";
+  validation: "estimate_not_provider_bill";
+  timezone: "UTC";
+  period_start: string;
+  period_end: string;
+  currencies: { currency: string | null; charged_micros: string; estimated_calls: number;
+    reserved_calls: number; unknown_calls: number; unpriced_calls: number }[];
+}
+
 export interface TaskRun {
   goal: RunGoal | null;
   id: string;
@@ -840,6 +850,10 @@ export class ChatApi {
   listRuns(token: string, before?: string) {
     const query = before ? `?before_id=${encodeURIComponent(before)}` : "";
     return this.request<TaskRun[]>(`/api/v1/runs${query}`, { method: "GET" }, token);
+  }
+
+  modelCosts(token: string) {
+    return this.request<ModelCostSummary>("/api/v1/runs/costs", { method: "GET" }, token);
   }
 
   getRun(token: string, id: string) {

@@ -82,9 +82,18 @@ class CompletionRequest(StrictModel):
     tool_choice: Literal["auto", "none"] = "auto"
 
 
+class ModelPricing(StrictModel):
+    input_rate: Annotated[float, Field(ge=0, le=1_000_000_000, allow_inf_nan=False)] | None = None
+    output_rate: Annotated[float, Field(ge=0, le=1_000_000_000, allow_inf_nan=False)] | None = None
+    currency: Annotated[str, Field(pattern=r"^[A-Z]{3}$")] | None = None
+
+
 class ModelUsage(StrictModel):
     # Internal: distinguish absent/partial provider usage from an exact total.
     usage_known: bool | None = Field(default=None, exclude=True)
+    provider_request_id: Annotated[str, Field(max_length=200)] | None = Field(
+        default=None, exclude=True
+    )
     input_tokens: Annotated[int, Field(ge=0)] = 0
     output_tokens: Annotated[int, Field(ge=0)] = 0
     total_tokens: Annotated[int, Field(ge=0)] = 0
@@ -127,8 +136,12 @@ class ModelEndpoint(StrictModel):
     max_retries: Annotated[int, Field(ge=0, le=3)] = 1
     max_tokens: Annotated[int, Field(gt=0, le=131_072)] | None = None
     max_context_tokens: Annotated[int, Field(gt=0)] = 131_072
-    input_cost_per_million: Annotated[float, Field(ge=0, allow_inf_nan=False)] | None = None
-    output_cost_per_million: Annotated[float, Field(ge=0, allow_inf_nan=False)] | None = None
+    input_cost_per_million: (
+        Annotated[float, Field(ge=0, le=1_000_000_000, allow_inf_nan=False)] | None
+    ) = None
+    output_cost_per_million: (
+        Annotated[float, Field(ge=0, le=1_000_000_000, allow_inf_nan=False)] | None
+    ) = None
     cost_currency: Annotated[str, Field(pattern=r"^[A-Z]{3}$")] | None = None
 
 

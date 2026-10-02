@@ -201,7 +201,13 @@ def create_chat_router(service: ChatService, auth_service: AuthService) -> APIRo
         except BudgetDenied as error:
             raise HTTPException(
                 status.HTTP_429_TOO_MANY_REQUESTS
-                if error.reason_code in {"run_budget_exhausted", "user_model_concurrency_exhausted"}
+                if error.reason_code
+                in {
+                    "run_budget_exhausted",
+                    "user_model_concurrency_exhausted",
+                    "daily_cost_budget_exhausted",
+                    "monthly_cost_budget_exhausted",
+                }
                 else status.HTTP_503_SERVICE_UNAVAILABLE,
                 detail={"reason_code": error.reason_code},
             ) from error

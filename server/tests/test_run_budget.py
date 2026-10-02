@@ -21,7 +21,14 @@ from app.db import (
 )
 from app.harness.budget import BudgetDenied, CallPermit, budget_scope, current_budget
 from app.ids import uuid7
-from app.llm.contracts import CompletionRequest, LLMMessage, LLMRoute, ModelUsage, RoutePolicy
+from app.llm.contracts import (
+    CompletionRequest,
+    LLMMessage,
+    LLMRoute,
+    ModelPricing,
+    ModelUsage,
+    RoutePolicy,
+)
 from app.llm.router import LLMRouter
 from app.runs.budget import RunModelBudget, recover_stale_reservations
 
@@ -423,7 +430,9 @@ async def test_admission_failure_never_calls_provider(database: Database) -> Non
     budget = await make_budget(database, RunBudgetConfig())
 
     class FailedAdmission(RunModelBudget):
-        async def reserve(self, *, endpoint: str, tokens: int, final: bool) -> CallPermit:
+        async def reserve(
+            self, *, endpoint: str, tokens: int, final: bool, pricing: ModelPricing | None = None
+        ) -> CallPermit:
             raise RuntimeError("database unavailable")
 
     failed = FailedAdmission(

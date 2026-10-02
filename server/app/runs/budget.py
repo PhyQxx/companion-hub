@@ -16,7 +16,9 @@ from app.db import AppUserRecord, Database, JobRecord, ModelReservationRecord, T
 from app.db.claims import assert_current_claim
 from app.harness.budget import BudgetDenied, CallPermit
 from app.ids import uuid7
-from app.llm.contracts import ModelUsage
+from app.llm.contracts import ModelPricing, ModelUsage
+
+from .costs import recover_cost_reservations, reserve_cost, settle_cost
 
 
 def utc(value: datetime) -> datetime:
@@ -66,7 +68,9 @@ class RunModelBudget:
     def remaining_delivery_seconds(self) -> float:
         return max(0.0, (utc(self._maintenance_deadline) - datetime.now(UTC)).total_seconds())
 
-    async def reserve(self, *, endpoint: str, tokens: int, final: bool) -> CallPermit:
+    async def reserve(
+        self, *, endpoint: str, tokens: int, final: bool, pricing: ModelPricing | None = None
+    ) -> CallPermit:
         if tokens < 1:
             raise ValueError("invalid_budget_reservation")
         now = datetime.now(UTC)
@@ -96,7 +100,7 @@ class RunModelBudget:
                 and row.status in {"accepted", "running"}
             ):
                 limit = max_attempts - 1
-            if row.status not in statuses:
+            if row.status not in statuses or row.contract.get("work_cancel_requested"):
                 raise BudgetDenied("budget_run_inactive")
             await assert_current_claim(session)
             # A no-op owner-row write serializes admission across different runs
@@ -137,6 +141,7 @@ class RunModelBudget:
                     TaskRunRecord.id == self._run_id,
                     TaskRunRecord.user_id == self._user_id,
                     TaskRunRecord.status.in_(statuses),
+                    TaskRunRecord.contract["work_cancel_requested"].as_boolean().is_not(True),
                     TaskRunRecord.llm_attempts < limit,
                     TaskRunRecord.budget_tokens <= max_tokens - tokens,
                 )
@@ -148,8 +153,22 @@ class RunModelBudget:
                 .execution_options(synchronize_session=False)
             )
             if admitted is None:
+                await session.refresh(row)
+                if row.status not in statuses or row.contract.get("work_cancel_requested"):
+                    raise BudgetDenied("budget_run_inactive")
                 raise BudgetDenied("run_budget_exhausted")
             call_id = uuid7()
+            await reserve_cost(
+                session,
+                call_id=call_id,
+                user_id=self._user_id,
+                endpoint=endpoint,
+                tokens=tokens,
+                pricing=pricing,
+                config=self._config,
+                snapshot=RunBudgetConfig.model_validate(row.budget),
+                now=now,
+            )
             session.add(
                 ModelReservationRecord(
                     call_id=call_id,
@@ -177,6 +196,7 @@ class RunModelBudget:
         )
         now = datetime.now(UTC)
         async with self._database.sessions.begin() as session:
+            await settle_cost(session, call_id=call_id, user_id=self._user_id, usage=usage, now=now)
             # Match source deletion/recovery lock order before changing usage.
             run = await session.scalar(
                 select(TaskRunRecord)
@@ -197,7 +217,11 @@ class RunModelBudget:
             if record is None:
                 # Source deletion also deletes budget records; do not recreate them.
                 return
-            if actual == 0:
+            if (
+                usage is None
+                or usage.usage_known is False
+                or (actual == 0 and usage.usage_known is not True)
+            ):
                 await session.execute(
                     update(ModelReservationRecord)
                     .where(
@@ -235,6 +259,7 @@ class RunModelBudget:
 
 async def recover_stale_reservations(database: Database) -> None:
     """Preserve charges after a crash. Never release usage we cannot prove unused."""
+    await recover_cost_reservations(database)
     async with database.sessions.begin() as session:
         await session.execute(
             update(ModelReservationRecord)

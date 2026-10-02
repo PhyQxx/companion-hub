@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { onBeforeUnmount, ref, watch } from "vue";
-import { ChatApi, type TaskRun, type TaskRunEvent } from "@aria/shared";
+import { ChatApi, type TaskRun, type TaskRunEvent, type ModelCostSummary } from "@aria/shared";
 
 const props = defineProps<{ token: string; refreshKey: number }>();
 const api = new ChatApi();
@@ -8,12 +8,15 @@ const opened = ref(false);
 const runs = ref<TaskRun[]>([]);
 const selected = ref<TaskRun | null>(null);
 const events = ref<TaskRunEvent[]>([]);
+const costs = ref<ModelCostSummary | null>(null);
+const costError = ref("");
 const error = ref("");
 const loading = ref(false);
 const cancelling = ref(false);
 const canLoadMore = ref(false);
 let stopped = false;
 let selectionVersion = 0;
+let refreshVersion = 0;
 const stateLabels: Record<string, string> = {
   accepted: "等待处理", running: "正在处理", succeeded: "处理完成", failed: "处理失败", cancelled: "已停止",
 };
@@ -31,16 +34,23 @@ const active = (run: TaskRun) => ["accepted", "running"].includes(run.status) ||
 const time = (value: string) => new Date(value).toLocaleString();
 async function refresh(more = false) {
   if (loading.value || stopped) return;
+  const version = ++refreshVersion;
+  const token = props.token;
   loading.value = true;
   error.value = "";
   try {
     const last = runs.value[runs.value.length - 1];
-    const page = await api.listRuns(props.token, more ? last?.id : undefined);
-    if (stopped) return;
+    const [page, costResult] = await Promise.all([
+      api.listRuns(token, more ? last?.id : undefined),
+      api.modelCosts(token).then(value => ({ value, ok: true as const })).catch(() => ({ ok: false as const })),
+    ]);
+    if (stopped || version !== refreshVersion || token !== props.token) return;
+    costs.value = costResult.ok ? costResult.value : null;
+    costError.value = costResult.ok ? "" : "费用记录暂时无法读取。";
     runs.value = more ? [...runs.value, ...page] : page;
     canLoadMore.value = page.length === 50;
-  } catch { if (!stopped) error.value = "运行记录读取失败，请重试。"; }
-  finally { loading.value = false; }
+  } catch { if (!stopped && version === refreshVersion && token === props.token) error.value = "运行记录读取失败，请重试。"; }
+  finally { if (version === refreshVersion) loading.value = false; }
 }
 async function inspect(run: TaskRun) {
   const version = ++selectionVersion;
@@ -79,6 +89,15 @@ async function cancel() {
   } catch { error.value = "停止请求未完成，请刷新核对当前状态。"; }
   finally { cancelling.value = false; }
 }
+function amount(micros: string) {
+  const value = BigInt(micros);
+  return `${value / 1000000n}.${(value % 1000000n).toString().padStart(6, "0")}`;
+}
+watch(() => props.token, () => {
+  refreshVersion++; selectionVersion++;
+  runs.value = []; costs.value = null; selected.value = null; events.value = [];
+  if (opened.value) void refresh();
+});
 function toggle(event: Event) {
   opened.value = (event.target as HTMLDetailsElement).open;
   if (opened.value) void refresh();
@@ -94,6 +113,16 @@ onBeforeUnmount(() => { stopped = true; selectionVersion++; });
     <summary>运行记录</summary>
     <div class="run-content">
       <p>查看处理进度与核实结果。</p>
+      <section v-if="costs" aria-label="模型费用估算">
+        <p>近 30 个 UTC 日期内已登记的模型费用预留与估算，尚未核对提供方账单；不含未登记调用。</p>
+        <p v-if="!costs.currencies.length">此期间没有可统计的费用记录。</p>
+        <p v-for="item in costs.currencies" :key="item.currency ?? 'unknown'">
+          {{ item.currency ?? '未注明币种，金额不能合并' }}<span v-if="item.currency"> · {{ amount(item.charged_micros) }}</span>；
+          已估算 {{ item.estimated_calls }} 次，预留 {{ item.reserved_calls }} 次，未知结果 {{ item.unknown_calls }} 次。
+          <span v-if="item.unpriced_calls">另有 {{ item.unpriced_calls }} 次未计价，金额不完整。</span>
+        </p>
+      </section>
+      <p v-if="costError" role="alert">{{ costError }}</p>
       <p v-if="error" role="alert">{{ error }}</p>
       <button :disabled="loading" @click="refresh()">{{ loading ? "正在读取…" : "刷新" }}</button>
       <p v-if="!loading && !runs.length">还没有运行记录。</p>

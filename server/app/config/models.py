@@ -872,12 +872,31 @@ class MailAwarenessConfig(StrictModel):
 
 class RunBudgetConfig(StrictModel):
     enabled: bool = True
+    cost_currency: Annotated[str, Field(pattern=r"^[A-Z]{3}$")] | None = None
+    max_daily_cost: Annotated[float, Field(ge=0, le=1_000_000_000, allow_inf_nan=False)] | None = (
+        None
+    )
+    max_monthly_cost: (
+        Annotated[float, Field(ge=0, le=1_000_000_000, allow_inf_nan=False)] | None
+    ) = None
     max_tool_attempts: Annotated[int, Field(ge=1, le=10000)] = 64
     max_llm_attempts: Annotated[int, Field(ge=2, le=100)] = 8
     max_concurrent_llm_calls: Annotated[int, Field(ge=1, le=64)] = 4
     max_tokens: Annotated[int, Field(ge=1024, le=10_000_000)] = 262_144
     interactive_deadline_seconds: Annotated[int, Field(ge=1, le=1800)] = 180
     maintenance_deadline_seconds: Annotated[int, Field(ge=1, le=1800)] = 180
+
+    @model_validator(mode="after")
+    def cost_limit_requires_currency(self) -> RunBudgetConfig:
+        if (
+            self.max_daily_cost is not None or self.max_monthly_cost is not None
+        ) and not self.cost_currency:
+            raise ValueError("cost_limit_requires_currency")
+        if not self.enabled and (
+            self.max_daily_cost is not None or self.max_monthly_cost is not None
+        ):
+            raise ValueError("cost_limit_requires_enabled_budget")
+        return self
 
 
 class HubConfig(StrictModel):

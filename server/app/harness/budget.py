@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from typing import Protocol
 from uuid import UUID
 
-from app.llm.contracts import ModelUsage
+from app.llm.contracts import ModelPricing, ModelUsage
 
 
 class BudgetDenied(RuntimeError):
@@ -25,7 +25,9 @@ class CallPermit:
 
 
 class ModelBudget(Protocol):
-    async def reserve(self, *, endpoint: str, tokens: int, final: bool) -> CallPermit: ...
+    async def reserve(
+        self, *, endpoint: str, tokens: int, final: bool, pricing: ModelPricing | None = None
+    ) -> CallPermit: ...
 
     async def settle(self, call_id: UUID, usage: ModelUsage | None) -> None: ...
 

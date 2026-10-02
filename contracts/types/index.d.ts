@@ -252,6 +252,18 @@ export type SchemaRef = "aria.agent-reply/1";
 export type SchemaVersion1 = 1;
 export type Text = string;
 export type TtsText = string;
+export type Coverage = "recorded_budgeted_model_calls";
+export type ChargedMicros = string;
+export type Currency = string | null;
+export type EstimatedCalls = number;
+export type ReservedCalls = number;
+export type UnknownCalls = number;
+export type UnpricedCalls = number;
+export type Currencies = CostCurrencyView[];
+export type PeriodEnd = string;
+export type PeriodStart = string;
+export type Timezone = "UTC";
+export type Validation = "estimate_not_provider_bill";
 export type AdapterInstanceId = string;
 export type Attempt = number;
 export type DeadlineAt = string;
@@ -791,6 +803,7 @@ export interface AriaContracts {
   AdapterHealth?: AdapterHealth;
   AdapterManifest?: AdapterManifest;
   AgentReply?: AgentReply;
+  CostSummaryView?: CostSummaryView;
   DeliveryPlan?: DeliveryPlan;
   DeliveryReceipt?: DeliveryReceipt;
   EndpointCapabilities?: EndpointCapabilities;
@@ -902,6 +915,30 @@ export interface AgentReply {
 export interface AgentAction {
   type: Type;
   value: Value;
+}
+/**
+ * This interface was referenced by `AriaContracts`'s JSON-Schema
+ * via the `definition` "CostSummaryView".
+ */
+export interface CostSummaryView {
+  coverage?: Coverage;
+  currencies?: Currencies;
+  period_end: PeriodEnd;
+  period_start: PeriodStart;
+  timezone?: Timezone;
+  validation?: Validation;
+}
+/**
+ * This interface was referenced by `AriaContracts`'s JSON-Schema
+ * via the `definition` "CostCurrencyView".
+ */
+export interface CostCurrencyView {
+  charged_micros: ChargedMicros;
+  currency: Currency;
+  estimated_calls: EstimatedCalls;
+  reserved_calls: ReservedCalls;
+  unknown_calls: UnknownCalls;
+  unpriced_calls: UnpricedCalls;
 }
 /**
  * This interface was referenced by `AriaContracts`'s JSON-Schema

@@ -1,3 +1,4 @@
+from .costs import ModelCostRecord
 from .models import (
     ActionPlanRecord,
     ActionResultRecord,
@@ -120,6 +121,7 @@ __all__ = [
     "MemoryRecord",
     "MemorySourceRecord",
     "MessageRecord",
+    "ModelCostRecord",
     "ModelReservationRecord",
     "OutboxRecord",
     "PendingMutationRecord",
