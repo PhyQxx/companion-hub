@@ -14,6 +14,7 @@ from pydantic import Field, JsonValue, ValidationError
 from app.auth import AuthService, ChatPrincipal, InvalidSession
 from app.avatar import AvatarControlPublisher, control_from_agent_reply, with_reply_text
 from app.chat import ChatService, MessageView, PendingTurn, TurnCancelled
+from app.harness.budget import BudgetDenied
 from app.ids import uuid7
 from app.llm import LLMRouteExhausted
 from app.privacy import EgressBlocked
@@ -261,6 +262,8 @@ class ChatWebSocketManager:
                         payload={"reason_code": "generation_cancelled"},
                     ),
                 )
+        except BudgetDenied as error:
+            await self._send_failure(connection, frame, pending, error.reason_code)
         except LLMRouteExhausted as error:
             logger.error(
                 "chat websocket model route failed conversation_id=%s generation_id=%s "

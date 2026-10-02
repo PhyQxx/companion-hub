@@ -432,3 +432,53 @@ def test_chat_connection_caches_location_across_frames() -> None:
     )
     assert second is not first
     assert connection.resolve_location(None) is second
+
+
+def test_chat_budget_failure_reports_reason(tmp_path: Path) -> None:
+    from app.harness.budget import BudgetDenied
+
+    class BudgetBackend(StreamingBackend):
+        async def stream(
+            self, request: CompletionRequest, on_delta: Callable[[str], Awaitable[None]]
+        ) -> CompletionResult:
+            raise BudgetDenied("run_budget_exhausted")
+
+    database = create_database(f"sqlite+aiosqlite:///{tmp_path / 'budget_ws.db'}")
+    path = tmp_path / "hub.yaml"
+    path.write_text(config_yaml())
+    store = DatabaseConfigStore(database, path)
+    auth = AuthService(database)
+    service = ChatService(database, store, router_builder=lambda config: BudgetBackend())
+
+    async def setup() -> tuple[str, str]:
+        async with database.engine.begin() as connection:
+            await connection.run_sync(Base.metadata.create_all)
+        await store.load()
+        owner = await auth.setup(display_name="owner", password="correct horse battery staple")
+        conversation = await service.create_conversation(
+            user_id=owner.principal.user_id, title="budget"
+        )
+        return owner.access_token, str(conversation.id)
+
+    token, conversation_id = asyncio.run(setup())
+    app = FastAPI()
+    router, _ = create_chat_websocket_router(
+        service, auth, turn_coordinator=TurnCoordinator(database, service)
+    )
+    app.include_router(router)
+    with TestClient(app) as client, client.websocket_connect("/ws/chat") as websocket:
+        websocket.send_json({"type": "authenticate", "access_token": token})
+        assert websocket.receive_json()["type"] == "auth.accepted"
+        websocket.send_json(
+            {
+                "type": "message.send",
+                "conversation_id": conversation_id,
+                "text": "hello",
+                "privacy_level": "L1",
+            }
+        )
+        event = websocket.receive_json()
+        while event["type"] != "turn.failed":
+            assert event["type"] != "reply.committed"
+            event = websocket.receive_json()
+        assert event["payload"]["reason_code"] == "run_budget_exhausted"

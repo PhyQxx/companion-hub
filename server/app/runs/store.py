@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db import (
@@ -11,12 +11,13 @@ from app.db import (
     ActionStepRecord,
     Database,
     JobRecord,
+    ModelReservationRecord,
     TaskRunEventRecord,
     TaskRunRecord,
 )
 from app.ids import uuid7
 from app.schemas.execution import RunActionOutcome
-from app.schemas.runs import RunEventView, RunView
+from app.schemas.runs import RunBudgetView, RunEventView, RunView
 
 from .outcomes import action_outcome
 
@@ -76,6 +77,27 @@ class RunStore:
             if row is None:
                 raise LookupError("run not found")
             view = self._view(row)
+            if view.budget_summary is not None:
+                counts = {
+                    state: count
+                    for state, count in (
+                        await session.execute(
+                            select(ModelReservationRecord.state, func.count())
+                            .where(ModelReservationRecord.run_id == run_id)
+                            .group_by(ModelReservationRecord.state)
+                        )
+                    ).all()
+                }
+                view = view.model_copy(
+                    update={
+                        "budget_summary": view.budget_summary.model_copy(
+                            update={
+                                "unsettled_calls": counts.get("reserved", 0),
+                                "unknown_usage_calls": counts.get("unknown", 0),
+                            }
+                        )
+                    }
+                )
             return view.model_copy(
                 update={
                     "action_outcomes": [
@@ -157,6 +179,13 @@ class RunStore:
 
     @staticmethod
     def _view(row: TaskRunRecord) -> RunView:
-        return RunView.model_validate(
-            {name: getattr(row, name) for name in RunView.model_fields if hasattr(row, name)}
-        )
+        data = {name: getattr(row, name) for name in RunView.model_fields if hasattr(row, name)}
+        if row.budget:
+            data["budget_summary"] = RunBudgetView(
+                enabled=bool(row.budget["enabled"]),
+                max_llm_attempts=int(row.budget["max_llm_attempts"]),
+                max_tokens=int(row.budget["max_tokens"]),
+                llm_attempts=row.llm_attempts,
+                charged_tokens=row.budget_tokens,
+            )
+        return RunView.model_validate(data)

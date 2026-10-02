@@ -8,7 +8,7 @@ import re
 from collections.abc import Awaitable, Callable, Coroutine, Iterable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from typing import Any, Protocol
+from typing import Any, Literal, Protocol
 from uuid import UUID
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -32,9 +32,11 @@ from app.db import (
     InteractionTurnRecord,
     JobRecord,
     MessageRecord,
+    ModelReservationRecord,
     TaskRunEventRecord,
     TaskRunRecord,
 )
+from app.harness.budget import BudgetDenied, budget_scope
 from app.harness.context import ContextAssembler, ContextBlocks, ContextReference
 from app.harness.loop import CompletionFrame, LoopOutcome, run_agent_loop
 from app.ids import uuid7
@@ -56,6 +58,7 @@ from app.memory import (
     RetrievalResult,
 )
 from app.persona import PersonaConfig, PersonaStore
+from app.runs.budget import RunModelBudget, recover_stale_reservations
 from app.runs.store import RunStore, append_run_event, transition_run
 from app.schemas import PrivacyLevel
 from app.skills.drafts import SkillDraftAssistant
@@ -90,6 +93,7 @@ from app.tools import (
     weather_tool_definition,
 )
 
+from .budget import BudgetedBackend
 from .capabilities import (
     RuntimeActionCapability,
     RuntimeCapabilityProvider,
@@ -613,7 +617,7 @@ class ChatService:
         await self._transition(pending.turn_id, {"accepted"}, "thinking")
         try:
             await self._validate_context(pending)
-            backend = self._router_builder(pending.config)
+            backend = self._budgeted_backend(pending)
             tool_executions: tuple[ToolExecution, ...] = ()
             consistency_request = pending.request
             transparency_reply = await self._transparency_report(pending)
@@ -775,6 +779,11 @@ class ChatService:
         if self._activity_tracker is not None:
             # SAFE-01：聊天回合刷新最后活动时间
             self._activity_tracker.record(user_id)
+        snapshot = (
+            await self._config_store.refresh()
+            if isinstance(self._config_store, DatabaseConfigStore)
+            else self._config_store.current
+        )
         now = datetime.now(UTC)
         turn_id = uuid7()
         generation_id = uuid7()
@@ -870,6 +879,11 @@ class ChatService:
                         "input_message_id": str(user_record.id),
                         "criterion": "reply_committed",
                     },
+                    budget=snapshot.config.run_budget.model_dump(mode="json"),
+                    deadline=now
+                    + timedelta(seconds=snapshot.config.run_budget.interactive_deadline_seconds)
+                    if snapshot.config.run_budget.enabled
+                    else None,
                     status="accepted",
                     state_version=1,
                     event_seq=0,
@@ -927,11 +941,6 @@ class ChatService:
                 )
             except Exception:
                 logger.warning("passive cognitive cycle failed for turn %s", turn_id, exc_info=True)
-        snapshot = (
-            await self._config_store.refresh()
-            if isinstance(self._config_store, DatabaseConfigStore)
-            else self._config_store.current
-        )
         persona_snapshot = await self._persona_store.refresh() if self._persona_store else None
         persona = persona_snapshot.persona if persona_snapshot else PersonaConfig()
         profile_overrides, profile_references = await self._assistant_profile_overrides(
@@ -1313,7 +1322,7 @@ class ChatService:
 
         try:
             await self._validate_context(pending)
-            backend = self._router_builder(pending.config)
+            backend = self._budgeted_backend(pending)
             consistency_request = pending.request
             tool_executions: tuple[ToolExecution, ...] = ()
             transparency_reply = await self._transparency_report(pending)
@@ -1404,6 +1413,22 @@ class ChatService:
         finally:
             self._cancelled_generations.discard(pending.generation_id)
 
+    def _model_budget(
+        self, pending: PendingTurn, *, phase: Literal["interactive", "maintenance"] = "interactive"
+    ) -> RunModelBudget | None:
+        if not pending.config.run_budget.enabled:
+            return None
+        return RunModelBudget(
+            self._database,
+            run_id=pending.turn_id,
+            user_id=pending.user_id,
+            config=pending.config.run_budget,
+            phase=phase,
+        )
+
+    def _budgeted_backend(self, pending: PendingTurn) -> CompletionBackend:
+        return BudgetedBackend(self._router_builder(pending.config), self._model_budget(pending))
+
     async def _run_agent_loop(
         self,
         pending: PendingTurn,
@@ -1413,19 +1438,53 @@ class ChatService:
         on_tool_event: Callable[[dict[str, object]], Awaitable[None]] | None = None,
     ) -> LoopOutcome[ToolExecution]:
         async def complete(request: CompletionRequest, final: bool) -> CompletionFrame:
-            await self._validate_context(pending)
-            self._check_cancelled(pending)
-            if on_delta is None:
-                return CompletionFrame(await backend.complete(request))
-            if final:
-                return CompletionFrame(await backend.stream(request, on_delta))
-            chunks: list[str] = []
+            try:
+                await self._validate_context(pending)
+                self._check_cancelled(pending)
+                if on_delta is None:
+                    return CompletionFrame(await backend.complete(request))
+                if final:
+                    return CompletionFrame(await backend.stream(request, on_delta))
+                chunks: list[str] = []
 
-            async def buffer(delta: str) -> None:
-                if delta:
-                    chunks.append(delta)
+                async def buffer(delta: str) -> None:
+                    if delta:
+                        chunks.append(delta)
 
-            return CompletionFrame(await backend.stream(request, buffer), tuple(chunks))
+                return CompletionFrame(await backend.stream(request, buffer), tuple(chunks))
+
+            except BudgetDenied as error:
+                if error.reason_code != "run_budget_exhausted" or not request.tools:
+                    raise
+                terminal = request.model_copy(
+                    update={
+                        "tools": [],
+                        "tool_choice": "none",
+                        "messages": [
+                            *request.messages,
+                            LLMMessage(
+                                role="system",
+                                content=(
+                                    "本轮工具调用额度已用完。只根据已有证据给出终答，明确说明未完成的查询或行动；"
+                                    "不得编造新结果，也不得宣称未执行的操作已完成。"
+                                ),
+                            ),
+                        ],
+                    }
+                )
+                frame = await complete(terminal, True)
+                return CompletionFrame(
+                    frame.result.model_copy(
+                        update={
+                            "context_budget": {
+                                **frame.result.context_budget,
+                                "budget_final_answer": 1,
+                            }
+                        }
+                    ),
+                    frame.buffered_chunks,
+                    effective_request=terminal,
+                )
 
         async def execute(calls: list[ToolCall]) -> list[ToolExecution]:
             if on_tool_event is not None:
@@ -1493,6 +1552,12 @@ class ChatService:
         )
 
     def _check_cancelled(self, pending: PendingTurn) -> None:
+        if (
+            pending.config.run_budget.enabled
+            and (datetime.now(UTC) - _aware(pending.user_message.created_at)).total_seconds()
+            >= pending.config.run_budget.interactive_deadline_seconds
+        ):
+            raise BudgetDenied("run_deadline_exceeded")
         if pending.generation_id in self._cancelled_generations:
             raise TurnCancelled("generation_cancelled")
 
@@ -1952,6 +2017,9 @@ class ChatService:
             )
             if run_ids:
                 await session.execute(
+                    delete(ModelReservationRecord).where(ModelReservationRecord.run_id.in_(run_ids))
+                )
+                await session.execute(
                     delete(TaskRunEventRecord).where(TaskRunEventRecord.run_id.in_(run_ids))
                 )
                 await session.execute(
@@ -1997,6 +2065,8 @@ class ChatService:
                     completed_at=now,
                 )
             )
+
+        await recover_stale_reservations(self._database)
 
     def start_postcommit_worker(self) -> None:
         self._postcommit.start()
@@ -2312,6 +2382,8 @@ class ChatService:
                 or user_message.privacy_level != assistant.privacy_level
             ):
                 raise PostcommitSourceGone()
+            run = await session.get(TaskRunRecord, assistant.turn_id)
+            budget_enabled = bool(run and run.budget and run.budget.get("enabled"))
             meta = assistant.decision_meta or {}
             references = tuple(
                 ContextReference(**ref)
@@ -2378,23 +2450,26 @@ class ChatService:
             user_timezone=str(payload.get("user_timezone", "Asia/Shanghai")),
             memory_retrieval=retrieval,
         )
-        backend = self._router_builder(snapshot.config)
-        if kind == "chat.memory":
-            await self._consolidate_memory(
-                pending, assistant_message=assistant_view, backend=backend, strict=True
-            )
-        elif kind == "chat.timeline":
-            await self._index_timeline(pending, assistant_message=assistant_view, strict=True)
-        elif kind == "chat.commitments":
-            await self._extract_commitments(pending, backend=backend, strict=True)
-        elif kind == "chat.skill_draft":
-            await self._harvest_skill_draft(pending, strict=True)
-        elif kind == "chat.skill_revision":
-            await self._harvest_skill_revision(pending, strict=True)
-        elif kind == "chat.summary":
-            await self._update_conversation_summary(pending.conversation_id, strict=True)
-        else:
-            raise ValueError("unknown_postcommit_kind")
+        with budget_scope(
+            self._model_budget(pending, phase="maintenance") if budget_enabled else None
+        ):
+            backend = self._router_builder(snapshot.config)
+            if kind == "chat.memory":
+                await self._consolidate_memory(
+                    pending, assistant_message=assistant_view, backend=backend, strict=True
+                )
+            elif kind == "chat.timeline":
+                await self._index_timeline(pending, assistant_message=assistant_view, strict=True)
+            elif kind == "chat.commitments":
+                await self._extract_commitments(pending, backend=backend, strict=True)
+            elif kind == "chat.skill_draft":
+                await self._harvest_skill_draft(pending, strict=True)
+            elif kind == "chat.skill_revision":
+                await self._harvest_skill_revision(pending, strict=True)
+            elif kind == "chat.summary":
+                await self._update_conversation_summary(pending.conversation_id, strict=True)
+            else:
+                raise ValueError("unknown_postcommit_kind")
 
     async def _update_conversation_summary(
         self, conversation_id: UUID, *, strict: bool = False

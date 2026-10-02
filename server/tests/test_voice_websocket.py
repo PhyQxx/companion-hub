@@ -1364,3 +1364,34 @@ async def test_finalize_streamer_reports_exact_prefix_and_diverged() -> None:
         FakeStreamingRecognizer(final="完全不同", partials=("今天天气",))
     )
     assert match == "diverged"
+
+
+def test_voice_budget_failure_reports_reason_instead_of_losing_task(tmp_path: Path) -> None:
+    from app.harness.budget import BudgetDenied
+
+    class BudgetBackend(StreamingBackend):
+        async def stream(
+            self, request: CompletionRequest, on_delta: Callable[[str], Awaitable[None]]
+        ) -> CompletionResult:
+            raise BudgetDenied("run_budget_exhausted")
+
+    app, token, conversation_id = _build(tmp_path, backend=BudgetBackend())
+    with TestClient(app) as client, client.websocket_connect("/ws/voice") as websocket:
+        websocket.send_json({"type": "authenticate", "access_token": token})
+        websocket.send_json(
+            {
+                "type": "voice.hello",
+                "conversation_id": conversation_id,
+                "privacy_level": "L1",
+                "format": "pcm_s16le",
+                "sample_rate": 16000,
+                "channels": 1,
+            }
+        )
+        _receive_until(websocket, "voice.ready")
+        websocket.send_json({"type": "utterance.begin"})
+        websocket.send_bytes(loud_frames(10))
+        websocket.send_json({"type": "utterance.end"})
+        events, _ = _receive_until(websocket, "turn.failed")
+        assert events[-1]["reason_code"] == "run_budget_exhausted"
+        assert not any(event["type"] == "reply.committed" for event in events)

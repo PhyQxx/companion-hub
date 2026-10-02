@@ -870,6 +870,14 @@ class MailAwarenessConfig(StrictModel):
     proactive_enabled: bool = True
 
 
+class RunBudgetConfig(StrictModel):
+    enabled: bool = True
+    max_llm_attempts: Annotated[int, Field(ge=2, le=100)] = 8
+    max_tokens: Annotated[int, Field(ge=1024, le=10_000_000)] = 262_144
+    interactive_deadline_seconds: Annotated[int, Field(ge=1, le=1800)] = 180
+    maintenance_deadline_seconds: Annotated[int, Field(ge=1, le=1800)] = 180
+
+
 class HubConfig(StrictModel):
     schema_version: Literal[1] = 1
     models: Annotated[dict[str, ModelEndpoint], Field(min_length=1, max_length=64)]
@@ -878,6 +886,7 @@ class HubConfig(StrictModel):
     observability: ObservabilityConfig = Field(default_factory=ObservabilityConfig)
     voice: VoiceConfig = Field(default_factory=VoiceConfig)
     tools: ToolsConfig = Field(default_factory=ToolsConfig)
+    run_budget: RunBudgetConfig = Field(default_factory=RunBudgetConfig)
     embeddings: EmbeddingsConfig = Field(default_factory=EmbeddingsConfig)
     integrations: IntegrationsConfig = Field(default_factory=IntegrationsConfig)
     proactive_output: ProactiveOutputConfig = Field(default_factory=ProactiveOutputConfig)

@@ -1745,6 +1745,64 @@
       "title": "RunActionOutcome",
       "type": "object"
     },
+    "RunBudgetView": {
+      "additionalProperties": false,
+      "properties": {
+        "charged_tokens": {
+          "title": "Charged Tokens",
+          "type": "integer"
+        },
+        "enabled": {
+          "title": "Enabled",
+          "type": "boolean"
+        },
+        "llm_attempts": {
+          "title": "Llm Attempts",
+          "type": "integer"
+        },
+        "max_llm_attempts": {
+          "title": "Max Llm Attempts",
+          "type": "integer"
+        },
+        "max_tokens": {
+          "title": "Max Tokens",
+          "type": "integer"
+        },
+        "unknown_usage_calls": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Unknown Usage Calls"
+        },
+        "unsettled_calls": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Unsettled Calls"
+        }
+      },
+      "required": [
+        "enabled",
+        "max_llm_attempts",
+        "max_tokens",
+        "llm_attempts",
+        "charged_tokens"
+      ],
+      "title": "RunBudgetView",
+      "type": "object"
+    },
     "RunEventView": {
       "additionalProperties": false,
       "properties": {
@@ -1801,6 +1859,17 @@
           },
           "title": "Action Outcomes",
           "type": "array"
+        },
+        "budget_summary": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RunBudgetView"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
         },
         "cancel_epoch": {
           "title": "Cancel Epoch",

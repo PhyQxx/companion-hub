@@ -7,6 +7,7 @@ from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
 from contextlib import asynccontextmanager, suppress
 from dataclasses import dataclass
 
+from app.harness.budget import BudgetDenied, current_budget
 from app.harness.window import ContextWindowExceeded, fit_window
 from app.observability import TraceRecorder
 from app.privacy import EgressBlocked, EgressDestination, EgressGuard
@@ -53,6 +54,18 @@ class LLMRouteExhausted(RuntimeError):
         self.reason_code = reason_code
         self.failures = failures
         super().__init__(reason_code)
+
+
+@dataclass(slots=True)
+class BudgetAttempt:
+    remaining_seconds: float = float("inf")
+    budgeted: bool = False
+    result: CompletionResult | None = None
+    expires_at: float | None = None
+
+    @property
+    def deadline_expired(self) -> bool:
+        return self.expires_at is not None and asyncio.get_running_loop().time() >= self.expires_at
 
 
 class LLMRouter:
@@ -119,17 +132,21 @@ class LLMRouter:
             for attempt in range(1, endpoint.max_retries + 2):
                 timeout_ms = policy.timeout_ms or endpoint.timeout_ms
                 try:
-                    async with self._span(
-                        endpoint_request,
-                        endpoint_name,
-                        attempt,
-                    ):
-                        result = await asyncio.wait_for(
-                            provider.complete(endpoint_request),
-                            timeout=timeout_ms / 1_000,
-                        )
+                    async with self._budget_attempt(
+                        endpoint_request, endpoint_name, fitted.manifest
+                    ) as admission:
+                        async with self._span(endpoint_request, endpoint_name, attempt):
+                            result = await asyncio.wait_for(
+                                provider.complete(endpoint_request),
+                                timeout=min(timeout_ms / 1_000, admission.remaining_seconds),
+                            )
+                            admission.result = result
                         return result.model_copy(update={"context_budget": fitted.manifest})
+                except BudgetDenied:
+                    raise
                 except TimeoutError as error:
+                    if admission.deadline_expired:
+                        raise BudgetDenied("run_deadline_exceeded") from None
                     failures += 1
                     failure_details.append(
                         LLMEndpointFailure(
@@ -266,15 +283,29 @@ class LLMRouter:
                 timeout_ms = policy.timeout_ms or endpoint.timeout_ms
                 first_chunk_ms = policy.stream_first_chunk_timeout_ms or timeout_ms
                 idle_ms = policy.stream_idle_timeout_ms or _DEFAULT_STREAM_IDLE_TIMEOUT_MS
-                watchdog = asyncio.timeout(first_chunk_ms / 1_000)
                 try:
-                    async with self._span(endpoint_request, endpoint_name, attempt), watchdog:
-                        result = await provider.stream(
-                            endpoint_request,
-                            _watched_delta(guarded_delta, watchdog, idle_ms / 1_000),
-                        )
+                    async with self._budget_attempt(
+                        endpoint_request, endpoint_name, fitted.manifest
+                    ) as admission:
+                        watchdog = asyncio.timeout(first_chunk_ms / 1_000)
+                        async with (
+                            self._span(endpoint_request, endpoint_name, attempt),
+                            asyncio.timeout(
+                                admission.remaining_seconds if admission.budgeted else None
+                            ),
+                            watchdog,
+                        ):
+                            result = await provider.stream(
+                                endpoint_request,
+                                _watched_delta(guarded_delta, watchdog, idle_ms / 1_000),
+                            )
+                            admission.result = result
                         return result.model_copy(update={"context_budget": fitted.manifest})
+                except BudgetDenied:
+                    raise
                 except Exception as error:
+                    if isinstance(error, TimeoutError) and admission.deadline_expired:
+                        raise BudgetDenied("run_deadline_exceeded") from None
                     failures += 1
                     failure_details.append(
                         LLMEndpointFailure(
@@ -341,6 +372,50 @@ class LLMRouter:
             "all_model_routes_failed",
             failures=tuple(failure_details),
         )
+
+    @asynccontextmanager
+    async def _budget_attempt(
+        self, request: CompletionRequest, endpoint: str, manifest: dict[str, int | str]
+    ) -> AsyncIterator[BudgetAttempt]:
+        budget = current_budget()
+        admission = BudgetAttempt()
+        if budget is None:
+            yield admission
+            return
+        tokens = sum(
+            int(manifest[key])
+            for key in (
+                "estimated_input_tokens",
+                "output_tokens",
+                "reasoning_tokens",
+                "protocol_reserve_tokens",
+            )
+        )
+        try:
+            permit = await budget.reserve(
+                endpoint=endpoint,
+                tokens=tokens,
+                final=not request.tools or request.tool_choice == "none",
+            )
+        except BudgetDenied:
+            raise
+        except Exception as error:
+            raise BudgetDenied("budget_admission_failed") from error
+        admission.remaining_seconds = permit.remaining_seconds
+        admission.expires_at = asyncio.get_running_loop().time() + permit.remaining_seconds
+        admission.budgeted = True
+        try:
+            yield admission
+        finally:
+            try:
+                await budget.settle(
+                    permit.call_id, admission.result.usage if admission.result else None
+                )
+            except BudgetDenied:
+                raise
+            except Exception as error:
+                # Never retry a provider merely because usage persistence failed.
+                raise BudgetDenied("budget_settlement_failed") from error
 
     def _log_endpoint_failure(
         self,

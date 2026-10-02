@@ -449,6 +449,19 @@ const visibleConversations = computed(() =>
   showArchivedConversations.value ? archivedConversations.value : conversations.value,
 );
 
+function generationFailureText(reason: unknown, prefix = "生成失败"): string {
+  const code = String(reason ?? "unknown");
+  const messages: Record<string, string> = {
+    run_budget_exhausted: "这轮回复已达到处理上限，可以缩小问题范围继续。",
+    run_deadline_exceeded: "这轮回复处理超时，已停止生成。",
+    budget_admission_failed: "暂时无法确认处理额度，这轮回复已停止。",
+    budget_settlement_failed: "暂时无法确认处理额度，这轮回复已停止。",
+    budget_run_inactive: "这轮回复已结束，没有继续处理。",
+    budget_snapshot_missing: "这轮回复暂时无法继续，请重新发起对话。",
+  };
+  return messages[code] ?? `${prefix}：${code}`;
+}
+
 function setStatus(text: string, error = false) {
   statusText.value = text;
   statusError.value = error;
@@ -703,7 +716,7 @@ function handleVoiceEvent(event: VoiceControlEvent) {
       playback.interrupt();
       voiceSentence = null;
       voiceViseme.value = 0;
-      voiceStatus.value = `语音生成失败：${event.reason_code ?? "unknown"}`;
+      voiceStatus.value = generationFailureText(event.reason_code, "语音生成失败");
       // 文字播报路径失败且没有回显时，回收占位消息并恢复到输入框。
       if (activeId.value) {
         const revoked = revokePendingUserMessages(activeId.value);
@@ -1397,9 +1410,9 @@ function handleEvent(event: SocketEvent) {
       const revoked = revokePendingUserMessages(conversationId);
       if (revoked && conversationId === activeId.value && !draft.value) {
         draft.value = revoked;
-        setStatus(`生成失败：${String(event.payload.reason_code ?? "")}；消息已恢复到输入框`, true);
+        setStatus(`${generationFailureText(event.payload.reason_code)}；消息已恢复到输入框`, true);
       } else {
-        setStatus(`生成失败：${String(event.payload.reason_code ?? "")}`, true);
+        setStatus(generationFailureText(event.payload.reason_code), true);
       }
     } else if (event.type === "turn.cancelled") {
       streaming.value = null;

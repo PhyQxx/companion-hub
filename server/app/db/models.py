@@ -2121,6 +2121,13 @@ class TaskRunRecord(Base):
     privacy_level: Mapped[str] = mapped_column(String(2), nullable=False)
     config_version: Mapped[int | None] = mapped_column(Integer)
     persona_version: Mapped[int | None] = mapped_column(Integer)
+    budget: Mapped[dict[str, Any] | None] = mapped_column(JSON)
+    llm_attempts: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default="0"
+    )
+    budget_tokens: Mapped[int] = mapped_column(
+        BigInteger, nullable=False, default=0, server_default="0"
+    )
     deadline: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
@@ -2139,3 +2146,31 @@ class TaskRunEventRecord(Base):
     payload: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False, default=dict)
     privacy_level: Mapped[str] = mapped_column(String(2), nullable=False)
     occurred_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class ModelReservationRecord(Base):
+    __tablename__ = "model_reservation"
+    __table_args__ = (
+        CheckConstraint(
+            "state IN ('reserved','settled','unknown')", name="ck_model_reservation_state"
+        ),
+        CheckConstraint(
+            "reserved_tokens > 0 AND charged_tokens >= 0", name="ck_model_reservation_tokens"
+        ),
+        CheckConstraint(
+            "phase IN ('interactive','maintenance')", name="ck_model_reservation_phase"
+        ),
+        Index("ix_model_reservation_run_created", "run_id", "created_at"),
+    )
+    call_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True)
+    run_id: Mapped[UUID] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("task_run.id", ondelete="CASCADE"), nullable=False
+    )
+    phase: Mapped[str] = mapped_column(String(16), nullable=False)
+    endpoint: Mapped[str] = mapped_column(String(160), nullable=False)
+    state: Mapped[str] = mapped_column(String(16), nullable=False)
+    reserved_tokens: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    charged_tokens: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    actual_tokens: Mapped[int | None] = mapped_column(BigInteger)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    settled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

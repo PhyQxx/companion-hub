@@ -525,6 +525,13 @@ export type Seq = number;
 export type PlanId = string;
 export type StepId = string;
 export type ActionOutcomes = RunActionOutcome[];
+export type ChargedTokens = number;
+export type Enabled = boolean;
+export type LlmAttempts = number;
+export type MaxLlmAttempts = number;
+export type MaxTokens = number;
+export type UnknownUsageCalls = number | null;
+export type UnsettledCalls = number | null;
 export type CancelEpoch = number;
 export type ConfigVersion = number | null;
 export type ConversationId2 = string | null;
@@ -1006,6 +1013,7 @@ export interface Payload {
  */
 export interface RunView {
   action_outcomes?: ActionOutcomes;
+  budget_summary?: RunBudgetView | null;
   cancel_epoch: CancelEpoch;
   config_version: ConfigVersion;
   conversation_id: ConversationId2;
@@ -1027,4 +1035,17 @@ export interface RunActionOutcome {
   outcome: ExecutionOutcome;
   plan_id: PlanId;
   step_id: StepId;
+}
+/**
+ * This interface was referenced by `AriaContracts`'s JSON-Schema
+ * via the `definition` "RunBudgetView".
+ */
+export interface RunBudgetView {
+  charged_tokens: ChargedTokens;
+  enabled: Enabled;
+  llm_attempts: LlmAttempts;
+  max_llm_attempts: MaxLlmAttempts;
+  max_tokens: MaxTokens;
+  unknown_usage_calls?: UnknownUsageCalls;
+  unsettled_calls?: UnsettledCalls;
 }

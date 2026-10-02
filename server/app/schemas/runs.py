@@ -7,7 +7,18 @@ from .common import StrictModel
 from .execution import RunActionOutcome
 
 
+class RunBudgetView(StrictModel):
+    enabled: bool
+    max_llm_attempts: int
+    max_tokens: int
+    llm_attempts: int
+    charged_tokens: int
+    unsettled_calls: int | None = None
+    unknown_usage_calls: int | None = None
+
+
 class RunView(StrictModel):
+    budget_summary: RunBudgetView | None = None
     action_outcomes: list[RunActionOutcome] = Field(default_factory=list)
     job_ids: list[UUID] = Field(default_factory=list)
     plan_ids: list[UUID] = Field(default_factory=list)

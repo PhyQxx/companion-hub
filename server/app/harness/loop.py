@@ -19,6 +19,7 @@ Execution = TypeVar("Execution")
 class CompletionFrame:
     result: CompletionResult
     buffered_chunks: tuple[str, ...] = ()
+    effective_request: CompletionRequest | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -49,6 +50,7 @@ async def run_agent_loop(
     while True:
         check_cancelled()
         frame = await complete(request, not request.tools or rounds_left == 0)
+        request = frame.effective_request or request
         result = normalize(request, frame.result)
         check_cancelled()
         if not request.tools or request.tool_choice == "none" or rounds_left == 0:

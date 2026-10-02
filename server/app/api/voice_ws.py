@@ -26,6 +26,7 @@ from pydantic import JsonValue, ValidationError
 from app.auth import AuthService, ChatPrincipal, InvalidSession
 from app.avatar import AvatarControlPublisher, control_from_agent_reply, with_reply_text
 from app.chat import ChatService, PendingTurn, TurnCancelled
+from app.harness.budget import BudgetDenied
 from app.ids import uuid7
 from app.llm import LLMRoute, LLMRouteExhausted
 from app.privacy import EgressBlocked
@@ -1274,6 +1275,10 @@ class VoiceWebSocketManager:
                         "turn.cancelled",
                         {"generation_id": str(pending.generation_id)},
                     )
+        except BudgetDenied as error:
+            if pending is not None and self._turns is not None:
+                await self._turns.transition(pending.turn_id, 2, "failed")
+            await self._send_failure(session, pending, error.reason_code)
         except LLMRouteExhausted as error:
             if pending is not None and self._turns is not None:
                 await self._turns.transition(pending.turn_id, 2, "failed")

@@ -8,6 +8,7 @@ from pydantic import Field
 
 from app.auth import AuthService, ChatPrincipal
 from app.chat import ChatService, ChatTurn, ConversationView, MessageView
+from app.harness.budget import BudgetDenied
 from app.llm import LLMRouteExhausted
 from app.privacy import EgressBlocked
 from app.schemas import PrivacyLevel
@@ -197,6 +198,13 @@ def create_chat_router(service: ChatService, auth_service: AuthService) -> APIRo
             raise HTTPException(status.HTTP_404_NOT_FOUND, detail=str(error)) from error
         except ValueError as error:
             raise HTTPException(status.HTTP_409_CONFLICT, detail=str(error)) from error
+        except BudgetDenied as error:
+            raise HTTPException(
+                status.HTTP_429_TOO_MANY_REQUESTS
+                if error.reason_code == "run_budget_exhausted"
+                else status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail={"reason_code": error.reason_code},
+            ) from error
         except LLMRouteExhausted as error:
             logger.error(
                 "chat model route failed conversation_id=%s user_id=%s reason=%s failures=[%s]",

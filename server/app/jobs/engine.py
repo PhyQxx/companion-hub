@@ -357,6 +357,7 @@ class JobEngine:
         *,
         error_code: str,
         error_detail: dict[str, Any] | None = None,
+        retryable: bool = True,
     ) -> None:
         now = datetime.now(UTC)
         async with self._database.sessions.begin() as session:
@@ -372,7 +373,7 @@ class JobEngine:
 
             if job.attempts != step.attempt or job.status not in {"running", "admitted"}:
                 return
-            if job.attempts >= job.max_attempts:
+            if not retryable or job.attempts >= job.max_attempts:
                 job.status = "failed"
                 job.error_code = error_code
                 job.error_detail_safe = error_detail

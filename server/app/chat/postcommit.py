@@ -13,6 +13,7 @@ from uuid import UUID
 from sqlalchemy import update
 
 from app.db import Database, JobRecord
+from app.harness.budget import BudgetDenied
 from app.ids import uuid7
 from app.jobs import JobEngine
 
@@ -103,12 +104,18 @@ class PostcommitWorker:
                         job.id, worker_id=self._worker_id, claim_version=job.attempts
                     )
                     await self.engine.confirm_cancelled(job.id, self._worker_id)
-                except Exception:
+                except Exception as error:
                     logger.warning("postcommit failed job=%s kind=%s", job.id, job.kind)
                     if await self.engine.cancel_requested(job.id):
                         await self.engine.confirm_cancelled(job.id, self._worker_id)
                     else:
-                        await self.engine.fail_step(step_id, error_code="postcommit_failed")
+                        await self.engine.fail_step(
+                            step_id,
+                            error_code=error.reason_code
+                            if isinstance(error, BudgetDenied)
+                            else "postcommit_failed",
+                            retryable=not isinstance(error, BudgetDenied),
+                        )
                 finally:
                     heartbeat.cancel()
                     with contextlib.suppress(asyncio.CancelledError):

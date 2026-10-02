@@ -209,7 +209,16 @@ class LiteLLMProvider:
             usage=ModelUsage(
                 input_tokens=input_tokens,
                 output_tokens=output_tokens,
-                total_tokens=input_tokens + output_tokens,
+                total_tokens=max(
+                    int(getattr(usage, "total_tokens", 0) or 0), input_tokens + output_tokens
+                ),
+                usage_known=(
+                    getattr(usage, "total_tokens", None) is not None
+                    or (
+                        getattr(usage, "prompt_tokens", None) is not None
+                        and getattr(usage, "completion_tokens", None) is not None
+                    )
+                ),
                 estimated_cost=estimated_cost,
             ),
             latency_ms=(perf_counter() - started) * 1_000,

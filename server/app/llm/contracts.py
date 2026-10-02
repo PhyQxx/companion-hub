@@ -83,6 +83,8 @@ class CompletionRequest(StrictModel):
 
 
 class ModelUsage(StrictModel):
+    # Internal: distinguish absent/partial provider usage from an exact total.
+    usage_known: bool | None = Field(default=None, exclude=True)
     input_tokens: Annotated[int, Field(ge=0)] = 0
     output_tokens: Annotated[int, Field(ge=0)] = 0
     total_tokens: Annotated[int, Field(ge=0)] = 0
