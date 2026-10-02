@@ -1,27 +1,21 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
+from typing import TYPE_CHECKING
 
-from sqlalchemy import func, select
-
-from app.context.repository import attach_memory_lineage, memory_reference, timeline_reference
-from app.db import (
-    AppUserRecord,
-    CognitiveDecisionRecord,
-    CognitiveFeedbackRecord,
-    ConversationRecord,
-    Database,
-    DeviceClientRecord,
-    MessageRecord,
-)
+from app.context.repository import memory_reference, timeline_reference
 from app.harness.context import ContextReference
 from app.memory import MemoryRetriever
 from app.schemas import PrivacyLevel
 from app.schemas.common import persistent_privacy_levels
 from app.timeline import TimelineStore
 
-from .models import FeedbackKind, SemanticEvent, WorldState
+from .models import SemanticEvent, WorldState
 from .store import CognitiveStore
+from .world_facts import WorldFactsRepository
+
+if TYPE_CHECKING:
+    from app.db import Database
 
 
 class WorldStateBuilder:
@@ -32,88 +26,25 @@ class WorldStateBuilder:
         *,
         memory_retriever: MemoryRetriever | None = None,
         timeline_store: TimelineStore | None = None,
+        repository: WorldFactsRepository | None = None,
     ) -> None:
-        self._database = database
+        if repository is None:
+            from .world_sql import SqlWorldFactsRepository
+
+            repository = SqlWorldFactsRepository(database)
+        self._repository = repository
         self._store = store
         self._memory_retriever = memory_retriever
         self._timeline_store = timeline_store
 
     async def build(self, event: SemanticEvent, *, now: datetime | None = None) -> WorldState:
         moment = now or datetime.now(UTC)
-        since = moment - timedelta(hours=4)
-        online_since = moment - timedelta(seconds=90)
         visible_levels = persistent_privacy_levels(event.privacy_level)
-        async with self._database.sessions() as session:
-            timezone = await session.scalar(
-                select(AppUserRecord.timezone).where(AppUserRecord.id == event.user_id)
-            )
-            last_interaction = await session.scalar(
-                select(func.max(MessageRecord.created_at))
-                .join(ConversationRecord, ConversationRecord.id == MessageRecord.conversation_id)
-                .where(
-                    ConversationRecord.user_id == event.user_id,
-                    MessageRecord.privacy_level.in_(visible_levels),
-                )
-            )
-            devices = list(
-                await session.scalars(
-                    select(DeviceClientRecord).where(
-                        DeviceClientRecord.owner_user_id == event.user_id,
-                        DeviceClientRecord.revoked_at.is_(None),
-                        DeviceClientRecord.last_seen_at >= online_since,
-                    )
-                )
-            )
-            recent_count = int(
-                await session.scalar(
-                    select(func.count(CognitiveDecisionRecord.id)).where(
-                        CognitiveDecisionRecord.user_id == event.user_id,
-                        CognitiveDecisionRecord.created_at >= moment - timedelta(days=1),
-                        CognitiveDecisionRecord.decision.in_(
-                            ["inform", "ask", "suggest", "escalate"]
-                        ),
-                    )
-                )
-                or 0
-            )
-            # 重复打扰惩罚只统计真正浮出水面的决策（record 及以上）；
-            # 高频事件源（如屏幕感知）的 below-threshold 静默判定不应累积惩罚，
-            # 否则活跃使用几分钟内通道就被结构性压死。同内容去重由上游
-            # dedupe_key 与感知管线窗口负责。
-            same_count = int(
-                await session.scalar(
-                    select(func.count(CognitiveDecisionRecord.id)).where(
-                        CognitiveDecisionRecord.user_id == event.user_id,
-                        CognitiveDecisionRecord.trigger_kind == event.kind,
-                        CognitiveDecisionRecord.decision != "ignore",
-                        CognitiveDecisionRecord.created_at >= since,
-                    )
-                )
-                or 0
-            )
-            ignored_count = int(
-                await session.scalar(
-                    select(func.count(CognitiveFeedbackRecord.id))
-                    .join(
-                        CognitiveDecisionRecord,
-                        CognitiveDecisionRecord.id == CognitiveFeedbackRecord.decision_id,
-                    )
-                    .where(
-                        CognitiveFeedbackRecord.user_id == event.user_id,
-                        CognitiveDecisionRecord.trigger_kind == event.kind,
-                        CognitiveFeedbackRecord.kind.in_(
-                            [FeedbackKind.IGNORED.value, FeedbackKind.FORBIDDEN.value]
-                        ),
-                    )
-                )
-                or 0
-            )
-        capabilities = sorted(
-            {
-                capability
-                for device in devices
-                for capability in set(device.capabilities) & set(device.granted_capabilities)
-            }
+        facts = await self._repository.read(
+            user_id=event.user_id,
+            trigger_kind=event.kind,
+            privacy_level=event.privacy_level,
+            now=moment,
         )
         references: tuple[ContextReference, ...] = ()
         memory_ids: list[str] = []
@@ -127,10 +58,9 @@ class WorldStateBuilder:
                 )
                 selected = memory_result.hits[:4]
                 memory_references = tuple(memory_reference(hit, included=True) for hit in selected)
-                async with self._database.sessions() as session:
-                    memory_references = await attach_memory_lineage(
-                        session, memory_references, owner_id=event.user_id
-                    )
+                memory_references = await self._repository.attach_memory_lineage(
+                    memory_references, user_id=event.user_id
+                )
                 references += memory_references
                 memory_ids = [str(hit.memory.id) for hit in selected]
             except Exception:
@@ -150,17 +80,17 @@ class WorldStateBuilder:
                 timeline_ids = []
         return WorldState(
             built_at=moment,
-            timezone=timezone or "Asia/Shanghai",
-            last_interaction_at=last_interaction,
-            active_capabilities=capabilities,
+            timezone=facts.timezone or "Asia/Shanghai",
+            last_interaction_at=facts.last_interaction_at,
+            active_capabilities=list(facts.active_capabilities),
             active_goals=await self._store.active_goals(
                 event.user_id, now=moment, max_privacy_level=event.privacy_level
             ),
             context_references=references,
             memory_evidence_ids=memory_ids,
             timeline_evidence_ids=timeline_ids,
-            recent_proactive_count=recent_count,
-            same_trigger_recent_count=same_count,
-            ignored_same_trigger_count=ignored_count,
+            recent_proactive_count=facts.recent_proactive_count,
+            same_trigger_recent_count=facts.same_trigger_recent_count,
+            ignored_same_trigger_count=facts.ignored_same_trigger_count,
             dnd=bool(event.attributes.get("dnd", False)),
         )

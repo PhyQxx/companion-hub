@@ -51,6 +51,7 @@ from app.cognition import (
     WorldStateBuilder,
     build_builtin_action_registry,
 )
+from app.cognition.world_sql import SqlWorldFactsRepository
 from app.commute import CommuteService
 from app.config import ConfigStore, ConfigWatcher, DatabaseConfigStore
 from app.config.models import RunBudgetConfig
@@ -360,6 +361,7 @@ def assemble_domain(
                 cognitive_store,
                 memory_retriever=MemoryRetriever(memory_store) if memory_store else None,
                 timeline_store=timeline_store,
+                repository=SqlWorldFactsRepository(runtime_database),
             ),
             AttentionEngine(),
             (

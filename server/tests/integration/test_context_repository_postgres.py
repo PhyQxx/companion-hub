@@ -9,6 +9,9 @@ from sqlalchemy.engine import make_url
 from test_context_repository import (
     test_memory_ancestry_checks_source_and_unreplayed_deletions as check_ancestry,
 )
+from test_world_facts_repository import (
+    test_feedback_cannot_link_foreign_decision_into_owned_world as check_world_facts,
+)
 
 from app.db import Base, create_database
 from app.ids import uuid7
@@ -44,6 +47,7 @@ async def test_postgres_context_ancestry(change: str) -> None:
                 f"ALTER TABLE {schema}.memory ADD COLUMN embedding_vec vector(256)"
             )
         await check_ancestry(database, change)
+        await check_world_facts(database)
     finally:
         if event.contains(database.engine.sync_engine, "checkout", set_search_path):
             event.remove(database.engine.sync_engine, "checkout", set_search_path)

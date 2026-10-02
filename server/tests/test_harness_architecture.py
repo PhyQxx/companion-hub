@@ -391,6 +391,29 @@ def test_delivery_core_and_contracts_do_not_use_domain_orm_rows() -> None:
     )
 
 
+def test_world_assembly_and_fact_contract_do_not_embed_database_queries() -> None:
+    cognition = ROOT / "server" / "app" / "cognition"
+    core = ast.parse((cognition / "world.py").read_text())
+    forbidden = {
+        "select",
+        "func",
+        "AppUserRecord",
+        "ConversationRecord",
+        "MessageRecord",
+        "DeviceClientRecord",
+        "CognitiveDecisionRecord",
+        "CognitiveFeedbackRecord",
+    }
+    assert not {node.id for node in ast.walk(core) if isinstance(node, ast.Name)} & forbidden
+    contract = ast.parse((cognition / "world_facts.py").read_text())
+    assert not any(
+        isinstance(node, ast.ImportFrom)
+        and node.module
+        and node.module.startswith(("app.db", "sqlalchemy", "app.config", "app.llm"))
+        for node in ast.walk(contract)
+    )
+
+
 def test_domain_mapping_exports_keep_one_class_and_table_identity() -> None:
     import app.db as public
     import app.db.models as legacy
