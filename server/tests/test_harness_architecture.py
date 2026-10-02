@@ -350,6 +350,34 @@ async def test_optional_services_degrade_and_focus_is_owned_by_lifecycle() -> No
     assert calls == ["optional.start", "optional.stop", "focus.start", "focus.stop"]
 
 
+async def test_plan_reports_stop_before_conversation_drains() -> None:
+    from app.chat import ChatService
+
+    calls: list[str] = []
+
+    class Conversation:
+        async def recover_incomplete_turns(self) -> None:
+            calls.append("conversation.start")
+
+        async def drain_background_work(self) -> None:
+            calls.append("conversation.stop")
+
+    class Reports:
+        def start(self) -> None:
+            calls.append("reports.start")
+
+        async def stop(self) -> None:
+            calls.append("reports.stop")
+
+    app = FastAPI()
+    deps = LifespanDeps(
+        runtime_chat_service=cast(ChatService, Conversation()), plan_completion_reporter=Reports()
+    )
+    async with build_lifespan(deps)(app):
+        assert app.state.module_registry.states["plan-completion-reports"] == "ready"
+    assert calls == ["conversation.start", "reports.start", "reports.stop", "conversation.stop"]
+
+
 def test_delivery_core_and_contracts_do_not_use_domain_orm_rows() -> None:
     core = ast.parse((ROOT / "server" / "app" / "runs" / "delivery.py").read_text())
     forbidden = {"CognitiveGoalRecord", "TaskItemRecord", "DailyBriefRecord", "DailyReviewRecord"}

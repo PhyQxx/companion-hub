@@ -253,8 +253,9 @@ async def test_completion_reporter_delivers_after_plan_completes(
     assert distiller_calls == [plan.id]
     assert len(delivered) == 1
     text, kwargs = delivered[0]
-    assert "关灯流程" in text
-    assert "全部成功" in text
+    assert "关灯流程" not in text
+    assert "计划详情" in text
+    assert "全部成功" not in text
     assert kwargs["target_user_id"] == user_id
     assert kwargs["rule_id"] == "plan.completed"
 

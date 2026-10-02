@@ -331,7 +331,16 @@ def assemble_domain(
     # BTL-03（docs/09 §1）：对话内提议注册表动作（A1/A2 转计划确认）+
     # 计划完成主动汇报（续跑闭环）。
     plan_completion_reporter = (
-        PlanCompletionReporter(action_plan_service) if action_plan_service is not None else None
+        PlanCompletionReporter(
+            action_plan_service,
+            budget_loader=lambda: (
+                runtime_config.current.config.run_budget
+                if runtime_config is not None
+                else RunBudgetConfig()
+            ),
+        )
+        if action_plan_service is not None
+        else None
     )
     if action_plan_service is not None and plan_completion_reporter is not None:
         action_plan_service.add_completion_callback(plan_completion_reporter.on_plan_completed)

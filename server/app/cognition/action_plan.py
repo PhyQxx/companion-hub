@@ -170,6 +170,10 @@ class ActionPlanService:
         self._completion_callbacks: list[PlanCompletionCallback] = []
         self._completion_enqueuers: list[PlanCompletionEnqueuer] = []
 
+    @property
+    def database(self) -> Database:
+        return self._database
+
     def set_tool_budget_builder(
         self, builder: Callable[[UUID, UUID, datetime], Awaitable[ToolBudget | None]]
     ) -> None:

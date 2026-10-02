@@ -22,9 +22,12 @@ class DeliverySourceSnapshot:
     privacy_level: str
     generation: int | None = None
     goal_claim: GoalDeliveryClaim | None = None
+    source_parent_id: UUID | None = None
 
     def contract_fields(self) -> dict[str, object]:
         fields: dict[str, object] = {}
+        if self.source_parent_id is not None:
+            fields["source_parent_run_id"] = str(self.source_parent_id)
         if self.generation is not None:
             fields["source_generation"] = self.generation
         if self.goal_claim is not None:

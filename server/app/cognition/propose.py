@@ -11,22 +11,28 @@
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import difflib
+import hashlib
 import logging
 from collections.abc import Awaitable, Callable
 from time import perf_counter
 from typing import Annotated, Any, cast
-from uuid import UUID
+from uuid import NAMESPACE_URL, UUID, uuid5
 
 from pydantic import BaseModel, ConfigDict, Field, JsonValue
 
+from app.config.models import RunBudgetConfig
+from app.db import TaskRunRecord
+from app.harness.budget import budget_scope, tool_budget_scope
 from app.llm import ToolDefinition
+from app.runs.budget import RunModelBudget
+from app.runs.delivery import deliver_once, recover_expired_deliveries
 from app.schemas.common import PrivacyLevel
 from app.tools.contracts import ToolContext, ToolResult
 
 from .action_plan import ActionPlanService, ActionPlanView
 from .action_registry import ActionRegistry, ActionRisk
+from .plan_delivery import PlanCompletionSource, completion_text
 
 logger = logging.getLogger("app.cognition.propose")
 
@@ -190,16 +196,32 @@ class PlanCompletionReporter:
         plan_service: ActionPlanService,
         *,
         deliver: ProactiveDeliver | None = None,
+        budget_loader: Callable[[], RunBudgetConfig] | None = None,
     ) -> None:
         self._plan_service = plan_service
         self._deliver = deliver
         self._background: set[asyncio.Task[None]] = set()
+        self._budget_loader = budget_loader or RunBudgetConfig
+        self._stopped = False
+
+    def start(self) -> None:
+        self._stopped = False
+
+    async def stop(self) -> None:
+        self._stopped = True
+        tasks = tuple(self._background)
+        for task in tasks:
+            task.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
 
     def set_deliver(self, deliver: ProactiveDeliver) -> None:
         """main 装配后期注入主动汇报通道。"""
         self._deliver = deliver
 
     def on_plan_completed(self, plan_id: UUID, user_id: UUID) -> None:
+        if self._stopped:
+            return
         task = asyncio.create_task(
             self._report(plan_id, user_id), name=f"aria-plan-report-{plan_id}"
         )
@@ -212,23 +234,80 @@ class PlanCompletionReporter:
             await asyncio.gather(*self._background)
 
     async def _report(self, plan_id: UUID, user_id: UUID) -> None:
-        if self._deliver is None:
+        if self._deliver is None or self._stopped:
             return
         try:
             view = await self._plan_service.get_plan(user_id=user_id, plan_id=plan_id)
             if view is None or view.status != "completed":
                 return
-            title = view.title or "未命名计划"
-            steps = "、".join(step.action_id for step in view.steps[:MAX_STEPS])
-            text = f"计划「{title}」已执行完成（{len(view.steps)} 步全部成功）：{steps}。"
-            with contextlib.suppress(Exception):
-                await self._deliver(
+            database = self._plan_service.database
+            await recover_expired_deliveries(database)
+            async with database.sessions() as session:
+                from app.db import ActionPlanRecord
+
+                plan = await session.get(ActionPlanRecord, plan_id)
+                if plan is None or plan.user_id != user_id:
+                    return
+                text = completion_text(view, include_details=plan.task_run_id is not None)
+                parent = (
+                    await session.get(TaskRunRecord, plan.task_run_id) if plan.task_run_id else None
+                )
+                input_id = parent.contract.get("input_message_id") if parent else None
+                source = PlanCompletionSource(
+                    plan_id,
+                    user_id,
+                    view.updated_at,
+                    plan.task_run_id,
+                    hashlib.sha256(text.encode()).hexdigest(),
+                    UUID(input_id) if input_id is not None else None,
+                )
+                config = self._budget_loader()
+                budget = None
+                if parent is not None and parent.user_id == user_id and parent.budget:
+                    if parent.budget.get("enabled"):
+                        budget = RunModelBudget(
+                            database,
+                            run_id=parent.id,
+                            user_id=user_id,
+                            config=config,
+                            phase="maintenance",
+                            allow_active_parent=True,
+                        )
+                    else:
+                        config = RunBudgetConfig.model_validate(parent.budget)
+
+            async def dispatch() -> list[str] | None:
+                if self._stopped or self._deliver is None:
+                    raise asyncio.CancelledError
+                result = await self._deliver(
                     text,
                     entity_id=f"plan:{plan_id}",
                     rule_id="plan.completed",
                     trigger_kind="plan.completed",
                     privacy_level=PrivacyLevel.L1,
                     target_user_id=user_id,
+                )
+                from app.output import ProactiveDeliveryResult
+
+                if isinstance(result, ProactiveDeliveryResult):
+                    if result.user_id != user_id:
+                        raise ValueError("delivery_owner_mismatch")
+                    return list(result.delivered_channels)
+                if isinstance(result, list) or result is None:
+                    return result
+                raise ValueError("delivery_receipt_invalid")
+
+            with budget_scope(budget), tool_budget_scope(budget.tool_budget if budget else None):
+                await deliver_once(
+                    database,
+                    source_repository=source,
+                    source_id=plan_id,
+                    user_id=user_id,
+                    text=text,
+                    entry="plan.completed.delivery",
+                    config=config,
+                    dispatch=dispatch,
+                    run_id=uuid5(NAMESPACE_URL, f"aria:plan-report:{user_id}:{plan_id}"),
                 )
         except Exception:
             logger.warning("plan completion report failed: %s", plan_id, exc_info=True)
