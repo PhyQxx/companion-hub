@@ -19,6 +19,7 @@ from app.config.models import RunBudgetConfig
 from app.db import TaskItemRecord
 from app.harness.budget import BudgetDenied
 from app.runs.delivery import deliver_once, recover_expired_deliveries, task_delivery_text
+from app.runs.delivery_sources import SqlDeliverySourceRepository
 from app.schemas.common import PrivacyLevel
 
 from .models import ClaimedTask
@@ -156,7 +157,9 @@ class TaskScheduler:
             try:
                 await deliver_once(
                     self._store.database,
-                    table=TaskItemRecord,
+                    source_repository=SqlDeliverySourceRepository(
+                        TaskItemRecord, task.id, task.user_id
+                    ),
                     source_id=task.id,
                     run_id=task.run_id,
                     user_id=task.user_id,

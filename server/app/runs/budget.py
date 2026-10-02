@@ -15,14 +15,11 @@ from app.config.models import RunBudgetConfig
 from app.db import AppUserRecord, Database, JobRecord, ModelReservationRecord, TaskRunRecord
 from app.db.claims import assert_current_claim
 from app.harness.budget import BudgetDenied, CallPermit
+from app.harness.time import utc as utc
 from app.ids import uuid7
 from app.llm.contracts import ModelPricing, ModelUsage
 
 from .costs import recover_cost_reservations, reserve_cost, settle_cost
-
-
-def utc(value: datetime) -> datetime:
-    return value.replace(tzinfo=UTC) if value.tzinfo is None else value.astimezone(UTC)
 
 
 class RunModelBudget:

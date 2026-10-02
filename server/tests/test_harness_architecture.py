@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ast
 import asyncio
 import importlib.util
 import json
@@ -317,3 +318,16 @@ async def test_optional_services_degrade_and_focus_is_owned_by_lifecycle() -> No
         assert app.state.module_registry.states["focus"] == "ready"
         assert app.state.module_registry.reason_codes["screen-awareness"] == "module_start_failed"
     assert calls == ["optional.start", "optional.stop", "focus.start", "focus.stop"]
+
+
+def test_delivery_core_and_contracts_do_not_use_domain_orm_rows() -> None:
+    core = ast.parse((ROOT / "server" / "app" / "runs" / "delivery.py").read_text())
+    forbidden = {"CognitiveGoalRecord", "TaskItemRecord", "DailyBriefRecord", "DailyReviewRecord"}
+    assert not {node.id for node in ast.walk(core) if isinstance(node, ast.Name)} & forbidden
+    contracts = ast.parse((ROOT / "server" / "app" / "runs" / "delivery_contracts.py").read_text())
+    assert not any(
+        isinstance(node, ast.ImportFrom)
+        and node.module
+        and (node.module.startswith("app.db") or node.module in {"delivery_sources", "budget"})
+        for node in ast.walk(contracts)
+    )

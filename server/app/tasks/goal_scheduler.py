@@ -27,6 +27,7 @@ from app.runs.delivery import (
     goal_delivery_text,
     recover_expired_deliveries,
 )
+from app.runs.delivery_sources import SqlDeliverySourceRepository
 
 logger = logging.getLogger("app.cognition.goals")
 
@@ -147,7 +148,9 @@ class GoalReminderScheduler:
             try:
                 admitted = await deliver_once(
                     self._store.database,
-                    table=CognitiveGoalRecord,
+                    source_repository=SqlDeliverySourceRepository(
+                        CognitiveGoalRecord, item.goal.id, item.user_id, claim
+                    ),
                     source_id=item.goal.id,
                     user_id=item.user_id,
                     text=text,
@@ -155,7 +158,6 @@ class GoalReminderScheduler:
                     config=self._budget_loader(),
                     dispatch=dispatch,
                     run_id=uuid7(),
-                    goal_claim=claim,
                     unavailable_reason="no_deliverer" if self._deliverer is None else None,
                 )
                 if admitted:

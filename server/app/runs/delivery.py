@@ -3,159 +3,44 @@
 import asyncio
 import hashlib
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from typing import Annotated, Any, cast
+from typing import Annotated
 from uuid import UUID
-from zoneinfo import ZoneInfo
 
 from pydantic import Field, TypeAdapter, ValidationError
 from sqlalchemy import select, update
 from sqlalchemy.exc import IntegrityError
-from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config.models import RunBudgetConfig
 from app.db import (
     AppUserRecord,
-    CognitiveGoalRecord,
-    DailyBriefRecord,
-    DailyReviewRecord,
     Database,
     ModelCostRecord,
     ModelReservationRecord,
-    TaskItemRecord,
     TaskRunRecord,
 )
 from app.db.claims import assert_current_claim
 from app.harness.budget import BudgetDenied, budget_scope, current_budget, current_tool_budget
-from app.schemas.common import PrivacyLevel, TokenName
+from app.harness.guarded_call import guarded_call
+from app.schemas.common import TokenName
 from app.schemas.delivery_run import DeliveryRunOutcome
 
 from .budget import RunModelBudget, utc
+from .delivery_contracts import DeliverySourceRepository
+from .delivery_contracts import GoalDeliveryClaim as GoalDeliveryClaim
+from .delivery_sources import (
+    SourceTable as SourceTable,
+)
+from .delivery_sources import SqlDeliverySourceRepository
+from .delivery_sources import (
+    goal_delivery_text as goal_delivery_text,
+)
+from .delivery_sources import (
+    task_delivery_text as task_delivery_text,
+)
 from .store import append_run_event, transition_run
 
-SourceTable = (
-    type[DailyBriefRecord]
-    | type[DailyReviewRecord]
-    | type[TaskItemRecord]
-    | type[CognitiveGoalRecord]
-)
-SourceRow = DailyBriefRecord | DailyReviewRecord | TaskItemRecord | CognitiveGoalRecord
-
-
-@dataclass(frozen=True)
-class GoalDeliveryClaim:
-    phase: str
-    claimed_at: datetime
-    timezone: str
-
-
-def goal_delivery_text(title: str, due_at: datetime, claim: GoalDeliveryClaim) -> str:
-    due_text = utc(due_at).astimezone(ZoneInfo(claim.timezone)).strftime("%m-%d %H:%M")
-    if claim.phase == "pre_due":
-        return f"📌 你有一个目标临近：{title}（预计 {due_text} 到期）"
-    return f"⏰ 目标已到期：{title}（{due_text}）"
-
-
 _CHANNELS: TypeAdapter[list[str]] = TypeAdapter(Annotated[list[TokenName], Field(max_length=16)])
-
-
-async def _source_lock(
-    session: AsyncSession,
-    table: SourceTable,
-    source_id: UUID,
-    user_id: UUID,
-    *,
-    pending: bool = False,
-) -> SourceRow | None:
-    query = update(table).where(table.id == source_id, table.user_id == user_id)
-    if pending:
-        query = query.where(
-            table.status.in_({"active", "firing"})
-            if table is TaskItemRecord
-            else table.status == "active"
-            if table is CognitiveGoalRecord
-            else table.status == "pending"
-        )
-    return cast(
-        SourceRow | None,
-        await session.scalar(query.values(updated_at=table.updated_at).returning(table)),
-    )
-
-
-async def _check_goal_sources(session: AsyncSession, source: SourceRow) -> None:
-    from app.cognition.goal_sources import goal_visibility
-
-    if isinstance(source, TaskItemRecord):
-        return
-    items = (
-        source.facts
-        if isinstance(source, DailyBriefRecord)
-        else source.items
-        if isinstance(source, DailyReviewRecord)
-        else []
-    )
-    identifiers: set[UUID] = {source.id} if isinstance(source, CognitiveGoalRecord) else set()
-    for item in items:
-        if item.get("action") == "removed":
-            continue
-        reference = item.get("source", "")
-        if isinstance(reference, str) and reference.startswith("goal:"):
-            try:
-                identifiers.add(UUID(reference[5:]))
-            except ValueError as error:
-                raise BudgetDenied("delivery_source_invalid") from error
-    if not identifiers:
-        return
-    if len(identifiers) > 1000:
-        raise BudgetDenied("delivery_source_invalid")
-    allowed = set(
-        await session.scalars(
-            select(CognitiveGoalRecord.id).where(
-                CognitiveGoalRecord.id.in_(identifiers),
-                CognitiveGoalRecord.user_id == source.user_id,
-                goal_visibility(PrivacyLevel.L1),
-            )
-        )
-    )
-    if allowed != identifiers:
-        raise BudgetDenied("delivery_source_private_or_deleted")
-
-
-def task_delivery_text(title: str, notes: str | None) -> str:
-    return f"⏰ 提醒：{title}" + (f"\n{notes}" if notes else "")
-
-
-def _matches(
-    source: SourceRow | None,
-    fingerprint: str,
-    run_id: UUID,
-    goal_claim: GoalDeliveryClaim | None = None,
-) -> bool:
-    if source is None:
-        return False
-    if isinstance(source, TaskItemRecord):
-        if source.status not in {"active", "firing"} or source.source == "pnkx":
-            return False
-        if (source.last_delivery or {}).get("run_id") != str(run_id):
-            return False
-        text = task_delivery_text(source.title, source.notes)
-    elif isinstance(source, CognitiveGoalRecord):
-        if goal_claim is None or source.status != "active" or source.due_at is None:
-            return False
-        stamp = source.due_reminded_at if goal_claim.phase == "due" else source.pre_due_reminded_at
-        if stamp is None or utc(stamp) != utc(goal_claim.claimed_at):
-            return False
-        if source.reminder_defer_until and utc(source.reminder_defer_until) > utc(
-            goal_claim.claimed_at
-        ):
-            return False
-        if source.expires_at and utc(source.expires_at) <= datetime.now(UTC):
-            return False
-        text = goal_delivery_text(source.title, source.due_at, goal_claim)
-    else:
-        text = source.text
-    return hashlib.sha256(text.encode()).hexdigest() == fingerprint
 
 
 def outcome(row: TaskRunRecord | None) -> DeliveryRunOutcome | None:
@@ -193,7 +78,7 @@ def outcome(row: TaskRunRecord | None) -> DeliveryRunOutcome | None:
 async def deliver_once(
     database: Database,
     *,
-    table: SourceTable,
+    table: SourceTable | None = None,
     source_id: UUID,
     user_id: UUID,
     text: str,
@@ -203,18 +88,18 @@ async def deliver_once(
     run_id: UUID | None = None,
     unavailable_reason: str | None = None,
     goal_claim: GoalDeliveryClaim | None = None,
+    source_repository: DeliverySourceRepository | None = None,
 ) -> bool:
     """Return False when another attempt owns this source; never resend unknown work."""
     identifier = run_id or source_id
-    if table is CognitiveGoalRecord and (
-        goal_claim is None or goal_claim.phase not in {"due", "pre_due"}
-    ):
-        raise BudgetDenied("delivery_source_invalid")
-    request_id = (
-        f"{entry}:{source_id}:{utc(goal_claim.claimed_at).isoformat()}"
-        if goal_claim is not None
-        else f"{entry}:{identifier}"
-    )
+    if source_repository is None:
+        if table is None:
+            raise BudgetDenied("delivery_source_invalid")
+        source_repository = SqlDeliverySourceRepository(table, source_id, user_id, goal_claim)
+    repository = source_repository
+    if repository.source_id != source_id or repository.user_id != user_id:
+        raise BudgetDenied("delivery_source_owner_invalid")
+    request_id = repository.request_key(entry, identifier)
     parent = current_budget()
     if isinstance(parent, RunModelBudget) and parent.owner_id != user_id:
         raise BudgetDenied("budget_owner_invalid")
@@ -228,37 +113,21 @@ async def deliver_once(
             owner = await session.get(AppUserRecord, user_id)
             if owner is None or owner.status != "active":
                 raise BudgetDenied("budget_owner_invalid")
-            source = await _source_lock(session, table, source_id, user_id, pending=True)
-            if source is None:
+            if not await repository.lock(session, pending=True):
                 return False
-            if not _matches(source, fingerprint, identifier, goal_claim):
-                raise BudgetDenied("delivery_source_changed")
-            await _check_goal_sources(session, source)
+            source = await repository.inspect(session, fingerprint, identifier)
             created = TaskRunRecord(
                 id=identifier,
                 user_id=user_id,
                 parent_run_id=parent_id,
                 request_id=request_id,
                 status="accepted",
-                privacy_level=source.privacy_level if isinstance(source, TaskItemRecord) else "L1",
+                privacy_level=source.privacy_level,
                 contract={
                     "entry": entry,
                     "source_id": str(source_id),
                     "budget_parent_id": str(parent_id) if parent_id else None,
-                    **(
-                        {"source_generation": source.fire_count}
-                        if isinstance(source, TaskItemRecord)
-                        else {}
-                    ),
-                    **(
-                        {
-                            "source_claimed_at": utc(goal_claim.claimed_at).isoformat(),
-                            "source_phase": goal_claim.phase,
-                            "source_timezone": goal_claim.timezone,
-                        }
-                        if goal_claim is not None
-                        else {}
-                    ),
+                    **source.contract_fields(),
                     "criterion": "delivery_channels_returned",
                     "required_work": [],
                     "dispatch_state": "not_started",
@@ -305,7 +174,8 @@ async def deliver_once(
                 permit = await port.reserve_tool(tool_name=entry, user_id=user_id)
             async with database.sessions.begin() as session:
                 await assert_current_claim(session)
-                source = await _source_lock(session, table, source_id, user_id, pending=True)
+                if not await repository.lock(session, pending=True):
+                    raise BudgetDenied("delivery_source_changed")
                 row = await session.get(TaskRunRecord, identifier, with_for_update=True)
                 if (
                     row is None
@@ -313,10 +183,7 @@ async def deliver_once(
                     or row.contract.get("work_cancel_requested")
                 ):
                     raise BudgetDenied("budget_run_inactive")
-                if not _matches(source, fingerprint, identifier, goal_claim):
-                    raise BudgetDenied("delivery_source_changed")
-                assert source is not None
-                await _check_goal_sources(session, source)
+                await repository.inspect(session, fingerprint, identifier)
                 if utc(row.deadline or deadline) <= datetime.now(UTC):
                     raise BudgetDenied("run_deadline_exceeded")
                 row.contract = {**row.contract, "dispatch_state": "started"}
@@ -331,13 +198,11 @@ async def deliver_once(
                 channels = list(
                     await _dispatch_with_watch(
                         database,
-                        table=table,
-                        source_id=source_id,
+                        repository=repository,
                         user_id=user_id,
                         fingerprint=fingerprint,
                         run_id=identifier,
                         dispatch=dispatch,
-                        goal_claim=goal_claim,
                     )
                     or []
                 )
@@ -352,11 +217,9 @@ async def deliver_once(
             await port.settle_tool(permit.call_id, reported_ok=None if started else False)
         await _finish(
             database,
-            table=table,
-            source_id=source_id,
+            repository=repository,
             user_id=user_id,
             run_id=identifier,
-            fingerprint=fingerprint,
             channels=[],
             reason=reason,
             state="unknown" if started else "not_started",
@@ -369,11 +232,9 @@ async def deliver_once(
         await port.settle_tool(permit.call_id, reported_ok=bool(channels))
     await _finish(
         database,
-        table=table,
-        source_id=source_id,
+        repository=repository,
         user_id=user_id,
         run_id=identifier,
-        fingerprint=fingerprint,
         channels=channels,
         reason=reason,
         state="returned",
@@ -384,11 +245,9 @@ async def deliver_once(
 async def _finish(
     database: Database,
     *,
-    table: SourceTable,
-    source_id: UUID,
+    repository: DeliverySourceRepository,
     user_id: UUID,
     run_id: UUID,
-    fingerprint: str,
     channels: list[str],
     reason: str | None,
     state: str,
@@ -397,7 +256,7 @@ async def _finish(
     now = datetime.now(UTC)
     async with database.sessions.begin() as session:
         # Source then Run matches admission; cancellation locks only Run.
-        source = await _source_lock(session, table, source_id, user_id)
+        await repository.lock(session)
         row = await session.get(TaskRunRecord, run_id, with_for_update=True)
         if row is None or row.user_id != user_id:
             return
@@ -415,106 +274,57 @@ async def _finish(
             "run.delivery.returned" if state == "returned" else "run.delivery.stopped",
             payload={"reported_channels": channels, "reason_code": reason},
         )
-        if isinstance(source, TaskItemRecord) and (source.last_delivery or {}).get("run_id") == str(
-            run_id
-        ):
-            source.last_delivery = {
-                "run_id": str(run_id),
-                "fire_count": source.fire_count,
-                "trigger_kind": row.contract["entry"],
-                "fired_at": utc(source.last_fired_at).isoformat() if source.last_fired_at else None,
-                "channels": channels,
-                "outcome": state,
-                "reason_code": f"deliver_error:{reason}"
-                if reason and reason.endswith("Error")
-                else reason,
-            }
-            source.updated_at = now
-            cancelled = cancelled or source.status == "cancelled"
-            if source.status == "firing":
-                source.status, source.completed_at, source.next_fire_at = "done", now, None
-        elif isinstance(source, (DailyBriefRecord, DailyReviewRecord)) and state != "not_started":
-            # Compatibility: delivered historically means one terminal attempt.
-            source.status, source.delivered_at, source.channels, source.updated_at = (
-                "delivered",
-                now,
-                channels,
-                now,
-            )
+        source_cancelled = await repository.finish(
+            session,
+            run_id=run_id,
+            entry=str(row.contract["entry"]),
+            channels=channels,
+            reason=reason,
+            state=state,
+            now=now,
+        )
+        cancelled = cancelled or source_cancelled
         await transition_run(
             session, run_id, "succeeded" if channels else "cancelled" if cancelled else "failed"
         )
 
 
-def _consume(task: asyncio.Future[Any]) -> None:
-    if not task.cancelled():
-        task.exception()
-
-
 async def _dispatch_with_watch(
     database: Database,
     *,
-    table: SourceTable,
-    source_id: UUID,
+    repository: DeliverySourceRepository,
     user_id: UUID,
     fingerprint: str,
     run_id: UUID,
     dispatch: Callable[[], Awaitable[list[str] | None]],
-    goal_claim: GoalDeliveryClaim | None = None,
 ) -> list[str] | None:
-    async def watch() -> None:
-        while True:
-            await asyncio.sleep(0.25)
-            async with database.sessions() as session:
-                await assert_current_claim(session)
-                row = await session.get(TaskRunRecord, run_id)
-                source = cast(SourceRow | None, await session.get(table, source_id))
-                owner = await session.get(AppUserRecord, user_id)
+    async def validate() -> None:
+        async with database.sessions() as session:
+            await assert_current_claim(session)
+            row = await session.get(TaskRunRecord, run_id)
+            owner = await session.get(AppUserRecord, user_id)
+            if (
+                row is None
+                or row.user_id != user_id
+                or row.status != "running"
+                or row.contract.get("work_cancel_requested")
+                or owner is None
+                or owner.status != "active"
+            ):
+                raise BudgetDenied("budget_run_inactive")
+            await repository.inspect(session, fingerprint, run_id)
+            parent_id = row.parent_run_id or row.contract.get("budget_parent_id")
+            if parent_id is not None:
+                parent = await session.get(TaskRunRecord, UUID(str(parent_id)))
                 if (
-                    row is None
-                    or row.user_id != user_id
-                    or row.status != "running"
-                    or row.contract.get("work_cancel_requested")
-                    or owner is None
-                    or owner.status != "active"
+                    parent is None
+                    or parent.user_id != user_id
+                    or parent.status in {"failed", "cancelled"}
+                    or parent.contract.get("work_cancel_requested")
                 ):
                     raise BudgetDenied("budget_run_inactive")
-                if (
-                    source is None
-                    or source.user_id != user_id
-                    or not _matches(source, fingerprint, run_id, goal_claim)
-                ):
-                    raise BudgetDenied("delivery_source_changed")
-                await _check_goal_sources(session, source)
-                parent_id = row.parent_run_id or row.contract.get("budget_parent_id")
-                if parent_id is not None:
-                    parent = await session.get(TaskRunRecord, UUID(str(parent_id)))
-                    if (
-                        parent is None
-                        or parent.user_id != user_id
-                        or parent.status in {"failed", "cancelled"}
-                        or parent.contract.get("work_cancel_requested")
-                    ):
-                        raise BudgetDenied("budget_run_inactive")
 
-    async def invoke() -> list[str] | None:
-        return await dispatch()
-
-    operation, watcher = asyncio.create_task(invoke()), asyncio.create_task(watch())
-    try:
-        done, _ = await asyncio.wait({operation, watcher}, return_when=asyncio.FIRST_COMPLETED)
-        if watcher in done:
-            await watcher
-        return await operation
-    finally:
-        for task in (operation, watcher):
-            if not task.done():
-                task.cancel()
-        # A custom transport that suppresses cancellation cannot be forcefully
-        # stopped; retain unknown and never wait indefinitely or dispatch again.
-        await asyncio.wait({operation, watcher}, timeout=0.25)
-        for task in (operation, watcher):
-            task.add_done_callback(_consume)
+    return await guarded_call(dispatch, validate)
 
 
 async def recover_expired_deliveries(database: Database) -> int:

@@ -32,6 +32,7 @@ from app.contacts.store import ContactStore
 from app.db import AppUserRecord, DailyBriefRecord, Database, TaskRunRecord
 from app.ids import uuid7
 from app.runs.delivery import deliver_once, outcome
+from app.runs.delivery_sources import SqlDeliverySourceRepository
 from app.schemas.common import PrivacyLevel, StrictModel
 from app.schemas.delivery_run import DeliveryRunOutcome
 from app.tasks.models import TaskStatus
@@ -404,7 +405,7 @@ class DailyBriefService:
 
         await deliver_once(
             self._database,
-            table=DailyBriefRecord,
+            source_repository=SqlDeliverySourceRepository(DailyBriefRecord, brief.id, user_id),
             source_id=brief.id,
             user_id=user_id,
             text=brief.text,
