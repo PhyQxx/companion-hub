@@ -23,7 +23,7 @@ from app.cognition import (
 )
 from app.db import CognitiveDecisionRecord
 from app.perception import PerceptionStore, SemanticEventAuditView
-from app.schemas.common import StrictModel
+from app.schemas.common import PrivacyLevel, StrictModel
 
 from .auth import ChatSessionGuard
 
@@ -33,6 +33,7 @@ class CreateGoalRequest(StrictModel):
     title: Annotated[str, Field(min_length=1, max_length=320)]
     source_kind: Literal["message", "manual"]
     source_id: Annotated[str, Field(min_length=1, max_length=200)]
+    privacy_level: Literal["L0", "L1", "L2"] | None = None
     due_at: datetime | None = None
     expires_at: datetime | None = None
 
@@ -88,6 +89,7 @@ def create_cognition_router(
                 title=body.title,
                 source_kind=body.source_kind,
                 source_id=body.source_id,
+                privacy_level=PrivacyLevel(body.privacy_level) if body.privacy_level else None,
                 due_at=body.due_at,
                 expires_at=body.expires_at,
             )

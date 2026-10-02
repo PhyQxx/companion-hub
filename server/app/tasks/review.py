@@ -225,7 +225,7 @@ class DailyReviewService:
                 )
             )
         for goal in await self._goals.goals_completed_between(
-            user_id, start=day_start, end=day_end
+            user_id, start=day_start, end=day_end, max_privacy_level=PrivacyLevel.L1
         ):
             items.append(ReviewItem(section="completed", text=goal.title, source=f"goal:{goal.id}"))
 
@@ -245,7 +245,9 @@ class DailyReviewService:
                     source=f"task:{task.id}",
                 )
             )
-        for goal in await self._goals.active_goals(user_id, now=self._clock()):
+        for goal in await self._goals.active_goals(
+            user_id, now=self._clock(), max_privacy_level=PrivacyLevel.L1
+        ):
             due = _aware(goal.due_at)
             if due is None or due >= day_end:
                 continue
@@ -253,7 +255,9 @@ class DailyReviewService:
                 ReviewItem(section="unfinished", text=goal.title, source=f"goal:{goal.id}")
             )
 
-        for goal in await self._goals.goals_created_between(user_id, start=day_start, end=day_end):
+        for goal in await self._goals.goals_created_between(
+            user_id, start=day_start, end=day_end, max_privacy_level=PrivacyLevel.L1
+        ):
             items.append(
                 ReviewItem(section="new_commitment", text=goal.title, source=f"goal:{goal.id}")
             )
@@ -271,7 +275,9 @@ class DailyReviewService:
                     source=f"task:{task.id}",
                 )
             )
-        for goal in await self._goals.active_goals(user_id, now=self._clock()):
+        for goal in await self._goals.active_goals(
+            user_id, now=self._clock(), max_privacy_level=PrivacyLevel.L1
+        ):
             due = _aware(goal.due_at)
             if due is None or not day_end <= due < tomorrow_end:
                 continue

@@ -362,7 +362,9 @@ class DailyBriefService:
             )
 
         overdue_goals = []
-        for goal in await self._goals.active_goals(user_id, now=self._clock()):
+        for goal in await self._goals.active_goals(
+            user_id, now=self._clock(), max_privacy_level=PrivacyLevel.L1
+        ):
             due = _aware(goal.due_at)
             if due is None or due >= day_end:
                 continue

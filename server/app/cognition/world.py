@@ -39,6 +39,12 @@ class WorldStateBuilder:
         moment = now or datetime.now(UTC)
         since = moment - timedelta(hours=4)
         online_since = moment - timedelta(seconds=90)
+        visible_levels = {
+            PrivacyLevel.L0: ("L0",),
+            PrivacyLevel.L1: ("L0", "L1"),
+            PrivacyLevel.L2: ("L0", "L1", "L2"),
+            PrivacyLevel.L3: (),
+        }[event.privacy_level]
         async with self._database.sessions() as session:
             timezone = await session.scalar(
                 select(AppUserRecord.timezone).where(AppUserRecord.id == event.user_id)
@@ -46,7 +52,10 @@ class WorldStateBuilder:
             last_interaction = await session.scalar(
                 select(func.max(MessageRecord.created_at))
                 .join(ConversationRecord, ConversationRecord.id == MessageRecord.conversation_id)
-                .where(ConversationRecord.user_id == event.user_id)
+                .where(
+                    ConversationRecord.user_id == event.user_id,
+                    MessageRecord.privacy_level.in_(visible_levels),
+                )
             )
             devices = list(
                 await session.scalars(
@@ -141,7 +150,9 @@ class WorldStateBuilder:
             timezone=timezone or "Asia/Shanghai",
             last_interaction_at=last_interaction,
             active_capabilities=capabilities,
-            active_goals=await self._store.active_goals(event.user_id, now=moment),
+            active_goals=await self._store.active_goals(
+                event.user_id, now=moment, max_privacy_level=event.privacy_level
+            ),
             memory_evidence_ids=memory_ids,
             timeline_evidence_ids=timeline_ids,
             recent_proactive_count=recent_count,

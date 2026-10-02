@@ -92,6 +92,8 @@ class GoalReminderScheduler:
         return len(claimed)
 
     async def _remind(self, item: ClaimedGoalReminder) -> None:
+        if not await self._store.reminder_claim_visible(item):
+            return
         due_text = item.due_at.strftime("%m-%d %H:%M")
         if item.phase == "pre_due":
             text = f"📌 你有一个目标临近：{item.goal.title}（预计 {due_text} 到期）"

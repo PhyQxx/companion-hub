@@ -15,6 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config.models import RunBudgetConfig
 from app.db import (
     AppUserRecord,
+    CognitiveGoalRecord,
     DailyBriefRecord,
     DailyReviewRecord,
     Database,
@@ -25,7 +26,7 @@ from app.db import (
 )
 from app.db.claims import assert_current_claim
 from app.harness.budget import BudgetDenied, budget_scope, current_budget, current_tool_budget
-from app.schemas.common import TokenName
+from app.schemas.common import PrivacyLevel, TokenName
 from app.schemas.delivery_run import DeliveryRunOutcome
 
 from .budget import RunModelBudget, utc
@@ -55,6 +56,39 @@ async def _source_lock(
         SourceRow | None,
         await session.scalar(query.values(updated_at=table.updated_at).returning(table)),
     )
+
+
+async def _check_goal_sources(session: AsyncSession, source: SourceRow) -> None:
+    from app.cognition.goal_sources import goal_visibility
+
+    if isinstance(source, TaskItemRecord):
+        return
+    items = source.facts if isinstance(source, DailyBriefRecord) else source.items
+    identifiers: set[UUID] = set()
+    for item in items:
+        if item.get("action") == "removed":
+            continue
+        reference = item.get("source", "")
+        if isinstance(reference, str) and reference.startswith("goal:"):
+            try:
+                identifiers.add(UUID(reference[5:]))
+            except ValueError as error:
+                raise BudgetDenied("delivery_source_invalid") from error
+    if not identifiers:
+        return
+    if len(identifiers) > 1000:
+        raise BudgetDenied("delivery_source_invalid")
+    allowed = set(
+        await session.scalars(
+            select(CognitiveGoalRecord.id).where(
+                CognitiveGoalRecord.id.in_(identifiers),
+                CognitiveGoalRecord.user_id == source.user_id,
+                goal_visibility(PrivacyLevel.L1),
+            )
+        )
+    )
+    if allowed != identifiers:
+        raise BudgetDenied("delivery_source_private_or_deleted")
 
 
 def task_delivery_text(title: str, notes: str | None) -> str:
@@ -140,6 +174,7 @@ async def deliver_once(
                 return False
             if not _matches(source, fingerprint, identifier):
                 raise BudgetDenied("delivery_source_changed")
+            await _check_goal_sources(session, source)
             created = TaskRunRecord(
                 id=identifier,
                 user_id=user_id,
@@ -212,6 +247,8 @@ async def deliver_once(
                     raise BudgetDenied("budget_run_inactive")
                 if not _matches(source, fingerprint, identifier):
                     raise BudgetDenied("delivery_source_changed")
+                assert source is not None
+                await _check_goal_sources(session, source)
                 if utc(row.deadline or deadline) <= datetime.now(UTC):
                     raise BudgetDenied("run_deadline_exceeded")
                 row.contract = {**row.contract, "dispatch_state": "started"}
@@ -380,6 +417,7 @@ async def _dispatch_with_watch(
                     or not _matches(source, fingerprint, run_id)
                 ):
                     raise BudgetDenied("delivery_source_changed")
+                await _check_goal_sources(session, source)
                 parent_id = row.parent_run_id or row.contract.get("budget_parent_id")
                 if parent_id is not None:
                     parent = await session.get(TaskRunRecord, UUID(str(parent_id)))

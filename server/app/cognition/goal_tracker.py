@@ -119,6 +119,7 @@ class GoalTracker:
                 message_id=message_id,
                 title=item.title,
                 due_at=item.due_at,
+                privacy_level=privacy_level,
             )
             if goal is not None:
                 created.append(goal)
@@ -131,6 +132,7 @@ class GoalTracker:
         message_id: UUID,
         title: str,
         due_at: datetime | None,
+        privacy_level: PrivacyLevel,
     ) -> GoalView | None:
         source_id = str(message_id)
         existing = await self._store.goal_by_source(
@@ -146,6 +148,7 @@ class GoalTracker:
                 source_kind="message",
                 source_id=source_id,
                 due_at=due_at,
+                privacy_level=privacy_level,
             )
         except ValueError:
             logger.debug("commitment goal rejected for %s", message_id, exc_info=True)

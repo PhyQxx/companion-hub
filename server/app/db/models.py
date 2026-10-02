@@ -530,6 +530,10 @@ class CognitiveGoalRecord(Base):
             "status IN ('active','completed','cancelled','expired')",
             name="ck_cognitive_goal_status",
         ),
+        CheckConstraint(
+            "privacy_level IS NULL OR privacy_level IN ('L0','L1','L2')",
+            name="ck_cognitive_goal_privacy",
+        ),
         Index("ix_cognitive_goal_user_status", "user_id", "status", "due_at"),
     )
 
@@ -542,6 +546,7 @@ class CognitiveGoalRecord(Base):
     status: Mapped[str] = mapped_column(String(16), nullable=False)
     source_kind: Mapped[str] = mapped_column(String(40), nullable=False)
     source_id: Mapped[str] = mapped_column(String(200), nullable=False)
+    privacy_level: Mapped[str | None] = mapped_column(String(2))
     due_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     # GOAL-01 提醒状态：pre_due/due 各提醒一次（时间戳非空即已提醒），

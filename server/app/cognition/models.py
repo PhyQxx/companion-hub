@@ -107,6 +107,7 @@ class GoalView(StrictModel):
     status: GoalStatus
     source_kind: str
     source_id: str
+    privacy_level: PrivacyLevel | None = None
     due_at: datetime | None = None
     expires_at: datetime | None = None
     pre_due_reminded_at: datetime | None = None
@@ -122,6 +123,7 @@ class ClaimedGoalReminder(StrictModel):
     goal: GoalView
     phase: Literal["pre_due", "due"]
     due_at: datetime
+    claimed_at: datetime | None = None
 
 
 class WorldState(StrictModel):

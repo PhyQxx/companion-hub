@@ -9,6 +9,7 @@ from sqlalchemy.engine import CursorResult
 
 from app.db import (
     ActionResultRecord,
+    AppUserRecord,
     CognitiveDecisionRecord,
     CognitiveFeedbackRecord,
     CognitiveGoalRecord,
@@ -20,7 +21,9 @@ from app.db import (
 )
 from app.db.claims import assert_current_claim
 from app.ids import uuid7
+from app.schemas.common import PrivacyLevel
 
+from .goal_sources import goal_visibility
 from .models import (
     ActionResult,
     ClaimedGoalReminder,
@@ -38,7 +41,7 @@ from .reflection import FeedbackSummary
 def _aware_or_none(value: datetime | None) -> datetime | None:
     if value is None:
         return None
-    return value if value.tzinfo is not None else value.replace(tzinfo=UTC)
+    return value.astimezone(UTC) if value.tzinfo is not None else value.replace(tzinfo=UTC)
 
 
 class CognitiveStore:
@@ -114,8 +117,11 @@ class CognitiveStore:
         source_id: str,
         due_at: datetime | None = None,
         expires_at: datetime | None = None,
+        privacy_level: PrivacyLevel | None = None,
         now: datetime | None = None,
     ) -> GoalView:
+        if privacy_level == PrivacyLevel.L3:
+            raise ValueError("L3 goals cannot be persisted")
         if kind in {GoalKind.USER, GoalKind.SHARED} and source_kind not in {
             "message",
             "manual",
@@ -124,6 +130,7 @@ class CognitiveStore:
         if source_kind == "message":
             try:
                 message_id = UUID(source_id)
+                source_id = str(message_id)
             except ValueError as error:
                 raise ValueError("goal message evidence must be a valid message id") from error
         moment = now or datetime.now(UTC)
@@ -135,8 +142,9 @@ class CognitiveStore:
             status=GoalStatus.ACTIVE.value,
             source_kind=source_kind,
             source_id=source_id,
-            due_at=due_at,
-            expires_at=expires_at,
+            due_at=_aware_or_none(due_at),
+            expires_at=_aware_or_none(expires_at),
+            privacy_level=str(privacy_level or PrivacyLevel.L1),
             created_at=moment,
             updated_at=moment,
         )
@@ -166,6 +174,14 @@ class CognitiveStore:
                 )
                 if conversation is None or evidence is None or deleted is not None:
                     raise ValueError("goal message evidence does not belong to the user")
+                await assert_current_claim(session)
+                ranks = {"L0": 0, "L1": 1, "L2": 2}
+                requested = (
+                    str(privacy_level) if privacy_level is not None else evidence.privacy_level
+                )
+                record.privacy_level = max(
+                    (requested, evidence.privacy_level), key=ranks.__getitem__
+                )
                 existing = await session.scalar(
                     select(CognitiveGoalRecord)
                     .where(
@@ -176,6 +192,12 @@ class CognitiveStore:
                     .limit(1)
                 )
                 if existing is not None:
+                    effective = existing.privacy_level or evidence.privacy_level
+                    inherited = record.privacy_level or evidence.privacy_level
+                    next_level = max((effective, inherited), key=ranks.__getitem__)
+                    if existing.privacy_level != next_level:
+                        existing.privacy_level = next_level
+                        existing.updated_at = moment
                     return _goal(existing)
             await assert_current_claim(session)
             session.add(record)
@@ -206,6 +228,7 @@ class CognitiveStore:
         start: datetime,
         end: datetime,
         limit: int = 50,
+        max_privacy_level: PrivacyLevel | None = None,
     ) -> list[GoalView]:
         """REVIEW-01 晚间回顾用：某时间窗内新建的承诺（含已完成/取消）。"""
         async with self.database.sessions() as session:
@@ -214,6 +237,7 @@ class CognitiveStore:
                     select(CognitiveGoalRecord)
                     .where(
                         CognitiveGoalRecord.user_id == user_id,
+                        goal_visibility(max_privacy_level),
                         CognitiveGoalRecord.created_at >= start,
                         CognitiveGoalRecord.created_at < end,
                     )
@@ -230,6 +254,7 @@ class CognitiveStore:
         start: datetime,
         end: datetime,
         limit: int = 50,
+        max_privacy_level: PrivacyLevel | None = None,
     ) -> list[GoalView]:
         """REVIEW-01 晚间回顾用：某时间窗内完成的承诺（按状态转移时间近似）。"""
         async with self.database.sessions() as session:
@@ -238,6 +263,7 @@ class CognitiveStore:
                     select(CognitiveGoalRecord)
                     .where(
                         CognitiveGoalRecord.user_id == user_id,
+                        goal_visibility(max_privacy_level),
                         CognitiveGoalRecord.status == GoalStatus.COMPLETED.value,
                         CognitiveGoalRecord.updated_at >= start,
                         CognitiveGoalRecord.updated_at < end,
@@ -269,12 +295,15 @@ class CognitiveStore:
             record.updated_at = moment
         return _goal(record)
 
-    async def active_goals(self, user_id: UUID, *, now: datetime) -> list[GoalView]:
+    async def active_goals(
+        self, user_id: UUID, *, now: datetime, max_privacy_level: PrivacyLevel | None = None
+    ) -> list[GoalView]:
         async with self.database.sessions.begin() as session:
             expired = list(
                 await session.scalars(
                     select(CognitiveGoalRecord).where(
                         CognitiveGoalRecord.user_id == user_id,
+                        goal_visibility(max_privacy_level),
                         CognitiveGoalRecord.status == GoalStatus.ACTIVE.value,
                         CognitiveGoalRecord.expires_at.is_not(None),
                         CognitiveGoalRecord.expires_at <= now,
@@ -289,6 +318,7 @@ class CognitiveStore:
                     select(CognitiveGoalRecord)
                     .where(
                         CognitiveGoalRecord.user_id == user_id,
+                        goal_visibility(max_privacy_level),
                         CognitiveGoalRecord.status == GoalStatus.ACTIVE.value,
                     )
                     .order_by(CognitiveGoalRecord.due_at, CognitiveGoalRecord.created_at)
@@ -296,6 +326,29 @@ class CognitiveStore:
                 )
             )
         return [_goal(row) for row in rows]
+
+    async def reminder_claim_visible(self, item: ClaimedGoalReminder) -> bool:
+        async with self.database.sessions() as session:
+            column = (
+                CognitiveGoalRecord.due_reminded_at
+                if item.phase == "due"
+                else CognitiveGoalRecord.pre_due_reminded_at
+            )
+            row = await session.scalar(
+                select(CognitiveGoalRecord.id).where(
+                    CognitiveGoalRecord.id == item.goal.id,
+                    CognitiveGoalRecord.user_id == item.user_id,
+                    CognitiveGoalRecord.status == GoalStatus.ACTIVE.value,
+                    CognitiveGoalRecord.title == item.goal.title,
+                    CognitiveGoalRecord.due_at == item.due_at,
+                    column == item.claimed_at if item.claimed_at else column.is_not(None),
+                    goal_visibility(PrivacyLevel.L1),
+                    CognitiveGoalRecord.user_id.in_(
+                        select(AppUserRecord.id).where(AppUserRecord.status == "active")
+                    ),
+                )
+            )
+        return row is not None
 
     async def claim_due_goal_reminders(
         self,
@@ -318,6 +371,10 @@ class CognitiveStore:
                     select(CognitiveGoalRecord)
                     .where(
                         CognitiveGoalRecord.status == GoalStatus.ACTIVE.value,
+                        goal_visibility(PrivacyLevel.L1),
+                        CognitiveGoalRecord.user_id.in_(
+                            select(AppUserRecord.id).where(AppUserRecord.status == "active")
+                        ),
                         CognitiveGoalRecord.due_at.is_not(None),
                     )
                     .order_by(CognitiveGoalRecord.due_at)
@@ -347,7 +404,15 @@ class CognitiveStore:
                     .where(
                         CognitiveGoalRecord.id == record.id,
                         CognitiveGoalRecord.status == GoalStatus.ACTIVE.value,
+                        goal_visibility(PrivacyLevel.L1),
                         column.is_(None),
+                        CognitiveGoalRecord.due_at == record.due_at,
+                        CognitiveGoalRecord.title == record.title,
+                        CognitiveGoalRecord.source_kind == record.source_kind,
+                        CognitiveGoalRecord.source_id == record.source_id,
+                        CognitiveGoalRecord.user_id.in_(
+                            select(AppUserRecord.id).where(AppUserRecord.status == "active")
+                        ),
                     )
                     .values({column: moment, "updated_at": moment})
                 )
@@ -359,6 +424,7 @@ class CognitiveStore:
                     goal=_goal(record),
                     phase=phase,
                     due_at=due_at,
+                    claimed_at=moment,
                 )
             )
         return claimed
@@ -614,10 +680,11 @@ def _goal(record: CognitiveGoalRecord) -> GoalView:
         status=record.status,
         source_kind=record.source_kind,
         source_id=record.source_id,
-        due_at=record.due_at,
-        expires_at=record.expires_at,
-        pre_due_reminded_at=record.pre_due_reminded_at,
-        due_reminded_at=record.due_reminded_at,
-        reminder_defer_until=record.reminder_defer_until,
+        privacy_level=record.privacy_level,
+        due_at=_aware_or_none(record.due_at),
+        expires_at=_aware_or_none(record.expires_at),
+        pre_due_reminded_at=_aware_or_none(record.pre_due_reminded_at),
+        due_reminded_at=_aware_or_none(record.due_reminded_at),
+        reminder_defer_until=_aware_or_none(record.reminder_defer_until),
         ignored_count=record.ignored_count,
     )
