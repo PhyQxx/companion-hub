@@ -31,6 +31,31 @@ class FixtureEvaluationRequest(StrictModel):
     def bound_cases(self) -> "FixtureEvaluationRequest":
         if len({case.id for case in self.cases}) != len(self.cases):
             raise ValueError("duplicate_fixture_id")
-        if len(self.model_dump_json()) > 65536:
+        if len(self.model_dump_json().encode("utf-8")) > 65536:
+            raise ValueError("fixture_payload_too_large")
+        return self
+
+
+class WorkflowFixtureCase(StrictModel):
+    id: str = Field(min_length=1, max_length=64, pattern=r"^[a-zA-Z0-9_-]+$")
+    expected: list[dict[str, JsonValue]] | None = Field(default=None, max_length=10)
+    expected_reason: Literal["workflow_compile_failed"] | None = None
+
+    @model_validator(mode="after")
+    def one_expectation(self) -> "WorkflowFixtureCase":
+        if (self.expected is None) == (self.expected_reason is None):
+            raise ValueError("fixture_requires_one_expectation")
+        return self
+
+
+class WorkflowFixtureRequest(StrictModel):
+    data_class: Literal["synthetic"]
+    cases: list[WorkflowFixtureCase] = Field(max_length=50)
+
+    @model_validator(mode="after")
+    def bound_cases(self) -> "WorkflowFixtureRequest":
+        if len({case.id for case in self.cases}) != len(self.cases):
+            raise ValueError("duplicate_fixture_id")
+        if len(self.model_dump_json().encode("utf-8")) > 65536:
             raise ValueError("fixture_payload_too_large")
         return self

@@ -76,9 +76,9 @@ class ActionDefinition(StrictModel):
             raise ValueError("confirmation policy does not match action risk")
         if self.reversible and self.compensation_action_id is None:
             raise ValueError("reversible actions require a compensation action")
-        if self.verification_policy is VerificationPolicy.NONE and self.verifier_id is not None:
+        if self.verification_policy == VerificationPolicy.NONE and self.verifier_id is not None:
             raise ValueError("verifier requires a verification policy")
-        if self.verification_policy is not VerificationPolicy.NONE and self.verifier_id is None:
+        if self.verification_policy != VerificationPolicy.NONE and self.verifier_id is None:
             raise ValueError("verification policy requires a verifier")
         return self
 
@@ -152,7 +152,7 @@ class ActionRegistry:
                 raise ValueError(
                     f"unknown compensation action for {definition.action_id}: {compensation_id}"
                 )
-            if compensation.definition.risk is ActionRisk.A3_PROHIBITED:
+            if compensation.definition.risk == ActionRisk.A3_PROHIBITED:
                 raise ValueError("compensation action cannot be prohibited")
 
     def get(self, action_id: str) -> RegisteredAction | None:
@@ -180,7 +180,7 @@ class ActionRegistry:
 
     def compile(self, action_id: str, arguments: dict[str, object]) -> CompiledAction:
         registered = self.require(action_id)
-        if registered.definition.risk is ActionRisk.A3_PROHIBITED:
+        if registered.definition.risk == ActionRisk.A3_PROHIBITED:
             raise PermissionError("prohibited actions cannot be compiled")
         validated = registered.arguments_model.model_validate(arguments)
         dynamic = validated.model_dump(mode="json", exclude_none=True)

@@ -22,6 +22,7 @@ from app.home_scene.service import HomeSceneService
 from app.meetings.models import MeetingView
 from app.meetings.service import MeetingService
 from app.schemas.common import StrictModel
+from app.schemas.evaluation import WorkflowFixtureRequest
 from app.tasks.brief import BriefView, DailyBriefService
 from app.tasks.review import DailyReviewService, ReviewView
 from app.workflows.drafts import PlanDistiller, WorkflowDraftStore, replay_pending_draft
@@ -154,48 +155,45 @@ def create_admin_butler_router(
         )
         return [_draft_view(record) for record in records]
 
-    @router.post(
-        "/workflow-drafts/{draft_id}/approve", response_model=WorkflowDraftAdminView
-    )
+    @router.post("/workflow-drafts/{draft_id}/approve", response_model=WorkflowDraftAdminView)
     async def approve_workflow_draft(
         draft_id: UUID, user_id: UUID | None = None
     ) -> WorkflowDraftAdminView:
         """审批通过：回放通过（或无可回放步骤）才允许创建正式流程。"""
         if drafts is None:
             raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, detail="drafts_disabled")
-        record = await drafts.get(draft_id)
-        if record is None or record.status != "pending":
-            raise HTTPException(status.HTTP_404_NOT_FOUND, detail="draft not found")
-        owner = await resolve_user(user_id)
-        if record.user_id != owner:
-            raise HTTPException(status.HTTP_404_NOT_FOUND, detail="draft not found")
-        if record.replay_status == "failed":
-            raise HTTPException(
-                status.HTTP_409_CONFLICT,
-                detail="replay_failed_rerun_before_approve",
-            )
-        if record.replay_status == "not_run":
-            raise HTTPException(
-                status.HTTP_409_CONFLICT,
-                detail="replay_not_run_rerun_before_approve",
-            )
-        steps = [WorkflowStep.model_validate(item) for item in record.steps or []]
         try:
-            await workflows.save_workflow(
-                user_id=owner,
-                name=record.name,
-                steps=steps,
-                description=record.description,
+            record = await drafts.approve(
+                draft_id, user_id=await resolve_user(user_id), workflows=workflows
             )
+        except LookupError as error:
+            raise HTTPException(404, str(error)) from error
         except ValueError as error:
-            raise HTTPException(status.HTTP_409_CONFLICT, detail=str(error)) from error
-        reviewed = await drafts.mark_reviewed(draft_id, status="approved")
-        assert reviewed is not None
-        return _draft_view(reviewed)
+            raise HTTPException(409, str(error)) from error
+        return _draft_view(record)
 
-    @router.post(
-        "/workflow-drafts/{draft_id}/dismiss", response_model=WorkflowDraftAdminView
-    )
+    @router.post("/workflow-drafts/{draft_id}/evaluate", response_model=WorkflowDraftAdminView)
+    async def evaluate_workflow_draft(
+        draft_id: UUID,
+        body: WorkflowFixtureRequest,
+        user_id: UUID | None = None,
+    ) -> WorkflowDraftAdminView:
+        if drafts is None:
+            raise HTTPException(503, "drafts_disabled")
+        try:
+            record = await drafts.evaluate_draft(
+                draft_id,
+                user_id=await resolve_user(user_id),
+                registry=workflows.registry,
+                corpus=body,
+            )
+        except LookupError as error:
+            raise HTTPException(404, str(error)) from error
+        except ValueError as error:
+            raise HTTPException(409, str(error)) from error
+        return _draft_view(record)
+
+    @router.post("/workflow-drafts/{draft_id}/dismiss", response_model=WorkflowDraftAdminView)
     async def dismiss_workflow_draft(
         draft_id: UUID, user_id: UUID | None = None
     ) -> WorkflowDraftAdminView:
@@ -211,9 +209,7 @@ def create_admin_butler_router(
         assert reviewed is not None
         return _draft_view(reviewed)
 
-    @router.post(
-        "/workflow-drafts/{draft_id}/replay", response_model=WorkflowDraftAdminView
-    )
+    @router.post("/workflow-drafts/{draft_id}/replay", response_model=WorkflowDraftAdminView)
     async def replay_workflow_draft(
         draft_id: UUID, user_id: UUID | None = None
     ) -> WorkflowDraftAdminView:

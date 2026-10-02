@@ -15,6 +15,7 @@
     "OutputIntent": "OutputIntent.schema.json",
     "PolicyDecision": "PolicyDecision.schema.json",
     "RunEventView": "RunEventView.schema.json",
-    "RunView": "RunView.schema.json"
+    "RunView": "RunView.schema.json",
+    "WorkflowFixtureRequest": "WorkflowFixtureRequest.schema.json"
   }
 }

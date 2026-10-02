@@ -46,8 +46,7 @@ def test_builtin_action_catalog_has_safe_home_actions() -> None:
     }
     assert definitions["home.light.turn_off"].risk == ActionRisk.A1_LOW
     assert (
-        definitions["home.climate.set_temperature"].confirmation_policy
-        == ConfirmationPolicy.ALWAYS
+        definitions["home.climate.set_temperature"].confirmation_policy == ConfirmationPolicy.ALWAYS
     )
     assert definitions["home.media.set_volume"].risk == ActionRisk.A2_CONFIRM
     assert definitions["desktop.notification.show"].verification_policy == "receipt"
@@ -209,3 +208,22 @@ async def test_action_catalog_endpoint_requires_chat_authentication() -> None:
     assert catalog["home.light.turn_on"]["risk"] == "A1"
     assert catalog["home.climate.set_temperature"]["confirmation_policy"] == "always"
     await database.close()
+
+
+def test_prohibited_catalog_entry_cannot_compile_after_schema_serialization() -> None:
+    registry = ActionRegistry()
+    definition = ActionDefinition(
+        action_id="test.prohibited",
+        label="Prohibited",
+        description="Synthetic safety regression",
+        risk=ActionRisk.A3_PROHIBITED,
+        confirmation_policy=ConfirmationPolicy.PROHIBITED,
+        tool_name="test_prohibited",
+        arguments_schema=HomeTargetArgs.model_json_schema(),
+        timeout_seconds=10,
+    )
+    # Strict schemas serialize enums as strings; identity comparison is unsafe.
+    persisted = ActionDefinition.model_validate_json(definition.model_dump_json())
+    registry.register(persisted, HomeTargetArgs)
+    with pytest.raises(PermissionError, match="prohibited"):
+        registry.compile("test.prohibited", {"target": "synthetic"})

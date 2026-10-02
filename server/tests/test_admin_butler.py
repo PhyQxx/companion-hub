@@ -61,7 +61,9 @@ class _NoopSummarizer:
         return MeetingSummary(summary="", decisions=[], action_items=[])
 
 
-def _services(database: Database) -> tuple[
+def _services(
+    database: Database,
+) -> tuple[
     WorkflowService, HomeSceneService, MeetingService, DailyBriefService, DailyReviewService
 ]:
     registry = build_builtin_action_registry()
@@ -93,9 +95,10 @@ def _services(database: Database) -> tuple[
 @pytest.fixture
 def client_app(
     database: Database, user_id: UUID
-) -> tuple[FastAPI, tuple[
-    WorkflowService, HomeSceneService, MeetingService, DailyBriefService, DailyReviewService
-]]:
+) -> tuple[
+    FastAPI,
+    tuple[WorkflowService, HomeSceneService, MeetingService, DailyBriefService, DailyReviewService],
+]:
     services = _services(database)
     app = FastAPI()
     app.include_router(
@@ -116,9 +119,14 @@ def _client(app: FastAPI) -> AsyncClient:
     return AsyncClient(transport=ASGITransport(app=app), base_url="http://test")
 
 
-async def test_requires_admin_token(client_app: tuple[FastAPI, tuple[
-    WorkflowService, HomeSceneService, MeetingService, DailyBriefService, DailyReviewService
-]]) -> None:
+async def test_requires_admin_token(
+    client_app: tuple[
+        FastAPI,
+        tuple[
+            WorkflowService, HomeSceneService, MeetingService, DailyBriefService, DailyReviewService
+        ],
+    ],
+) -> None:
     app, _ = client_app
     async with _client(app) as client:
         response = await client.get("/api/v1/admin/butler/summary")
@@ -126,9 +134,12 @@ async def test_requires_admin_token(client_app: tuple[FastAPI, tuple[
 
 
 async def test_summary_counts_seeded_butler_data(
-    client_app: tuple[FastAPI, tuple[
-        WorkflowService, HomeSceneService, MeetingService, DailyBriefService, DailyReviewService
-    ]],
+    client_app: tuple[
+        FastAPI,
+        tuple[
+            WorkflowService, HomeSceneService, MeetingService, DailyBriefService, DailyReviewService
+        ],
+    ],
     user_id: UUID,
 ) -> None:
     app, (workflows, scenes, meetings, briefs, reviews) = client_app
@@ -141,9 +152,16 @@ async def test_summary_counts_seeded_butler_data(
         user_id=user_id,
         name="回家模式",
         trigger="user_arrived_home",
-        steps=[HomeSceneStep(action_id="desktop.notification.show", arguments={
-            "title": "到家", "body": "欢迎回来", "privacy_level": "L0",
-        })],
+        steps=[
+            HomeSceneStep(
+                action_id="desktop.notification.show",
+                arguments={
+                    "title": "到家",
+                    "body": "欢迎回来",
+                    "privacy_level": "L0",
+                },
+            )
+        ],
     )
     await meetings.prepare(
         user_id,
@@ -169,9 +187,12 @@ async def test_summary_counts_seeded_butler_data(
 
 
 async def test_workflow_list_and_delete(
-    client_app: tuple[FastAPI, tuple[
-        WorkflowService, HomeSceneService, MeetingService, DailyBriefService, DailyReviewService
-    ]],
+    client_app: tuple[
+        FastAPI,
+        tuple[
+            WorkflowService, HomeSceneService, MeetingService, DailyBriefService, DailyReviewService
+        ],
+    ],
     user_id: UUID,
 ) -> None:
     app, (workflows, *_rest) = client_app
@@ -186,22 +207,21 @@ async def test_workflow_list_and_delete(
         assert [item["id"] for item in listed.json()] == [str(created.id)]
         assert listed.json()[0]["steps"][0]["action_id"] == "system.volume.set"
 
-        deleted = await client.delete(
-            f"/api/v1/admin/butler/workflows/{created.id}", headers=AUTH
-        )
+        deleted = await client.delete(f"/api/v1/admin/butler/workflows/{created.id}", headers=AUTH)
         assert deleted.status_code == 204
-        missing = await client.delete(
-            f"/api/v1/admin/butler/workflows/{created.id}", headers=AUTH
-        )
+        missing = await client.delete(f"/api/v1/admin/butler/workflows/{created.id}", headers=AUTH)
         assert missing.status_code == 404
         empty = await client.get("/api/v1/admin/butler/workflows", headers=AUTH)
         assert empty.json() == []
 
 
 async def test_scene_enable_disable_and_delete(
-    client_app: tuple[FastAPI, tuple[
-        WorkflowService, HomeSceneService, MeetingService, DailyBriefService, DailyReviewService
-    ]],
+    client_app: tuple[
+        FastAPI,
+        tuple[
+            WorkflowService, HomeSceneService, MeetingService, DailyBriefService, DailyReviewService
+        ],
+    ],
     user_id: UUID,
 ) -> None:
     app, (_, scenes, *_) = client_app
@@ -209,9 +229,16 @@ async def test_scene_enable_disable_and_delete(
         user_id=user_id,
         name="离家模式",
         trigger="manual",
-        steps=[HomeSceneStep(action_id="desktop.notification.show", arguments={
-            "title": "离家", "body": "已执行", "privacy_level": "L0",
-        })],
+        steps=[
+            HomeSceneStep(
+                action_id="desktop.notification.show",
+                arguments={
+                    "title": "离家",
+                    "body": "已执行",
+                    "privacy_level": "L0",
+                },
+            )
+        ],
     )
     async with _client(app) as client:
         disabled = await client.post(
@@ -226,22 +253,21 @@ async def test_scene_enable_disable_and_delete(
         assert enabled.status_code == 200
         assert enabled.json()["enabled"] is True
 
-        unknown = await client.post(
-            f"/api/v1/admin/butler/scenes/{uuid7()}/enable", headers=AUTH
-        )
+        unknown = await client.post(f"/api/v1/admin/butler/scenes/{uuid7()}/enable", headers=AUTH)
         assert unknown.status_code == 404
 
-        deleted = await client.delete(
-            f"/api/v1/admin/butler/scenes/{created.id}", headers=AUTH
-        )
+        deleted = await client.delete(f"/api/v1/admin/butler/scenes/{created.id}", headers=AUTH)
         assert deleted.status_code == 204
         assert await scenes.list_scenes(user_id) == []
 
 
 async def test_meetings_briefs_reviews_listing(
-    client_app: tuple[FastAPI, tuple[
-        WorkflowService, HomeSceneService, MeetingService, DailyBriefService, DailyReviewService
-    ]],
+    client_app: tuple[
+        FastAPI,
+        tuple[
+            WorkflowService, HomeSceneService, MeetingService, DailyBriefService, DailyReviewService
+        ],
+    ],
     user_id: UUID,
 ) -> None:
     app, (_, _, meetings, briefs, reviews) = client_app
@@ -299,9 +325,7 @@ async def test_explicit_user_id_and_empty_user_pool(database: Database) -> None:
         assert default.json()["user_id"] == str(other)
 
 
-async def test_workflow_draft_review_flow_via_api(
-    database: Database, user_id: UUID
-) -> None:
+async def test_workflow_draft_review_flow_via_api(database: Database, user_id: UUID) -> None:
     """DIST（docs/09 §4）：草稿列表/审批晋级（回放门禁）/终态不可再审。"""
     from app.workflows.drafts import PlanDistiller, WorkflowDraftStore
 
@@ -331,9 +355,7 @@ async def test_workflow_draft_review_flow_via_api(
             plan_id=None,
             name="睡前检查",
             steps=[
-                WorkflowStep(
-                    action_id="home.light.turn_off", arguments={"target": "客厅主灯"}
-                ),
+                WorkflowStep(action_id="home.light.turn_off", arguments={"target": "客厅主灯"}),
                 WorkflowStep(
                     action_id="home.climate.set_temperature",
                     arguments={"target": "卧室空调", "temperature_c": 25},
@@ -375,3 +397,64 @@ async def test_workflow_draft_review_flow_via_api(
             f"/api/v1/admin/butler/workflow-drafts/{draft.id}/approve", headers=AUTH
         )
         assert again.status_code == 404
+
+
+async def test_workflow_fixture_endpoint_auth_ownership_and_contract(
+    database: Database,
+    user_id: UUID,
+) -> None:
+    from app.workflows.drafts import WorkflowDraftStore
+
+    services = _services(database)
+    drafts = WorkflowDraftStore(database)
+    app = FastAPI()
+    app.include_router(
+        create_admin_butler_router(
+            database=database,
+            workflows=services[0],
+            scenes=services[1],
+            meetings=services[2],
+            briefs=services[3],
+            reviews=services[4],
+            admin_token="test-admin-token",
+            drafts=drafts,
+        )
+    )
+    draft = await drafts.create_draft(
+        user_id=user_id,
+        plan_id=None,
+        name="Offline fixture",
+        steps=[
+            WorkflowStep(action_id="home.light.turn_off", arguments={"target": "fixture-device"})
+        ],
+    )
+    assert draft is not None
+    payload = {
+        "data_class": "synthetic",
+        "cases": [
+            {
+                "id": "normal",
+                "expected": [
+                    {
+                        "tool_name": "home_control",
+                        "arguments": {"action": "turn_off", "target": "fixture-device"},
+                    },
+                ],
+            }
+        ],
+    }
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        url = f"/api/v1/admin/butler/workflow-drafts/{draft.id}/evaluate"
+        assert (await client.post(url, json=payload)).status_code == 401
+        assert (
+            await client.post(f"{url}?user_id={uuid7()}", headers=AUTH, json=payload)
+        ).status_code == 404
+        assert (
+            await client.post(url, headers=AUTH, json={**payload, "data_class": "conversation"})
+        ).status_code == 422
+        result = await client.post(url, headers=AUTH, json=payload)
+        assert result.status_code == 200
+        report = result.json()["replay_detail"]["fixture_replay"]
+        assert report["status"] == "passed" and report["validation_level"] == "V2"
+        assert "fixture-device" not in str(report)
+        assert await services[0].list_workflows(user_id) == []

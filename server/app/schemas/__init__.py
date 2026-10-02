@@ -7,7 +7,7 @@ from .adapter import (
     EndpointCapabilities,
 )
 from .common import PrivacyLevel
-from .evaluation import FixtureEvaluationRequest
+from .evaluation import FixtureEvaluationRequest, WorkflowFixtureRequest
 from .execution import ExecutionOutcome, ValidationLevel
 from .input import EphemeralSignal, InputEnvelope
 from .output import DeliveryPlan, DeliveryReceipt, OutputIntent
@@ -29,6 +29,7 @@ SCHEMA_MODELS = (
     RunEventView,
     ExecutionOutcome,
     FixtureEvaluationRequest,
+    WorkflowFixtureRequest,
     PolicyDecision,
 )
 
@@ -54,4 +55,5 @@ __all__ = [
     "RunEventView",
     "RunView",
     "ValidationLevel",
+    "WorkflowFixtureRequest",
 ]

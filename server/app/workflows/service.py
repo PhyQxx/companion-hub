@@ -11,6 +11,8 @@ from collections.abc import Callable
 from datetime import UTC, datetime
 from uuid import UUID
 
+from sqlalchemy.ext.asyncio import AsyncSession
+
 from app.cognition.action_plan import ActionInvocation, ActionPlanService
 from app.cognition.action_registry import ActionRegistry
 
@@ -38,6 +40,29 @@ class WorkflowService:
         # 计划服务在 main 中晚于流程服务完成 runner 注入，用惰性获取解耦。
         self._plan_service = plan_service
         self._clock = clock or (lambda: datetime.now(UTC))
+
+    @property
+    def registry(self) -> ActionRegistry:
+        return self._registry
+
+    async def save_in_session(
+        self,
+        session: AsyncSession,
+        *,
+        user_id: UUID,
+        name: str,
+        steps: list[WorkflowStep],
+        description: str | None = None,
+    ) -> WorkflowView:
+        self._compile_steps(steps)
+        return await self._store.create_in_session(
+            session,
+            user_id=user_id,
+            name=name,
+            steps=steps,
+            description=description,
+            now=self._clock(),
+        )
 
     async def preview(
         self,

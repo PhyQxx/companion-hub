@@ -564,6 +564,201 @@ export type PrivacyLevel3 = string;
 export type StateVersion = number;
 export type Status = string;
 export type UpdatedAt = string;
+export type Expected1 =
+  | []
+  | [
+      {
+        [k: string]: JsonValue;
+      }
+    ]
+  | [
+      {
+        [k: string]: JsonValue;
+      },
+      {
+        [k: string]: JsonValue;
+      }
+    ]
+  | [
+      {
+        [k: string]: JsonValue;
+      },
+      {
+        [k: string]: JsonValue;
+      },
+      {
+        [k: string]: JsonValue;
+      }
+    ]
+  | [
+      {
+        [k: string]: JsonValue;
+      },
+      {
+        [k: string]: JsonValue;
+      },
+      {
+        [k: string]: JsonValue;
+      },
+      {
+        [k: string]: JsonValue;
+      }
+    ]
+  | [
+      {
+        [k: string]: JsonValue;
+      },
+      {
+        [k: string]: JsonValue;
+      },
+      {
+        [k: string]: JsonValue;
+      },
+      {
+        [k: string]: JsonValue;
+      },
+      {
+        [k: string]: JsonValue;
+      }
+    ]
+  | [
+      {
+        [k: string]: JsonValue;
+      },
+      {
+        [k: string]: JsonValue;
+      },
+      {
+        [k: string]: JsonValue;
+      },
+      {
+        [k: string]: JsonValue;
+      },
+      {
+        [k: string]: JsonValue;
+      },
+      {
+        [k: string]: JsonValue;
+      }
+    ]
+  | [
+      {
+        [k: string]: JsonValue;
+      },
+      {
+        [k: string]: JsonValue;
+      },
+      {
+        [k: string]: JsonValue;
+      },
+      {
+        [k: string]: JsonValue;
+      },
+      {
+        [k: string]: JsonValue;
+      },
+      {
+        [k: string]: JsonValue;
+      },
+      {
+        [k: string]: JsonValue;
+      }
+    ]
+  | [
+      {
+        [k: string]: JsonValue;
+      },
+      {
+        [k: string]: JsonValue;
+      },
+      {
+        [k: string]: JsonValue;
+      },
+      {
+        [k: string]: JsonValue;
+      },
+      {
+        [k: string]: JsonValue;
+      },
+      {
+        [k: string]: JsonValue;
+      },
+      {
+        [k: string]: JsonValue;
+      },
+      {
+        [k: string]: JsonValue;
+      }
+    ]
+  | [
+      {
+        [k: string]: JsonValue;
+      },
+      {
+        [k: string]: JsonValue;
+      },
+      {
+        [k: string]: JsonValue;
+      },
+      {
+        [k: string]: JsonValue;
+      },
+      {
+        [k: string]: JsonValue;
+      },
+      {
+        [k: string]: JsonValue;
+      },
+      {
+        [k: string]: JsonValue;
+      },
+      {
+        [k: string]: JsonValue;
+      },
+      {
+        [k: string]: JsonValue;
+      }
+    ]
+  | [
+      {
+        [k: string]: JsonValue;
+      },
+      {
+        [k: string]: JsonValue;
+      },
+      {
+        [k: string]: JsonValue;
+      },
+      {
+        [k: string]: JsonValue;
+      },
+      {
+        [k: string]: JsonValue;
+      },
+      {
+        [k: string]: JsonValue;
+      },
+      {
+        [k: string]: JsonValue;
+      },
+      {
+        [k: string]: JsonValue;
+      },
+      {
+        [k: string]: JsonValue;
+      },
+      {
+        [k: string]: JsonValue;
+      }
+    ]
+  | null;
+export type ExpectedReason1 = "workflow_compile_failed" | null;
+export type Id2 = string;
+/**
+ * @maxItems 50
+ */
+export type Cases1 = WorkflowFixtureCase[];
+export type DataClass1 = "synthetic";
 /**
  * This interface was referenced by `AriaContracts`'s JSON-Schema
  * via the `definition` "Priority".
@@ -590,6 +785,7 @@ export interface AriaContracts {
   PolicyDecision?: PolicyDecision;
   RunEventView?: RunEventView;
   RunView?: RunView;
+  WorkflowFixtureRequest?: WorkflowFixtureRequest;
   [k: string]: unknown;
 }
 /**
@@ -1102,4 +1298,21 @@ export interface RunBudgetView {
   max_tokens: MaxTokens;
   unknown_usage_calls?: UnknownUsageCalls;
   unsettled_calls?: UnsettledCalls;
+}
+/**
+ * This interface was referenced by `AriaContracts`'s JSON-Schema
+ * via the `definition` "WorkflowFixtureRequest".
+ */
+export interface WorkflowFixtureRequest {
+  cases: Cases1;
+  data_class: DataClass1;
+}
+/**
+ * This interface was referenced by `AriaContracts`'s JSON-Schema
+ * via the `definition` "WorkflowFixtureCase".
+ */
+export interface WorkflowFixtureCase {
+  expected?: Expected1;
+  expected_reason?: ExpectedReason1;
+  id: Id2;
 }

@@ -1,0 +1,76 @@
+{
+  "$defs": {
+    "JsonValue": {},
+    "WorkflowFixtureCase": {
+      "additionalProperties": false,
+      "properties": {
+        "expected": {
+          "anyOf": [
+            {
+              "items": {
+                "additionalProperties": {
+                  "$ref": "#/$defs/JsonValue"
+                },
+                "type": "object"
+              },
+              "maxItems": 10,
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Expected"
+        },
+        "expected_reason": {
+          "anyOf": [
+            {
+              "const": "workflow_compile_failed",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Expected Reason"
+        },
+        "id": {
+          "maxLength": 64,
+          "minLength": 1,
+          "pattern": "^[a-zA-Z0-9_-]+$",
+          "title": "Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id"
+      ],
+      "title": "WorkflowFixtureCase",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "cases": {
+      "items": {
+        "$ref": "#/$defs/WorkflowFixtureCase"
+      },
+      "maxItems": 50,
+      "title": "Cases",
+      "type": "array"
+    },
+    "data_class": {
+      "const": "synthetic",
+      "title": "Data Class",
+      "type": "string"
+    }
+  },
+  "required": [
+    "data_class",
+    "cases"
+  ],
+  "title": "WorkflowFixtureRequest",
+  "type": "object"
+}

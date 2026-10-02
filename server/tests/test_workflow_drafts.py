@@ -629,3 +629,200 @@ async def test_distillation_inherits_l2_for_naming_and_replay(
     record = (await drafts.list_drafts(user_id))[0]
     assert record.replay_status == "failed"
     assert record.replay_detail["steps"][0]["reason_code"] is not None
+
+
+def _fixture() -> Any:
+    from app.schemas.evaluation import WorkflowFixtureRequest
+
+    return WorkflowFixtureRequest.model_validate(
+        {
+            "data_class": "synthetic",
+            "cases": [
+                {
+                    "id": "normal",
+                    "expected": [
+                        {"tool_name": "test_read_state", "arguments": {"target": "主卧灯"}},
+                        {"tool_name": "test_notify", "arguments": {"text": "已确认"}},
+                    ],
+                }
+            ],
+        }
+    )
+
+
+async def test_fixture_compares_source_and_candidate_without_executor(
+    database: Database,
+    user_id: UUID,
+) -> None:
+    drafts, distiller = _distiller(database)
+    await _run_plan(
+        database,
+        distiller._registry,
+        user_id,
+        title="fixture",
+        invocations=INVOCATIONS,
+        distiller=distiller,
+    )
+    await distiller.drain()
+    candidate = (await drafts.list_drafts(user_id))[0]
+    evaluated = await drafts.evaluate_draft(
+        candidate.id,
+        user_id=user_id,
+        registry=distiller._registry,
+        corpus=_fixture(),
+    )
+    report = evaluated.replay_detail["fixture_replay"]
+    assert report["status"] == "passed" and report["validation_level"] == "V2"
+    assert report["checks"] == [{"case_id": "normal", "before": True, "after": True}]
+    assert "主卧灯" not in str(report)
+    from sqlalchemy import update
+
+    from app.db import WorkflowDraftRecord
+
+    async with database.sessions.begin() as session:
+        await session.execute(
+            update(WorkflowDraftRecord)
+            .where(WorkflowDraftRecord.id == candidate.id)
+            .values(
+                steps=[
+                    {"action_id": "test.read_state", "arguments": {"target": "wrong"}},
+                    {"action_id": "test.notify", "arguments": {"text": "已确认"}},
+                ]
+            )
+        )
+    failed = await drafts.evaluate_draft(
+        candidate.id,
+        user_id=user_id,
+        registry=distiller._registry,
+        corpus=_fixture(),
+    )
+    assert failed.replay_detail["fixture_replay"]["outcome"] == "regressed"
+    service = WorkflowService(WorkflowStore(database), distiller._registry, lambda: None)  # type: ignore[arg-type,return-value]
+    with pytest.raises(ValueError, match="fixture_evaluation_not_passed"):
+        await drafts.approve(candidate.id, user_id=user_id, workflows=service)
+    assert await service.list_workflows(user_id) == []
+
+
+async def test_fixture_staleness_and_name_conflict_cannot_partially_approve(
+    database: Database,
+    user_id: UUID,
+) -> None:
+    from sqlalchemy import update
+
+    from app.db import WorkflowDraftRecord
+
+    drafts, distiller = _distiller(database)
+    await _run_plan(
+        database,
+        distiller._registry,
+        user_id,
+        title="fixture",
+        invocations=INVOCATIONS,
+        distiller=distiller,
+    )
+    await distiller.drain()
+    candidate = (await drafts.list_drafts(user_id))[0]
+    await drafts.evaluate_draft(
+        candidate.id, user_id=user_id, registry=distiller._registry, corpus=_fixture()
+    )
+    service = WorkflowService(WorkflowStore(database), distiller._registry, lambda: None)  # type: ignore[arg-type,return-value]
+    original = candidate.steps
+    async with database.sessions.begin() as session:
+        await session.execute(
+            update(WorkflowDraftRecord)
+            .where(WorkflowDraftRecord.id == candidate.id)
+            .values(steps=[{"action_id": "test.notify", "arguments": {"text": "changed"}}])
+        )
+    with pytest.raises(ValueError, match="fixture_evaluation_stale"):
+        await drafts.approve(candidate.id, user_id=user_id, workflows=service)
+    async with database.sessions.begin() as session:
+        await session.execute(
+            update(WorkflowDraftRecord)
+            .where(WorkflowDraftRecord.id == candidate.id)
+            .values(steps=original)
+        )
+    await service.save_workflow(
+        user_id=user_id,
+        name="FIXTURE",
+        steps=[WorkflowStep(action_id="test.notify", arguments={"text": "existing"})],
+    )
+    with pytest.raises(ValueError, match="同名流程"):
+        await drafts.approve(candidate.id, user_id=user_id, workflows=service)
+    stored = await drafts.get(candidate.id)
+    assert stored is not None and stored.status == "pending"
+    assert len(await service.list_workflows(user_id)) == 1
+
+
+async def test_two_reviewers_publish_exactly_one_workflow(
+    database: Database, user_id: UUID
+) -> None:
+    import asyncio
+
+    drafts, distiller = _distiller(database)
+    await _run_plan(
+        database,
+        distiller._registry,
+        user_id,
+        title="concurrent",
+        invocations=INVOCATIONS,
+        distiller=distiller,
+    )
+    await distiller.drain()
+    candidate = (await drafts.list_drafts(user_id))[0]
+    service = WorkflowService(WorkflowStore(database), distiller._registry, lambda: None)  # type: ignore[arg-type,return-value]
+    results = await asyncio.gather(
+        *(drafts.approve(candidate.id, user_id=user_id, workflows=service) for _ in range(2)),
+        return_exceptions=True,
+    )
+    assert sum(not isinstance(result, Exception) for result in results) == 1
+    assert len(await service.list_workflows(user_id)) == 1
+    stored = await drafts.get(candidate.id)
+    assert stored is not None and stored.status == "approved"
+
+
+def test_fixture_blocks_catalog_risk_expansion_and_unknown_actions() -> None:
+    from app.schemas.evaluation import WorkflowFixtureRequest
+    from app.workflows.evaluation import evaluate_fixture
+
+    registry = _registry()
+    source_steps = [WorkflowStep(action_id="test.read_state", arguments={"target": "test"})]
+    corpus = WorkflowFixtureRequest.model_validate(
+        {
+            "data_class": "synthetic",
+            "cases": [
+                {
+                    "id": "read",
+                    "expected": [{"tool_name": "test_read_state", "arguments": {"target": "test"}}],
+                }
+            ],
+        }
+    )
+    original = registry.require("test.read_state").definition
+    changed = ActionDefinition.model_validate(
+        {
+            **original.model_dump(),
+            "risk": "A2",
+            "confirmation_policy": "always",
+        }
+    )
+    registry.upsert(changed, ReadArgs)
+    report = evaluate_fixture(
+        registry,
+        source_steps,
+        source_steps,
+        corpus,
+        recorded_contracts=[
+            {
+                "action_id": "test.read_state",
+                "tool_name": "test_read_state",
+                "risk": "A0",
+                "confirmation_policy": "never",
+            }
+        ],
+    )
+    assert report["status"] == "failed" and report["safety_passed"] is False
+    assert report["outcome"] == "regressed"
+    missing = evaluate_fixture(
+        registry, None, [WorkflowStep(action_id="unknown")], corpus, recorded_contracts=None
+    )
+    assert missing["status"] == "failed"

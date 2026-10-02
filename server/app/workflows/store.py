@@ -9,10 +9,11 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.exc import IntegrityError
+from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db import Database, WorkflowRecord
+from app.db import AppUserRecord, Database, WorkflowRecord
 from app.ids import uuid7
 
 from .models import WorkflowStep, WorkflowView
@@ -57,7 +58,46 @@ class WorkflowStore:
         description: str | None = None,
         now: datetime | None = None,
     ) -> WorkflowView:
+        try:
+            async with self._database.sessions.begin() as session:
+                return await self.create_in_session(
+                    session,
+                    user_id=user_id,
+                    name=name,
+                    steps=steps,
+                    description=description,
+                    now=now,
+                )
+        except IntegrityError as error:
+            raise ValueError(f"同名流程已存在：{name.strip()}") from error
+
+    async def create_in_session(
+        self,
+        session: AsyncSession,
+        *,
+        user_id: UUID,
+        name: str,
+        steps: list[WorkflowStep],
+        description: str | None = None,
+        now: datetime | None = None,
+    ) -> WorkflowView:
         cleaned_name = _clean_name(name)
+        # Serialize user-scoped casefold uniqueness, including concurrent approval.
+        owner = await session.scalar(
+            update(AppUserRecord)
+            .where(AppUserRecord.id == user_id)
+            .values(id=AppUserRecord.id)
+            .returning(AppUserRecord.id)
+        )
+        if owner is None:
+            raise LookupError("workflow owner not found")
+        names = list(
+            await session.scalars(
+                select(WorkflowRecord.name).where(WorkflowRecord.user_id == user_id)
+            )
+        )
+        if any(item.casefold() == cleaned_name.casefold() for item in names):
+            raise ValueError(f"同名流程已存在：{cleaned_name}")
         moment = now or datetime.now(UTC)
         record = WorkflowRecord(
             id=uuid7(),
@@ -68,11 +108,8 @@ class WorkflowStore:
             created_at=moment,
             updated_at=moment,
         )
-        try:
-            async with self._database.sessions.begin() as session:
-                session.add(record)
-        except IntegrityError as error:
-            raise ValueError(f"同名流程已存在：{cleaned_name}") from error
+        session.add(record)
+        await session.flush()
         return _to_view(record)
 
     async def get_workflow(self, user_id: UUID, workflow_id: UUID) -> WorkflowRecord:

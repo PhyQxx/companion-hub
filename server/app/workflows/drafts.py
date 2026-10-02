@@ -23,13 +23,14 @@ from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.cognition.action_registry import ActionRegistry
 from app.db import (
     ActionPlanRecord,
     ActionStepRecord,
+    ConversationRecord,
     Database,
     TaskRunRecord,
     WorkflowDraftRecord,
@@ -43,10 +44,13 @@ from app.jobs.maintenance import MaintenanceSourceGone, MaintenanceWorker, maint
 from app.llm import CompletionRequest, LLMMessage, LLMRoute, ToolCall
 from app.runs.budget import job_model_budget
 from app.schemas.common import PrivacyLevel
+from app.schemas.evaluation import WorkflowFixtureRequest
 from app.tools.contracts import ToolContext
 from app.tools.executor import ToolExecutor
 
+from .evaluation import compiled_hash, evaluate_fixture, trajectory_hash
 from .models import WorkflowStep
+from .service import WorkflowService
 
 logger = logging.getLogger("app.workflows.drafts")
 
@@ -140,10 +144,142 @@ class WorkflowDraftStore:
         if status not in {"approved", "dismissed"}:
             raise ValueError("invalid review status")
         async with self._database.sessions.begin() as session:
-            record = await session.get(WorkflowDraftRecord, draft_id)
-            if record is None or record.status != "pending":
+            changed = await session.scalar(
+                update(WorkflowDraftRecord)
+                .where(
+                    WorkflowDraftRecord.id == draft_id,
+                    WorkflowDraftRecord.status == "pending",
+                )
+                .values(status=status, reviewed_at=datetime.now(UTC))
+                .returning(WorkflowDraftRecord.id)
+            )
+            if changed is None:
                 return None
-            record.status = status
+            record = await session.get(WorkflowDraftRecord, draft_id, populate_existing=True)
+        return record
+
+    async def evaluate_draft(
+        self,
+        draft_id: UUID,
+        *,
+        user_id: UUID,
+        registry: ActionRegistry,
+        corpus: WorkflowFixtureRequest,
+    ) -> WorkflowDraftRecord:
+        async with self._database.sessions.begin() as session:
+            locked = await session.scalar(
+                update(WorkflowDraftRecord)
+                .where(
+                    WorkflowDraftRecord.id == draft_id,
+                    WorkflowDraftRecord.user_id == user_id,
+                    WorkflowDraftRecord.status == "pending",
+                )
+                .values(id=WorkflowDraftRecord.id)
+                .returning(WorkflowDraftRecord.id)
+            )
+            if locked is None:
+                raise LookupError("draft not found")
+            record = await session.get(WorkflowDraftRecord, draft_id, populate_existing=True)
+            assert record is not None
+            baseline = None
+            contracts = None
+            if record.plan_id is not None:
+                plan = await session.get(ActionPlanRecord, record.plan_id)
+                if plan is None or plan.user_id != user_id or plan.reason_code == "source_deleted":
+                    raise ValueError("source_deleted")
+                original = list(
+                    await session.scalars(
+                        select(ActionStepRecord)
+                        .where(ActionStepRecord.plan_id == plan.id)
+                        .order_by(ActionStepRecord.position)
+                    )
+                )
+                baseline = [
+                    WorkflowStep(action_id=item.action_id, arguments=item.arguments)
+                    for item in original
+                ]
+                contracts = [
+                    {
+                        "action_id": item.action_id,
+                        "tool_name": item.tool_name,
+                        "risk": item.risk,
+                        "confirmation_policy": item.confirmation_policy,
+                    }
+                    for item in original
+                ]
+            candidate = [WorkflowStep.model_validate(item) for item in record.steps]
+            report = evaluate_fixture(
+                registry, baseline, candidate, corpus, recorded_contracts=contracts
+            )
+            record.replay_detail = {**dict(record.replay_detail or {}), "fixture_replay": report}
+        return record
+
+    async def approve(
+        self,
+        draft_id: UUID,
+        *,
+        user_id: UUID,
+        workflows: WorkflowService,
+    ) -> WorkflowDraftRecord:
+        async with self._database.sessions.begin() as session:
+            # Use the source's lock order before locking the candidate. Deletion
+            # cannot race publication after this revalidation.
+            source = await session.get(WorkflowDraftRecord, draft_id)
+            if source is None or source.user_id != user_id:
+                raise LookupError("draft not found")
+            if source.plan_id is not None:
+                plan = await session.get(ActionPlanRecord, source.plan_id)
+                if plan is None or plan.user_id != user_id:
+                    raise ValueError("source_deleted")
+                if plan.task_run_id is not None:
+                    run = await session.get(TaskRunRecord, plan.task_run_id)
+                    if run is None or run.user_id != user_id:
+                        raise ValueError("source_deleted")
+                    if run.conversation_id is not None:
+                        conversation = await session.get(
+                            ConversationRecord, run.conversation_id, with_for_update=True
+                        )
+                        if conversation is None or conversation.user_id != user_id:
+                            raise ValueError("source_deleted")
+                plan = await session.get(
+                    ActionPlanRecord, source.plan_id, with_for_update=True, populate_existing=True
+                )
+                if plan is None or plan.reason_code == "source_deleted":
+                    raise ValueError("source_deleted")
+            # CAS also protects SQLite where SELECT FOR UPDATE is a no-op.
+            claimed = await session.scalar(
+                update(WorkflowDraftRecord)
+                .where(
+                    WorkflowDraftRecord.id == draft_id,
+                    WorkflowDraftRecord.user_id == user_id,
+                    WorkflowDraftRecord.status == "pending",
+                )
+                .values(status="approved", reviewed_at=datetime.now(UTC))
+                .returning(WorkflowDraftRecord.id)
+            )
+            if claimed is None:
+                raise LookupError("draft not found")
+            record = await session.get(WorkflowDraftRecord, draft_id, populate_existing=True)
+            assert record is not None
+            if record.replay_status in {"failed", "not_run"}:
+                raise ValueError(f"replay_{record.replay_status}_rerun_before_approve")
+            steps = [WorkflowStep.model_validate(item) for item in record.steps]
+            report = (record.replay_detail or {}).get("fixture_replay")
+            if report is not None:
+                if report.get("status") != "passed":
+                    raise ValueError("fixture_evaluation_not_passed")
+                if report.get("candidate_hash") != trajectory_hash(steps) or report.get(
+                    "compiled_hash"
+                ) != compiled_hash(workflows.registry, steps):
+                    raise ValueError("fixture_evaluation_stale")
+            await workflows.save_in_session(
+                session,
+                user_id=user_id,
+                name=record.name,
+                steps=steps,
+                description=record.description,
+            )
+            record.status = "approved"
             record.reviewed_at = datetime.now(UTC)
         return record
 
@@ -152,11 +288,22 @@ class WorkflowDraftStore:
     ) -> None:
         async with self._database.sessions.begin() as session:
             await assert_current_claim(session)
-            record = await session.get(WorkflowDraftRecord, draft_id)
-            if record is None or record.status != "pending":
+            locked = await session.scalar(
+                update(WorkflowDraftRecord)
+                .where(
+                    WorkflowDraftRecord.id == draft_id,
+                    WorkflowDraftRecord.status == "pending",
+                )
+                .values(id=WorkflowDraftRecord.id)
+                .returning(WorkflowDraftRecord.id)
+            )
+            if locked is None:
                 return
+            record = await session.get(WorkflowDraftRecord, draft_id, populate_existing=True)
+            assert record is not None
             record.replay_status = replay_status
-            record.replay_detail = detail
+            fixture = (record.replay_detail or {}).get("fixture_replay")
+            record.replay_detail = {**detail, **({"fixture_replay": fixture} if fixture else {})}
 
 
 class PlanDistiller:

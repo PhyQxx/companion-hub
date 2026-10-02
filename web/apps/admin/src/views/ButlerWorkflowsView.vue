@@ -17,11 +17,72 @@ interface WorkflowItem {
   updated_at: string | null;
 }
 
+interface DraftItem {
+  id: string;
+  name: string;
+  description: string | null;
+  status: string;
+  replay_status: string;
+  replay_detail: {
+    fixture_replay?: {
+      status: string;
+      validation_level: string;
+      outcome: string;
+      case_count: number;
+      checks: Array<{ case_id: string; before: boolean | null; after: boolean }>;
+    };
+  };
+}
+
 const api = inject("adminApi") as AdminApi;
 const emit = defineEmits<{ status: [text: string, error?: boolean] }>();
 
 const workflows = ref<WorkflowItem[]>([]);
 const loading = ref(false);
+const drafts = ref<DraftItem[]>([]);
+const draftError = ref<string | null>(null);
+const busyDraft = ref<string | null>(null);
+const evaluating = ref<DraftItem | null>(null);
+const fixtureText = ref(JSON.stringify({ data_class: "synthetic", cases: [
+  { id: "example", expected: [{ tool_name: "your_read_tool", arguments: {} }] },
+] }, null, 2));
+
+function canApprove(item: DraftItem) {
+  return !["failed", "not_run"].includes(item.replay_status)
+    && (!item.replay_detail.fixture_replay || item.replay_detail.fixture_replay.status === "passed");
+}
+
+async function review(item: DraftItem, action: "approve" | "dismiss" | "replay") {
+  busyDraft.value = item.id;
+  try {
+    await api.request(`/api/v1/admin/butler/workflow-drafts/${item.id}/${action}`, { method: "POST" });
+    ElMessage.success(action === "approve" ? "已保存为流程，运行时仍需按权限确认" : action === "dismiss" ? "已忽略候选" : "来源检查已更新");
+    await load();
+  } catch (error) {
+    emit("status", error instanceof Error ? error.message : "操作失败", true);
+  } finally {
+    busyDraft.value = null;
+  }
+}
+
+async function evaluate() {
+  const item = evaluating.value;
+  if (!item) return;
+  busyDraft.value = item.id;
+  try {
+    const body = JSON.parse(fixtureText.value);
+    await api.request(`/api/v1/admin/butler/workflow-drafts/${item.id}/evaluate`, {
+      method: "POST", body: JSON.stringify(body),
+    });
+    evaluating.value = null;
+    ElMessage.success("离线评测已保存");
+    await load();
+  } catch (error) {
+    emit("status", error instanceof Error ? error.message : "评测失败", true);
+  } finally {
+    busyDraft.value = null;
+  }
+}
 
 function fmt(value: string | null) {
   return value ? new Date(value).toLocaleString() : "—";
@@ -30,7 +91,19 @@ function fmt(value: string | null) {
 async function load() {
   loading.value = true;
   try {
-    workflows.value = await api.request<WorkflowItem[]>("/api/v1/admin/butler/workflows");
+    const [saved, candidates] = await Promise.allSettled([
+      api.request<WorkflowItem[]>("/api/v1/admin/butler/workflows"),
+      api.request<DraftItem[]>("/api/v1/admin/butler/workflow-drafts?status=pending"),
+    ]);
+    if (saved.status === "rejected") throw saved.reason;
+    workflows.value = saved.value;
+    if (candidates.status === "fulfilled") {
+      drafts.value = candidates.value;
+      draftError.value = null;
+    } else {
+      drafts.value = [];
+      draftError.value = candidates.reason instanceof Error ? candidates.reason.message : "候选服务暂不可用";
+    }
   } catch (error) {
     emit("status", error instanceof Error ? error.message : "流程加载失败", true);
   } finally {
@@ -98,6 +171,46 @@ onMounted(load);
         </el-table-column>
       </el-table>
     </div>
+    <div class="panel">
+      <h2>待审阅的流程候选</h2>
+      <p class="muted">来源检查只说明只读步骤的结构是否一致。离线样例比较动作调用契约；两者都不证明实际业务结果正确。</p>
+      <el-alert v-if="draftError" :title="draftError" type="warning" :closable="false" />
+      <el-table v-else :data="drafts" empty-text="暂无待审阅候选">
+        <el-table-column type="expand">
+          <template #default="{ row }">
+            <p v-for="check in row.replay_detail.fixture_replay?.checks ?? []" :key="check.case_id">
+              {{ check.case_id }} · 来源 {{ check.before === null ? '未评估' : check.before ? '通过' : '失败' }} · 候选 {{ check.after ? '通过' : '失败' }}
+            </p>
+          </template>
+        </el-table-column>
+        <el-table-column prop="name" label="候选" min-width="150" />
+        <el-table-column label="来源检查" min-width="110">
+          <template #default="{ row }">{{ ({ passed: "通过", failed: "失败", not_run: "未检查", not_applicable: "无可检查步骤" } as Record<string, string>)[row.replay_status] ?? row.replay_status }}</template>
+        </el-table-column>
+        <el-table-column label="离线对比" min-width="220">
+          <template #default="{ row }">
+            <template v-if="row.replay_detail.fixture_replay">
+              {{ row.replay_detail.fixture_replay.status === 'passed' ? '通过' : '未通过' }} · {{ row.replay_detail.fixture_replay.validation_level }} · {{ row.replay_detail.fixture_replay.case_count }} 个样例
+              <small class="muted">{{ ({ improved: "改善", regressed: "退化", unchanged: "无变化", inconclusive: "结论不足" } as Record<string, string>)[row.replay_detail.fixture_replay.outcome] }}</small>
+            </template>
+            <span v-else>未评测</span>
+          </template>
+        </el-table-column>
+        <el-table-column label="操作" min-width="340">
+          <template #default="{ row }">
+            <el-button size="small" :disabled="busyDraft !== null" @click="evaluating = row as DraftItem">离线评测</el-button>
+            <el-button size="small" :disabled="busyDraft !== null" @click="review(row as DraftItem, 'replay')">检查只读来源</el-button>
+            <el-button size="small" type="primary" :disabled="busyDraft !== null || !canApprove(row as DraftItem)" @click="review(row as DraftItem, 'approve')">批准保存</el-button>
+            <el-button size="small" :disabled="busyDraft !== null" @click="review(row as DraftItem, 'dismiss')">忽略</el-button>
+          </template>
+        </el-table-column>
+      </el-table>
+    </div>
+    <el-dialog :model-value="evaluating !== null" title="流程离线评测" width="min(680px, 95vw)" @close="evaluating = null">
+      <p>只使用自行构造的测试参数；不要粘贴私人对话。评测不会执行工具或访问外部连接。expected 列出完整轨迹的工具名与参数。</p>
+      <el-input v-model="fixtureText" type="textarea" :rows="14" aria-label="自行构造的测试样例 JSON" />
+      <template #footer><el-button type="primary" :loading="busyDraft !== null" @click="evaluate">运行离线评测</el-button></template>
+    </el-dialog>
   </section>
 </template>
 
