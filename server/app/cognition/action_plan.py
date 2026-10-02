@@ -12,6 +12,7 @@ from uuid import UUID
 
 from pydantic import Field, JsonValue
 from sqlalchemy import or_, select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db import ActionPlanRecord, ActionStepRecord, AppUserRecord, Database, TaskRunRecord
 from app.ids import uuid7
@@ -139,6 +140,7 @@ ExecutionListener = Callable[[PlanExecutionEvent], Awaitable[None]]
 ChangeListener = Callable[[PlanChangedEvent], Awaitable[None]]
 # DIST：计划全部完成后的回调（plan_id, user_id）
 PlanCompletionCallback = Callable[[UUID, UUID], None]
+PlanCompletionEnqueuer = Callable[[AsyncSession, UUID, UUID], Awaitable[None]]
 
 
 class ActionPlanService:
@@ -161,6 +163,7 @@ class ActionPlanService:
         self._change_listener: ChangeListener | None = None
         # DIST/BTL-03：计划全部步骤完成后的回调列表（每个回调自身转后台执行）
         self._completion_callbacks: list[PlanCompletionCallback] = []
+        self._completion_enqueuers: list[PlanCompletionEnqueuer] = []
 
     def set_runner(
         self,
@@ -171,6 +174,10 @@ class ActionPlanService:
     def set_execution_listener(self, listener: ExecutionListener) -> None:
         """PC-02：订阅执行进度事件；监听器异常绝不影响执行本身。"""
         self._execution_listener = listener
+
+    def add_completion_enqueuer(self, callback: PlanCompletionEnqueuer) -> None:
+        """Only enqueue local durable work; no network calls in this transaction."""
+        self._completion_enqueuers.append(callback)
 
     def add_completion_callback(self, callback: PlanCompletionCallback) -> None:
         """BTL-03：追加计划完成回调（DIST 蒸馏、完成汇报等）；异常只记日志。"""
@@ -662,6 +669,8 @@ class ActionPlanService:
                 plan.status = ActionPlanStatus.COMPLETED.value
                 plan.completed_at = datetime.now(UTC)
                 plan.updated_at = plan.completed_at
+                for enqueue in self._completion_enqueuers:
+                    await enqueue(session, plan_id, user_id)
             view = await self.get_plan(user_id=user_id, plan_id=plan_id)
         await self._emit(
             PlanExecutionEvent(

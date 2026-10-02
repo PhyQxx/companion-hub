@@ -70,9 +70,7 @@ class FakeReadTool:
         self.data = data if data is not None else {"entities": [{"name": "主卧灯"}]}
 
     def definition(self) -> ToolDefinition:
-        return ToolDefinition(
-            name=self.name, description=self.description, parameters={}
-        )
+        return ToolDefinition(name=self.name, description=self.description, parameters={})
 
     async def execute(self, arguments: BaseModel, context: ToolContext) -> ToolResult:
         del context, arguments
@@ -93,15 +91,11 @@ class FakeNotifyTool:
     max_privacy_level = PrivacyLevel.L2
 
     def definition(self) -> ToolDefinition:
-        return ToolDefinition(
-            name=self.name, description=self.description, parameters={}
-        )
+        return ToolDefinition(name=self.name, description=self.description, parameters={})
 
     async def execute(self, arguments: BaseModel, context: ToolContext) -> ToolResult:
         del context, arguments
-        return ToolResult(
-            ok=True, tool_name=self.name, provider="test", latency_ms=1, data={}
-        )
+        return ToolResult(ok=True, tool_name=self.name, provider="test", latency_ms=1, data={})
 
 
 def _tool_registry(*tools: Any) -> ToolRegistry:
@@ -163,7 +157,7 @@ async def _run_plan(
         )
 
     service = ActionPlanService(database, registry, runner=runner)
-    service.set_completion_callback(distiller.on_plan_completed)
+    service.add_completion_enqueuer(distiller.enqueue_in_session)
     plan = await service.create_plan(
         user_id=user_id, title=title, invocations=invocations, idempotency_key=uuid7().hex
     )
@@ -180,9 +174,7 @@ def _distiller(
     executor = None
     if read_tool is not None:
         executor = ToolExecutor(_tool_registry(read_tool, FakeNotifyTool()))
-    distiller = PlanDistiller(
-        database, drafts, registry=_registry(), executor=executor
-    )
+    distiller = PlanDistiller(database, drafts, registry=_registry(), executor=executor)
     return drafts, distiller
 
 
@@ -214,9 +206,7 @@ async def test_completed_plan_distills_into_pending_draft(
     assert draft.plan_id is not None
 
 
-async def test_single_step_plan_is_not_distilled(
-    database: Database, user_id: UUID
-) -> None:
+async def test_single_step_plan_is_not_distilled(database: Database, user_id: UUID) -> None:
     drafts, distiller = _distiller(database)
     await _run_plan(
         database,
@@ -230,9 +220,7 @@ async def test_single_step_plan_is_not_distilled(
     assert await drafts.list_drafts(user_id) == []
 
 
-async def test_same_trajectory_distills_only_once(
-    database: Database, user_id: UUID
-) -> None:
+async def test_same_trajectory_distills_only_once(database: Database, user_id: UUID) -> None:
     drafts, distiller = _distiller(database)
     for _ in range(2):
         await _run_plan(
@@ -247,20 +235,19 @@ async def test_same_trajectory_distills_only_once(
     assert len(await drafts.list_drafts(user_id)) == 1
 
 
-async def test_workflow_run_plan_is_not_reproposed(
-    database: Database, user_id: UUID
-) -> None:
+async def test_workflow_run_plan_is_not_reproposed(database: Database, user_id: UUID) -> None:
     """workflow_run 展开的计划与既有流程步骤相同：不重复提案。"""
     registry = _registry()
     workflow_service = WorkflowService(
-        WorkflowStore(database), registry, lambda: None  # type: ignore[arg-type,return-value]
+        WorkflowStore(database),
+        registry,
+        lambda: None,  # type: ignore[arg-type,return-value]
     )
     await workflow_service.save_workflow(
         user_id=user_id,
         name="睡前检查",
         steps=[
-            WorkflowStep(action_id=item.action_id, arguments=item.arguments)
-            for item in INVOCATIONS
+            WorkflowStep(action_id=item.action_id, arguments=item.arguments) for item in INVOCATIONS
         ],
     )
     drafts, distiller = _distiller(database)
@@ -276,9 +263,7 @@ async def test_workflow_run_plan_is_not_reproposed(
     assert await drafts.list_drafts(user_id) == []
 
 
-async def test_replay_passes_on_structural_match(
-    database: Database, user_id: UUID
-) -> None:
+async def test_replay_passes_on_structural_match(database: Database, user_id: UUID) -> None:
     drafts, distiller = _distiller(database, read_tool=FakeReadTool())
     await _run_plan(
         database,
@@ -297,13 +282,9 @@ async def test_replay_passes_on_structural_match(
     assert detail["steps"][0]["passed"] is True
 
 
-async def test_replay_fails_on_structure_change(
-    database: Database, user_id: UUID
-) -> None:
+async def test_replay_fails_on_structure_change(database: Database, user_id: UUID) -> None:
     # 原执行返回 {entities}；重放工具现在返回不同顶层键 → 结构不一致
-    drafts, distiller = _distiller(
-        database, read_tool=FakeReadTool(data={"rows": [1, 2]})
-    )
+    drafts, distiller = _distiller(database, read_tool=FakeReadTool(data={"rows": [1, 2]}))
     await _run_plan(
         database,
         distiller._registry,
@@ -339,17 +320,15 @@ async def test_replay_without_read_steps_is_not_applicable(
     assert records[0].replay_status == "not_applicable"
 
 
-async def test_approve_gate_and_workflow_creation(
-    database: Database, user_id: UUID
-) -> None:
+async def test_approve_gate_and_workflow_creation(database: Database, user_id: UUID) -> None:
     """回放失败不可晋级；通过后审批创建正式流程，草稿置 approved。"""
     registry = _registry()
     workflow_service = WorkflowService(
-        WorkflowStore(database), registry, lambda: None  # type: ignore[arg-type,return-value]
+        WorkflowStore(database),
+        registry,
+        lambda: None,  # type: ignore[arg-type,return-value]
     )
-    drafts, distiller = _distiller(
-        database, read_tool=FakeReadTool(data={"rows": []})
-    )
+    drafts, distiller = _distiller(database, read_tool=FakeReadTool(data={"rows": []}))
     await _run_plan(
         database,
         registry,
@@ -494,3 +473,159 @@ async def test_distiller_polishes_name_via_llm_with_fallback(
     await distiller2.drain()
     record2 = (await drafts2.list_drafts(user_id))[0]
     assert record2.name == "另一个计划标题"
+
+
+async def test_distillation_queue_survives_new_worker(database: Database, user_id: UUID) -> None:
+    from sqlalchemy import select
+
+    from app.db import JobRecord
+
+    drafts, original = _distiller(database)
+    await _run_plan(
+        database,
+        original._registry,
+        user_id,
+        title="重启前完成",
+        invocations=INVOCATIONS,
+        distiller=original,
+    )
+    assert await drafts.list_drafts(user_id) == []
+    async with database.sessions() as session:
+        jobs = list(await session.scalars(select(JobRecord)))
+        assert len(jobs) == 1 and jobs[0].status == "queued"
+        assert set(jobs[0].input) == {"plan_id", "user_id"}
+    _, restarted = _distiller(database, read_tool=FakeReadTool())
+    await restarted.drain()
+    assert len(await drafts.list_drafts(user_id)) == 1
+    async with database.sessions() as session:
+        job = await session.get(JobRecord, jobs[0].id)
+        assert job is not None and job.status == "succeeded"
+
+
+async def test_retry_resumes_replay_without_duplicate_draft(
+    database: Database,
+    user_id: UUID,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from datetime import UTC, datetime
+
+    from sqlalchemy import select
+
+    from app.db import JobRecord
+
+    drafts, first = _distiller(database, read_tool=FakeReadTool())
+    await _run_plan(
+        database,
+        first._registry,
+        user_id,
+        title="回放中断",
+        invocations=INVOCATIONS,
+        distiller=first,
+    )
+
+    async def interrupted(draft: Any, *, user_id: UUID) -> Any:
+        raise RuntimeError("simulated process interruption after candidate persistence")
+
+    monkeypatch.setattr(first, "replay_draft", interrupted)
+    await first.drain()
+    candidate = (await drafts.list_drafts(user_id))[0]
+    assert candidate.replay_status == "not_run"
+    async with database.sessions.begin() as session:
+        job = await session.scalar(select(JobRecord))
+        assert job is not None and job.status == "retry_wait"
+        job.available_at = datetime.now(UTC)
+    _, restarted = _distiller(database, read_tool=FakeReadTool())
+    await restarted.drain()
+    records = await drafts.list_drafts(user_id)
+    assert len(records) == 1 and records[0].id == candidate.id
+    assert records[0].replay_status == "passed"
+
+
+async def test_cancelled_claim_cannot_create_derived_candidate(
+    database: Database,
+    user_id: UUID,
+) -> None:
+    from app.harness.claim import ClaimInvalidated, ExecutionClaim, claim_scope
+    from app.jobs.engine import JobEngine
+
+    drafts, _ = _distiller(database)
+    engine = JobEngine(database)
+    queued = await engine.submit(
+        kind="workflow.distill",
+        owner=str(user_id),
+        resource_class="workflow-distillation",
+        input={},
+        idempotency_key="cancelled-derived-write",
+    )
+    job = await engine.claim("old-worker", resource_class="workflow-distillation")
+    assert job is not None and job.id == queued.id
+    await engine.cancel(job.id)
+    with (
+        claim_scope(ExecutionClaim(job.id, "old-worker", job.attempts)),
+        pytest.raises(ClaimInvalidated),
+    ):
+        await drafts.create_draft(
+            user_id=user_id,
+            plan_id=None,
+            name="must not persist",
+            steps=[WorkflowStep(action_id="test.read_state", arguments={"target": "test"})],
+        )
+    assert await drafts.list_drafts(user_id) == []
+
+
+async def test_distillation_inherits_l2_for_naming_and_replay(
+    database: Database,
+    user_id: UUID,
+) -> None:
+    from datetime import UTC, datetime
+
+    from sqlalchemy import select
+
+    from app.db import ActionPlanRecord, JobRecord, TaskRunRecord
+    from app.llm import LLMRoute
+
+    backend = _NamingBackend('{"name":"私密流程","description":"本地处理"}')
+    tool = FakeReadTool()
+    tool.runs_local = False
+    drafts = WorkflowDraftStore(database)
+    distiller = PlanDistiller(
+        database,
+        drafts,
+        registry=_registry(),
+        executor=ToolExecutor(_tool_registry(tool)),
+        config_store=_NamingStore(),
+        router_builder=lambda config: backend,
+    )
+    await _run_plan(
+        database,
+        distiller._registry,
+        user_id,
+        title="私密标题",
+        invocations=INVOCATIONS,
+        distiller=distiller,
+    )
+    run_id = uuid7()
+    async with database.sessions.begin() as session:
+        session.add(
+            TaskRunRecord(
+                id=run_id,
+                user_id=user_id,
+                contract={},
+                status="succeeded",
+                privacy_level="L2",
+                created_at=datetime.now(UTC),
+                updated_at=datetime.now(UTC),
+            )
+        )
+        await session.flush()
+        plan = await session.scalar(select(ActionPlanRecord))
+        job = await session.scalar(select(JobRecord))
+        assert plan is not None and job is not None
+        plan.task_run_id = run_id
+        job.task_run_id = run_id
+    await distiller.drain()
+    assert backend.requests[0].privacy_level == PrivacyLevel.L2
+    assert backend.requests[0].route == LLMRoute.PRIVATE
+    record = (await drafts.list_drafts(user_id))[0]
+    assert record.replay_status == "failed"
+    assert record.replay_detail["steps"][0]["reason_code"] is not None

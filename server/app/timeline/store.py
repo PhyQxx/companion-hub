@@ -19,6 +19,7 @@ from app.db import (
     MessageRecord,
     TimelineEventRecord,
 )
+from app.db.claims import assert_current_claim
 from app.schemas.common import PrivacyLevel
 
 from .models import (
@@ -439,6 +440,7 @@ class TimelineStore:
                         or message.conversation_id != record.conversation_id
                     ):
                         raise ValueError("source_deleted")
+                await assert_current_claim(session)
                 session.add(record)
                 await session.flush()
                 await session.refresh(record)

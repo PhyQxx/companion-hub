@@ -39,6 +39,7 @@ from app.db import (
     TaskRunRecord,
     WorkflowDraftRecord,
 )
+from app.db.claims import assert_current_claim
 from app.harness.budget import BudgetDenied, budget_scope
 from app.harness.context import ContextAssembler, ContextBlocks, ContextReference
 from app.harness.loop import CompletionFrame, LoopOutcome, run_agent_loop
@@ -2010,6 +2011,23 @@ class ChatService:
                     )
                 )
             )
+            run_ids = list(
+                await session.scalars(
+                    select(TaskRunRecord.id).where(
+                        TaskRunRecord.conversation_id == conversation_id,
+                    )
+                )
+            )
+            # Derived writes lock Conversation -> Job -> derived rows. Take
+            # the same order before purging candidates so cancellation and
+            # deletion cannot deadlock a worker committing its evidence.
+            if run_ids:
+                await session.scalars(
+                    select(JobRecord)
+                    .where(JobRecord.task_run_id.in_(run_ids))
+                    .order_by(JobRecord.id)
+                    .with_for_update()
+                )
             if turn_ids:
                 await session.execute(
                     delete(SkillDraftRecord).where(
@@ -2030,13 +2048,6 @@ class ChatService:
             )
             await session.execute(
                 delete(MessageRecord).where(MessageRecord.conversation_id == conversation_id)
-            )
-            run_ids = list(
-                await session.scalars(
-                    select(TaskRunRecord.id).where(
-                        TaskRunRecord.conversation_id == conversation_id,
-                    )
-                )
             )
             if run_ids:
                 source_plan_ids = select(ActionPlanRecord.id).where(
@@ -2620,6 +2631,7 @@ class ChatService:
                         conversation_id,
                     )
                     return
+                await assert_current_claim(session)
                 row.summary_text = new_summary
                 row.summary_until_seq = new_watermark
         except Exception:
@@ -2661,6 +2673,7 @@ class ChatService:
                 backend=self._router_builder(pending.config),
                 strict=strict,
                 source_owner_id=pending.user_id if strict else None,
+                privacy_level=pending.request.privacy_level,
             )
         except Exception:
             if strict:

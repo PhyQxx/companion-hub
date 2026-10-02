@@ -10,6 +10,7 @@ from sqlalchemy import func, select, update
 
 from app.config.models import RunBudgetConfig
 from app.db import AppUserRecord, Database, JobRecord, ModelReservationRecord, TaskRunRecord
+from app.db.claims import assert_current_claim
 from app.harness.budget import BudgetDenied, CallPermit
 from app.ids import uuid7
 from app.llm.contracts import ModelUsage
@@ -77,6 +78,7 @@ class RunModelBudget:
                 limit = max_attempts - 1
             if row.status not in statuses:
                 raise BudgetDenied("budget_run_inactive")
+            await assert_current_claim(session)
             # A no-op owner-row write serializes admission across different runs
             # on both SQLite and PostgreSQL; calls themselves never hold this lock.
             owner = await session.scalar(
@@ -248,7 +250,10 @@ async def job_model_budget(
                 user_id=user_id,
                 status="running",
                 privacy_level="L1",
-                contract={"entry": "delegated", "criterion": "handler_completed"},
+                contract={
+                    "entry": "delegated" if job.kind.startswith("deleg.") else "background",
+                    "criterion": "handler_completed",
+                },
                 budget=config.model_dump(mode="json"),
                 deadline=now + timedelta(seconds=config.maintenance_deadline_seconds),
                 created_at=now,

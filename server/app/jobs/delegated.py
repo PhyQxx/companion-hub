@@ -26,6 +26,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from app.config import ConfigStore, DatabaseConfigStore, HubConfig
 from app.db import Database
 from app.harness.budget import BudgetDenied, budget_scope
+from app.harness.claim import ExecutionClaim, claim_scope
 from app.ids import uuid7
 from app.llm import (
     CompletionRequest,
@@ -179,7 +180,8 @@ class DelegatedJobWorker:
             is_cancel_requested=cancelled,
         )
         try:
-            result = await handler(payload, run_context)
+            with claim_scope(ExecutionClaim(job.id, worker_id, job.attempts)):
+                result = await handler(payload, run_context)
         except DelegCancelled:
             # Handler 协作式取消：与执行后取消同语义，结果不汇报
             logger.info("delegated job %s cancelled cooperatively", job.id)

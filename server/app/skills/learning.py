@@ -78,6 +78,7 @@ class SkillRevisionLearner:
         backend: CompletionBackend,
         strict: bool = False,
         source_owner_id: UUID | None = None,
+        privacy_level: PrivacyLevel = PrivacyLevel.L1,
     ) -> SkillDraftView | None:
         """纠正 → 修订草稿；任何门槛不满足返回 None（静默，不影响回合）。"""
         if not runs or not _CORRECTION_MARKERS.search(text):
@@ -154,7 +155,12 @@ class SkillRevisionLearner:
         )
         if draft is None:
             return None
-        draft = await self._auto_verify(draft)
+        if privacy_level == PrivacyLevel.L2:
+            draft = await self._store.mark_draft_verified(
+                draft.id, ok=False, reason="local_only_source_probe_skipped"
+            )
+        else:
+            draft = await self._auto_verify(draft)
         logger.info(
             "skill revision drafted skill=%s base=v%s draft=%s",
             skill_name,

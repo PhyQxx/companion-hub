@@ -311,7 +311,7 @@ def assemble_domain(
         else None
     )
     if action_plan_service is not None and plan_distiller is not None:
-        action_plan_service.add_completion_callback(plan_distiller.on_plan_completed)
+        action_plan_service.add_completion_enqueuer(plan_distiller.enqueue_in_session)
     # BTL-03（docs/09 §1）：对话内提议注册表动作（A1/A2 转计划确认）+
     # 计划完成主动汇报（续跑闭环）。
     plan_completion_reporter = (

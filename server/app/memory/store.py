@@ -26,6 +26,7 @@ from app.db import (
     MemorySourceRecord,
     MessageRecord,
 )
+from app.db.claims import assert_current_claim
 from app.schemas.common import PrivacyLevel
 
 from .embeddings import EmbeddingProvider, HashingEmbeddingProvider, cosine_similarity
@@ -161,6 +162,7 @@ class MemoryStore:
                     if existing is not None:
                         return self._entry(existing)
 
+            await assert_current_claim(session)
             record = MemoryRecord(
                 user_id=user_id,
                 subject_kind=MemorySubjectKind(candidate.subject_kind).value,
@@ -451,6 +453,7 @@ class MemoryStore:
         async with self._database.sessions.begin() as session:
             if source_owner_id is not None:
                 await self._guard_sources(session, sources, user_id=source_owner_id)
+            await assert_current_claim(session)
 
             record = await session.get(MemoryRecord, memory_id, with_for_update=True)
             if record is None:

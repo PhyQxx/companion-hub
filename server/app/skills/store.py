@@ -24,6 +24,7 @@ from app.db import (
     SkillSuggestionRecord,
     SkillVersionRecord,
 )
+from app.db.claims import assert_current_claim
 from app.ids import uuid7
 from app.schemas.evaluation import FixtureEvaluationRequest
 
@@ -445,6 +446,7 @@ class SkillStore:
                 if prior is not None:
                     return None
 
+            await assert_current_claim(session)
             existing = await session.scalar(
                 select(SkillDraftRecord)
                 .where(SkillDraftRecord.dedupe_key == dedupe_key)

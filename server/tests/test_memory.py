@@ -55,8 +55,10 @@ NOW = datetime(2099, 1, 1, tzinfo=UTC)
 
 
 @pytest.fixture
-async def database() -> AsyncIterator[Database]:
-    result = create_database("sqlite+aiosqlite:///:memory:")
+async def database(tmp_path: Path) -> AsyncIterator[Database]:
+    # Lifespan owns multiple workers; use separate real transactions rather
+    # than interleaving sessions on one in-memory StaticPool connection.
+    result = create_database(f"sqlite+aiosqlite:///{tmp_path}/memory.db")
     async with result.engine.begin() as connection:
         await connection.run_sync(Base.metadata.create_all)
     try:

@@ -18,6 +18,7 @@ from app.db import (
     MessageRecord,
     ReflectionCandidateRecord,
 )
+from app.db.claims import assert_current_claim
 from app.ids import uuid7
 
 from .models import (
@@ -176,6 +177,7 @@ class CognitiveStore:
                 )
                 if existing is not None:
                     return _goal(existing)
+            await assert_current_claim(session)
             session.add(record)
         return _goal(record)
 

@@ -24,17 +24,24 @@ from typing import Any
 from uuid import UUID
 
 from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.cognition.action_registry import ActionRegistry
 from app.db import (
     ActionPlanRecord,
     ActionStepRecord,
     Database,
+    TaskRunRecord,
     WorkflowDraftRecord,
     WorkflowRecord,
 )
+from app.db.claims import assert_current_claim
+from app.harness.budget import budget_scope
 from app.ids import uuid7
+from app.jobs.engine import JobEngine
+from app.jobs.maintenance import MaintenanceSourceGone, MaintenanceWorker, maintenance_job
 from app.llm import CompletionRequest, LLMMessage, LLMRoute, ToolCall
+from app.runs.budget import job_model_budget
 from app.schemas.common import PrivacyLevel
 from app.tools.contracts import ToolContext
 from app.tools.executor import ToolExecutor
@@ -88,6 +95,7 @@ class WorkflowDraftStore:
             created_at=now or datetime.now(UTC),
         )
         async with self._database.sessions.begin() as session:
+            await assert_current_claim(session)
             if plan_id is not None:
                 plan = await session.get(ActionPlanRecord, plan_id, with_for_update=True)
                 if (
@@ -143,6 +151,7 @@ class WorkflowDraftStore:
         self, draft_id: UUID, *, replay_status: str, detail: dict[str, Any]
     ) -> None:
         async with self._database.sessions.begin() as session:
+            await assert_current_claim(session)
             record = await session.get(WorkflowDraftRecord, draft_id)
             if record is None or record.status != "pending":
                 return
@@ -172,33 +181,93 @@ class PlanDistiller:
         # DIST 命名润色（可选）：utility 路由生成名字/描述，失败回落标题
         self._config_store = config_store
         self._router_builder = router_builder
-        self._background: set[asyncio.Task[None]] = set()
+        self._worker = MaintenanceWorker(
+            database, self._process, resource_class="workflow-distillation"
+        )
 
     def set_executor(self, executor: ToolExecutor) -> None:
         """main 装配后期注入：与计划执行共用同一套工具注册表。"""
         self._executor = executor
 
-    def on_plan_completed(self, plan_id: UUID, user_id: UUID) -> None:
-        """ActionPlanService 完成回调入口；蒸馏转后台执行。"""
-        task = asyncio.create_task(
-            self._distill_and_replay(plan_id, user_id), name=f"aria-distill-{plan_id}"
+    async def enqueue_in_session(self, session: AsyncSession, plan_id: UUID, user_id: UUID) -> None:
+        plan = await session.get(ActionPlanRecord, plan_id)
+        if plan is None or plan.user_id != user_id or plan.status != "completed":
+            raise ValueError("distillation_source_invalid")
+        await JobEngine(self._database).submit_in_session(
+            session,
+            "workflow.distill",
+            {"plan_id": str(plan_id), "user_id": str(user_id)},
+            owner=str(user_id),
+            idempotency_key=f"workflow:{plan_id}:distill",
+            resource_class="workflow-distillation",
+            task_run_id=plan.task_run_id,
         )
-        self._background.add(task)
-        task.add_done_callback(self._background.discard)
+
+    def start(self) -> None:
+        self._worker.start()
+
+    async def stop(self) -> None:
+        await self._worker.stop()
 
     async def drain(self) -> None:
-        """等待后台蒸馏任务完成；测试断言与优雅停机使用。"""
-        if self._background:
-            await asyncio.gather(*self._background)
+        await self._worker.process_ready()
 
-    async def _distill_and_replay(self, plan_id: UUID, user_id: UUID) -> None:
+    async def _process(self, kind: str, payload: dict[str, Any], owner: str) -> None:
+        job = maintenance_job()
+        if kind != "workflow.distill" or payload.get("user_id") != owner:
+            raise MaintenanceSourceGone()
         try:
-            draft = await self.distill_plan(plan_id, user_id=user_id)
-            if draft is None:
-                return
-            await self.replay_draft(draft, user_id=user_id)
-        except Exception:
-            logger.warning("workflow distillation failed for plan %s", plan_id, exc_info=True)
+            plan_id, user_id = UUID(payload["plan_id"]), UUID(owner)
+        except (KeyError, ValueError, TypeError) as error:
+            raise MaintenanceSourceGone() from error
+        async with self._database.sessions() as session:
+            plan = await session.get(ActionPlanRecord, plan_id)
+            if (
+                plan is None
+                or plan.user_id != user_id
+                or plan.status != "completed"
+                or plan.reason_code == "source_deleted"
+            ):
+                raise MaintenanceSourceGone()
+            prior = await session.scalar(
+                select(WorkflowDraftRecord)
+                .where(
+                    WorkflowDraftRecord.plan_id == plan_id,
+                    WorkflowDraftRecord.user_id == user_id,
+                )
+                .order_by(WorkflowDraftRecord.created_at.desc())
+                .limit(1)
+            )
+        snapshot = None
+        if self._config_store is not None:
+            snapshot = (
+                await self._config_store.refresh()
+                if hasattr(self._config_store, "refresh")
+                else self._config_store.current
+            )
+        settings = getattr(snapshot.config, "run_budget", None) if snapshot else None
+        budget = (
+            await job_model_budget(self._database, job.id, settings)
+            if settings is not None and settings.enabled
+            else None
+        )
+
+        async def derive() -> None:
+            draft = prior or await self.distill_plan(plan_id, user_id=user_id)
+            if draft is not None and draft.status == "pending":
+                await self.replay_draft(draft, user_id=user_id)
+
+        with budget_scope(budget):
+            if budget is None:
+                await derive()
+            else:
+                try:
+                    async with asyncio.timeout(budget.remaining_delivery_seconds):
+                        await derive()
+                except TimeoutError as error:
+                    from app.harness.budget import BudgetDenied
+
+                    raise BudgetDenied("run_deadline_exceeded") from error
 
     async def distill_plan(self, plan_id: UUID, *, user_id: UUID) -> WorkflowDraftRecord | None:
         """蒸馏一份已完成的计划；不满足门槛或重复时返回 None。"""
@@ -227,7 +296,8 @@ class PlanDistiller:
             # 已有等步骤流程（含 workflow_run 展开的计划）：不重复提案
             return None
         title = plan.title or "未命名计划"
-        name, description = await self._polish_naming(title, steps)
+        privacy = await self._plan_privacy(plan)
+        name, description = await self._polish_naming(title, steps, privacy_level=privacy)
         return await self._drafts.create_draft(
             user_id=user_id,
             plan_id=plan_id,
@@ -237,7 +307,18 @@ class PlanDistiller:
             now=self._clock(),
         )
 
-    async def _polish_naming(self, title: str, steps: list[ActionStepRecord]) -> tuple[str, str]:
+    async def _plan_privacy(self, plan: ActionPlanRecord) -> PrivacyLevel:
+        if plan.task_run_id is None:
+            return PrivacyLevel.L1
+        async with self._database.sessions() as session:
+            run = await session.get(TaskRunRecord, plan.task_run_id)
+            if run is None or run.user_id != plan.user_id:
+                raise MaintenanceSourceGone()
+            return PrivacyLevel(run.privacy_level)
+
+    async def _polish_naming(
+        self, title: str, steps: list[ActionStepRecord], *, privacy_level: PrivacyLevel
+    ) -> tuple[str, str]:
         """LLM 命名润色；未配置或任何失败回落确定性标题命名。"""
         fallback = (_clean_draft_name(title), _describe_plan(title, steps))
         if self._config_store is None or self._router_builder is None:
@@ -265,8 +346,10 @@ class PlanDistiller:
                         ),
                         LLMMessage(role="user", content=f"计划标题：{title}\n步骤：{sequence}"),
                     ],
-                    privacy_level=PrivacyLevel.L1,
-                    route=LLMRoute.UTILITY,
+                    privacy_level=privacy_level,
+                    route=LLMRoute.PRIVATE
+                    if privacy_level == PrivacyLevel.L2
+                    else LLMRoute.UTILITY,
                     temperature=0,
                     json_mode=True,
                     max_tokens=200,
@@ -312,6 +395,7 @@ class PlanDistiller:
                     .order_by(ActionStepRecord.position)
                 )
             )
+        privacy = await self._plan_privacy(plan)
         read_steps = [step for step in steps if step.risk == "A0"]
         if not read_steps or self._executor is None:
             detail = {"reason": "no_read_steps" if not read_steps else "no_executor"}
@@ -324,7 +408,7 @@ class PlanDistiller:
         outcomes: list[dict[str, Any]] = []
         all_passed = True
         for step in read_steps:
-            outcome = await self._replay_step(step, user_id=user_id)
+            outcome = await self._replay_step(step, user_id=user_id, privacy_level=privacy)
             outcomes.append(outcome)
             if not outcome["passed"]:
                 all_passed = False
@@ -337,7 +421,9 @@ class PlanDistiller:
         draft.replay_detail = {"steps": outcomes}
         return draft
 
-    async def _replay_step(self, step: ActionStepRecord, *, user_id: UUID) -> dict[str, Any]:
+    async def _replay_step(
+        self, step: ActionStepRecord, *, user_id: UUID, privacy_level: PrivacyLevel
+    ) -> dict[str, Any]:
         outcome: dict[str, Any] = {
             "position": step.position,
             "action_id": step.action_id,
@@ -348,7 +434,7 @@ class PlanDistiller:
         try:
             compiled = self._registry.compile(step.action_id, dict(step.arguments or {}))
             context = ToolContext(
-                privacy_level=PrivacyLevel.L1,
+                privacy_level=privacy_level,
                 user_id=user_id,
                 idempotency_key=f"draft-replay-{step.id}",
                 current_time=self._clock(),

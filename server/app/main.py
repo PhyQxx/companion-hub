@@ -248,6 +248,7 @@ def create_app(
     deps.config_watcher = config_watcher
     deps.worker = worker
     deps.deleg_worker = deleg_worker
+    deps.plan_distiller = domain.plan_distiller
     deps.screen_awareness_loop = screen_awareness_loop
     deps.browser_awareness_loop = browser_awareness_loop
     deps.mail_awareness_loop = mail_awareness_loop

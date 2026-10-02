@@ -51,6 +51,7 @@ from app.tasks.brief_scheduler import DailyBriefScheduler
 from app.tasks.goal_scheduler import GoalReminderScheduler
 from app.tasks.review_scheduler import DailyReviewScheduler
 from app.todo.sync_scheduler import TodoSyncScheduler
+from app.workflows.drafts import PlanDistiller
 from app.xiaoai_config import XiaoAiConfigMaterializer
 
 from .registry import ModuleRegistry, ModuleSpec
@@ -94,6 +95,7 @@ class LifespanDeps:
     skill_http_client: SkillHttpClient | None = None
     skill_audit_scheduler: SkillAuditScheduler | None = None
     pnkx_life_client: PnkxLifeClient | None = None
+    plan_distiller: PlanDistiller | None = None
     home_assistant_proactive: HomeAssistantProactiveEngine | None = None
     mqtt_presence_bridge: MqttPresenceBridge | None = None
     perception_pipeline: PerceptionPipeline | None = None
@@ -207,6 +209,7 @@ def _core_modules(deps: LifespanDeps) -> ModuleRegistry:
     add_service("todo-sync", deps.todo_sync_scheduler)
     add_service("caldav-sync", deps.caldav_sync_scheduler)
     add_service("google-calendar-sync", deps.google_calendar_sync_scheduler)
+    add_service("workflow-distillation", deps.plan_distiller)
     add_service("skill-audit", deps.skill_audit_scheduler)
     add_service("self-check", deps.self_check_scheduler)
     add_service("home-proactive", deps.home_assistant_proactive, start_method=None)

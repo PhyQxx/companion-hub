@@ -78,7 +78,7 @@ class RunStore:
             )
             if row is None:
                 raise LookupError("run not found")
-            if row.contract.get("entry") != "delegated" or row.status not in {
+            if row.contract.get("entry") not in {"delegated", "background"} or row.status not in {
                 "accepted",
                 "running",
             }:

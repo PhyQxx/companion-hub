@@ -536,3 +536,29 @@ async def test_revision_does_not_probe_description_only_or_stale_contracts(
     assert result.verification_report is not None
     assert result.verification_report["checks"] == []
     assert result.verification_report["outcome"] == "inconclusive"
+
+
+async def test_l2_learning_never_auto_probes_external_connection(
+    database: Database,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.schemas import PrivacyLevel
+
+    async def forbidden(*args: object, **kwargs: object) -> SkillDraftView:
+        raise AssertionError("L2 source must not trigger external probing")
+
+    monkeypatch.setattr("app.skills.learning.verify_skill_draft", forbidden)
+    store = await _seed_skill(database)
+    backend = QueuedBackend([_decide_response(), _revision_response()])
+    learner = SkillRevisionLearner(store, SkillDraftGenerator(backend=backend))
+    draft = await learner.harvest(
+        text=USER_TEXT,
+        turn_id=None,
+        runs=[RUN],
+        backend=backend,
+        privacy_level=PrivacyLevel.L2,
+    )
+    assert draft is not None
+    persisted = await store.get_draft(draft.id)
+    assert persisted is not None
+    assert persisted.verify_reason == "local_only_source_probe_skipped"
