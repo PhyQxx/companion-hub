@@ -407,6 +407,11 @@ def assemble_domain(
         GoalReminderScheduler(
             cognitive_store,
             interval_seconds=float(os.getenv("ARIA_GOAL_REMINDER_INTERVAL", "60")),
+            budget_loader=lambda: (
+                runtime_config.current.config.run_budget
+                if runtime_config is not None
+                else RunBudgetConfig()
+            ),
         )
         if cognitive_store is not None
         else None

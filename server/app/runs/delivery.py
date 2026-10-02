@@ -3,9 +3,11 @@
 import asyncio
 import hashlib
 from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Annotated, Any, cast
 from uuid import UUID
+from zoneinfo import ZoneInfo
 
 from pydantic import Field, TypeAdapter, ValidationError
 from sqlalchemy import select, update
@@ -32,8 +34,29 @@ from app.schemas.delivery_run import DeliveryRunOutcome
 from .budget import RunModelBudget, utc
 from .store import append_run_event, transition_run
 
-SourceTable = type[DailyBriefRecord] | type[DailyReviewRecord] | type[TaskItemRecord]
-SourceRow = DailyBriefRecord | DailyReviewRecord | TaskItemRecord
+SourceTable = (
+    type[DailyBriefRecord]
+    | type[DailyReviewRecord]
+    | type[TaskItemRecord]
+    | type[CognitiveGoalRecord]
+)
+SourceRow = DailyBriefRecord | DailyReviewRecord | TaskItemRecord | CognitiveGoalRecord
+
+
+@dataclass(frozen=True)
+class GoalDeliveryClaim:
+    phase: str
+    claimed_at: datetime
+    timezone: str
+
+
+def goal_delivery_text(title: str, due_at: datetime, claim: GoalDeliveryClaim) -> str:
+    due_text = utc(due_at).astimezone(ZoneInfo(claim.timezone)).strftime("%m-%d %H:%M")
+    if claim.phase == "pre_due":
+        return f"📌 你有一个目标临近：{title}（预计 {due_text} 到期）"
+    return f"⏰ 目标已到期：{title}（{due_text}）"
+
+
 _CHANNELS: TypeAdapter[list[str]] = TypeAdapter(Annotated[list[TokenName], Field(max_length=16)])
 
 
@@ -50,6 +73,8 @@ async def _source_lock(
         query = query.where(
             table.status.in_({"active", "firing"})
             if table is TaskItemRecord
+            else table.status == "active"
+            if table is CognitiveGoalRecord
             else table.status == "pending"
         )
     return cast(
@@ -63,8 +88,14 @@ async def _check_goal_sources(session: AsyncSession, source: SourceRow) -> None:
 
     if isinstance(source, TaskItemRecord):
         return
-    items = source.facts if isinstance(source, DailyBriefRecord) else source.items
-    identifiers: set[UUID] = set()
+    items = (
+        source.facts
+        if isinstance(source, DailyBriefRecord)
+        else source.items
+        if isinstance(source, DailyReviewRecord)
+        else []
+    )
+    identifiers: set[UUID] = {source.id} if isinstance(source, CognitiveGoalRecord) else set()
     for item in items:
         if item.get("action") == "removed":
             continue
@@ -95,7 +126,12 @@ def task_delivery_text(title: str, notes: str | None) -> str:
     return f"⏰ 提醒：{title}" + (f"\n{notes}" if notes else "")
 
 
-def _matches(source: SourceRow | None, fingerprint: str, run_id: UUID) -> bool:
+def _matches(
+    source: SourceRow | None,
+    fingerprint: str,
+    run_id: UUID,
+    goal_claim: GoalDeliveryClaim | None = None,
+) -> bool:
     if source is None:
         return False
     if isinstance(source, TaskItemRecord):
@@ -104,6 +140,19 @@ def _matches(source: SourceRow | None, fingerprint: str, run_id: UUID) -> bool:
         if (source.last_delivery or {}).get("run_id") != str(run_id):
             return False
         text = task_delivery_text(source.title, source.notes)
+    elif isinstance(source, CognitiveGoalRecord):
+        if goal_claim is None or source.status != "active" or source.due_at is None:
+            return False
+        stamp = source.due_reminded_at if goal_claim.phase == "due" else source.pre_due_reminded_at
+        if stamp is None or utc(stamp) != utc(goal_claim.claimed_at):
+            return False
+        if source.reminder_defer_until and utc(source.reminder_defer_until) > utc(
+            goal_claim.claimed_at
+        ):
+            return False
+        if source.expires_at and utc(source.expires_at) <= datetime.now(UTC):
+            return False
+        text = goal_delivery_text(source.title, source.due_at, goal_claim)
     else:
         text = source.text
     return hashlib.sha256(text.encode()).hexdigest() == fingerprint
@@ -153,9 +202,19 @@ async def deliver_once(
     dispatch: Callable[[], Awaitable[list[str] | None]],
     run_id: UUID | None = None,
     unavailable_reason: str | None = None,
+    goal_claim: GoalDeliveryClaim | None = None,
 ) -> bool:
     """Return False when another attempt owns this source; never resend unknown work."""
     identifier = run_id or source_id
+    if table is CognitiveGoalRecord and (
+        goal_claim is None or goal_claim.phase not in {"due", "pre_due"}
+    ):
+        raise BudgetDenied("delivery_source_invalid")
+    request_id = (
+        f"{entry}:{source_id}:{utc(goal_claim.claimed_at).isoformat()}"
+        if goal_claim is not None
+        else f"{entry}:{identifier}"
+    )
     parent = current_budget()
     if isinstance(parent, RunModelBudget) and parent.owner_id != user_id:
         raise BudgetDenied("budget_owner_invalid")
@@ -172,14 +231,14 @@ async def deliver_once(
             source = await _source_lock(session, table, source_id, user_id, pending=True)
             if source is None:
                 return False
-            if not _matches(source, fingerprint, identifier):
+            if not _matches(source, fingerprint, identifier, goal_claim):
                 raise BudgetDenied("delivery_source_changed")
             await _check_goal_sources(session, source)
             created = TaskRunRecord(
                 id=identifier,
                 user_id=user_id,
                 parent_run_id=parent_id,
-                request_id=f"{entry}:{identifier}",
+                request_id=request_id,
                 status="accepted",
                 privacy_level=source.privacy_level if isinstance(source, TaskItemRecord) else "L1",
                 contract={
@@ -189,6 +248,15 @@ async def deliver_once(
                     **(
                         {"source_generation": source.fire_count}
                         if isinstance(source, TaskItemRecord)
+                        else {}
+                    ),
+                    **(
+                        {
+                            "source_claimed_at": utc(goal_claim.claimed_at).isoformat(),
+                            "source_phase": goal_claim.phase,
+                            "source_timezone": goal_claim.timezone,
+                        }
+                        if goal_claim is not None
                         else {}
                     ),
                     "criterion": "delivery_channels_returned",
@@ -210,12 +278,12 @@ async def deliver_once(
             await transition_run(session, created.id, "running")
     except IntegrityError as error:
         async with database.sessions() as session:
-            existing = await session.get(TaskRunRecord, identifier)
-            if (
-                existing
-                and existing.user_id == user_id
-                and existing.request_id == f"{entry}:{identifier}"
-            ):
+            existing = await session.scalar(
+                select(TaskRunRecord).where(
+                    TaskRunRecord.user_id == user_id, TaskRunRecord.request_id == request_id
+                )
+            )
+            if existing and existing.user_id == user_id and existing.request_id == request_id:
                 return False
         raise BudgetDenied("delivery_run_identity_conflict") from error
     budget = parent or (
@@ -245,7 +313,7 @@ async def deliver_once(
                     or row.contract.get("work_cancel_requested")
                 ):
                     raise BudgetDenied("budget_run_inactive")
-                if not _matches(source, fingerprint, identifier):
+                if not _matches(source, fingerprint, identifier, goal_claim):
                     raise BudgetDenied("delivery_source_changed")
                 assert source is not None
                 await _check_goal_sources(session, source)
@@ -269,6 +337,7 @@ async def deliver_once(
                         fingerprint=fingerprint,
                         run_id=identifier,
                         dispatch=dispatch,
+                        goal_claim=goal_claim,
                     )
                     or []
                 )
@@ -364,9 +433,7 @@ async def _finish(
             cancelled = cancelled or source.status == "cancelled"
             if source.status == "firing":
                 source.status, source.completed_at, source.next_fire_at = "done", now, None
-        elif (
-            source is not None and not isinstance(source, TaskItemRecord) and state != "not_started"
-        ):
+        elif isinstance(source, (DailyBriefRecord, DailyReviewRecord)) and state != "not_started":
             # Compatibility: delivered historically means one terminal attempt.
             source.status, source.delivered_at, source.channels, source.updated_at = (
                 "delivered",
@@ -393,6 +460,7 @@ async def _dispatch_with_watch(
     fingerprint: str,
     run_id: UUID,
     dispatch: Callable[[], Awaitable[list[str] | None]],
+    goal_claim: GoalDeliveryClaim | None = None,
 ) -> list[str] | None:
     async def watch() -> None:
         while True:
@@ -414,7 +482,7 @@ async def _dispatch_with_watch(
                 if (
                     source is None
                     or source.user_id != user_id
-                    or not _matches(source, fingerprint, run_id)
+                    or not _matches(source, fingerprint, run_id, goal_claim)
                 ):
                     raise BudgetDenied("delivery_source_changed")
                 await _check_goal_sources(session, source)

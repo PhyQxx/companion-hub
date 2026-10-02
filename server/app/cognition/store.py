@@ -4,8 +4,9 @@ from datetime import UTC, datetime, timedelta
 from typing import Any, Literal, cast
 from uuid import UUID
 
-from sqlalchemy import select, update
+from sqlalchemy import and_, or_, select, update
 from sqlalchemy.engine import CursorResult
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db import (
     ActionResultRecord,
@@ -18,9 +19,11 @@ from app.db import (
     DeletionLedgerRecord,
     MessageRecord,
     ReflectionCandidateRecord,
+    TaskRunRecord,
 )
 from app.db.claims import assert_current_claim
 from app.ids import uuid7
+from app.runs.store import transition_run
 from app.schemas.common import PrivacyLevel
 
 from .goal_sources import goal_visibility
@@ -286,11 +289,20 @@ class CognitiveStore:
             raise ValueError("goal status can only be completed or cancelled explicitly")
         moment = now or datetime.now(UTC)
         async with self.database.sessions.begin() as session:
-            record = await session.get(CognitiveGoalRecord, goal_id)
+            record = await session.scalar(
+                update(CognitiveGoalRecord)
+                .where(
+                    CognitiveGoalRecord.id == goal_id,
+                    CognitiveGoalRecord.user_id == user_id,
+                )
+                .values(updated_at=CognitiveGoalRecord.updated_at)
+                .returning(CognitiveGoalRecord)
+            )
             if record is None or record.user_id != user_id:
                 raise LookupError("cognitive goal not found")
             if record.status != GoalStatus.ACTIVE.value:
                 raise ValueError("only active goals can change status")
+            await self._stop_goal_deliveries(session, user_id, goal_id)
             record.status = status.value
             record.updated_at = moment
         return _goal(record)
@@ -326,6 +338,26 @@ class CognitiveStore:
                 )
             )
         return [_goal(row) for row in rows]
+
+    async def _stop_goal_deliveries(
+        self, session: AsyncSession, user_id: UUID, goal_id: UUID
+    ) -> None:
+        rows = list(
+            await session.scalars(
+                select(TaskRunRecord)
+                .where(
+                    TaskRunRecord.user_id == user_id,
+                    TaskRunRecord.status.in_({"accepted", "running"}),
+                    TaskRunRecord.contract["source_id"].as_string() == str(goal_id),
+                    TaskRunRecord.contract["entry"].as_string().in_({"goal.due", "goal.pre_due"}),
+                    TaskRunRecord.contract["criterion"].as_string() == "delivery_channels_returned",
+                )
+                .order_by(TaskRunRecord.id)
+                .with_for_update()
+            )
+        )
+        for run in rows:
+            await transition_run(session, run.id, "cancelled")
 
     async def reminder_claim_visible(self, item: ClaimedGoalReminder) -> bool:
         async with self.database.sessions() as session:
@@ -363,7 +395,25 @@ class CognitiveStore:
         reminder_defer_until 推迟闸门约束。时间戳列即乐观守卫——并发
         认领只有一方能把 NULL 更新为非空。
         """
-        moment = now or datetime.now(UTC)
+        moment = _aware_or_none(now) or datetime.now(UTC)
+        eligible = and_(
+            or_(
+                CognitiveGoalRecord.reminder_defer_until.is_(None),
+                CognitiveGoalRecord.reminder_defer_until <= moment,
+            ),
+            or_(CognitiveGoalRecord.expires_at.is_(None), CognitiveGoalRecord.expires_at > moment),
+            or_(
+                and_(
+                    CognitiveGoalRecord.due_at <= moment,
+                    CognitiveGoalRecord.due_reminded_at.is_(None),
+                ),
+                and_(
+                    CognitiveGoalRecord.due_at > moment,
+                    CognitiveGoalRecord.due_at <= moment + pre_due_window,
+                    CognitiveGoalRecord.pre_due_reminded_at.is_(None),
+                ),
+            ),
+        )
         claimed: list[ClaimedGoalReminder] = []
         async with self.database.sessions() as session:
             rows = list(
@@ -376,6 +426,7 @@ class CognitiveStore:
                             select(AppUserRecord.id).where(AppUserRecord.status == "active")
                         ),
                         CognitiveGoalRecord.due_at.is_not(None),
+                        eligible,
                     )
                     .order_by(CognitiveGoalRecord.due_at)
                     .limit(limit)
@@ -403,6 +454,7 @@ class CognitiveStore:
                     update(CognitiveGoalRecord)
                     .where(
                         CognitiveGoalRecord.id == record.id,
+                        eligible,
                         CognitiveGoalRecord.status == GoalStatus.ACTIVE.value,
                         goal_visibility(PrivacyLevel.L1),
                         column.is_(None),
@@ -442,11 +494,20 @@ class CognitiveStore:
         if until <= moment:
             raise ValueError("推迟时间必须在未来")
         async with self.database.sessions.begin() as session:
-            record = await session.get(CognitiveGoalRecord, goal_id)
+            record = await session.scalar(
+                update(CognitiveGoalRecord)
+                .where(
+                    CognitiveGoalRecord.id == goal_id,
+                    CognitiveGoalRecord.user_id == user_id,
+                )
+                .values(updated_at=CognitiveGoalRecord.updated_at)
+                .returning(CognitiveGoalRecord)
+            )
             if record is None or record.user_id != user_id:
                 raise LookupError("cognitive goal not found")
             if record.status != GoalStatus.ACTIVE.value:
                 raise ValueError("only active goals can defer reminders")
+            await self._stop_goal_deliveries(session, user_id, goal_id)
             record.reminder_defer_until = until
             record.updated_at = moment
         return _goal(record)
@@ -461,11 +522,20 @@ class CognitiveStore:
         """忽略降频：记录忽略并顺延一天，重复忽略保持每天最多打扰一次。"""
         moment = now or datetime.now(UTC)
         async with self.database.sessions.begin() as session:
-            record = await session.get(CognitiveGoalRecord, goal_id)
+            record = await session.scalar(
+                update(CognitiveGoalRecord)
+                .where(
+                    CognitiveGoalRecord.id == goal_id,
+                    CognitiveGoalRecord.user_id == user_id,
+                )
+                .values(updated_at=CognitiveGoalRecord.updated_at)
+                .returning(CognitiveGoalRecord)
+            )
             if record is None or record.user_id != user_id:
                 raise LookupError("cognitive goal not found")
             if record.status != GoalStatus.ACTIVE.value:
                 raise ValueError("only active goals can ignore reminders")
+            await self._stop_goal_deliveries(session, user_id, goal_id)
             record.ignored_count += 1
             record.reminder_defer_until = moment + timedelta(days=1)
             record.updated_at = moment

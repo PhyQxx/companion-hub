@@ -17,6 +17,16 @@ from uuid import UUID
 
 from app.cognition import ClaimedGoalReminder
 from app.cognition.store import CognitiveStore
+from app.config.models import RunBudgetConfig
+from app.db import AppUserRecord, CognitiveGoalRecord
+from app.harness.budget import BudgetDenied
+from app.ids import uuid7
+from app.runs.delivery import (
+    GoalDeliveryClaim,
+    deliver_once,
+    goal_delivery_text,
+    recover_expired_deliveries,
+)
 
 logger = logging.getLogger("app.cognition.goals")
 
@@ -45,15 +55,18 @@ class GoalReminderScheduler:
         clock: Callable[[], datetime] | None = None,
         sleeper: Callable[[float], Awaitable[None]] | None = None,
         deliverer: GoalDeliverer | None = None,
+        budget_loader: Callable[[], RunBudgetConfig] | None = None,
     ) -> None:
         self._store = store
         self._interval = interval_seconds
         self._clock = clock or (lambda: datetime.now(UTC))
         self._sleep = sleeper or asyncio.sleep
         self._deliverer = deliverer
+        self._budget_loader = budget_loader or RunBudgetConfig
         self._stop = asyncio.Event()
         self._task: asyncio.Task[None] | None = None
         self.reminded_count = 0
+        self._dispatches: set[asyncio.Task[object]] = set()
 
     def set_deliverer(self, deliverer: GoalDeliverer) -> None:
         self._deliverer = deliverer
@@ -67,9 +80,14 @@ class GoalReminderScheduler:
     async def stop(self) -> None:
         self._stop.set()
         task, self._task = self._task, None
+        pending = set(self._dispatches)
         if task is not None:
-            with contextlib.suppress(asyncio.CancelledError):
-                await task
+            pending.add(task)
+        pending.discard(asyncio.current_task())
+        for active in pending:
+            active.cancel()
+        if pending:
+            await asyncio.gather(*pending, return_exceptions=True)
 
     async def _run(self) -> None:
         # 与 TaskScheduler 相同：首个 tick 前等待一个完整间隔
@@ -85,34 +103,65 @@ class GoalReminderScheduler:
 
     async def run_once(self, *, now: datetime | None = None) -> int:
         """认领并投递到期目标提醒；返回本次触发数量（测试与手动共用）。"""
-        moment = now or self._clock()
-        claimed = await self._store.claim_due_goal_reminders(now=moment)
-        for item in claimed:
-            await self._remind(item)
-        return len(claimed)
+        await recover_expired_deliveries(self._store.database)
+        count = 0
+        for _ in range(20):
+            if self._stop.is_set():
+                break
+            claimed = await self._store.claim_due_goal_reminders(now=now or self._clock(), limit=1)
+            if not claimed:
+                break
+            await self._remind(claimed[0])
+            count += 1
+        return count
 
     async def _remind(self, item: ClaimedGoalReminder) -> None:
-        if not await self._store.reminder_claim_visible(item):
-            return
-        due_text = item.due_at.strftime("%m-%d %H:%M")
-        if item.phase == "pre_due":
-            text = f"📌 你有一个目标临近：{item.goal.title}（预计 {due_text} 到期）"
-        else:
-            text = f"⏰ 目标已到期：{item.goal.title}（{due_text}）"
-        channels: list[str] | None = None
-        if self._deliverer is not None:
-            try:
-                channels = await self._deliverer(
+        current = asyncio.current_task()
+        if current is not None:
+            self._dispatches.add(current)
+        try:
+            if self._stop.is_set() or item.claimed_at is None:
+                return
+            if not await self._store.reminder_claim_visible(item):
+                return
+            async with self._store.database.sessions() as session:
+                owner = await session.get(AppUserRecord, item.user_id)
+                if owner is None or owner.status != "active":
+                    return
+                timezone = owner.timezone
+            claim = GoalDeliveryClaim(item.phase, item.claimed_at, timezone)
+            text = goal_delivery_text(item.goal.title, item.due_at, claim)
+            trigger = TRIGGER_KIND_DUE if item.phase == "due" else TRIGGER_KIND_PRE_DUE
+
+            async def dispatch() -> list[str] | None:
+                if self._deliverer is None:
+                    return None
+                return await self._deliverer(
                     text,
                     user_id=item.user_id,
                     goal_id=item.goal.id,
                     privacy_level="L1",
-                    trigger_kind=(
-                        TRIGGER_KIND_DUE if item.phase == "due" else TRIGGER_KIND_PRE_DUE
-                    ),
+                    trigger_kind=trigger,
                 )
-            except Exception as error:
-                logger.warning("goal reminder delivery failed: %s", error)
-        self.reminded_count += 1
-        if not channels:
-            logger.info("goal %s reminder delivered without channel", item.goal.id)
+
+            try:
+                admitted = await deliver_once(
+                    self._store.database,
+                    table=CognitiveGoalRecord,
+                    source_id=item.goal.id,
+                    user_id=item.user_id,
+                    text=text,
+                    entry=trigger,
+                    config=self._budget_loader(),
+                    dispatch=dispatch,
+                    run_id=uuid7(),
+                    goal_claim=claim,
+                    unavailable_reason="no_deliverer" if self._deliverer is None else None,
+                )
+                if admitted:
+                    self.reminded_count += 1
+            except BudgetDenied as error:
+                logger.info("goal reminder stopped: %s", error.reason_code)
+        finally:
+            if current is not None:
+                self._dispatches.discard(current)
