@@ -11,8 +11,10 @@ from typing import cast
 from uuid import UUID, uuid4
 
 import pytest
+import yaml
+from test_database_config import config_yaml
 
-from app.config import ConfigStore
+from app.config import ConfigSnapshot, ConfigStore, HubConfig
 from app.db import AppUserRecord, Base, Database, create_database
 from app.devices.service import DeviceRegistry
 from app.llm import CompletionRequest, CompletionResult, LLMRoute
@@ -140,9 +142,7 @@ async def test_time_gate_and_daily_once(database: Database, tmp_path: Path) -> N
 
 
 @pytest.mark.asyncio
-async def test_backup_staleness_reported_once_per_day(
-    database: Database, tmp_path: Path
-) -> None:
+async def test_backup_staleness_reported_once_per_day(database: Database, tmp_path: Path) -> None:
     dump = tmp_path / "aria_20261001.dump"
     dump.write_bytes(b"pg_dump")
     stale_moment = datetime(2026, 10, 1, 10, 30, tzinfo=UTC) - timedelta(hours=30)
@@ -160,9 +160,7 @@ async def test_backup_staleness_reported_once_per_day(
 
 
 @pytest.mark.asyncio
-async def test_backup_fresh_or_missing_is_silent(
-    database: Database, tmp_path: Path
-) -> None:
+async def test_backup_fresh_or_missing_is_silent(database: Database, tmp_path: Path) -> None:
     deliverer = RecordingDeliverer()
     # 新鲜备份：安静
     fresh = tmp_path / "aria_fresh.dump"
@@ -183,17 +181,13 @@ async def test_device_heartbeat_window(database: Database, tmp_path: Path) -> No
         devices=[
             FakeDevice(name="客厅 Mac", last_seen_at=now - timedelta(hours=48)),
             FakeDevice(name="昨天的手机", last_seen_at=now - timedelta(hours=2)),
-            FakeDevice(
-                name="已注销", last_seen_at=now - timedelta(hours=48), revoked_at=now
-            ),
+            FakeDevice(name="已注销", last_seen_at=now - timedelta(hours=48), revoked_at=now),
             # 停用太久（>7 天）：不再提醒
             FakeDevice(name="退役设备", last_seen_at=now - timedelta(days=30)),
         ]
     )
     deliverer = RecordingDeliverer()
-    scheduler = _scheduler(
-        database, deliverer, registry=registry, now=now, isolate=tmp_path
-    )
+    scheduler = _scheduler(database, deliverer, registry=registry, now=now, isolate=tmp_path)
     findings = await scheduler.run_once()
     assert [item.check for item in findings] == ["设备心跳"]
     assert "客厅 Mac" in findings[0].detail
@@ -228,7 +222,12 @@ async def test_route_probe_failure_and_delivery_to_active_users(
 class _StaticConfig:
     """最小配置桩：自体检只读 snapshot.config 交给注入的 router_builder。"""
 
-    current = type("Snapshot", (), {"config": object()})()
+    current = ConfigSnapshot(
+        version=1,
+        content_hash="fixture",
+        config=HubConfig.model_validate(yaml.safe_load(config_yaml())),
+        published_at=datetime.now(UTC),
+    )
 
 
 @pytest.mark.asyncio
@@ -275,3 +274,88 @@ async def test_self_check_slot_survives_restart_and_competing_schedulers(
     monkeypatch.setattr(restarted, "_perform_check", probe)
     assert await restarted.run_once() == []
     assert calls == 1
+
+
+async def test_daily_probe_uses_owner_budget_and_persists_unknown_usage(
+    database: Database, tmp_path: Path
+) -> None:
+    from test_llm import FakeProvider
+
+    from app.llm.router import LLMRouter
+    from app.runs.store import RunStore
+
+    config = ConfigStore(tmp_path / "fixture.yaml")
+    config.path.write_text(
+        config_yaml() + "\nrun_budget:\n  max_llm_attempts: 2\n", encoding="utf-8"
+    )
+    snapshot = await config.load()
+    cloud, local = FakeProvider("cloud", fail=True), FakeProvider("local")
+    backend = LLMRouter(
+        endpoints=snapshot.config.models,
+        routes=snapshot.config.routes,
+        providers={"cloud": cloud, "local": local},
+    )
+    scheduler = DailySelfCheckScheduler(
+        database, config_store=config, backup_dir=tmp_path, router_builder=lambda cfg: backend
+    )
+    findings = await scheduler.run_once(now=datetime(2026, 10, 1, 10, 30, tzinfo=UTC))
+    assert any(item.check == "模型路由" for item in findings)
+    owner = (await scheduler._active_user_ids())[0]
+    views = await RunStore(database).list_runs(user_id=owner)
+    assert len(views) == 1 and views[0].status == "failed"
+    assert views[0].budget_summary is not None and views[0].budget_summary.llm_attempts == 2
+    detail = await RunStore(database).get(views[0].id, user_id=owner)
+    assert detail.budget_summary is not None and detail.budget_summary.unknown_usage_calls == 2
+    assert len(cloud.requests) == 2 and not local.requests
+    # Another scheduler on the same slot cannot obtain a fresh model quota.
+    restarted = DailySelfCheckScheduler(
+        database, config_store=config, backup_dir=tmp_path, router_builder=lambda cfg: backend
+    )
+    assert await restarted.run_once(now=datetime(2026, 10, 1, 12, 0, tzinfo=UTC)) == []
+    assert len(cloud.requests) == 2
+
+
+async def test_cancelled_selfcheck_claim_stops_probe_and_suppresses_delivery(
+    database: Database, tmp_path: Path
+) -> None:
+    import asyncio
+
+    from sqlalchemy import select
+
+    from app.db import JobRecord
+    from app.harness.claim import current_claim
+    from app.runs.store import RunStore
+
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    class WaitingBackend(FlakyBackend):
+        async def complete(self, request: CompletionRequest) -> CompletionResult:
+            started.set()
+            await release.wait()
+            return await super().complete(request)
+
+    deliverer = RecordingDeliverer()
+    scheduler = _scheduler(database, deliverer, backend=WaitingBackend(), isolate=tmp_path)
+    scheduler._config_store = cast(ConfigStore, _StaticConfig())
+    scheduler._lease_interval = 0.005
+    task = asyncio.create_task(scheduler.run_once())
+    try:
+        await asyncio.wait_for(started.wait(), timeout=5)
+        async with database.sessions() as session:
+            job = await session.scalar(select(JobRecord))
+            assert job is not None
+        assert await scheduler._jobs.cancel(job.id)
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(task, timeout=5)
+        fresh = await scheduler._jobs.get(job.id)
+        assert fresh is not None and fresh.status == "cancelled"
+        assert deliverer.texts == [] and current_claim() is None
+        owner = (await scheduler._active_user_ids())[0]
+        views = await RunStore(database).list_runs(user_id=owner)
+        assert len(views) == 1 and views[0].status == "cancelled"
+    finally:
+        release.set()
+        if not task.done():
+            task.cancel()
+        await asyncio.gather(task, return_exceptions=True)

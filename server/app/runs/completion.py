@@ -18,6 +18,7 @@ from app.db import (
     ModelReservationRecord,
     TaskRunRecord,
 )
+from app.db.claims import assert_current_claim
 from app.harness.budget import BudgetDenied, budget_scope, current_budget
 from app.ids import uuid7
 from app.llm.contracts import CompletionRequest, CompletionResult
@@ -102,6 +103,7 @@ async def complete_with_run(
                 )
                 if conversation is None:
                     raise BudgetDenied("run_source_not_found")
+            await assert_current_claim(session)
             owner = await session.get(AppUserRecord, user_id)
             if owner is None or owner.status != "active":
                 raise BudgetDenied("budget_owner_invalid")
@@ -116,6 +118,7 @@ async def complete_with_run(
                 contract={
                     "kind": kind,
                     "source_id": str(source_id),
+                    "request_trace_id": str(request.trace_id),
                     "criterion": "model_result_returned",
                     "required_work": [],
                 },
@@ -142,6 +145,7 @@ async def complete_with_run(
             async with asyncio.timeout(max(0, (deadline - datetime.now(UTC)).total_seconds())):
                 result = await complete(request)
         async with database.sessions.begin() as session:
+            await assert_current_claim(session)
             current = await session.get(TaskRunRecord, run_id, with_for_update=True)
             if current is None or current.status != "running":
                 raise BudgetDenied("budget_run_inactive")

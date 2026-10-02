@@ -25,12 +25,16 @@ from sqlalchemy import select
 
 from app.config import ConfigStore, DatabaseConfigStore, HubConfig
 from app.db import AppUserRecord, Database
+from app.db.claims import assert_current_claim
 from app.devices.service import DeviceRegistry
+from app.harness.budget import BudgetDenied
+from app.harness.claim import ExecutionClaim, claim_scope, current_claim
 from app.ids import uuid7
 from app.jobs import JobEngine
 from app.llm import CompletionRequest, CompletionResult, LLMMessage, LLMRoute
 from app.llm.factory import build_router
 from app.llm.provider import EnvSecretProvider
+from app.runs.completion import complete_with_run
 from app.schemas.common import PrivacyLevel
 
 logger = logging.getLogger("app.observability.selfcheck")
@@ -103,6 +107,7 @@ class DailySelfCheckScheduler:
         self._jobs = JobEngine(database)
         self._worker_id = f"self-check-{uuid7()}"
         self._stop = asyncio.Event()
+        self._lease_interval = 30.0
         self._task: asyncio.Task[None] | None = None
 
     @staticmethod
@@ -170,8 +175,14 @@ class DailySelfCheckScheduler:
         step = await self._jobs.start_step(
             job.id, "check", worker_id=self._worker_id, claim_version=claimed.attempts
         )
+        operation = asyncio.current_task()
+        assert operation is not None
+        lease_task = asyncio.create_task(
+            self._renew_claim(job.id, claimed.attempts, operation), name="aria-selfcheck-lease"
+        )
         try:
-            findings = await self._perform_check(moment)
+            with claim_scope(ExecutionClaim(job.id, self._worker_id, claimed.attempts)):
+                findings = await self._perform_check(moment)
             await self._jobs.complete_step(
                 step, worker_id=self._worker_id, claim_version=claimed.attempts
             )
@@ -180,9 +191,42 @@ class DailySelfCheckScheduler:
             ):
                 self._last_check_date = today
             return findings
-        except Exception:
-            await self._jobs.fail_step(step, error_code="self_check_failed")
+        except asyncio.CancelledError:
+            await self._jobs.confirm_cancelled(
+                job.id, self._worker_id, claim_version=claimed.attempts
+            )
             raise
+        except Exception:
+            if await self._jobs.claim_active(job.id, self._worker_id, claimed.attempts):
+                await self._jobs.fail_step(step, error_code="self_check_failed")
+            raise
+        finally:
+            lease_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await lease_task
+
+    async def _renew_claim(
+        self, job_id: UUID, version: int, operation: asyncio.Task[object]
+    ) -> None:
+        while True:
+            try:
+                await asyncio.wait_for(self._stop.wait(), timeout=self._lease_interval)
+                operation.cancel()
+                return
+            except TimeoutError:
+                pass
+            try:
+                renewed = await self._jobs.renew_lease(
+                    job_id, self._worker_id, claim_version=version
+                )
+                active = await self._jobs.claim_active(job_id, self._worker_id, version)
+            except Exception:
+                logger.warning("self check lease renewal failed", exc_info=True)
+                operation.cancel()
+                return
+            if not renewed or not active:
+                operation.cancel()
+                return
 
     async def _perform_check(self, moment: datetime) -> list[SelfCheckFinding]:
         findings: list[SelfCheckFinding] = []
@@ -193,6 +237,8 @@ class DailySelfCheckScheduler:
             detail_lines = "\n".join(item.render() for item in findings)
             text = f"每日自体检发现 {len(findings)} 项异常：\n{detail_lines}"
             for user_id in await self._active_user_ids():
+                async with self._database.sessions.begin() as session:
+                    await assert_current_claim(session)
                 try:
                     await self._deliverer(
                         text,
@@ -223,16 +269,35 @@ class DailySelfCheckScheduler:
                 lambda config: build_router(config, EnvSecretProvider())
             )
             backend = builder(snapshot.config)
-            await backend.complete(
-                CompletionRequest(
-                    trace_id=uuid7(),
-                    messages=[LLMMessage(role="user", content="ping")],
-                    privacy_level=PrivacyLevel.L0,
-                    route=LLMRoute.UTILITY,
-                    temperature=0,
-                    max_tokens=1,
-                )
+            request = CompletionRequest(
+                trace_id=uuid7(),
+                messages=[LLMMessage(role="user", content="ping")],
+                privacy_level=PrivacyLevel.L0,
+                route=LLMRoute.UTILITY,
+                temperature=0,
+                max_tokens=1,
             )
+            owners = await self._active_user_ids()
+            if not owners:
+                return [SelfCheckFinding(check="模型路由", detail="没有活动用户，探活未执行。")]
+            claim = current_claim()
+            await complete_with_run(
+                self._database,
+                snapshot,
+                request,
+                backend.complete,
+                user_id=owners[0],
+                kind="system.selfcheck.probe",
+                source_id=claim.job_id if claim is not None else request.trace_id,
+            )
+        except BudgetDenied as error:
+            if error.reason_code == "job_claim_lost":
+                raise
+            return [
+                SelfCheckFinding(
+                    check="模型路由", detail="探活因预算或取消限制未完成，当前连通状态未核实。"
+                )
+            ]
         except Exception:
             logger.info("self check route probe failed", exc_info=True)
             return [
@@ -308,7 +373,7 @@ class DailySelfCheckScheduler:
                 await session.scalars(
                     select(AppUserRecord.id)
                     .where(AppUserRecord.status == "active")
-                    .order_by(AppUserRecord.created_at)
+                    .order_by(AppUserRecord.created_at, AppUserRecord.id)
                 )
             ).all()
             return list(records)
