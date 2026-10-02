@@ -2,7 +2,9 @@
 
 Compares budget enforcement on/off, keeping Run tracking and source guards in both.
 This is not a pre-Harness baseline and does not measure HTTP, model or device latency.
-No existing configuration, credentials, database or provider client is opened.
+Defaults to temporary SQLite. An explicitly supplied PostgreSQL _test database
+uses owned temporary schemas, including pgvector, and removes them afterwards.
+No existing configuration or provider client is opened; URLs never enter reports.
 """
 
 from __future__ import annotations
@@ -28,11 +30,9 @@ from app.chat import ChatService
 from app.config import ConfigStore
 from app.db import (
     AppUserRecord,
-    Base,
     ConversationRecord,
     Database,
     MessageRecord,
-    create_database,
 )
 from app.ids import uuid7
 from app.llm import CompletionRequest, CompletionResult, LLMRoute, ModelUsage
@@ -40,6 +40,7 @@ from app.llm.router import LLMRouter
 from app.memory import MemoryCandidate, MemoryStore, MemoryType, RuleBasedExtractor
 from app.schemas import PrivacyLevel
 from scripts.benchmark_harness import distribution
+from scripts.benchmark_storage import FixtureStorage, open_storage, validate_test_url
 
 TEXT = "请根据合成测试偏好简短回答。"
 REPLY = "synthetic fixed reply"
@@ -74,6 +75,7 @@ class FixtureProvider:
 @dataclass
 class Case:
     database: Database
+    storage: FixtureStorage
     service: ChatService
     user_id: UUID
     conversations: list[UUID]
@@ -82,16 +84,17 @@ class Case:
         try:
             await self.service.drain_background_work()
         finally:
-            await self.database.close()
+            await self.storage.close()
 
 
-async def prepare(directory: Path, enabled: bool, count: int) -> Case:
+async def prepare(
+    directory: Path, enabled: bool, count: int, postgres_test_url: str | None = None
+) -> Case:
     directory.mkdir()
-    database = create_database(f"sqlite+aiosqlite:///{directory / 'fixture.db'}")
+    storage = await open_storage(directory / "fixture.db", postgres_test_url)
+    database = storage.database
     service: ChatService | None = None
     try:
-        async with database.engine.begin() as connection:
-            await connection.run_sync(Base.metadata.create_all)
         config_path = directory / "fixture.json"
         config_path.write_text(
             json.dumps(
@@ -180,24 +183,34 @@ async def prepare(directory: Path, enabled: bool, count: int) -> Case:
                 ),
                 user_id=user_id,
             )
-        return Case(database, service, user_id, ids)
+        return Case(database, storage, service, user_id, ids)
     except BaseException:
-        if service is not None:
-            await service.drain_background_work()
-        await database.close()
+        try:
+            if service is not None:
+                await service.drain_background_work()
+        finally:
+            await storage.close()
         raise
 
 
-async def benchmark(samples: int, concurrency: int, warmup: int) -> dict[str, Any]:
+async def benchmark(
+    samples: int,
+    concurrency: int,
+    warmup: int,
+    *,
+    postgres_test_url: str | None = None,
+) -> dict[str, Any]:
+    if postgres_test_url is not None:
+        validate_test_url(postgres_test_url)
     off_times: list[float] = []
     on_times: list[float] = []
     gate = asyncio.Semaphore(concurrency)
     verified = 0
     with tempfile.TemporaryDirectory(prefix="aria-chat-harness-") as temporary:
-        off = await prepare(Path(temporary) / "off", False, samples + warmup)
+        off = await prepare(Path(temporary) / "off", False, samples + warmup, postgres_test_url)
         on: Case | None = None
         try:
-            on = await prepare(Path(temporary) / "on", True, samples + warmup)
+            on = await prepare(Path(temporary) / "on", True, samples + warmup, postgres_test_url)
 
             async def turn(case: Case, index: int) -> float:
                 nonlocal verified
@@ -229,10 +242,20 @@ async def benchmark(samples: int, concurrency: int, warmup: int) -> dict[str, An
                         off_times.append(no)
                         on_times.append(yes)
 
-            await asyncio.gather(*(pair(index, False) for index in range(warmup)))
+            async def pairs(indices: range, record: bool) -> None:
+                tasks = [asyncio.create_task(pair(index, record)) for index in indices]
+                try:
+                    await asyncio.gather(*tasks)
+                except BaseException:
+                    for task in tasks:
+                        task.cancel()
+                    await asyncio.gather(*tasks, return_exceptions=True)
+                    raise
+
+            await pairs(range(warmup), False)
             await off.service.drain_background_work()
             await on.service.drain_background_work()
-            await asyncio.gather(*(pair(index, True) for index in range(warmup, samples + warmup)))
+            await pairs(range(warmup, samples + warmup), True)
         finally:
             try:
                 if on is not None:
@@ -251,7 +274,10 @@ async def benchmark(samples: int, concurrency: int, warmup: int) -> dict[str, An
             "architecture": platform.machine(),
             "python": platform.python_version(),
             "logical_cpus": os.cpu_count(),
-            "database": "isolated file SQLite",
+            "database": "isolated PostgreSQL schemas with pgvector"
+            if postgres_test_url is not None
+            else "isolated file SQLite",
+            "database_version": off.storage.server_version,
         },
         "samples_per_mode": samples,
         "warmup_per_mode": warmup,
@@ -280,6 +306,7 @@ def main() -> None:
     parser.add_argument("--warmup", type=int, default=5)
     parser.add_argument("--concurrency", type=int, default=1)
     parser.add_argument("--output", type=Path)
+    parser.add_argument("--postgres-test-url", help="Explicit asyncpg URL ending in _test")
     args = parser.parse_args()
     if (
         not 10 <= args.samples <= 1000
@@ -287,7 +314,16 @@ def main() -> None:
         or not 1 <= args.concurrency <= 8
     ):
         parser.error("samples 10..1000, warmup 0..100, concurrency 1..8")
-    report = asyncio.run(benchmark(args.samples, args.concurrency, args.warmup))
+    if args.postgres_test_url is not None:
+        try:
+            validate_test_url(args.postgres_test_url)
+        except ValueError:
+            parser.error("PostgreSQL fixture requires asyncpg and a dedicated _test database")
+    report = asyncio.run(
+        benchmark(
+            args.samples, args.concurrency, args.warmup, postgres_test_url=args.postgres_test_url
+        )
+    )
     if args.output:
         args.output.parent.mkdir(parents=True, exist_ok=True)
         args.output.write_text(json.dumps(report, ensure_ascii=False, indent=2) + "\n")
