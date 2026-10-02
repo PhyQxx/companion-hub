@@ -87,7 +87,7 @@ class PostcommitWorker:
                     worker_id=self._worker_id,
                     claim_version=job.attempts,
                 )
-                heartbeat = asyncio.create_task(self._renew(job.id))
+                heartbeat = asyncio.create_task(self._renew(job.id, job.attempts))
                 try:
                     if await self.engine.cancel_requested(job.id):
                         raise PostcommitSourceGone()
@@ -95,7 +95,9 @@ class PostcommitWorker:
                     if payload is None:
                         raise PostcommitSourceGone()
                     await self._handler(job.kind, payload, job.owner)
-                    await self.engine.complete_step(step_id)
+                    await self.engine.complete_step(
+                        step_id, worker_id=self._worker_id, claim_version=job.attempts
+                    )
                     await self.engine.succeed(
                         job.id, worker_id=self._worker_id, claim_version=job.attempts
                     )
@@ -103,26 +105,33 @@ class PostcommitWorker:
                     await self.engine.cancel(
                         job.id, worker_id=self._worker_id, claim_version=job.attempts
                     )
-                    await self.engine.confirm_cancelled(job.id, self._worker_id)
+                    await self.engine.confirm_cancelled(
+                        job.id, self._worker_id, claim_version=job.attempts
+                    )
                 except Exception as error:
                     logger.warning("postcommit failed job=%s kind=%s", job.id, job.kind)
                     if await self.engine.cancel_requested(job.id):
-                        await self.engine.confirm_cancelled(job.id, self._worker_id)
+                        await self.engine.confirm_cancelled(
+                            job.id, self._worker_id, claim_version=job.attempts
+                        )
                     else:
                         await self.engine.fail_step(
                             step_id,
                             error_code=error.reason_code
                             if isinstance(error, BudgetDenied)
                             else "postcommit_failed",
-                            retryable=not isinstance(error, BudgetDenied),
+                            retryable=not isinstance(error, BudgetDenied)
+                            or error.reason_code == "user_model_concurrency_exhausted",
                         )
                 finally:
                     heartbeat.cancel()
                     with contextlib.suppress(asyncio.CancelledError):
                         await heartbeat
 
-    async def _renew(self, job_id: UUID) -> None:
+    async def _renew(self, job_id: UUID, claim_version: int) -> None:
         while True:
             await asyncio.sleep(30)
-            if not await self.engine.renew_lease(job_id, self._worker_id, lease_seconds=300):
+            if not await self.engine.renew_lease(
+                job_id, self._worker_id, lease_seconds=300, claim_version=claim_version
+            ):
                 return

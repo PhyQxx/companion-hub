@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime, timedelta, timezone
 from typing import Any
 
 import pytest
@@ -248,3 +248,102 @@ async def test_expired_cancellation_is_never_requeued(engine: JobEngine) -> None
     current = await engine.get(job.id)
     assert current is not None and current.status == "cancelled"
     assert await engine.claim("other") is None
+
+
+async def test_live_claim_cannot_be_stolen_and_stale_results_are_fenced(engine: JobEngine) -> None:
+    from sqlalchemy import update
+
+    from app.db import JobRecord
+
+    job = await engine.submit("test", {})
+    first = await engine.claim("same-worker")
+    assert first is not None
+    step = await engine.start_step(job.id, "read", worker_id="same-worker", claim_version=1)
+    assert await engine.claim("other-worker") is None
+    async with engine._database.sessions.begin() as session:
+        await session.execute(
+            update(JobRecord)
+            .where(JobRecord.id == job.id)
+            .values(lease_expires_at=datetime.now(UTC) - timedelta(seconds=1))
+        )
+    second = await engine.claim("same-worker")
+    assert second is not None and second.attempts == 2
+    assert not await engine.complete_step(step, worker_id="same-worker", claim_version=1)
+    assert not await engine.succeed(job.id, worker_id="same-worker", claim_version=1)
+    await engine.fail_step(step, error_code="late_failure")
+    current = await engine.get(job.id)
+    assert current is not None and current.status == "running" and current.attempts == 2
+    assert not await engine.claim_active(job.id, "same-worker", 1)
+    assert await engine.claim_active(job.id, "same-worker", 2)
+    await engine.cancel(job.id)
+    assert not await engine.confirm_cancelled(job.id, "same-worker", claim_version=1)
+    assert await engine.confirm_cancelled(job.id, "same-worker", claim_version=2)
+
+
+async def test_due_retry_releases_only_its_resource_pool(engine: JobEngine) -> None:
+    from sqlalchemy import update
+
+    from app.db import JobRecord
+
+    jobs = []
+    for pool in ("deleg", "other"):
+        job = await engine.submit("test", {}, resource_class=pool)
+        await engine.claim("worker", resource_class=pool)
+        step = await engine.start_step(job.id, "read")
+        await engine.fail_step(step, error_code="retry")
+        jobs.append(job)
+    async with engine._database.sessions.begin() as session:
+        await session.execute(update(JobRecord).values(available_at=datetime.now(UTC)))
+    assert await engine.release_ready_retries(resource_class="deleg") == 1
+    first, second = await engine.get(jobs[0].id), await engine.get(jobs[1].id)
+    assert first is not None and first.status == "queued" and first.lease_owner is None
+    assert second is not None and second.status == "retry_wait"
+
+
+async def test_concurrent_submission_and_utc_schedule_slot_are_idempotent(
+    engine: JobEngine,
+) -> None:
+    import asyncio
+
+    utc_slot = datetime(2026, 10, 1, 2, tzinfo=UTC)
+    jobs = await asyncio.gather(
+        *(
+            engine.submit_scheduled(
+                "check",
+                {},
+                schedule_id="daily-check",
+                scheduled_slot=utc_slot,
+                owner="user-a",
+                resource_class="scheduled",
+            )
+            for _ in range(8)
+        )
+    )
+    assert len({job.id for job in jobs}) == 1
+    same = await engine.submit_scheduled(
+        "check",
+        {},
+        schedule_id="daily-check",
+        scheduled_slot=utc_slot.astimezone(timezone(timedelta(hours=8))),
+        owner="user-a",
+        resource_class="scheduled",
+    )
+    assert same.id == jobs[0].id
+    other = await engine.submit_scheduled(
+        "check",
+        {},
+        schedule_id="daily-check",
+        scheduled_slot=utc_slot,
+        owner="user-b",
+        resource_class="scheduled",
+    )
+    assert other.id != same.id
+    with pytest.raises(ValueError, match="schedule_slot_requires_timezone"):
+        await engine.submit_scheduled(
+            "check",
+            {},
+            schedule_id="daily-check",
+            scheduled_slot=utc_slot.replace(tzinfo=None),
+            owner="user-a",
+            resource_class="scheduled",
+        )

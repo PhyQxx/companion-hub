@@ -11,7 +11,14 @@ from sqlalchemy import select, update
 from test_llm import FakeProvider, endpoint
 
 from app.config.models import RunBudgetConfig
-from app.db import Base, Database, ModelReservationRecord, TaskRunRecord, create_database
+from app.db import (
+    AppUserRecord,
+    Base,
+    Database,
+    ModelReservationRecord,
+    TaskRunRecord,
+    create_database,
+)
 from app.harness.budget import BudgetDenied, CallPermit, budget_scope, current_budget
 from app.ids import uuid7
 from app.llm.contracts import CompletionRequest, LLMMessage, LLMRoute, ModelUsage, RoutePolicy
@@ -34,6 +41,7 @@ async def make_budget(database: Database, config: RunBudgetConfig) -> RunModelBu
     run_id, user_id = uuid7(), uuid7()
     now = datetime.now(UTC)
     async with database.sessions.begin() as session:
+        session.add(AppUserRecord(id=user_id, display_name="Budget fixture", status="active"))
         session.add(
             TaskRunRecord(
                 id=run_id,
@@ -483,3 +491,143 @@ async def test_settlement_failure_never_repeats_successful_provider_call(
     async with database.sessions() as session:
         rows = list(await session.scalars(select(ModelReservationRecord)))
         assert len(rows) == 1 and rows[0].state == "reserved"
+
+
+async def test_background_job_shares_parent_budget_and_cannot_revive_deleted_parent(
+    database: Database,
+) -> None:
+    from app.db import JobRecord
+    from app.jobs import JobEngine
+    from app.runs.budget import job_model_budget
+
+    config = RunBudgetConfig(max_llm_attempts=3)
+    parent = await make_budget(database, config)
+    async with database.sessions() as session:
+        run = await session.scalar(select(TaskRunRecord))
+        assert run is not None
+        run_id, user_id = run.id, run.user_id
+    engine = JobEngine(database)
+    job = await engine.submit(
+        "deleg.test",
+        {"user_id": str(user_id), "turn_id": str(run_id)},
+        owner=str(user_id),
+        source_turn_id=run_id,
+        resource_class="deleg",
+    )
+    await engine.claim("worker", resource_class="deleg")
+    child = await job_model_budget(database, job.id, config)
+    assert child is not None
+    await parent.reserve(endpoint="local", tokens=10, final=True)
+    await child.reserve(endpoint="local", tokens=10, final=True)
+    with pytest.raises(BudgetDenied, match="run_budget_exhausted"):
+        await child.reserve(endpoint="local", tokens=10, final=True)
+    await parent.reserve(endpoint="local", tokens=10, final=True)
+    with pytest.raises(BudgetDenied, match="run_budget_exhausted"):
+        await parent.reserve(endpoint="local", tokens=10, final=True)
+    async with database.sessions.begin() as session:
+        await session.execute(
+            update(JobRecord).where(JobRecord.id == job.id).values(task_run_id=None)
+        )
+    with pytest.raises(BudgetDenied, match="budget_run_not_found"):
+        await job_model_budget(database, job.id, config)
+
+
+async def test_standalone_job_run_persists_budget_and_terminal_state(database: Database) -> None:
+    from app.jobs import JobEngine
+    from app.runs.budget import job_model_budget
+    from app.runs.store import RunStore
+
+    config = RunBudgetConfig(max_llm_attempts=2)
+    user_id = uuid7()
+    async with database.sessions.begin() as session:
+        session.add(AppUserRecord(id=user_id, display_name="Job fixture", status="active"))
+    engine = JobEngine(database)
+    job = await engine.submit(
+        "deleg.test", {"user_id": str(user_id)}, owner=str(user_id), resource_class="deleg"
+    )
+    await engine.claim("worker", resource_class="deleg")
+    first = await job_model_budget(database, job.id, config)
+    assert first is not None
+    await first.reserve(endpoint="local", tokens=10, final=True)
+    resumed = await job_model_budget(database, job.id, config)
+    assert resumed is not None
+    await resumed.reserve(endpoint="local", tokens=10, final=True)
+    with pytest.raises(BudgetDenied, match="run_budget_exhausted"):
+        await resumed.reserve(endpoint="local", tokens=10, final=True)
+    assert await engine.succeed(job.id, worker_id="worker", claim_version=1)
+    view = await RunStore(database).get(job.id, user_id=user_id)
+    assert view.status == "succeeded" and view.budget_summary is not None
+    assert view.budget_summary.llm_attempts == 2
+    assert [event.kind for event in await RunStore(database).events(job.id, user_id=user_id)] == [
+        "run.running",
+        "run.succeeded",
+    ]
+
+
+async def test_background_cancel_stops_admission_and_preserves_owner_boundary(
+    database: Database,
+) -> None:
+    from app.jobs import JobEngine
+    from app.runs.budget import job_model_budget
+    from app.runs.store import RunStore
+
+    config = RunBudgetConfig()
+    user_id = uuid7()
+    async with database.sessions.begin() as session:
+        session.add(AppUserRecord(id=user_id, display_name="Job fixture", status="active"))
+    engine = JobEngine(database)
+    job = await engine.submit(
+        "deleg.test", {"user_id": str(user_id)}, owner=str(user_id), resource_class="deleg"
+    )
+    await engine.claim("worker", resource_class="deleg")
+    budget = await job_model_budget(database, job.id, config)
+    assert budget is not None
+    store = RunStore(database)
+    with pytest.raises(LookupError):
+        await store.cancel_background(job.id, user_id=uuid7())
+    assert await store.cancel_background(job.id, user_id=user_id)
+    with pytest.raises(BudgetDenied, match="budget_run_inactive"):
+        await budget.reserve(endpoint="local", tokens=10, final=True)
+    assert not await engine.succeed(job.id, worker_id="worker", claim_version=1)
+    assert await engine.confirm_cancelled(job.id, "worker", claim_version=1)
+    assert (await store.get(job.id, user_id=user_id)).status == "cancelled"
+
+
+async def test_user_concurrency_is_shared_across_runs_and_released_after_attempt(
+    database: Database,
+) -> None:
+    config = RunBudgetConfig(max_concurrent_llm_calls=1)
+    first = await make_budget(database, config)
+    run_id = uuid7()
+    now = datetime.now(UTC)
+    async with database.sessions.begin() as session:
+        session.add(
+            TaskRunRecord(
+                id=run_id,
+                user_id=first._user_id,
+                contract={},
+                budget=config.model_dump(),
+                status="running",
+                privacy_level="L1",
+                created_at=now,
+                updated_at=now,
+                deadline=now + timedelta(seconds=180),
+            )
+        )
+    second = RunModelBudget(database, run_id=run_id, user_id=first._user_id, config=config)
+    results = await asyncio.gather(
+        first.reserve(endpoint="local", tokens=10, final=True),
+        second.reserve(endpoint="local", tokens=10, final=True),
+        return_exceptions=True,
+    )
+    assert sum(isinstance(result, CallPermit) for result in results) == 1
+    denied = next(result for result in results if isinstance(result, BudgetDenied))
+    assert denied.reason_code == "user_model_concurrency_exhausted"
+    independent = await make_budget(database, config)
+    await independent.reserve(endpoint="local", tokens=10, final=True)
+    winner = first if isinstance(results[0], CallPermit) else second
+    permit = next(result for result in results if isinstance(result, CallPermit))
+    # Even unknown usage releases concurrency after the provider attempt ends;
+    # its conservative token charge remains accounted for.
+    await winner.settle(permit.call_id, None)
+    await second.reserve(endpoint="local", tokens=10, final=True)

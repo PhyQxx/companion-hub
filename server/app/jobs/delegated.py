@@ -17,7 +17,6 @@ import contextlib
 import logging
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from functools import partial
 from time import perf_counter
 from typing import Annotated, Any, Literal, cast
 from uuid import UUID
@@ -26,6 +25,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from app.config import ConfigStore, DatabaseConfigStore, HubConfig
 from app.db import Database
+from app.harness.budget import BudgetDenied, budget_scope
 from app.ids import uuid7
 from app.llm import (
     CompletionRequest,
@@ -36,6 +36,7 @@ from app.llm import (
 )
 from app.llm.factory import build_router
 from app.llm.provider import EnvSecretProvider
+from app.runs.budget import job_model_budget
 from app.schemas.common import PrivacyLevel
 from app.tools.contracts import ToolContext, ToolResult
 from app.tools.webfetch import FetchWebpageArgs, FetchWebpageTool
@@ -76,12 +77,12 @@ class DelegatedJobWorker:
         engine: JobEngine,
         *,
         deliver: ProactiveDeliver | None = None,
-        worker_id: str = "aria-deleg-worker",
+        worker_id: str | None = None,
         poll_seconds: float = WORKER_POLL_SECONDS,
     ) -> None:
         self._engine = engine
         self._deliver = deliver
-        self._worker_id = worker_id
+        self._worker_id = worker_id or f"deleg-{uuid7()}"
         self._poll_seconds = poll_seconds
         self._handlers: dict[str, DelegHandler] = {}
         self._stop = asyncio.Event()
@@ -110,6 +111,8 @@ class DelegatedJobWorker:
     async def _run(self) -> None:
         while not self._stop.is_set():
             try:
+                await self._engine.expire_stale_leases(resource_class=DELEG_RESOURCE_CLASS)
+                await self._engine.release_ready_retries(resource_class=DELEG_RESOURCE_CLASS)
                 job = await self._engine.claim(
                     self._worker_id,
                     resource_class=DELEG_RESOURCE_CLASS,
@@ -128,48 +131,83 @@ class DelegatedJobWorker:
                     await asyncio.wait_for(self._stop.wait(), timeout=self._poll_seconds)
 
     async def _execute(self, job: JobView) -> None:
+        worker_id = job.lease_owner
+        if worker_id is None:
+            return
+        if not await self._engine.claim_active(job.id, worker_id, job.attempts):
+            await self._engine.confirm_cancelled(job.id, worker_id, claim_version=job.attempts)
+            return
         handler = self._handlers.get(job.kind)
         if handler is None:
             logger.error("no handler registered for delegated job kind: %s", job.kind)
-            step_id = await self._engine.start_step(job.id, "run")
+            step_id = await self._engine.start_step(
+                job.id, "run", worker_id=worker_id, claim_version=job.attempts
+            )
             await self._engine.fail_step(
-                step_id, error_code="handler_missing", error_detail={"kind": job.kind}
+                step_id,
+                error_code="handler_missing",
+                error_detail={"kind": job.kind},
+                retryable=False,
             )
             return
         payload = await self._engine.job_input(job.id) or {}
         user_id = payload.get("user_id")
-        if not isinstance(user_id, str):
-            step_id = await self._engine.start_step(job.id, "run")
+        try:
+            owner_id = UUID(user_id) if isinstance(user_id, str) else None
+        except ValueError:
+            owner_id = None
+        if owner_id is None:
+            step_id = await self._engine.start_step(
+                job.id, "run", worker_id=worker_id, claim_version=job.attempts
+            )
             await self._engine.fail_step(
-                step_id, error_code="payload_invalid", error_detail={"reason": "user_id_missing"}
+                step_id,
+                error_code="payload_invalid",
+                error_detail={"reason": "user_id_missing"},
+                retryable=False,
             )
             return
-        step_id = await self._engine.start_step(job.id, "run")
+        step_id = await self._engine.start_step(
+            job.id, "run", worker_id=worker_id, claim_version=job.attempts
+        )
+
+        async def cancelled() -> bool:
+            return not await self._engine.claim_active(job.id, worker_id, job.attempts)
+
         run_context = DelegRunContext(
             job_id=job.id,
-            is_cancel_requested=partial(self._engine.cancel_requested, job.id),
+            is_cancel_requested=cancelled,
         )
         try:
             result = await handler(payload, run_context)
         except DelegCancelled:
             # Handler 协作式取消：与执行后取消同语义，结果不汇报
             logger.info("delegated job %s cancelled cooperatively", job.id)
-            await self._engine.confirm_cancelled(job.id, self._worker_id)
+            await self._engine.confirm_cancelled(job.id, worker_id, claim_version=job.attempts)
             return
         except Exception as error:
             logger.warning("delegated job %s (%s) failed", job.id, job.kind, exc_info=True)
+            if await cancelled():
+                await self._engine.confirm_cancelled(job.id, worker_id, claim_version=job.attempts)
+                return
             await self._engine.fail_step(
                 step_id,
-                error_code="handler_error",
+                error_code=error.reason_code
+                if isinstance(error, BudgetDenied)
+                else "handler_error",
+                retryable=not isinstance(error, BudgetDenied)
+                or error.reason_code == "user_model_concurrency_exhausted",
                 error_detail={"exception": type(error).__name__},
             )
             return
-        await self._engine.complete_step(step_id, progress=1.0)
-        if not await self._engine.succeed(job.id):
+        await self._engine.complete_step(
+            step_id, progress=1.0, worker_id=worker_id, claim_version=job.attempts
+        )
+        if not await self._engine.succeed(job.id, worker_id=worker_id, claim_version=job.attempts):
             # 执行期间收到取消请求：按取消收尾，结果不汇报
-            await self._engine.confirm_cancelled(job.id, self._worker_id)
+            await self._engine.confirm_cancelled(job.id, worker_id, claim_version=job.attempts)
             return
-        await self._report(UUID(user_id), job, result)
+        await self._report(owner_id, job, result)
 
     async def _report(self, user_id: UUID, job: JobView, result: dict[str, Any]) -> None:
         if self._deliver is None:
@@ -197,13 +235,37 @@ class WebResearchHandler:
         config_store: ConfigStore | DatabaseConfigStore,
         *,
         router_builder: Callable[[HubConfig], Any] | None = None,
+        database: Database | None = None,
     ) -> None:
+        self._database = database
         self._fetch = fetch
         self._config_store = config_store
         secrets = EnvSecretProvider()
         self._router_builder = router_builder or (lambda config: build_router(config, secrets))
 
     async def __call__(
+        self, payload: dict[str, Any], run_context: DelegRunContext
+    ) -> dict[str, Any]:
+        snapshot = (
+            await self._config_store.refresh()
+            if isinstance(self._config_store, DatabaseConfigStore)
+            else self._config_store.current
+        )
+        budget = (
+            await job_model_budget(self._database, run_context.job_id, snapshot.config.run_budget)
+            if self._database is not None and snapshot.config.run_budget.enabled
+            else None
+        )
+        with budget_scope(budget):
+            if budget is None:
+                return await self._research(payload, run_context)
+            try:
+                async with asyncio.timeout(budget.remaining_delivery_seconds):
+                    return await self._research(payload, run_context)
+            except TimeoutError as error:
+                raise BudgetDenied("run_deadline_exceeded") from error
+
+    async def _research(
         self, payload: dict[str, Any], run_context: DelegRunContext
     ) -> dict[str, Any]:
         urls = payload.get("urls")
@@ -236,6 +298,8 @@ class WebResearchHandler:
                 failures.append({"url": url, "reason": str(result.reason_code or "failed")})
         if not documents:
             raise ValueError("all_fetches_failed")
+        if await run_context.is_cancel_requested():
+            raise DelegCancelled("web_research")
         summary = await self._summarize(topic, documents)
         return {
             "summary": summary,

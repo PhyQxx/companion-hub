@@ -650,7 +650,8 @@ def assemble_domain(
     )
     if deleg_worker is not None and web_fetch_tool is not None and runtime_config is not None:
         deleg_worker.register(
-            DELEG_KIND_RESEARCH, WebResearchHandler(web_fetch_tool, runtime_config)
+            DELEG_KIND_RESEARCH,
+            WebResearchHandler(web_fetch_tool, runtime_config, database=runtime_database),
         )
     delegate_task_tool = DelegateTaskTool(job_engine) if job_engine is not None else None
     # 对话内 propose_skill 工具 + 回合后草稿收割，共用生成器与草稿存储；

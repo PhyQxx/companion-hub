@@ -1,17 +1,20 @@
 from __future__ import annotations
 
+import hashlib
 import logging
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any, Literal, cast
 from uuid import UUID
 
-from sqlalchemy import func, select, update
+from sqlalchemy import func, or_, select, update
 from sqlalchemy.engine import CursorResult
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db import Database, JobRecord, JobStepRecord, TaskRunRecord
 from app.ids import uuid7
+from app.runs.store import transition_run
 
 logger = logging.getLogger("app.jobs.engine")
 
@@ -90,19 +93,56 @@ class JobEngine:
         source_turn_id: UUID | None = None,
     ) -> JobView:
         """提交新 Job。若 idempotency_key 已存在则返回已有 Job。"""
-        async with self._database.sessions.begin() as session:
-            return await self.submit_in_session(
-                session,
-                kind,
-                input,
-                owner=owner,
-                priority=priority,
-                idempotency_key=idempotency_key,
-                resource_class=resource_class,
-                max_attempts=max_attempts,
-                available_at=available_at,
-                source_turn_id=source_turn_id,
-            )
+        try:
+            async with self._database.sessions.begin() as session:
+                return await self.submit_in_session(
+                    session,
+                    kind,
+                    input,
+                    owner=owner,
+                    priority=priority,
+                    idempotency_key=idempotency_key,
+                    resource_class=resource_class,
+                    max_attempts=max_attempts,
+                    available_at=available_at,
+                    source_turn_id=source_turn_id,
+                )
+        except IntegrityError as error:
+            if idempotency_key is None:
+                raise
+            async with self._database.sessions() as session:
+                existing = await session.scalar(
+                    select(JobRecord).where(
+                        JobRecord.idempotency_key == idempotency_key,
+                    )
+                )
+                if existing is None:
+                    raise
+                if existing.owner != owner or existing.kind != kind or existing.input != input:
+                    raise ValueError("job_idempotency_conflict") from error
+                return self._to_view(existing)
+
+    async def submit_scheduled(
+        self,
+        kind: str,
+        input: dict[str, Any],
+        *,
+        schedule_id: str,
+        scheduled_slot: datetime,
+        owner: str,
+        resource_class: str,
+    ) -> JobView:
+        if scheduled_slot.tzinfo is None:
+            raise ValueError("schedule_slot_requires_timezone")
+        slot = scheduled_slot.astimezone(UTC).isoformat()
+        key = hashlib.sha256(f"{owner}:{schedule_id}:{slot}".encode()).hexdigest()
+        return await self.submit(
+            kind,
+            {**input, "scheduled_slot": slot},
+            owner=owner,
+            idempotency_key=f"schedule:{key}",
+            resource_class=resource_class,
+        )
 
     async def submit_in_session(
         self,
@@ -217,6 +257,7 @@ class JobEngine:
         *,
         resource_class: str = "cpu-small",
         lease_seconds: float = 300.0,
+        job_id: UUID | None = None,
     ) -> JobView | None:
         """Worker 领取一个可执行的 Job。
 
@@ -232,8 +273,11 @@ class JobEngine:
                 select(JobRecord)
                 .where(
                     JobRecord.status.in_({"queued", "admitted"}),
+                    or_(JobRecord.lease_expires_at.is_(None), JobRecord.lease_expires_at <= now),
                     JobRecord.available_at <= now,
+                    JobRecord.attempts < JobRecord.max_attempts,
                     JobRecord.resource_class == resource_class,
+                    *([JobRecord.id == job_id] if job_id is not None else []),
                     JobRecord.cancel_requested_at.is_(None),
                 )
                 .order_by(JobRecord.priority.desc(), JobRecord.available_at.asc())
@@ -255,8 +299,15 @@ class JobEngine:
 
             claimed = await session.execute(
                 update(JobRecord)
-                .where(JobRecord.id == record.id, JobRecord.status == record.status)
+                .where(
+                    JobRecord.id == record.id,
+                    JobRecord.status == record.status,
+                    JobRecord.attempts == record.attempts,
+                    JobRecord.cancel_requested_at.is_(None),
+                    or_(JobRecord.lease_expires_at.is_(None), JobRecord.lease_expires_at <= now),
+                )
                 .values(**values)
+                .execution_options(synchronize_session=False)
             )
             if not int(cast(CursorResult[Any], claimed).rowcount or 0):
                 return None
@@ -268,7 +319,12 @@ class JobEngine:
             return self._to_view(record)
 
     async def renew_lease(
-        self, job_id: UUID, worker_id: str, *, lease_seconds: float = 300.0
+        self,
+        job_id: UUID,
+        worker_id: str,
+        *,
+        lease_seconds: float = 300.0,
+        claim_version: int | None = None,
     ) -> bool:
         """续约：只有当前持有者可以续约。"""
         expires = datetime.now(UTC) + timedelta(seconds=lease_seconds)
@@ -278,6 +334,9 @@ class JobEngine:
                 .where(
                     JobRecord.id == job_id,
                     JobRecord.lease_owner == worker_id,
+                    JobRecord.status.in_({"running", "admitted", "cancelling"}),
+                    JobRecord.lease_expires_at > datetime.now(UTC),
+                    *([JobRecord.attempts == claim_version] if claim_version is not None else []),
                 )
                 .values(lease_expires_at=expires)
             )
@@ -316,6 +375,8 @@ class JobEngine:
             job = await session.get(JobRecord, job_id, with_for_update=True)
             if job is None:
                 raise LookupError("job not found")
+            if job.status not in {"running", "admitted"}:
+                raise RuntimeError("job_claim_lost")
             if (worker_id is not None and job.lease_owner != worker_id) or (
                 claim_version is not None and job.attempts != claim_version
             ):
@@ -341,15 +402,28 @@ class JobEngine:
         step_id: int,
         *,
         progress: float | None = None,
-    ) -> None:
+        worker_id: str | None = None,
+        claim_version: int | None = None,
+    ) -> bool:
         now = datetime.now(UTC)
         async with self._database.sessions.begin() as session:
-            values: dict[str, Any] = {"status": "completed", "completed_at": now}
+            step = await session.get(JobStepRecord, step_id)
+            if step is None:
+                return False
+            job = await session.get(JobRecord, step.job_id, with_for_update=True)
+            if job is None or job.status not in {"running", "admitted"}:
+                return False
+            if (
+                job.attempts != step.attempt
+                or (worker_id is not None and job.lease_owner != worker_id)
+                or (claim_version is not None and job.attempts != claim_version)
+            ):
+                return False
+            step.status = "completed"
+            step.completed_at = now
             if progress is not None:
-                values["progress"] = progress
-            await session.execute(
-                update(JobStepRecord).where(JobStepRecord.id == step_id).values(**values)
-            )
+                step.progress = progress
+            return True
 
     async def fail_step(
         self,
@@ -364,20 +438,23 @@ class JobEngine:
             step = await session.get(JobStepRecord, step_id)
             if step is None:
                 raise LookupError("step not found")
-            step.status = "failed"
-            step.completed_at = now
-
             job = await session.get(JobRecord, step.job_id, with_for_update=True)
             if job is None:
                 raise LookupError("job not found")
 
             if job.attempts != step.attempt or job.status not in {"running", "admitted"}:
                 return
+            step.status = "failed"
+            step.completed_at = now
+            job.lease_owner = None
+            job.lease_expires_at = None
             if not retryable or job.attempts >= job.max_attempts:
                 job.status = "failed"
                 job.error_code = error_code
                 job.error_detail_safe = error_detail
                 job.completed_at = now
+                if job.task_run_id == job.id:
+                    await transition_run(session, job.id, "failed")
             else:
                 # 进入重试等待
                 job.status = "retry_wait"
@@ -413,6 +490,8 @@ class JobEngine:
             else:
                 record.status = "cancelled"
                 record.completed_at = now
+                if record.task_run_id == record.id:
+                    await transition_run(session, record.id, "cancelled")
             return True
 
     async def cancel_requested(self, job_id: UUID) -> bool:
@@ -423,7 +502,26 @@ class JobEngine:
                 return False
             return record.cancel_requested_at is not None
 
-    async def confirm_cancelled(self, job_id: UUID, worker_id: str) -> bool:
+    async def claim_active(self, job_id: UUID, worker_id: str, claim_version: int) -> bool:
+        """A stale or deleted claim must stop before its next external operation."""
+        async with self._database.sessions() as session:
+            return (
+                await session.scalar(
+                    select(JobRecord.id).where(
+                        JobRecord.id == job_id,
+                        JobRecord.lease_owner == worker_id,
+                        JobRecord.attempts == claim_version,
+                        JobRecord.status.in_({"running", "admitted"}),
+                        JobRecord.cancel_requested_at.is_(None),
+                        JobRecord.lease_expires_at > datetime.now(UTC),
+                    )
+                )
+                is not None
+            )
+
+    async def confirm_cancelled(
+        self, job_id: UUID, worker_id: str, *, claim_version: int | None = None
+    ) -> bool:
         """Worker 确认取消完成。"""
         now = datetime.now(UTC)
         async with self._database.sessions.begin() as session:
@@ -433,12 +531,17 @@ class JobEngine:
                     JobRecord.id == job_id,
                     JobRecord.lease_owner == worker_id,
                     JobRecord.status == "cancelling",
+                    *([JobRecord.attempts == claim_version] if claim_version is not None else []),
                 )
                 .values(
                     status="cancelled", completed_at=now, lease_owner=None, lease_expires_at=None
                 )
+                .returning(JobRecord.id, JobRecord.task_run_id)
             )
-            return int(cast(CursorResult[Any], result).rowcount or 0) > 0
+            changed = result.one_or_none()
+            if changed is not None and changed[1] == job_id:
+                await transition_run(session, job_id, "cancelled")
+            return changed is not None
 
     async def succeed(
         self,
@@ -452,7 +555,9 @@ class JobEngine:
         async with self._database.sessions.begin() as session:
             conditions = []
             if worker_id is not None:
-                conditions.append(JobRecord.lease_owner == worker_id)
+                conditions.extend(
+                    [JobRecord.lease_owner == worker_id, JobRecord.lease_expires_at > now]
+                )
             if claim_version is not None:
                 conditions.append(JobRecord.attempts == claim_version)
             result = await session.execute(
@@ -469,8 +574,12 @@ class JobEngine:
                     lease_owner=None,
                     lease_expires_at=None,
                 )
+                .returning(JobRecord.id, JobRecord.task_run_id)
             )
-            return int(cast(CursorResult[Any], result).rowcount or 0) > 0
+            changed = result.one_or_none()
+            if changed is not None and changed[1] == job_id:
+                await transition_run(session, job_id, "succeeded")
+            return changed is not None
 
     # ------------------------------------------------------------------ #
     # Worker 心跳与租约清理
@@ -494,6 +603,22 @@ class JobEngine:
             )
             return [self._to_view(r) for r in records]
 
+    async def release_ready_retries(self, *, resource_class: str) -> int:
+        """Release due retries only within the caller's owned resource pool."""
+        async with self._database.sessions.begin() as session:
+            result = await session.execute(
+                update(JobRecord)
+                .where(
+                    JobRecord.resource_class == resource_class,
+                    JobRecord.status == "retry_wait",
+                    JobRecord.available_at <= datetime.now(UTC),
+                    JobRecord.cancel_requested_at.is_(None),
+                    JobRecord.attempts < JobRecord.max_attempts,
+                )
+                .values(status="queued", lease_owner=None, lease_expires_at=None)
+            )
+            return int(cast(CursorResult[Any], result).rowcount or 0)
+
     async def expire_stale_leases(self, *, resource_class: str | None = None) -> int:
         """清理过期的 worker 租约，将超时 Job 重置为 queued 或 failed。
 
@@ -504,11 +629,13 @@ class JobEngine:
             # 先找出所有过期租约
             stale = list(
                 await session.scalars(
-                    select(JobRecord).where(
+                    select(JobRecord)
+                    .where(
                         JobRecord.lease_expires_at < now,
                         *([JobRecord.resource_class == resource_class] if resource_class else []),
                         JobRecord.status.in_({"running", "admitted", "cancelling"}),
                     )
+                    .with_for_update(skip_locked=True)
                 )
             )
             count = 0
@@ -522,10 +649,14 @@ class JobEngine:
                     record.status = "failed"
                     record.error_code = "lease_expired"
                     record.completed_at = now
+                    record.lease_owner = None
+                    record.lease_expires_at = None
                 else:
                     record.status = "queued"
                     record.lease_owner = None
                     record.lease_expires_at = None
+                if record.task_run_id == record.id and record.status in {"failed", "cancelled"}:
+                    await transition_run(session, record.id, record.status)
                 count += 1
             return count
 

@@ -2,16 +2,18 @@
 
 import asyncio
 import os
+from datetime import UTC, datetime, timedelta
 
 import pytest
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.engine import make_url
 from test_run_budget import make_budget
 
 from app.config.models import RunBudgetConfig
-from app.db import Base, TaskRunRecord, create_database
+from app.db import Base, JobRecord, TaskRunRecord, create_database
 from app.harness.budget import BudgetDenied
 from app.ids import uuid7
+from app.jobs import JobEngine
 from app.llm.contracts import ModelUsage
 
 
@@ -51,6 +53,30 @@ async def test_postgres_concurrent_budget_admission_and_settlement() -> None:
                 select(TaskRunRecord).where(TaskRunRecord.id == budget._run_id)
             )
             assert row is not None and row.llm_attempts == 1 and row.budget_tokens == 100
+        engine = JobEngine(database)
+        job = await engine.submit("deleg.test", {}, resource_class="deleg")
+        claims = await asyncio.gather(
+            *(engine.claim(f"worker-{i}", resource_class="deleg") for i in range(16))
+        )
+        owners = [claim for claim in claims if claim is not None]
+        assert len(owners) == 1 and owners[0].attempts == 1
+        assert await engine.claim("other", resource_class="deleg") is None
+        first = owners[0]
+        assert first.lease_owner is not None
+        step = await engine.start_step(job.id, "read", worker_id=first.lease_owner, claim_version=1)
+        async with database.sessions.begin() as session:
+            await session.execute(
+                update(JobRecord)
+                .where(JobRecord.id == job.id)
+                .values(lease_expires_at=datetime.now(UTC) - timedelta(seconds=1))
+            )
+        claims = await asyncio.gather(
+            *(engine.claim("same-worker", resource_class="deleg") for _ in range(16))
+        )
+        owners = [claim for claim in claims if claim is not None]
+        assert len(owners) == 1 and owners[0].attempts == 2
+        assert not await engine.complete_step(step, worker_id=first.lease_owner, claim_version=1)
+        assert not await engine.succeed(job.id, worker_id=first.lease_owner, claim_version=1)
     finally:
         if created:
             async with database.engine.begin() as connection:

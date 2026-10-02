@@ -27,6 +27,7 @@ from app.config import ConfigStore, DatabaseConfigStore, HubConfig
 from app.db import AppUserRecord, Database
 from app.devices.service import DeviceRegistry
 from app.ids import uuid7
+from app.jobs import JobEngine
 from app.llm import CompletionRequest, CompletionResult, LLMMessage, LLMRoute
 from app.llm.factory import build_router
 from app.llm.provider import EnvSecretProvider
@@ -92,15 +93,15 @@ class DailySelfCheckScheduler:
         self._device_registry = device_registry
         self._backup_dir = backup_dir
         self._tz = ZoneInfo(timezone_name)
-        self._check_time = check_time or self._parse_time(
-            os.getenv(CHECK_TIME_ENV, "10:00")
-        )
+        self._check_time = check_time or self._parse_time(os.getenv(CHECK_TIME_ENV, "10:00"))
         self._interval = interval_seconds
         self._clock = clock or (lambda: datetime.now(UTC))
         self._sleep = sleeper or asyncio.sleep
         self._deliverer = deliverer
         self._router_builder = router_builder
         self._last_check_date: str | None = None
+        self._jobs = JobEngine(database)
+        self._worker_id = f"self-check-{uuid7()}"
         self._stop = asyncio.Event()
         self._task: asyncio.Task[None] | None = None
 
@@ -147,7 +148,43 @@ class DailySelfCheckScheduler:
         today = local.date().isoformat()
         if self._last_check_date == today:
             return []
-        self._last_check_date = today
+        slot = datetime.combine(local.date(), self._check_time, self._tz).astimezone(UTC)
+        job = await self._jobs.submit_scheduled(
+            "system.self_check",
+            {},
+            schedule_id=f"self-check:{self._tz.key}",
+            scheduled_slot=slot,
+            owner="system-self-check",
+            resource_class="self-check",
+        )
+        if job.status in {"succeeded", "failed", "cancelled"}:
+            self._last_check_date = today
+            return []
+        await self._jobs.expire_stale_leases(resource_class="self-check")
+        await self._jobs.release_ready_retries(resource_class="self-check")
+        claimed = await self._jobs.claim(
+            self._worker_id, resource_class="self-check", job_id=job.id
+        )
+        if claimed is None:
+            return []
+        step = await self._jobs.start_step(
+            job.id, "check", worker_id=self._worker_id, claim_version=claimed.attempts
+        )
+        try:
+            findings = await self._perform_check(moment)
+            await self._jobs.complete_step(
+                step, worker_id=self._worker_id, claim_version=claimed.attempts
+            )
+            if await self._jobs.succeed(
+                job.id, worker_id=self._worker_id, claim_version=claimed.attempts
+            ):
+                self._last_check_date = today
+            return findings
+        except Exception:
+            await self._jobs.fail_step(step, error_code="self_check_failed")
+            raise
+
+    async def _perform_check(self, moment: datetime) -> list[SelfCheckFinding]:
         findings: list[SelfCheckFinding] = []
         findings.extend(await self._check_route())
         findings.extend(await self._check_devices())
@@ -240,11 +277,15 @@ class DailySelfCheckScheduler:
         if directory is None:
             directory = Path(os.getenv("ARIA_BACKUP_DIR", "backups"))
         try:
-            dumps = sorted(
-                (item for item in directory.glob("aria_*.dump") if item.is_file()),
-                key=lambda item: item.stat().st_mtime,
-                reverse=True,
-            ) if directory.is_dir() else []
+            dumps = (
+                sorted(
+                    (item for item in directory.glob("aria_*.dump") if item.is_file()),
+                    key=lambda item: item.stat().st_mtime,
+                    reverse=True,
+                )
+                if directory.is_dir()
+                else []
+            )
         except OSError:
             return []
         if not dumps:

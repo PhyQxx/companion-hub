@@ -98,14 +98,17 @@ def _scheduler(
 
 
 @pytest.fixture
-async def database() -> AsyncIterator[Database]:
-    value = create_database("sqlite+aiosqlite:///:memory:")
+async def database(tmp_path: Path) -> AsyncIterator[Database]:
+    value = create_database(f"sqlite+aiosqlite:///{tmp_path / 'self-check.db'}")
     async with value.engine.begin() as connection:
         await connection.run_sync(Base.metadata.create_all)
     async with value.sessions() as session:
         session.add(AppUserRecord(id=uuid4(), display_name="主人", status="active"))
         await session.commit()
-    yield value
+    try:
+        yield value
+    finally:
+        await value.close()
 
 
 async def _second_user_id(database: Database) -> UUID:
@@ -247,3 +250,28 @@ async def test_route_probe_success_is_silent(database: Database, tmp_path: Path)
 async def test_finding_render_is_deterministic() -> None:
     finding = SelfCheckFinding(check="模型路由", detail="探活失败")
     assert finding.render() == "- 模型路由：探活失败"
+
+
+async def test_self_check_slot_survives_restart_and_competing_schedulers(
+    database: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import asyncio
+
+    calls = 0
+    first = _scheduler(database, RecordingDeliverer())
+    second = _scheduler(database, RecordingDeliverer())
+
+    async def probe(moment: datetime) -> list[SelfCheckFinding]:
+        nonlocal calls
+        calls += 1
+        await asyncio.sleep(0.03)
+        return []
+
+    monkeypatch.setattr(first, "_perform_check", probe)
+    monkeypatch.setattr(second, "_perform_check", probe)
+    await asyncio.gather(first.run_once(), second.run_once())
+    assert calls == 1
+    restarted = _scheduler(database, RecordingDeliverer())
+    monkeypatch.setattr(restarted, "_perform_check", probe)
+    assert await restarted.run_once() == []
+    assert calls == 1

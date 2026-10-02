@@ -6,10 +6,10 @@ from datetime import UTC, datetime, timedelta
 from typing import Literal
 from uuid import UUID
 
-from sqlalchemy import select, update
+from sqlalchemy import func, select, update
 
 from app.config.models import RunBudgetConfig
-from app.db import Database, ModelReservationRecord, TaskRunRecord
+from app.db import AppUserRecord, Database, JobRecord, ModelReservationRecord, TaskRunRecord
 from app.harness.budget import BudgetDenied, CallPermit
 from app.ids import uuid7
 from app.llm.contracts import ModelUsage
@@ -28,15 +28,22 @@ class RunModelBudget:
         user_id: UUID,
         config: RunBudgetConfig,
         phase: Literal["interactive", "maintenance"] = "interactive",
+        allow_active_parent: bool = False,
+        delivery_deadline: datetime | None = None,
     ) -> None:
         self._database = database
         self._run_id = run_id
         self._user_id = user_id
         self._config = config
         self._phase = phase
-        self._maintenance_deadline = datetime.now(UTC) + timedelta(
-            seconds=config.maintenance_deadline_seconds
+        self._allow_active_parent = allow_active_parent
+        self._maintenance_deadline = delivery_deadline or (
+            datetime.now(UTC) + timedelta(seconds=config.maintenance_deadline_seconds)
         )
+
+    @property
+    def remaining_delivery_seconds(self) -> float:
+        return max(0.0, (utc(self._maintenance_deadline) - datetime.now(UTC)).total_seconds())
 
     async def reserve(self, *, endpoint: str, tokens: int, final: bool) -> CallPermit:
         if tokens < 1:
@@ -60,8 +67,48 @@ class RunModelBudget:
             # Preserve one model-attempt slot for a tool-free interactive answer.
             limit = max_attempts - (self._phase == "interactive" and not final)
             statuses = {"accepted", "running"} if self._phase == "interactive" else {"succeeded"}
+            if self._phase == "maintenance" and self._allow_active_parent:
+                statuses = {"accepted", "running", "succeeded"}
+            if (
+                self._phase == "maintenance"
+                and self._allow_active_parent
+                and row.status in {"accepted", "running"}
+            ):
+                limit = max_attempts - 1
             if row.status not in statuses:
                 raise BudgetDenied("budget_run_inactive")
+            # A no-op owner-row write serializes admission across different runs
+            # on both SQLite and PostgreSQL; calls themselves never hold this lock.
+            owner = await session.scalar(
+                update(AppUserRecord)
+                .where(
+                    AppUserRecord.id == self._user_id,
+                    AppUserRecord.status == "active",
+                )
+                .values(id=AppUserRecord.id)
+                .returning(AppUserRecord.id)
+            )
+            if owner is None:
+                raise BudgetDenied("budget_owner_invalid")
+            concurrency = min(
+                int(
+                    row.budget.get(
+                        "max_concurrent_llm_calls", self._config.max_concurrent_llm_calls
+                    )
+                ),
+                self._config.max_concurrent_llm_calls,
+            )
+            in_flight = await session.scalar(
+                select(func.count())
+                .select_from(ModelReservationRecord)
+                .join(TaskRunRecord, TaskRunRecord.id == ModelReservationRecord.run_id)
+                .where(
+                    TaskRunRecord.user_id == self._user_id,
+                    ModelReservationRecord.state == "reserved",
+                )
+            )
+            if int(in_flight or 0) >= concurrency:
+                raise BudgetDenied("user_model_concurrency_exhausted")
             admitted = await session.scalar(
                 update(TaskRunRecord)
                 .where(
@@ -167,3 +214,66 @@ async def recover_stale_reservations(database: Database) -> None:
             )
             .values(state="unknown", settled_at=datetime.now(UTC))
         )
+
+
+async def job_model_budget(
+    database: Database, job_id: UUID, config: RunBudgetConfig
+) -> RunModelBudget | None:
+    """Share a chat parent's quota; give standalone jobs a durable run on first delivery.
+
+    Retry reuses the same counters. A deleted/cancelled parent cannot be recreated.
+    Metadata contains no research topic, URL, text or provider credentials.
+    """
+    from app.runs.store import append_run_event
+
+    now = datetime.now(UTC)
+    async with database.sessions.begin() as session:
+        job = await session.get(JobRecord, job_id, with_for_update=True)
+        if job is None or job.status not in {"running", "admitted"}:
+            raise BudgetDenied("budget_run_inactive")
+        try:
+            user_id = UUID(job.owner)
+        except ValueError as error:
+            raise BudgetDenied("budget_owner_invalid") from error
+        if (job.input or {}).get("user_id") != str(user_id):
+            raise BudgetDenied("budget_owner_invalid")
+        run_id = job.task_run_id
+        if run_id is None:
+            # A sourced job whose run vanished is not an independent task.
+            if (job.input or {}).get("turn_id"):
+                raise BudgetDenied("budget_run_not_found")
+            run_id = job.id
+            row = TaskRunRecord(
+                id=run_id,
+                user_id=user_id,
+                status="running",
+                privacy_level="L1",
+                contract={"entry": "delegated", "criterion": "handler_completed"},
+                budget=config.model_dump(mode="json"),
+                deadline=now + timedelta(seconds=config.maintenance_deadline_seconds),
+                created_at=now,
+                updated_at=now,
+                state_version=1,
+                event_seq=0,
+                cancel_epoch=0,
+            )
+            session.add(row)
+            await session.flush()
+            await append_run_event(session, row, "run.running")
+            job.task_run_id = run_id
+        else:
+            existing = await session.get(TaskRunRecord, run_id)
+            if existing is None or existing.user_id != user_id:
+                raise BudgetDenied("budget_run_not_found")
+            if not existing.budget or not existing.budget.get("enabled"):
+                return None  # Pre-budget runs preserve their recorded opt-out.
+    return RunModelBudget(
+        database,
+        run_id=run_id,
+        user_id=user_id,
+        config=config,
+        phase="interactive" if run_id == job_id else "maintenance",
+        allow_active_parent=True,
+        delivery_deadline=utc(job.started_at or job.created_at)
+        + timedelta(seconds=config.maintenance_deadline_seconds),
+    )

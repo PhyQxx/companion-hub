@@ -27,14 +27,17 @@ from app.db import (
     ActionPlanRecord,
     AppUserRecord,
     CognitiveDecisionRecord,
+    CognitiveGoalRecord,
     ConversationRecord,
     Database,
     InteractionTurnRecord,
     JobRecord,
     MessageRecord,
     ModelReservationRecord,
+    SkillDraftRecord,
     TaskRunEventRecord,
     TaskRunRecord,
+    WorkflowDraftRecord,
 )
 from app.harness.budget import BudgetDenied, budget_scope
 from app.harness.context import ContextAssembler, ContextBlocks, ContextReference
@@ -2000,6 +2003,26 @@ class ChatService:
             )
             if conversation is None or conversation.user_id != user_id:
                 raise LookupError("conversation not found")
+            turn_ids = list(
+                await session.scalars(
+                    select(InteractionTurnRecord.id).where(
+                        InteractionTurnRecord.conversation_id == conversation_id,
+                    )
+                )
+            )
+            if turn_ids:
+                await session.execute(
+                    delete(SkillDraftRecord).where(
+                        SkillDraftRecord.turn_id.in_([str(turn_id) for turn_id in turn_ids]),
+                    )
+                )
+            await session.execute(
+                delete(CognitiveGoalRecord).where(
+                    CognitiveGoalRecord.user_id == user_id,
+                    CognitiveGoalRecord.source_kind == "message",
+                    CognitiveGoalRecord.source_id.in_(message_ids),
+                )
+            )
             await session.execute(
                 delete(InteractionTurnRecord).where(
                     InteractionTurnRecord.conversation_id == conversation_id
@@ -2016,6 +2039,41 @@ class ChatService:
                 )
             )
             if run_ids:
+                source_plan_ids = select(ActionPlanRecord.id).where(
+                    ActionPlanRecord.task_run_id.in_(run_ids),
+                    ActionPlanRecord.user_id == user_id,
+                )
+                await session.execute(
+                    delete(WorkflowDraftRecord).where(
+                        WorkflowDraftRecord.user_id == user_id,
+                        WorkflowDraftRecord.plan_id.in_(source_plan_ids),
+                    )
+                )
+                # Derived jobs must stop rather than becoming detached tasks.
+                await session.execute(
+                    update(JobRecord)
+                    .where(
+                        JobRecord.task_run_id.in_(run_ids),
+                        JobRecord.owner == str(user_id),
+                        JobRecord.status.in_({"queued", "retry_wait", "waiting_user"}),
+                    )
+                    .values(
+                        status="cancelled",
+                        cancel_requested_at=datetime.now(UTC),
+                        completed_at=datetime.now(UTC),
+                        lease_owner=None,
+                        lease_expires_at=None,
+                    )
+                )
+                await session.execute(
+                    update(JobRecord)
+                    .where(
+                        JobRecord.task_run_id.in_(run_ids),
+                        JobRecord.owner == str(user_id),
+                        JobRecord.status.in_({"admitted", "running"}),
+                    )
+                    .values(status="cancelling", cancel_requested_at=datetime.now(UTC))
+                )
                 await session.execute(
                     delete(ModelReservationRecord).where(ModelReservationRecord.run_id.in_(run_ids))
                 )
@@ -2025,12 +2083,12 @@ class ChatService:
                 await session.execute(
                     update(JobRecord)
                     .where(JobRecord.task_run_id.in_(run_ids))
-                    .values(task_run_id=None)
+                    .values(task_run_id=None, input={"source_deleted": True})
                 )
                 await session.execute(
                     update(ActionPlanRecord)
                     .where(ActionPlanRecord.task_run_id.in_(run_ids))
-                    .values(task_run_id=None)
+                    .values(task_run_id=None, reason_code="source_deleted")
                 )
             await session.execute(
                 delete(TaskRunRecord).where(
@@ -2889,7 +2947,7 @@ class ChatService:
                 )
             )
         if generation is None:
-            return False
+            return await self.runs.cancel_background(run_id, user_id=user_id)
         return await self.cancel_turn(generation, user_id=user_id)
 
     async def _validate_context(self, pending: PendingTurn) -> None:

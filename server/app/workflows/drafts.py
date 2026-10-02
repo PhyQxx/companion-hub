@@ -84,13 +84,25 @@ class WorkflowDraftStore:
             status="pending",
             replay_status="not_run",
             replay_detail={},
-            dedupe_key=steps_dedupe_key(steps),
+            dedupe_key=hashlib.sha256(f"{user_id}:{steps_dedupe_key(steps)}".encode()).hexdigest(),
             created_at=now or datetime.now(UTC),
         )
         async with self._database.sessions.begin() as session:
+            if plan_id is not None:
+                plan = await session.get(ActionPlanRecord, plan_id, with_for_update=True)
+                if (
+                    plan is None
+                    or plan.user_id != user_id
+                    or plan.status != "completed"
+                    or plan.reason_code == "source_deleted"
+                ):
+                    return None
             existing = await session.scalar(
                 select(WorkflowDraftRecord).where(
-                    WorkflowDraftRecord.dedupe_key == record.dedupe_key
+                    WorkflowDraftRecord.user_id == user_id,
+                    WorkflowDraftRecord.dedupe_key.in_(
+                        {record.dedupe_key, steps_dedupe_key(steps)}
+                    ),
                 )
             )
             if existing is not None:
@@ -188,9 +200,7 @@ class PlanDistiller:
         except Exception:
             logger.warning("workflow distillation failed for plan %s", plan_id, exc_info=True)
 
-    async def distill_plan(
-        self, plan_id: UUID, *, user_id: UUID
-    ) -> WorkflowDraftRecord | None:
+    async def distill_plan(self, plan_id: UUID, *, user_id: UUID) -> WorkflowDraftRecord | None:
         """蒸馏一份已完成的计划；不满足门槛或重复时返回 None。"""
         async with self._database.sessions() as session:
             plan = await session.scalar(
@@ -198,7 +208,7 @@ class PlanDistiller:
                     ActionPlanRecord.id == plan_id, ActionPlanRecord.user_id == user_id
                 )
             )
-            if plan is None or plan.status != "completed":
+            if plan is None or plan.status != "completed" or plan.reason_code == "source_deleted":
                 return None
             steps = list(
                 await session.scalars(
@@ -227,9 +237,7 @@ class PlanDistiller:
             now=self._clock(),
         )
 
-    async def _polish_naming(
-        self, title: str, steps: list[ActionStepRecord]
-    ) -> tuple[str, str]:
+    async def _polish_naming(self, title: str, steps: list[ActionStepRecord]) -> tuple[str, str]:
         """LLM 命名润色；未配置或任何失败回落确定性标题命名。"""
         fallback = (_clean_draft_name(title), _describe_plan(title, steps))
         if self._config_store is None or self._router_builder is None:
@@ -264,9 +272,7 @@ class PlanDistiller:
                     max_tokens=200,
                 )
             )
-            payload = json.loads(
-                result.text[result.text.find("{") : result.text.rfind("}") + 1]
-            )
+            payload = json.loads(result.text[result.text.find("{") : result.text.rfind("}") + 1])
             if not isinstance(payload, dict):
                 return fallback
             name = str(payload.get("name") or "").strip()[:120]
@@ -291,6 +297,14 @@ class PlanDistiller:
             draft.replay_detail = detail
             return draft
         async with self._database.sessions() as session:
+            plan = await session.get(ActionPlanRecord, draft.plan_id)
+            if plan is None or plan.user_id != user_id or plan.reason_code == "source_deleted":
+                await self._drafts.set_replay_result(
+                    draft.id, replay_status="failed", detail={"reason": "source_deleted"}
+                )
+                draft.replay_status = "failed"
+                draft.replay_detail = {"reason": "source_deleted"}
+                return draft
             steps = list(
                 await session.scalars(
                     select(ActionStepRecord)
@@ -378,9 +392,7 @@ class PlanDistiller:
             )
         for record in records:
             try:
-                candidate = [
-                    WorkflowStep.model_validate(item) for item in record.steps or []
-                ]
+                candidate = [WorkflowStep.model_validate(item) for item in record.steps or []]
             except Exception:
                 continue
             if steps_dedupe_key(candidate) == key:

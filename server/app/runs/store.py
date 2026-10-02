@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from uuid import UUID
 
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db import (
@@ -65,6 +65,53 @@ async def append_run_event(session: AsyncSession, row: TaskRunRecord, kind: str)
 class RunStore:
     def __init__(self, database: Database) -> None:
         self._database = database
+
+    async def cancel_background(self, run_id: UUID, *, user_id: UUID) -> bool:
+        async with self._database.sessions.begin() as session:
+            row = await session.scalar(
+                select(TaskRunRecord)
+                .where(
+                    TaskRunRecord.id == run_id,
+                    TaskRunRecord.user_id == user_id,
+                )
+                .with_for_update()
+            )
+            if row is None:
+                raise LookupError("run not found")
+            if row.contract.get("entry") != "delegated" or row.status not in {
+                "accepted",
+                "running",
+            }:
+                return False
+            now = datetime.now(UTC)
+            # Immediate run cancellation blocks future model admission. Running
+            # jobs acknowledge cancellation after their external operation returns.
+            await session.execute(
+                update(JobRecord)
+                .where(
+                    JobRecord.task_run_id == run_id,
+                    JobRecord.owner == str(user_id),
+                    JobRecord.status.in_({"running", "admitted"}),
+                )
+                .values(status="cancelling", cancel_requested_at=now)
+            )
+            await session.execute(
+                update(JobRecord)
+                .where(
+                    JobRecord.task_run_id == run_id,
+                    JobRecord.owner == str(user_id),
+                    JobRecord.status.in_({"queued", "retry_wait", "waiting_user"}),
+                )
+                .values(
+                    status="cancelled",
+                    cancel_requested_at=now,
+                    completed_at=now,
+                    lease_owner=None,
+                    lease_expires_at=None,
+                )
+            )
+            await transition_run(session, run_id, "cancelled")
+            return True
 
     async def get(self, run_id: UUID, *, user_id: UUID) -> RunView:
         async with self._database.sessions() as session:

@@ -278,3 +278,115 @@ async def test_run_api_authentication_owner_scope_and_event_cursor(tmp_path: Pat
     finally:
         await service.drain_background_work()
         await database.close()
+
+
+async def test_delete_source_purges_candidates_goals_and_stops_detached_jobs(
+    tmp_path: Path,
+) -> None:
+    from datetime import UTC, datetime, timedelta
+
+    from sqlalchemy import select
+
+    from app.cognition import CognitiveStore
+    from app.cognition.models import GoalKind
+    from app.db import (
+        ActionPlanRecord,
+        CognitiveGoalRecord,
+        JobRecord,
+        SkillDraftRecord,
+        WorkflowDraftRecord,
+    )
+    from app.jobs import JobEngine
+    from app.skills.generator import SkillProposal
+    from app.skills.models import SkillDocument
+    from app.skills.store import SkillStore
+    from app.workflows.drafts import WorkflowDraftStore
+    from app.workflows.models import WorkflowStep
+
+    service, database, _ = await _summary_service(tmp_path)
+    try:
+        user = await create_user(database)
+        conversation = await service.create_conversation(user_id=user.id, title="source")
+        pending = await service.start_turn(
+            conversation.id, user_id=user.id, text="测试来源", privacy_level=PrivacyLevel.L1
+        )
+        skill_store = SkillStore(database)
+        draft = await skill_store.save_draft(
+            SkillProposal(
+                document=SkillDocument(
+                    name="source-fixture", description="Synthetic", instructions="Synthetic"
+                ),
+                warnings=[],
+                evidence=[],
+            ),
+            system_name="example",
+            source="chat",
+            turn_id=str(pending.turn_id),
+        )
+        assert draft is not None
+        await CognitiveStore(database).create_goal(
+            user_id=user.id,
+            kind=GoalKind.USER,
+            title="测试目标",
+            source_kind="message",
+            source_id=str(pending.user_message.id),
+        )
+        plan_id = uuid7()
+        now = datetime.now(UTC)
+        async with database.sessions.begin() as session:
+            session.add(
+                ActionPlanRecord(
+                    id=plan_id,
+                    user_id=user.id,
+                    task_run_id=pending.turn_id,
+                    status="completed",
+                    idempotency_key="source-fixture",
+                    request_hash="fixture",
+                    expires_at=now + timedelta(minutes=10),
+                )
+            )
+        workflow_store = WorkflowDraftStore(database)
+        workflow_draft = await workflow_store.create_draft(
+            user_id=user.id,
+            plan_id=plan_id,
+            name="Synthetic",
+            steps=[WorkflowStep(action_id="test.read")],
+        )
+        assert workflow_draft is not None
+        engine = JobEngine(database)
+        job = await engine.submit(
+            "deleg.test",
+            {"user_id": str(user.id), "turn_id": str(pending.turn_id), "topic": "敏感主题"},
+            owner=str(user.id),
+            source_turn_id=pending.turn_id,
+            resource_class="deleg",
+        )
+        claimed = await engine.claim("worker", resource_class="deleg")
+        assert claimed is not None
+        await service.delete_conversation(conversation.id, user_id=user.id)
+        async with database.sessions() as session:
+            assert await session.scalar(select(SkillDraftRecord)) is None
+            assert await session.scalar(select(WorkflowDraftRecord)) is None
+            assert await session.scalar(select(CognitiveGoalRecord)) is None
+            stored = await session.get(JobRecord, job.id)
+            assert (
+                stored is not None
+                and stored.status == "cancelling"
+                and stored.input == {"source_deleted": True}
+            )
+            plan = await session.get(ActionPlanRecord, plan_id)
+            assert plan is not None and plan.reason_code == "source_deleted"
+        assert not await engine.claim_active(job.id, "worker", claimed.attempts)
+        # A writer which captured a plan before deletion cannot recreate a draft.
+        assert (
+            await workflow_store.create_draft(
+                user_id=user.id,
+                plan_id=plan_id,
+                name="Late",
+                steps=[WorkflowStep(action_id="test.other")],
+            )
+            is None
+        )
+    finally:
+        await service.drain_background_work()
+        await database.close()
