@@ -42,6 +42,10 @@ logger = logging.getLogger("app.calendar.caldav")
 
 SOURCE_CALDAV = "caldav"
 DEFAULT_TZ = ZoneInfo("Asia/Shanghai")
+MAX_CALENDAR_RESPONSE_BYTES = 8 * 1024 * 1024
+MAX_CALENDAR_RESOURCES = 10_000
+MAX_CALENDAR_OCCURRENCES = 25_000
+MAX_RECURRENCE_STEPS = 10_000
 
 _PROPFIND_BODY = """<?xml version="1.0" encoding="utf-8"?>
 <D:propfind xmlns:D="DAV:" xmlns:C="urn:ietf:params:xml:ns:caldav">
@@ -79,6 +83,44 @@ class CalDavError(RuntimeError):
     def __init__(self, reason_code: str, detail: str = "") -> None:
         self.reason_code = reason_code
         super().__init__(detail or reason_code)
+
+
+def _successful_status(value: str | None) -> bool:
+    if value is None:
+        return True  # Preserve compatibility with providers omitting propstat status.
+    parts = value.split()
+    return (
+        len(parts) >= 2
+        and parts[0].startswith("HTTP/")
+        and parts[1].isdigit()
+        and 200 <= int(parts[1]) < 300
+    )
+
+
+def _multistatus(response: httpx.Response) -> list[ET.Element]:
+    if len(response.content) > MAX_CALENDAR_RESPONSE_BYTES:
+        raise CalDavError("caldav_response_limit")
+    try:
+        root = ET.fromstring(response.content)
+    except ET.ParseError as error:
+        raise CalDavError("caldav_response_invalid") from error
+    if root.tag != "{DAV:}multistatus":
+        raise CalDavError("caldav_response_invalid")
+    rows = root.findall("{DAV:}response")
+    if len(rows) > MAX_CALENDAR_RESOURCES:
+        raise CalDavError("caldav_resource_limit")
+    for row in rows:
+        if not row.findtext("{DAV:}href") or not _successful_status(row.findtext("{DAV:}status")):
+            raise CalDavError("caldav_response_invalid")
+    return rows
+
+
+def _property(row: ET.Element, name: str) -> ET.Element | None:
+    for propstat in row.findall("{DAV:}propstat"):
+        value = propstat.find("{DAV:}prop/" + name)
+        if value is not None and _successful_status(propstat.findtext("{DAV:}status")):
+            return value
+    return None
 
 
 @dataclass(slots=True)
@@ -130,13 +172,15 @@ class CalDavClient:
     async def list_calendars(self) -> list[tuple[str, str]]:
         """返回 [(href, displayname)]；仅包含 resourcetype 为 calendar 的集合。"""
         response = await self._request("PROPFIND", self._base_url, _PROPFIND_BODY, depth="1")
-        root = ET.fromstring(response.text)
+        responses = _multistatus(response)
         results: list[tuple[str, str]] = []
-        for response_node in root.findall(".//{DAV:}response"):
+        for response_node in responses:
             href = response_node.findtext("{DAV:}href", "")
             if not href:
                 continue
-            resourcetype = response_node.find(".//{DAV:}resourcetype")
+            resourcetype = _property(response_node, "{DAV:}resourcetype")
+            if resourcetype is None:
+                raise CalDavError("caldav_response_invalid")
             calendar_node = (
                 resourcetype.find("{urn:ietf:params:xml:ns:caldav}calendar")
                 if resourcetype is not None
@@ -144,10 +188,10 @@ class CalDavClient:
             )
             if calendar_node is None:
                 continue
-            name = (
-                response_node.findtext(".//{DAV:}displayname")
-                or href.rstrip("/").split("/")[-1]
-            )
+            displayname = _property(response_node, "{DAV:}displayname")
+            name = (displayname.text if displayname is not None else None) or href.rstrip(
+                "/"
+            ).split("/")[-1]
             results.append((href, name))
         return results
 
@@ -157,19 +201,30 @@ class CalDavClient:
         """REPORT 拉取窗口内事件并展开周期；一个 UID 可产生多个 occurrence。"""
         url = self._url(href)
         response = await self._request("REPORT", url, _report_body(start, end))
-        root = ET.fromstring(response.text)
+        responses = _multistatus(response)
         occurrences: list[MirrorOccurrence] = []
-        for response_node in root.findall(".//{DAV:}response"):
+        for response_node in responses:
             href_item = response_node.findtext("{DAV:}href", "")
-            etag = (response_node.findtext(".//{DAV:}getetag") or "").strip().strip('"')
-            data = response_node.findtext(
-                ".//{urn:ietf:params:xml:ns:caldav}calendar-data"
+            etag_property = _property(response_node, "{DAV:}getetag")
+            etag = (
+                ((etag_property.text if etag_property is not None else None) or "")
+                .strip()
+                .strip('"')
             )
-            if not data or not href_item:
-                continue
-            occurrences.extend(
-                _expand_event(data, etag=etag or href_item, window_start=start, window_end=end)
-            )
+            data = _property(response_node, "{urn:ietf:params:xml:ns:caldav}calendar-data")
+            if data is None or not data.text:
+                raise CalDavError("caldav_response_invalid")
+            try:
+                expanded = _expand_event(
+                    data.text, etag=etag or href_item, window_start=start, window_end=end
+                )
+            except (ValueError, TypeError, AttributeError, OverflowError) as error:
+                raise CalDavError("caldav_response_invalid") from error
+            if any(not value.ref or len(value.ref) > 160 for value in expanded):
+                raise CalDavError("caldav_response_invalid")
+            occurrences.extend(expanded)
+            if len(occurrences) > MAX_CALENDAR_OCCURRENCES:
+                raise CalDavError("caldav_occurrence_limit")
         return occurrences
 
     def _url(self, href: str) -> str:
@@ -205,15 +260,22 @@ def _expand_event(
     """解析单个 VEVENT 资源；周期规则在窗口内展开，覆盖/剔除按 RECURRENCE-ID/EXDATE。"""
     calendar = Calendar.from_ical(ical_data)
     components = [comp for comp in calendar.walk("VEVENT")]
-    if not components:
-        return []
-    master = components[0]
+    if not components or calendar.errors or any(comp.errors for comp in components):
+        raise ValueError("calendar_event_invalid")
+    masters = [comp for comp in components if comp.get("RECURRENCE-ID") is None]
+    if len(masters) > 1:
+        raise ValueError("calendar_event_multiple_masters")
+    master = masters[0] if masters else components[0]
+    components = [master, *(comp for comp in components if comp is not master)]
+    master_anchor = master.get("RECURRENCE-ID")
     overrides = {
-        str(comp.get("RECURRENCE-ID").dt)
+        _override_key(comp.get("RECURRENCE-ID").dt)
         for comp in components[1:]
         if comp.get("RECURRENCE-ID")
     }
-    uid = str(master.get("UID", "")) or etag
+    uid = str(master.get("UID", ""))
+    if not uid or any(str(comp.get("UID", "")) != uid for comp in components):
+        raise ValueError("calendar_event_uid_invalid")
     cancelled = str(master.get("STATUS", "")).upper() == "CANCELLED"
     summary = str(master.get("SUMMARY", "") or "(无标题)")[:320]
     location = str(master.get("LOCATION"))[:240] if master.get("LOCATION") else None
@@ -225,11 +287,14 @@ def _expand_event(
     duration = master.get("DURATION")
     if dtend_prop is not None:
         end_value = dtend_prop.dt
-        duration = (end_value - dtstart) if isinstance(end_value, datetime) else timedelta(days=1)
+        duration = _as_datetime(end_value) - _as_datetime(dtstart)
     elif duration is not None:
         duration = duration.dt if hasattr(duration, "dt") else duration
     else:
         duration = timedelta(days=1) if all_day else timedelta(hours=1)
+
+    if not isinstance(duration, timedelta) or duration <= timedelta(0):
+        raise ValueError("calendar_event_duration_invalid")
 
     rrule_prop = master.get("RRULE")
     raw_exdates = master.get("EXDATE", [])
@@ -248,11 +313,12 @@ def _expand_event(
             return None
         if _exdate_key(start_value) in exdates:
             return None
-        key = _override_key(start_value)
+        anchor = master_anchor.dt if master_anchor is not None else start_value
+        key = _override_key(anchor)
         if key in overrides:
             return None  # 该次由 override 资源自己提供
         return MirrorOccurrence(
-            ref=_ref_of(uid, start_value),
+            ref=_ref_of(uid, anchor),
             summary=summary,
             starts_at=_to_utc(start_dt),
             ends_at=_to_utc(end_dt),
@@ -265,28 +331,35 @@ def _expand_event(
 
     results = [_occurrence(dtstart)]
     if rrule_prop is not None:
-        try:
-            rule = rrulestr(rrule_prop.to_ical().decode(), dtstart=_as_datetime(dtstart))
-            for occurrence in rule.between(
-                window_start - timedelta(days=1), window_end + timedelta(days=1), inc=True
-            ):
-                candidate = _occurrence(occurrence)
-                if candidate is not None and candidate.ref != _ref_of(uid, dtstart):
-                    results.append(candidate)
-        except (ValueError, TypeError) as error:
-            logger.debug("caldav rrule expand failed for %s: %s", uid, error)
+        rule = rrulestr(rrule_prop.to_ical().decode(), dtstart=_as_datetime(dtstart))
+        lower = window_start - max(duration, timedelta(days=1))
+        upper = window_end + timedelta(days=1)
+        # Count the prefix too: xafter/between can scan unbounded old instances
+        # before returning the first value in the requested window.
+        for index, occurrence in enumerate(rule):
+            if occurrence > upper:
+                break
+            if index >= MAX_RECURRENCE_STEPS:
+                raise CalDavError("caldav_recurrence_limit")
+            if occurrence < lower:
+                continue
+            candidate = _occurrence(occurrence)
+            if candidate is not None and candidate.ref != _ref_of(uid, dtstart):
+                results.append(candidate)
     # override 资源自身也产出 occurrence
     for comp in components[1:]:
         recurrence_id = comp.get("RECURRENCE-ID")
         if recurrence_id is None:
             continue
         override_start = recurrence_id.dt
-        override_dt = _as_datetime(override_start)
+        actual_start = comp.get("DTSTART")
+        override_dt = _as_datetime(actual_start.dt if actual_start is not None else override_start)
         override_end = (
             comp.get("DTEND").dt if comp.get("DTEND") else override_dt + timedelta(hours=1)
         )
-        if not isinstance(override_end, datetime):
-            override_end = override_dt + timedelta(days=1)
+        override_end = _as_datetime(override_end)
+        if override_end <= override_dt:
+            raise ValueError("calendar_event_duration_invalid")
         if _to_utc(override_end) < window_start or _to_utc(override_dt) > window_end:
             continue
         results.append(
@@ -298,9 +371,7 @@ def _expand_event(
                 all_day=all_day,
                 location=str(comp.get("LOCATION"))[:240] if comp.get("LOCATION") else location,
                 description=(
-                    str(comp.get("DESCRIPTION"))[:2000]
-                    if comp.get("DESCRIPTION")
-                    else description
+                    str(comp.get("DESCRIPTION"))[:2000] if comp.get("DESCRIPTION") else description
                 ),
                 cancelled=str(comp.get("STATUS", "")).upper() == "CANCELLED" or cancelled,
                 etag=etag,
