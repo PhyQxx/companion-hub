@@ -61,6 +61,7 @@ from app.db import Database
 from app.devices import DeviceCommandStore, DeviceRegistry
 from app.devices.mqtt_client import MqttDeviceClient, MqttTelemetryBuffer
 from app.focus import FocusScheduler, FocusService
+from app.harness.source_cleanup import close_after_source
 from app.home_assistant import HomeAssistantManager
 from app.home_scene import HomeSceneService, HomeSceneStore
 from app.integrations.mcp import McpManager
@@ -104,6 +105,7 @@ from app.skills.store import SkillStore
 from app.tasks import TaskScheduler, TaskStore
 from app.tasks.brief import BriefCommute, BriefWeather, DailyBriefService
 from app.tasks.brief_scheduler import DailyBriefScheduler
+from app.tasks.brief_sources import read_brief_weather
 from app.tasks.goal_scheduler import GoalReminderScheduler
 from app.tasks.review import DailyReviewService
 from app.tasks.review_scheduler import DailyReviewScheduler
@@ -111,7 +113,6 @@ from app.timeline import HistoryRecallService, TimelineStore
 from app.todo import PnkxTodoClient, TodoSyncService
 from app.todo.sync_scheduler import TodoSyncScheduler
 from app.tools import FetchWebpageTool, build_query_tool_runtime
-from app.tools.location import resolve_location
 from app.workflows import WorkflowService, WorkflowStore
 from app.workflows.drafts import PlanDistiller, WorkflowDraftStore
 from app.xiaoai_config import XiaoAiConfigMaterializer
@@ -486,7 +487,7 @@ def assemble_domain(
         perception_pipeline.set_departure_observer(cancel_home_on_departure)
 
     async def fetch_brief_weather() -> BriefWeather | None:
-        """按需构建高德运行时取一次天气；任何失败只意味着简报少一条事实。"""
+        """按需构建天气运行时；普通失败少一条事实，预算拒绝终止采集。"""
         if runtime_config is None:
             return None
         city = runtime_config.current.config.tools.query.default_city or os.getenv(
@@ -498,36 +499,7 @@ def assemble_domain(
             runtime = build_query_tool_runtime(runtime_config.current.config, EnvSecretProvider())
         except ValueError:
             return None
-        try:
-            resolved = await resolve_location(
-                runtime.provider, explicit=city, ephemeral=None, default_city=city
-            )
-            live = await runtime.provider.weather(resolved.adcode, extensions="base")
-            lives = live.get("lives")
-            if not isinstance(lives, list) or not lives:
-                return None
-            item = lives[0] if isinstance(lives[0], dict) else {}
-            forecast = await runtime.provider.weather(resolved.adcode, extensions="all")
-            forecasts = forecast.get("forecasts")
-            casts = (
-                forecasts[0].get("casts")
-                if isinstance(forecasts, list) and forecasts and isinstance(forecasts[0], dict)
-                else None
-            )
-            today = (
-                casts[0] if isinstance(casts, list) and casts and isinstance(casts[0], dict) else {}
-            )
-            return BriefWeather(
-                city=resolved.name or city,
-                condition=str(item.get("weather") or "未知"),
-                temperature_c=str(item.get("temperature") or "—"),
-                low_c=str(today.get("nighttemp")) if today.get("nighttemp") else None,
-                high_c=str(today.get("daytemp")) if today.get("daytemp") else None,
-            )
-        except Exception:
-            return None
-        finally:
-            await runtime.close()
+        return await read_brief_weather(runtime, city=city)
 
     contact_store = ContactStore(runtime_database) if runtime_database is not None else None
     calendar_store = CalendarStore(runtime_database) if runtime_database is not None else None
@@ -562,7 +534,7 @@ def assemble_domain(
         if service is None:
             return None
         brief_tz = ZoneInfo(os.getenv("ARIA_DEFAULT_TIMEZONE", "Asia/Shanghai"))
-        try:
+        async with close_after_source(service.aclose):
             event = await service.next_outing(user_id, within_hours=24)
             if event is None:
                 return None
@@ -576,9 +548,9 @@ def assemble_domain(
                 starts_at=plan.starts_at,
                 mode=plan.mode,
                 duration_min=int(plan.duration_s // 60) if plan.duration_s else None,
+                event_id=event.id,
+                user_id=user_id,
             )
-        finally:
-            await service.aclose()
 
     daily_brief_service = (
         DailyBriefService(

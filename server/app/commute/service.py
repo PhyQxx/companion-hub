@@ -15,6 +15,7 @@ from datetime import UTC, datetime, timedelta
 from uuid import UUID
 
 from app.calendar.models import CalendarEventView, CalendarSourceInvalidated
+from app.harness.budget import BudgetDenied
 from app.harness.time import utc
 from app.tasks.models import TaskTrigger
 from app.tools.route_parser import parse_route
@@ -139,7 +140,7 @@ class CommuteService:
 
         try:
             origin_geo = deepcopy(await self._amap.geocode(self._origin, city=self._city))
-        except CommuteRouteError:
+        except (CommuteRouteError, BudgetDenied):
             raise
         except Exception as error:
             raise CommuteRouteError("origin_geocode_failed") from error
@@ -148,7 +149,7 @@ class CommuteService:
             raise CommuteRouteError("origin_geocode_failed")
         try:
             destination_geo = deepcopy(await self._amap.geocode(destination_text, city=self._city))
-        except CommuteRouteError:
+        except (CommuteRouteError, BudgetDenied):
             raise
         except Exception as error:
             raise CommuteRouteError("destination_geocode_failed") from error
@@ -165,7 +166,7 @@ class CommuteService:
                 destination_citycode=str(destination_geo.get("citycode") or "") or None,
             )
             distance, duration, _steps = parse_route(payload, self._mode)
-        except CommuteRouteError:
+        except (CommuteRouteError, BudgetDenied):
             raise
         except Exception as error:
             raise CommuteRouteError("route_failed") from error
@@ -216,6 +217,8 @@ class CommuteService:
             return None
         try:
             payload = await weather(adcode, extensions="base")
+        except BudgetDenied:
+            raise
         except Exception:
             return None
         forecasts = payload.get("lives") if isinstance(payload, dict) else None

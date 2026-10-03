@@ -11,14 +11,12 @@
 
 from __future__ import annotations
 
-from collections.abc import Awaitable, Callable
-from datetime import UTC, date, datetime, timedelta
-from datetime import time as dt_time
-from typing import Annotated, Any, Literal
+from collections.abc import Callable
+from datetime import UTC, date, datetime
+from typing import Any, Literal
 from uuid import UUID
 from zoneinfo import ZoneInfo
 
-from pydantic import Field
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 
@@ -28,53 +26,22 @@ from app.db import AppUserRecord, DailyReviewRecord, Database, TaskRunRecord
 from app.ids import uuid7
 from app.runs.delivery import deliver_once, outcome
 from app.runs.delivery_sources import SqlDeliverySourceRepository
-from app.schemas.common import PrivacyLevel, StrictModel
-from app.schemas.delivery_run import DeliveryRunOutcome
-from app.tasks.models import TaskStatus
+from app.schemas.common import PrivacyLevel
 from app.tasks.store import TaskStore
 
+from .review_core import MAX_ITEMS_PER_SECTION as MAX_ITEMS_PER_SECTION
+from .review_core import MAX_TEXT_CHARS as MAX_TEXT_CHARS
+from .review_core import DailyReviewCollector
+from .review_core import _aware as _aware
+from .review_core import _cap_sections as _cap_sections
+from .review_core import compose_review_text as compose_review_text
+from .review_models import _SECTION_TITLES as _SECTION_TITLES
+from .review_models import ReviewDeliverer as ReviewDeliverer
+from .review_models import ReviewItem as ReviewItem
+from .review_models import ReviewSection as ReviewSection
+from .review_models import ReviewView as ReviewView
+
 TRIGGER_KIND_REVIEW = "review.evening"
-MAX_ITEMS_PER_SECTION = 5
-MAX_TEXT_CHARS = 1_600
-
-ReviewSection = Literal["completed", "unfinished", "new_commitment", "tomorrow"]
-
-
-class ReviewItem(StrictModel):
-    section: ReviewSection
-    text: Annotated[str, Field(min_length=1, max_length=280)]
-    source: Annotated[str, Field(min_length=1, max_length=120)]
-    action: Literal["pending", "confirmed", "removed"] = "pending"
-    note: Annotated[str, Field(min_length=1, max_length=200)] | None = None
-
-
-class ReviewView(StrictModel):
-    delivery_outcome: DeliveryRunOutcome | None = None
-    id: UUID
-    user_id: UUID
-    review_date: date
-    items: list[ReviewItem]
-    text: str
-    status: Annotated[str, Field(pattern="^(pending|delivered)$")]
-    delivered_at: datetime | None = None
-    channels: list[str] = Field(default_factory=list)
-    created_at: datetime | None = None
-
-
-ReviewDeliverer = Callable[..., Awaitable[list[str] | None]]
-
-_SECTION_TITLES: dict[str, str] = {
-    "completed": "完成事项",
-    "unfinished": "未完成计划",
-    "new_commitment": "新承诺",
-    "tomorrow": "明日重点",
-}
-
-
-def _aware(value: datetime | None) -> datetime | None:
-    if value is None:
-        return None
-    return value if value.tzinfo is not None else value.replace(tzinfo=UTC)
 
 
 def _to_view(record: DailyReviewRecord, run: TaskRunRecord | None = None) -> ReviewView:
@@ -92,7 +59,7 @@ def _to_view(record: DailyReviewRecord, run: TaskRunRecord | None = None) -> Rev
     )
 
 
-class DailyReviewService:
+class DailyReviewService(DailyReviewCollector):
     def __init__(
         self,
         database: Database,
@@ -208,151 +175,6 @@ class DailyReviewService:
             return existing
         return _to_view(record)
 
-    async def collect_items(self, user_id: UUID, *, review_date: date) -> list[ReviewItem]:
-        day_start = datetime.combine(review_date, dt_time.min, tzinfo=self._tz)
-        day_end = day_start + timedelta(days=1)
-        tomorrow_end = day_end + timedelta(days=1)
-        items: list[ReviewItem] = []
-
-        for task in await self._tasks.list_tasks(
-            user_id, status=TaskStatus.DONE, limit=200, max_privacy_level=PrivacyLevel.L1
-        ):
-            if (
-                task.user_id != user_id
-                or task.status != TaskStatus.DONE
-                or task.privacy_level not in {PrivacyLevel.L0, PrivacyLevel.L1}
-            ):
-                continue
-            completed = _aware(task.completed_at)
-            if completed is None or not day_start <= completed < day_end:
-                continue
-            items.append(
-                ReviewItem(
-                    section="completed",
-                    text=task.title,
-                    source=f"task:{task.id}",
-                )
-            )
-        for goal in await self._goals.goals_completed_between(
-            user_id, start=day_start, end=day_end, max_privacy_level=PrivacyLevel.L1
-        ):
-            items.append(ReviewItem(section="completed", text=goal.title, source=f"goal:{goal.id}"))
-
-        for task in await self._tasks.list_tasks(
-            user_id, status=TaskStatus.ACTIVE, limit=200, max_privacy_level=PrivacyLevel.L1
-        ):
-            if (
-                task.user_id != user_id
-                or task.status != TaskStatus.ACTIVE
-                or task.privacy_level not in {PrivacyLevel.L0, PrivacyLevel.L1}
-            ):
-                continue
-            next_fire = _aware(task.next_fire_at)
-            if task.trigger.type != "time" or next_fire is None or next_fire >= day_end:
-                continue
-            overdue = (
-                "已逾期"
-                if next_fire < day_start
-                else next_fire.astimezone(self._tz).strftime("%H:%M")
-            )
-            items.append(
-                ReviewItem(
-                    section="unfinished",
-                    text=f"[{overdue}] {task.title}",
-                    source=f"task:{task.id}",
-                )
-            )
-        for goal in await self._goals.active_goals(
-            user_id, now=self._clock(), max_privacy_level=PrivacyLevel.L1
-        ):
-            due = _aware(goal.due_at)
-            if due is None or due >= day_end:
-                continue
-            items.append(
-                ReviewItem(section="unfinished", text=goal.title, source=f"goal:{goal.id}")
-            )
-
-        for goal in await self._goals.goals_created_between(
-            user_id, start=day_start, end=day_end, max_privacy_level=PrivacyLevel.L1
-        ):
-            items.append(
-                ReviewItem(section="new_commitment", text=goal.title, source=f"goal:{goal.id}")
-            )
-
-        for task in await self._tasks.list_tasks(
-            user_id, status=TaskStatus.ACTIVE, limit=200, max_privacy_level=PrivacyLevel.L1
-        ):
-            if (
-                task.user_id != user_id
-                or task.status != TaskStatus.ACTIVE
-                or task.privacy_level not in {PrivacyLevel.L0, PrivacyLevel.L1}
-            ):
-                continue
-            next_fire = _aware(task.next_fire_at)
-            if task.trigger.type != "time" or next_fire is None:
-                continue
-            if not day_end <= next_fire < tomorrow_end:
-                continue
-            items.append(
-                ReviewItem(
-                    section="tomorrow",
-                    text=f"{next_fire.astimezone(self._tz).strftime('%H:%M')} {task.title}",
-                    source=f"task:{task.id}",
-                )
-            )
-        for goal in await self._goals.active_goals(
-            user_id, now=self._clock(), max_privacy_level=PrivacyLevel.L1
-        ):
-            due = _aware(goal.due_at)
-            if due is None or not day_end <= due < tomorrow_end:
-                continue
-            items.append(
-                ReviewItem(
-                    section="tomorrow",
-                    text=goal.title,
-                    source=f"goal:{goal.id}",
-                )
-            )
-
-        # 明日日程（本地 + 外部镜像；全天日程只列标题）
-        if self._calendar is not None:
-            try:
-                # 与 brief 同因：查询边界归一到 UTC，兼容 SQLite 墙钟存储
-                events = await self._calendar.list_events(
-                    user_id,
-                    starts_from=day_end.astimezone(UTC),
-                    starts_to=tomorrow_end.astimezone(UTC),
-                    include_cancelled=False,
-                    limit=50,
-                )
-            except Exception:
-                events = []
-            for event in sorted(
-                (item for item in events if not item.all_day),
-                key=lambda item: item.starts_at,
-            ):
-                mirror_tag = f"[{event.source}] " if event.source and event.source != "api" else ""
-                items.append(
-                    ReviewItem(
-                        section="tomorrow",
-                        text=(
-                            f"{mirror_tag}{event.starts_at.astimezone(self._tz).strftime('%H:%M')}"
-                            f" {event.title}"
-                        ),
-                        source=f"calendar:{event.id}",
-                    )
-                )
-            for event in (item for item in events if item.all_day):
-                items.append(
-                    ReviewItem(
-                        section="tomorrow",
-                        text=f"全天：{event.title}",
-                        source=f"calendar:{event.id}",
-                    )
-                )
-
-        return _cap_sections(items)
-
     async def correct_item(
         self,
         user_id: UUID,
@@ -411,41 +233,3 @@ class DailyReviewService:
         updated = await self.get_review(user_id, review.review_date)
         assert updated is not None
         return updated
-
-
-def _cap_sections(items: list[ReviewItem]) -> list[ReviewItem]:
-    capped: list[ReviewItem] = []
-    counts: dict[str, int] = {}
-    for item in items:
-        count = counts.get(item.section, 0)
-        if count >= MAX_ITEMS_PER_SECTION:
-            continue
-        counts[item.section] = count + 1
-        capped.append(item)
-    return capped
-
-
-def compose_review_text(review_date: date, items: list[ReviewItem]) -> str:
-    """确定性拼装：removed 的条目不再出现，note 作为更正附注展示。"""
-    weekdays = "一二三四五六日"
-    header = (
-        f"{review_date.month}月{review_date.day}日（周{weekdays[review_date.weekday()]}）晚间回顾"
-    )
-    lines: list[str] = [header]
-    visible = [item for item in items if item.action != "removed"]
-    for section in ("completed", "unfinished", "new_commitment", "tomorrow"):
-        section_items = [item for item in visible if item.section == section]
-        if not section_items:
-            continue
-        lines.append(f"{_SECTION_TITLES[section]}（{len(section_items)}）：")
-        for item in section_items:
-            line = f"· {item.text}"
-            if item.note:
-                line += f"（用户更正：{item.note}）"
-            lines.append(line)
-    if len(lines) == 1:
-        lines.append("今天没有需要回顾的事项。")
-    text = "\n".join(lines)
-    if len(text) > MAX_TEXT_CHARS:
-        text = text[: MAX_TEXT_CHARS - 1] + "…"
-    return text

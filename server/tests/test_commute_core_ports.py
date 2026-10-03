@@ -10,6 +10,7 @@ from app.commute.ports import CommuteAmapProvider, CommuteCalendarStore
 from app.commute.service import CommuteAmapProvider as LegacyProvider
 from app.commute.service import CommuteCalendarStore as LegacyCalendar
 from app.commute.service import CommuteRouteError
+from app.harness.budget import BudgetDenied
 from app.tools.amap import AmapProviderError as LegacyError
 from app.tools.amap_models import AmapProviderError
 from app.tools.nearby import parse_route as LegacyParser
@@ -18,14 +19,16 @@ from scripts.check_architecture import allowed
 
 
 @pytest.mark.parametrize("stage", ["origin", "destination", "route", "weather"])
-@pytest.mark.parametrize("cancel", [False, True])
-async def test_connector_failure_or_cancellation_is_not_retried(stage: str, cancel: bool) -> None:
+@pytest.mark.parametrize("failure", ["ordinary", "cancel", "budget"])
+async def test_connector_failure_or_cancellation_is_not_retried(stage: str, failure: str) -> None:
     class Broken(Provider):
         def fail(self, current: str) -> None:
             self.calls.append(current)
             if current == stage:
-                if cancel:
+                if failure == "cancel":
                     raise asyncio.CancelledError
+                if failure == "budget":
+                    raise BudgetDenied("synthetic_budget_denied")
                 raise RuntimeError("synthetic connector failure")
 
         async def geocode(self, address: str, *, city: str | None = None) -> dict[str, object]:
@@ -41,7 +44,7 @@ async def test_connector_failure_or_cancellation_is_not_retried(stage: str, canc
             return {}
 
     calendar, tasks, provider = Calendar(), Tasks(), Broken()
-    if stage == "weather" and not cancel:
+    if stage == "weather" and failure == "ordinary":
         result = await service(calendar, tasks, provider).plan_commute(
             calendar.owner,
             calendar.event,
@@ -50,7 +53,13 @@ async def test_connector_failure_or_cancellation_is_not_retried(stage: str, canc
         assert result.weather_summary is None
         assert result.duration_s == 60
     else:
-        with pytest.raises(asyncio.CancelledError if cancel else CommuteRouteError):
+        with pytest.raises(
+            asyncio.CancelledError
+            if failure == "cancel"
+            else BudgetDenied
+            if failure == "budget"
+            else CommuteRouteError
+        ):
             await service(calendar, tasks, provider).plan_commute(
                 calendar.owner,
                 calendar.event,

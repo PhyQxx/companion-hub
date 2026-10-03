@@ -42,6 +42,12 @@ async def test_private_task_migration_preserves_data_and_constraints(
         before = inspect(connection)
         indexes = before.get_indexes("task_item", schema=schema)
         foreign_keys = before.get_foreign_keys("task_item", schema=schema)
+        primary_key = before.get_pk_constraint("task_item", schema=schema)
+        other_checks = {
+            value["name"]: value["sqltext"]
+            for value in before.get_check_constraints("task_item", schema=schema)
+            if value["name"] != "ck_task_item_privacy_level"
+        }
         module.downgrade()
         owner, legacy = uuid4(), uuid4()
         connection.execute(
@@ -74,6 +80,12 @@ async def test_private_task_migration_preserves_data_and_constraints(
         after = inspect(connection)
         assert after.get_indexes("task_item", schema=schema) == indexes
         assert after.get_foreign_keys("task_item", schema=schema) == foreign_keys
+        assert after.get_pk_constraint("task_item", schema=schema) == primary_key
+        assert {
+            value["name"]: value["sqltext"]
+            for value in after.get_check_constraints("task_item", schema=schema)
+            if value["name"] != "ck_task_item_privacy_level"
+        } == other_checks
         assert "'L2'" in next(
             value["sqltext"]
             for value in after.get_check_constraints("task_item", schema=schema)

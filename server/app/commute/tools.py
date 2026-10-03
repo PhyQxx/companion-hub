@@ -14,6 +14,8 @@ from typing import cast
 from pydantic import BaseModel, ConfigDict, Field
 
 from app.commute.service import DEFAULT_WITHIN_HOURS, CommuteRouteError, CommuteService
+from app.harness.budget import BudgetDenied
+from app.harness.source_cleanup import close_after_source
 from app.llm import ToolDefinition
 from app.schemas.common import PrivacyLevel
 from app.tools.contracts import ToolContext, ToolResult
@@ -59,27 +61,28 @@ class CommuteCheckTool:
         service = self._service_factory()
         if service is None:
             return self._failure("commute_not_configured", started)
-        try:
-            event = await service.next_outing(context.user_id, within_hours=args.within_hours)
-            if event is None:
+        async with close_after_source(service.aclose):
+            try:
+                event = await service.next_outing(context.user_id, within_hours=args.within_hours)
+                if event is None:
+                    return ToolResult(
+                        ok=True,
+                        tool_name=self.name,
+                        data={"has_outing": False},
+                        latency_ms=(perf_counter() - started) * 1_000,
+                    )
+                plan = await service.plan_commute(context.user_id, event)
+            except CommuteRouteError as error:
                 return ToolResult(
-                    ok=True,
+                    ok=False,
                     tool_name=self.name,
-                    data={"has_outing": False},
+                    reason_code=error.reason_code,
                     latency_ms=(perf_counter() - started) * 1_000,
                 )
-            plan = await service.plan_commute(context.user_id, event)
-        except CommuteRouteError as error:
-            return ToolResult(
-                ok=False,
-                tool_name=self.name,
-                reason_code=error.reason_code,
-                latency_ms=(perf_counter() - started) * 1_000,
-            )
-        except Exception:
-            return self._failure("calendar_unavailable", started)
-        finally:
-            await service.aclose()
+            except BudgetDenied:
+                raise
+            except Exception:
+                return self._failure("calendar_unavailable", started)
         return ToolResult(
             ok=True,
             tool_name=self.name,

@@ -58,6 +58,15 @@ import pytest
         "app.calendar.ports",
         "app.calendar:CalendarCoordinator",
         "app.tasks.models",
+        "app.contacts.models",
+        "app.tasks.brief_models",
+        "app.tasks.review_models",
+        "app.tasks.report_ports",
+        "app.tasks.report_rules",
+        "app.tasks.brief_core",
+        "app.tasks.review_core",
+        "app.contacts",
+        "app.contacts:ContactView",
         "app.tools.amap_models",
         "app.tools.route_parser",
         "app.commute:CommuteService",
@@ -117,6 +126,7 @@ if separator:
         "tasks",
         "tools",
         "commute",
+        "contacts",
     ],
 )
 def test_all_legacy_exports_preserve_object_identity_caching_and_discovery(name: str) -> None:
