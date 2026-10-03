@@ -76,6 +76,24 @@ class RunModelBudget:
             raise ValueError("invalid_budget_reservation")
         now = datetime.now(UTC)
         async with self._database.sessions.begin() as session:
+            await assert_current_claim(session)
+            # Write before reading the snapshot: serialize cross-run owner
+            # admission without a SQLite read-to-write transaction upgrade.
+            owner = await session.scalar(
+                update(AppUserRecord)
+                .where(AppUserRecord.id == self._user_id, AppUserRecord.status == "active")
+                .values(id=AppUserRecord.id)
+                .returning(AppUserRecord.id)
+            )
+            if owner is None:
+                owned_run = await session.scalar(
+                    select(TaskRunRecord.id).where(
+                        TaskRunRecord.id == self._run_id, TaskRunRecord.user_id == self._user_id
+                    )
+                )
+                if owned_run is None:
+                    raise BudgetDenied("budget_run_not_found")
+                raise BudgetDenied("budget_owner_invalid")
             row = await session.scalar(
                 select(TaskRunRecord).where(
                     TaskRunRecord.id == self._run_id, TaskRunRecord.user_id == self._user_id
@@ -103,20 +121,6 @@ class RunModelBudget:
                 limit = max_attempts - 1
             if row.status not in statuses or row.contract.get("work_cancel_requested"):
                 raise BudgetDenied("budget_run_inactive")
-            await assert_current_claim(session)
-            # A no-op owner-row write serializes admission across different runs
-            # on both SQLite and PostgreSQL; calls themselves never hold this lock.
-            owner = await session.scalar(
-                update(AppUserRecord)
-                .where(
-                    AppUserRecord.id == self._user_id,
-                    AppUserRecord.status == "active",
-                )
-                .values(id=AppUserRecord.id)
-                .returning(AppUserRecord.id)
-            )
-            if owner is None:
-                raise BudgetDenied("budget_owner_invalid")
             concurrency = min(
                 int(
                     row.budget.get(

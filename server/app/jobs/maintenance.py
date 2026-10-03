@@ -134,6 +134,8 @@ class MaintenanceWorker:
                             else self._error_code,
                             retryable=not isinstance(error, BudgetDenied)
                             or error.reason_code == "user_model_concurrency_exhausted",
+                            worker_id=self._worker_id,
+                            claim_version=job.attempts,
                         )
                 finally:
                     _CURRENT_JOB.reset(context_token)

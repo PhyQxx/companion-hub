@@ -149,6 +149,8 @@ class DelegatedJobWorker:
                 error_code="handler_missing",
                 error_detail={"kind": job.kind},
                 retryable=False,
+                worker_id=worker_id,
+                claim_version=job.attempts,
             )
             return
         payload = await self._engine.job_input(job.id) or {}
@@ -166,6 +168,8 @@ class DelegatedJobWorker:
                 error_code="payload_invalid",
                 error_detail={"reason": "user_id_missing"},
                 retryable=False,
+                worker_id=worker_id,
+                claim_version=job.attempts,
             )
             return
         step_id = await self._engine.start_step(
@@ -200,6 +204,8 @@ class DelegatedJobWorker:
                 retryable=not isinstance(error, BudgetDenied)
                 or error.reason_code == "user_model_concurrency_exhausted",
                 error_detail={"exception": type(error).__name__},
+                worker_id=worker_id,
+                claim_version=job.attempts,
             )
             return
         await self._engine.complete_step(

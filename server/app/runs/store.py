@@ -17,6 +17,7 @@ from app.db import (
     TaskRunEventRecord,
     TaskRunRecord,
 )
+from app.db.claims import lock_job
 from app.ids import uuid7
 from app.schemas.billing import BillingEvidence, BillingReport, CostPeriod, CostSnapshot
 from app.schemas.costs import CostSummaryView
@@ -168,12 +169,10 @@ class RunStore:
                 if conversation is None or conversation.user_id != user_id:
                     raise LookupError("run not found")
             else:
-                await session.scalar(
-                    select(JobRecord).where(JobRecord.id == run_id).with_for_update()
-                )
-            jobs = list(
+                await lock_job(session, run_id)
+            job_ids = list(
                 await session.scalars(
-                    select(JobRecord)
+                    select(JobRecord.id)
                     .where(
                         JobRecord.task_run_id == run_id,
                         JobRecord.owner == str(user_id),
@@ -183,6 +182,11 @@ class RunStore:
                     .with_for_update()
                 )
             )
+            jobs = []
+            for job_id in job_ids:
+                job = await lock_job(session, job_id)
+                if job is not None and job.task_run_id == run_id and job.owner == str(user_id):
+                    jobs.append(job)
             plans = list(
                 await session.scalars(
                     select(ActionPlanRecord)

@@ -58,12 +58,12 @@ class RunToolBudget:
         now = datetime.now(UTC)
         async with self._database.sessions.begin() as session:
             await assert_current_claim(session)
-            owner = await session.get(AppUserRecord, self._user_id)
-            if owner is None or owner.status != "active":
-                raise BudgetDenied("budget_owner_invalid")
             row = await self._lock_run(session)
             if row is None:
                 raise BudgetDenied("budget_run_not_found")
+            owner = await session.get(AppUserRecord, self._user_id)
+            if owner is None or owner.status != "active":
+                raise BudgetDenied("budget_owner_invalid")
             allowed = (
                 {"accepted", "running", "succeeded"}
                 if self._maintenance

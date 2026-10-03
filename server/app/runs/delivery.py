@@ -110,11 +110,14 @@ async def deliver_once(
     try:
         async with database.sessions.begin() as session:
             await assert_current_claim(session)
+            # Acquire the owned source write fence before reading owner state.
+            # SQLite read-to-write upgrades can otherwise deadlock concurrent
+            # admissions even though none has reached the transport yet.
+            if not await repository.lock(session, pending=True):
+                return False
             owner = await session.get(AppUserRecord, user_id)
             if owner is None or owner.status != "active":
                 raise BudgetDenied("budget_owner_invalid")
-            if not await repository.lock(session, pending=True):
-                return False
             source = await repository.inspect(session, fingerprint, identifier)
             created = TaskRunRecord(
                 id=identifier,

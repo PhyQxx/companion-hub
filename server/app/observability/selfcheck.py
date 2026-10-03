@@ -198,7 +198,12 @@ class DailySelfCheckScheduler:
             raise
         except Exception:
             if await self._jobs.claim_active(job.id, self._worker_id, claimed.attempts):
-                await self._jobs.fail_step(step, error_code="self_check_failed")
+                await self._jobs.fail_step(
+                    step,
+                    error_code="self_check_failed",
+                    worker_id=self._worker_id,
+                    claim_version=claimed.attempts,
+                )
             raise
         finally:
             lease_task.cancel()
