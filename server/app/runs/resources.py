@@ -55,15 +55,29 @@ class RunToolBudget:
         if user_id != self._user_id:
             raise BudgetDenied("budget_owner_invalid")
         await recover_tool_reservations(self._database, run_id=self._run_id, user_id=self._user_id)
-        now = datetime.now(UTC)
         async with self._database.sessions.begin() as session:
             await assert_current_claim(session)
+            # Match model admission's claim -> owner -> Run order and retain
+            # the active-owner fence through acceptance, including on SQLite.
+            owner = await session.scalar(
+                update(AppUserRecord)
+                .where(AppUserRecord.id == self._user_id, AppUserRecord.status == "active")
+                .values(id=AppUserRecord.id)
+                .returning(AppUserRecord.id)
+            )
+            if owner is None:
+                owned_run = await session.scalar(
+                    select(TaskRunRecord.id).where(
+                        TaskRunRecord.id == self._run_id, TaskRunRecord.user_id == self._user_id
+                    )
+                )
+                if owned_run is None:
+                    raise BudgetDenied("budget_run_not_found")
+                raise BudgetDenied("budget_owner_invalid")
             row = await self._lock_run(session)
             if row is None:
                 raise BudgetDenied("budget_run_not_found")
-            owner = await session.get(AppUserRecord, self._user_id)
-            if owner is None or owner.status != "active":
-                raise BudgetDenied("budget_owner_invalid")
+            now = datetime.now(UTC)
             allowed = (
                 {"accepted", "running", "succeeded"}
                 if self._maintenance
@@ -101,6 +115,11 @@ class RunToolBudget:
                     "deadline": utc(deadline).isoformat(),
                 },
             )
+            # Event allocation and its final ORM flush can wait on storage.
+            # Reject expired acceptance here so counters/events roll back.
+            await session.flush()
+            if utc(deadline) <= datetime.now(UTC):
+                raise BudgetDenied("run_deadline_exceeded")
         remaining = (utc(deadline) - datetime.now(UTC)).total_seconds()
         if remaining <= 0:
             await self.settle_tool(call_id, reported_ok=False)
