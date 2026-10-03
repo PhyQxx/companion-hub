@@ -126,6 +126,18 @@ class RunStore:
         async with self._database.sessions.begin() as session:
             # Admission and completion lock Job before Run. Cancellation must
             # use the same order so a model reservation cannot deadlock it.
+            # The owned root Job is also the first SQLite write; an empty
+            # match still serializes roots without a linked Job before reads.
+            await session.execute(
+                update(JobRecord)
+                .where(
+                    JobRecord.id == run_id,
+                    JobRecord.task_run_id == run_id,
+                    JobRecord.owner == str(user_id),
+                )
+                .values(progress=JobRecord.progress)
+                .execution_options(synchronize_session=False)
+            )
             await session.scalars(
                 select(JobRecord)
                 .where(
@@ -136,12 +148,14 @@ class RunStore:
                 .with_for_update()
             )
             row = await session.scalar(
-                select(TaskRunRecord)
+                update(TaskRunRecord)
                 .where(
                     TaskRunRecord.id == run_id,
                     TaskRunRecord.user_id == user_id,
                 )
-                .with_for_update()
+                .values(updated_at=TaskRunRecord.updated_at)
+                .returning(TaskRunRecord)
+                .execution_options(synchronize_session=False, populate_existing=True)
             )
             if row is None:
                 raise LookupError("run not found")
