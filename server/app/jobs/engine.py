@@ -180,11 +180,23 @@ class JobEngine:
     ) -> JobView:
         """Enqueue atomically with the caller's domain transaction."""
         if idempotency_key is not None:
-            existing = await session.scalar(
-                select(JobRecord).where(
-                    JobRecord.idempotency_key == idempotency_key,
+            if kind.startswith("deleg.") and (
+                task_run_id is not None or source_turn_id is not None
+            ):
+                # Replay lookup is the first write for sourced delegation.
+                # A missing key must not open a SQLite read transaction before
+                # the source fence; existing replays still return their record.
+                existing = await session.scalar(
+                    update(JobRecord)
+                    .where(JobRecord.idempotency_key == idempotency_key)
+                    .values(progress=JobRecord.progress)
+                    .returning(JobRecord)
+                    .execution_options(synchronize_session=False, populate_existing=True)
                 )
-            )
+            else:
+                existing = await session.scalar(
+                    select(JobRecord).where(JobRecord.idempotency_key == idempotency_key)
+                )
             if existing is not None:
                 if existing.owner != owner or existing.kind != kind or existing.input != input:
                     raise ValueError("job_idempotency_conflict")

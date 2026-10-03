@@ -365,13 +365,17 @@ class ActionPlanService:
             updated_at=now,
         )
         async with self._database.sessions.begin() as session:
+            source_run = (
+                await lock_source_run(session, source_turn_id, user_id=user_id)
+                if source_turn_id is not None
+                else None
+            )
             user_exists = await session.scalar(
                 select(AppUserRecord.id).where(AppUserRecord.id == user_id)
             )
             if user_exists is None:
                 raise LookupError("active user not found")
-            if source_turn_id is not None:
-                source_run = await lock_source_run(session, source_turn_id, user_id=user_id)
+            if source_run is not None:
                 plan.task_run_id = source_run.id
                 await require_work(session, source_run, kind="action_plan", work_id=plan.id)
             session.add(plan)
