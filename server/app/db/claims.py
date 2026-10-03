@@ -1,12 +1,25 @@
-"""Check the request-local fencing identity in the same transaction as a derived write."""
+"""Fence derived writes with an owned row lock on PostgreSQL and SQLite."""
 
 from datetime import UTC, datetime
+from uuid import UUID
 
+from sqlalchemy import update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.harness.claim import ClaimInvalidated, ExecutionClaim, current_claims
 
 from .models import JobRecord
+
+
+async def lock_job(session: AsyncSession, job_id: UUID) -> JobRecord | None:
+    record = await session.scalar(
+        update(JobRecord)
+        .where(JobRecord.id == job_id)
+        .values(progress=JobRecord.progress)
+        .returning(JobRecord)
+        .execution_options(synchronize_session=False, populate_existing=True)
+    )
+    return record if isinstance(record, JobRecord) else None
 
 
 async def assert_current_claim(session: AsyncSession) -> None:
@@ -15,18 +28,22 @@ async def assert_current_claim(session: AsyncSession) -> None:
 
 
 async def _assert_claim(session: AsyncSession, claim: ExecutionClaim) -> None:
-    job = await session.get(JobRecord, claim.job_id, with_for_update=True)
-    if job is None:
-        raise ClaimInvalidated()
-    expires = job.lease_expires_at
-    if expires is not None and expires.tzinfo is None:
-        expires = expires.replace(tzinfo=UTC)
-    if (
-        job.lease_owner != claim.worker_id
-        or job.attempts != claim.version
-        or job.status not in {"admitted", "running"}
-        or job.cancel_requested_at is not None
-        or expires is None
-        or expires <= datetime.now(UTC)
-    ):
+    # SQLite ignores FOR UPDATE, and an ORM identity-map hit can retain old
+    # fields. A conditional no-op write locks the fence through derived commit
+    # on both databases, without loading a worker's potentially private payload.
+    identifier = await session.scalar(
+        update(JobRecord)
+        .where(
+            JobRecord.id == claim.job_id,
+            JobRecord.lease_owner == claim.worker_id,
+            JobRecord.attempts == claim.version,
+            JobRecord.status.in_({"admitted", "running"}),
+            JobRecord.cancel_requested_at.is_(None),
+            JobRecord.lease_expires_at > datetime.now(UTC),
+        )
+        .values(progress=JobRecord.progress)
+        .returning(JobRecord.id)
+        .execution_options(synchronize_session=False)
+    )
+    if identifier is None:
         raise ClaimInvalidated()

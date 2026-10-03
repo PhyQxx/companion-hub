@@ -13,6 +13,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db import Database, JobRecord, JobStepRecord, TaskRunRecord
+from app.db.claims import lock_job
 from app.ids import uuid7
 from app.runs.store import transition_run
 
@@ -488,7 +489,7 @@ class JobEngine:
         """请求取消 Job。"""
         now = datetime.now(UTC)
         async with self._database.sessions.begin() as session:
-            record = await session.get(JobRecord, job_id, with_for_update=True)
+            record = await lock_job(session, job_id)
             if record is None or record.status in _TERMINAL:
                 return False
             if (worker_id is not None and record.lease_owner != worker_id) or (
