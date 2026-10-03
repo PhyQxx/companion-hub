@@ -6,6 +6,7 @@ from collections.abc import Awaitable, Callable
 from contextlib import suppress
 from datetime import UTC, datetime, timedelta
 from uuid import UUID
+from weakref import WeakValueDictionary
 
 from app.cognition.models import SemanticEvent
 from app.cognition.ports import CognitiveCyclePort
@@ -39,7 +40,9 @@ class PerceptionPipeline:
         self._policy = policy
         self._admission = admission
         self._tasks: dict[tuple[UUID, str], asyncio.Task[None]] = {}
-        self._locks: dict[tuple[UUID, str], asyncio.Lock] = {}
+        # Holders and waiters keep their lock alive. Idle source keys must not
+        # accumulate permanently in a long-running observation process.
+        self._locks: WeakValueDictionary[tuple[UUID, str], asyncio.Lock] = WeakValueDictionary()
         self._recent: dict[tuple[UUID, str], tuple[UUID, datetime]] = {}
         self._event_observer: EventObserver | None = None
         self._departure_observer: EventObserver | None = None

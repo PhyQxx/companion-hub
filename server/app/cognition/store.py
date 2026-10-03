@@ -62,6 +62,9 @@ class CognitiveStore:
         event: SemanticEvent | None = None,
         state: WorldState | None = None,
     ) -> None:
+        decision = decision.model_copy(deep=True)
+        event = event.model_copy(deep=True) if event is not None else None
+        state = state.model_copy(deep=True) if state is not None else None
         if state is not None and event is None:
             raise ValueError("decision_event_required")
         if event is not None and (
@@ -102,14 +105,20 @@ class CognitiveStore:
                 if deleted is not None:
                     raise BudgetDenied("decision_source_changed")
             await assert_current_claim(session)
-            owner = await session.get(AppUserRecord, decision.user_id)
-            if owner is None or owner.status != "active":
+            owner = await session.scalar(
+                update(AppUserRecord)
+                .where(AppUserRecord.id == decision.user_id, AppUserRecord.status == "active")
+                .values(status=AppUserRecord.status)
+                .returning(AppUserRecord.id)
+                .execution_options(synchronize_session=False)
+            )
+            if owner is None:
                 raise BudgetDenied("budget_owner_invalid")
             if state is not None and event is not None:
                 expiry = _aware_or_none(event.expires_at)
                 if expiry is not None and expiry <= datetime.now(UTC):
                     raise BudgetDenied("decision_expired")
-                await self.validate_world_snapshot(session, event, state)
+                await self.validate_world_snapshot(session, event, state, lock=True)
             session.add(
                 CognitiveDecisionRecord(
                     id=decision.id,
@@ -403,6 +412,7 @@ class CognitiveStore:
         *,
         privacy_level: PrivacyLevel,
         session: AsyncSession | None = None,
+        lock: bool = False,
     ) -> None:
         identifiers = {goal.id for goal in goals}
         if len(identifiers) != len(goals) or len(goals) > 16:
@@ -410,25 +420,40 @@ class CognitiveStore:
         if not identifiers:
             return
         if session is None:
-            async with self.database.sessions() as own_session:
+            async with self.database.sessions.begin() as own_session:
                 await self.validate_goal_snapshots(
-                    user_id, goals, privacy_level=privacy_level, session=own_session
+                    user_id, goals, privacy_level=privacy_level, session=own_session, lock=lock
                 )
             return
-        records = list(
-            await session.scalars(
-                select(CognitiveGoalRecord).where(
-                    CognitiveGoalRecord.id.in_(identifiers),
-                    CognitiveGoalRecord.user_id == user_id,
-                    CognitiveGoalRecord.status == GoalStatus.ACTIVE.value,
-                    goal_visibility(privacy_level),
-                    or_(
-                        CognitiveGoalRecord.expires_at.is_(None),
-                        CognitiveGoalRecord.expires_at > datetime.now(UTC),
-                    ),
+        conditions = (
+            CognitiveGoalRecord.user_id == user_id,
+            CognitiveGoalRecord.status == GoalStatus.ACTIVE.value,
+            goal_visibility(privacy_level),
+            or_(
+                CognitiveGoalRecord.expires_at.is_(None),
+                CognitiveGoalRecord.expires_at > datetime.now(UTC),
+            ),
+        )
+        if lock:
+            records = []
+            for identifier in sorted(identifiers):
+                record = await session.scalar(
+                    update(CognitiveGoalRecord)
+                    .where(CognitiveGoalRecord.id == identifier, *conditions)
+                    .values(updated_at=CognitiveGoalRecord.updated_at)
+                    .returning(CognitiveGoalRecord)
+                    .execution_options(synchronize_session=False, populate_existing=True)
+                )
+                if record is not None:
+                    records.append(record)
+        else:
+            records = list(
+                await session.scalars(
+                    select(CognitiveGoalRecord)
+                    .where(CognitiveGoalRecord.id.in_(identifiers), *conditions)
+                    .execution_options(populate_existing=True)
                 )
             )
-        )
         snapshots = {goal.id: goal for goal in goals}
         if len(records) != len(goals) or any(
             _goal(record) != snapshots[record.id] for record in records
@@ -440,6 +465,8 @@ class CognitiveStore:
         session: AsyncSession,
         event: SemanticEvent,
         state: WorldState,
+        *,
+        lock: bool = False,
     ) -> None:
         refs = state.context_references
         expected = {("memory", value) for value in state.memory_evidence_ids} | {
@@ -454,12 +481,20 @@ class CognitiveStore:
             raise BudgetDenied("model_source_changed")
         try:
             await validate_references(
-                session, refs, owner_id=event.user_id, privacy_level=str(event.privacy_level)
+                session,
+                refs,
+                owner_id=event.user_id,
+                privacy_level=str(event.privacy_level),
+                lock=lock,
             )
         except ContextSourceInvalidated as error:
             raise BudgetDenied("model_source_changed") from error
         await self.validate_goal_snapshots(
-            event.user_id, state.active_goals, privacy_level=event.privacy_level, session=session
+            event.user_id,
+            state.active_goals,
+            privacy_level=event.privacy_level,
+            session=session,
+            lock=lock,
         )
 
     async def _stop_goal_deliveries(
