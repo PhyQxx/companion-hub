@@ -16,10 +16,12 @@ if TYPE_CHECKING:
     from .google_scheduler import GoogleCalendarSyncScheduler
     from .models import CalendarEventView, CalendarParticipant, CalendarPreview
     from .service import CalendarService
+    from .service_core import CalendarCoordinator
     from .store import CalendarStore
     from .tools import CalendarCreateTool, CalendarSyncTool
 
 _EXPORTS = {
+    "CalendarCoordinator": ("app.calendar.service_core", "CalendarCoordinator"),
     "CalDavClient": ("app.calendar.caldav", "CalDavClient"),
     "CalDavError": ("app.calendar.caldav", "CalDavError"),
     "CalDavSyncService": ("app.calendar.caldav", "CalDavSyncService"),
@@ -52,6 +54,7 @@ __all__ = [
     "CalDavError",
     "CalDavSyncScheduler",
     "CalDavSyncService",
+    "CalendarCoordinator",
     "CalendarCreateTool",
     "CalendarEventView",
     "CalendarParticipant",
