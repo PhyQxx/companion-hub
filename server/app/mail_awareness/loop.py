@@ -20,7 +20,7 @@ from uuid import UUID
 
 from app.cognition.models import CognitiveDecision, SemanticEvent
 from app.config import ConfigStore, DatabaseConfigStore, HubConfig
-from app.context.observation import ObservationOwnerGuard
+from app.context.observation import ObservationOwnerGuard, ObservationUnavailable
 from app.context.owners import observation_owner
 from app.db import Database
 from app.ids import uuid7
@@ -244,17 +244,18 @@ class MailAwarenessLoop:
         self._stop.set()
         task, self._task = self._task, None
         self.state.running = False
-        for background in list(self._background):
-            background.cancel()
-        if task is not None:
-            with contextlib.suppress(asyncio.CancelledError):
-                await task
+        tasks = (*self._background, *((task,) if task is not None else ()))
+        for pending in tasks:
+            pending.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
 
     async def _run(self) -> None:
         while not self._stop.is_set():
             config = self._config_store.current.config.mail_awareness
             try:
                 await self._tick(config)
+            except ObservationUnavailable:
+                pass
             except Exception as error:
                 self.state.last_error = f"{type(error).__name__}: {error}"
                 logger.warning("mail awareness tick failed", exc_info=True)
@@ -274,7 +275,7 @@ class MailAwarenessLoop:
         owner = await self._resolve_owner()
         if owner is None:
             return
-        guard = ObservationOwnerGuard(owner, self._resolve_owner)
+        guard = self._owner_guard(owner)
         try:
             messages = await guard.call(
                 lambda: self._reader.fetch_inbox(
@@ -282,6 +283,8 @@ class MailAwarenessLoop:
                     limit=max(config.max_messages_per_tick * 4, 20),
                 )
             )
+        except ObservationUnavailable:
+            return
         except MailError as error:
             # 未配置/授权失败是部署状态问题：按失败计并冷却，不刷日志堆栈。
             self._record_failure(error.reason_code, now)
@@ -308,8 +311,18 @@ class MailAwarenessLoop:
     async def _resolve_owner(self) -> UUID | None:
         return await observation_owner(self._database)
 
+    def _owner_guard(self, owner: UUID) -> ObservationOwnerGuard:
+        return ObservationOwnerGuard(
+            owner,
+            self._resolve_owner,
+            lambda: (
+                not self._stop.is_set()
+                and bool(self._config_store.current.config.mail_awareness.enabled)
+            ),
+        )
+
     async def _observe(self, config: Any, owner: UUID, message: MailSummary, now: datetime) -> None:
-        guard = ObservationOwnerGuard(owner, self._resolve_owner)
+        guard = self._owner_guard(owner)
         observation_id = uuid7()
         with model_owner(owner):
             analysis = await guard.call(
@@ -403,7 +416,7 @@ class MailAwarenessLoop:
             self._perception.submit(
                 event,
                 stable_for_seconds=PROACTIVE_STABLE_SECONDS,
-                validate=ObservationOwnerGuard(owner, self._resolve_owner).valid,
+                validate=self._owner_guard(owner).valid,
                 handler=handler,
             )
         else:
@@ -419,7 +432,7 @@ class MailAwarenessLoop:
         if decision.decision not in {"inform", "suggest", "ask", "escalate"}:
             return
         with contextlib.suppress(Exception):
-            await ObservationOwnerGuard(event.user_id, self._resolve_owner).check()
+            await self._owner_guard(event.user_id).check()
             await self._proactive_deliver(
                 str(event.attributes.get("message", event.summary)),
                 entity_id="mail:inbox",
@@ -435,7 +448,7 @@ class MailAwarenessLoop:
             await self._deliver_event(event, None)
             return
         with contextlib.suppress(Exception):
-            decision = await ObservationOwnerGuard(event.user_id, self._resolve_owner).call(
+            decision = await self._owner_guard(event.user_id).call(
                 lambda: self._cycle.evaluate(event)
             )
             await self._deliver_event(event, decision)

@@ -23,7 +23,7 @@ from uuid import UUID
 from PIL import Image
 
 from app.cognition.models import CognitiveDecision, SemanticEvent
-from app.context.observation import ObservationOwnerGuard
+from app.context.observation import ObservationOwnerGuard, ObservationUnavailable
 from app.context.owners import observation_owner
 from app.ids import uuid7
 from app.memory.consolidation import MemoryIngester
@@ -257,11 +257,10 @@ class ScreenAwarenessLoop:
         self._stop.set()
         task, self._task = self._task, None
         self.state.running = False
-        for background in list(self._background):
-            background.cancel()
-        if task is not None:
-            with contextlib.suppress(asyncio.CancelledError):
-                await task
+        tasks = (*self._background, *((task,) if task is not None else ()))
+        for pending in tasks:
+            pending.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
 
     async def _run(self) -> None:
         while not self._stop.is_set():
@@ -269,6 +268,8 @@ class ScreenAwarenessLoop:
             interval = float(config.interval_seconds)
             try:
                 await self._tick(config)
+            except ObservationUnavailable:
+                pass
             except Exception as error:
                 self.state.last_error = f"{type(error).__name__}: {error}"
                 logger.warning("screen awareness tick failed: %s", error, exc_info=True)
@@ -283,7 +284,7 @@ class ScreenAwarenessLoop:
         owner = await self._resolve_owner()
         if owner is None:
             return
-        guard = ObservationOwnerGuard(owner, self._resolve_owner)
+        guard = self._owner_guard(owner)
         device = await guard.call(lambda: self._resolve_device(owner))
         if device is None:
             return
@@ -294,6 +295,16 @@ class ScreenAwarenessLoop:
 
     async def _resolve_owner(self) -> UUID | None:
         return await observation_owner(self._database)
+
+    def _owner_guard(self, owner: UUID) -> ObservationOwnerGuard:
+        return ObservationOwnerGuard(
+            owner,
+            self._resolve_owner,
+            lambda: (
+                not self._stop.is_set()
+                and bool(self._config_store.current.config.screen_awareness.enabled)
+            ),
+        )
 
     async def _resolve_device(self, owner: UUID) -> MonitorDevice | None:
         from app.devices import (
@@ -313,12 +324,14 @@ class ScreenAwarenessLoop:
         self, config: Any, owner: UUID, device: MonitorDevice, display: int
     ) -> None:
         state = self.state.displays.setdefault(display, DisplayState())
-        guard = ObservationOwnerGuard(owner, self._resolve_owner)
+        guard = self._owner_guard(owner)
         now = self._clock()
         if state.disabled_until is not None and now < state.disabled_until:
             return
         try:
             image = await guard.call(lambda: self._capture_bytes(device, display, owner))
+        except ObservationUnavailable:
+            return
         except ScreenAwarenessError as error:
             state.consecutive_failures += 1
             if state.consecutive_failures >= 3:
@@ -450,7 +463,7 @@ class ScreenAwarenessLoop:
             self._perception.submit(
                 event,
                 stable_for_seconds=PROACTIVE_STABLE_SECONDS,
-                validate=ObservationOwnerGuard(owner, self._resolve_owner).valid,
+                validate=self._owner_guard(owner).valid,
                 handler=handler,
             )
         else:
@@ -466,7 +479,7 @@ class ScreenAwarenessLoop:
         if decision.decision not in {"inform", "suggest", "ask", "escalate"}:
             return
         with contextlib.suppress(Exception):
-            await ObservationOwnerGuard(event.user_id, self._resolve_owner).check()
+            await self._owner_guard(event.user_id).check()
             await self._proactive_deliver(
                 str(event.attributes.get("message", event.summary)),
                 entity_id=f"display:{event.attributes.get('display', 1)}",
@@ -483,7 +496,7 @@ class ScreenAwarenessLoop:
             await self._deliver_event(event, None)
             return
         with contextlib.suppress(Exception):
-            decision = await ObservationOwnerGuard(event.user_id, self._resolve_owner).call(
+            decision = await self._owner_guard(event.user_id).call(
                 lambda: self._cycle.evaluate(event)
             )
             await self._deliver_event(event, decision)

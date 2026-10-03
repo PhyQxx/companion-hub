@@ -11,17 +11,29 @@ from app.harness.guarded_call import guarded_call
 T = TypeVar("T")
 
 
+class ObservationUnavailable(BudgetDenied):
+    """An expected source revocation, rather than a provider failure."""
+
+
 @dataclass(frozen=True, slots=True)
 class ObservationOwnerGuard:
     owner: UUID
     resolve: Callable[[], Awaitable[UUID | None]]
+    source_active: Callable[[], bool] | None = None
+
+    def enabled(self) -> bool:
+        return self.source_active is None or self.source_active()
 
     async def valid(self) -> bool:
-        return await self.resolve() == self.owner
+        return self.enabled() and await self.resolve() == self.owner and self.enabled()
 
     async def check(self) -> None:
-        if not await self.valid():
-            raise BudgetDenied("observation_owner_changed")
+        if not self.enabled():
+            raise ObservationUnavailable("observation_source_inactive")
+        if await self.resolve() != self.owner:
+            raise ObservationUnavailable("observation_owner_changed")
+        if not self.enabled():
+            raise ObservationUnavailable("observation_source_inactive")
 
     async def call(self, invoke: Callable[[], Awaitable[T]]) -> T:
         # Validate before starting, while waiting, and before accepting a result.

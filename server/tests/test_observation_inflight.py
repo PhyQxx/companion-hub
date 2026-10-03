@@ -117,6 +117,9 @@ async def fixture_loop(database: Database, kind: str) -> tuple[Any, Any, UUID, O
         loop = ScreenAwarenessLoop(**common, resolver=ports, gateway=cast(Any, ports))
         loop._capture_bytes = ports.read
         config = ScreenAwarenessConfig(enabled=True, displays=[1])
+    loop._config_store = SimpleNamespace(
+        current=SimpleNamespace(config=SimpleNamespace(**{f"{kind}_awareness": config}))
+    )
     return loop, config, owner, ports
 
 

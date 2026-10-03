@@ -112,6 +112,10 @@ class FakeDatabase:
 class _ConfigView:
     config: HubConfig
 
+    @property
+    def current(self) -> _ConfigView:
+        return self
+
 
 def _hub_config(mail_awareness: MailAwarenessConfig) -> HubConfig:
     base = yaml.safe_load(
@@ -151,9 +155,7 @@ def _loop(
 ) -> tuple[MailAwarenessLoop, FakeTimeline]:
     _Session.owner_id = owner_id or UUID("00000000-0000-7000-8000-000000000001")
     timeline = FakeTimeline()
-    config_view = cast(
-        Any, _ConfigView(_hub_config(config or MailAwarenessConfig(enabled=True)))
-    )
+    config_view = cast(Any, _ConfigView(_hub_config(config or MailAwarenessConfig(enabled=True))))
     loop = MailAwarenessLoop(
         config_store=config_view,
         database=FakeDatabase(),

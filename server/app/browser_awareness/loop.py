@@ -23,7 +23,7 @@ from pydantic import ValidationError
 
 from app.cognition.models import CognitiveDecision, SemanticEvent
 from app.config import ConfigStore, DatabaseConfigStore, HubConfig
-from app.context.observation import ObservationOwnerGuard
+from app.context.observation import ObservationOwnerGuard, ObservationUnavailable
 from app.context.owners import observation_owner
 from app.db import Database
 from app.ids import uuid7
@@ -312,17 +312,18 @@ class BrowserAwarenessLoop:
         self._stop.set()
         task, self._task = self._task, None
         self.state.running = False
-        for background in list(self._background):
-            background.cancel()
-        if task is not None:
-            with contextlib.suppress(asyncio.CancelledError):
-                await task
+        tasks = (*self._background, *((task,) if task is not None else ()))
+        for pending in tasks:
+            pending.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
 
     async def _run(self) -> None:
         while not self._stop.is_set():
             config = self._config_store.current.config.browser_awareness
             try:
                 await self._tick(config)
+            except ObservationUnavailable:
+                pass
             except Exception as error:
                 self.state.last_error = f"{type(error).__name__}: {error}"
                 logger.warning("browser awareness tick failed", exc_info=True)
@@ -343,7 +344,7 @@ class BrowserAwarenessLoop:
         owner = await self._resolve_owner()
         if owner is None:
             return
-        guard = ObservationOwnerGuard(owner, self._resolve_owner)
+        guard = self._owner_guard(owner)
         device = await guard.call(lambda: self._resolve_device(owner))
         if device is None:
             return
@@ -354,6 +355,8 @@ class BrowserAwarenessLoop:
         try:
             payload = await guard.call(lambda: self._read_document(device, owner))
             await self._observe(config, owner, device, payload, now)
+        except ObservationUnavailable:
+            return
         except BrowserAwarenessError as error:
             if error.reason_code in BENIGN_SKIP_REASONS:
                 self._record_success()
@@ -372,6 +375,16 @@ class BrowserAwarenessLoop:
 
     async def _resolve_owner(self) -> UUID | None:
         return await observation_owner(self._database)
+
+    def _owner_guard(self, owner: UUID) -> ObservationOwnerGuard:
+        return ObservationOwnerGuard(
+            owner,
+            self._resolve_owner,
+            lambda: (
+                not self._stop.is_set()
+                and bool(self._config_store.current.config.browser_awareness.enabled)
+            ),
+        )
 
     async def _resolve_device(self, owner: UUID) -> BrowserDevice | None:
         from app.devices import (
@@ -449,7 +462,7 @@ class BrowserAwarenessLoop:
             self._record_success()
             return
         observation_id = uuid7()
-        guard = ObservationOwnerGuard(owner, self._resolve_owner)
+        guard = self._owner_guard(owner)
         with model_owner(owner):
             analysis = await guard.call(
                 lambda: self._analyzer.analyze(
@@ -544,7 +557,7 @@ class BrowserAwarenessLoop:
             self._perception.submit(
                 event,
                 stable_for_seconds=PROACTIVE_STABLE_SECONDS,
-                validate=ObservationOwnerGuard(owner, self._resolve_owner).valid,
+                validate=self._owner_guard(owner).valid,
                 handler=handler,
             )
         else:
@@ -560,7 +573,7 @@ class BrowserAwarenessLoop:
         if decision.decision not in {"inform", "suggest", "ask", "escalate"}:
             return
         with contextlib.suppress(Exception):
-            await ObservationOwnerGuard(event.user_id, self._resolve_owner).check()
+            await self._owner_guard(event.user_id).check()
             await self._proactive_deliver(
                 str(event.attributes.get("message", event.summary)),
                 entity_id="browser:active_tab",
@@ -576,7 +589,7 @@ class BrowserAwarenessLoop:
             await self._deliver_event(event, None)
             return
         with contextlib.suppress(Exception):
-            decision = await ObservationOwnerGuard(event.user_id, self._resolve_owner).call(
+            decision = await self._owner_guard(event.user_id).call(
                 lambda: self._cycle.evaluate(event)
             )
             await self._deliver_event(event, decision)
