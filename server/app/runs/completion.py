@@ -9,6 +9,7 @@ from uuid import UUID
 
 from sqlalchemy import select, update
 from sqlalchemy.exc import IntegrityError
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import ConfigSnapshot
 from app.db import (
@@ -132,23 +133,37 @@ async def complete_with_run(
     if deadline <= now:
         raise BudgetDenied("run_deadline_exceeded")
     run_id = uuid7()
+
+    async def lock_context(session: AsyncSession) -> None:
+        if conversation_id is not None:
+            # Preserve conversation -> claim -> owner order with a real
+            # first-write source fence on both SQLite and PostgreSQL.
+            conversation = await session.scalar(
+                update(ConversationRecord)
+                .where(
+                    ConversationRecord.id == conversation_id,
+                    ConversationRecord.user_id == user_id,
+                )
+                .values(id=ConversationRecord.id)
+                .returning(ConversationRecord.id)
+            )
+            if conversation is None:
+                raise BudgetDenied("run_source_not_found")
+        await assert_current_claim(session)
+        owner = await session.scalar(
+            update(AppUserRecord)
+            .where(AppUserRecord.id == user_id, AppUserRecord.status == "active")
+            .values(id=AppUserRecord.id)
+            .returning(AppUserRecord.id)
+        )
+        if owner is None:
+            raise BudgetDenied("budget_owner_invalid")
+        if deadline <= datetime.now(UTC):
+            raise BudgetDenied("run_deadline_exceeded")
+
     try:
         async with database.sessions.begin() as session:
-            if conversation_id is not None:
-                conversation = await session.scalar(
-                    select(ConversationRecord)
-                    .where(
-                        ConversationRecord.id == conversation_id,
-                        ConversationRecord.user_id == user_id,
-                    )
-                    .with_for_update()
-                )
-                if conversation is None:
-                    raise BudgetDenied("run_source_not_found")
-            await assert_current_claim(session)
-            owner = await session.get(AppUserRecord, user_id)
-            if owner is None or owner.status != "active":
-                raise BudgetDenied("budget_owner_invalid")
+            await lock_context(session)
             row = TaskRunRecord(
                 id=run_id,
                 user_id=user_id,
@@ -173,6 +188,9 @@ async def complete_with_run(
             await session.flush()
             await append_run_event(session, row, "run.accepted")
             await transition_run(session, run_id, "running")
+            await session.flush()
+            if deadline <= datetime.now(UTC):
+                raise BudgetDenied("run_deadline_exceeded")
     except IntegrityError as error:
         # The same owned source must not silently acquire a fresh quota when
         # delivered again. Result caching/semantic retries need their own contract.
@@ -187,11 +205,26 @@ async def complete_with_run(
             async with asyncio.timeout(max(0, (deadline - datetime.now(UTC)).total_seconds())):
                 result = await guarded_call(lambda: complete(request), lambda: validate(run_id))
         async with database.sessions.begin() as session:
-            await assert_current_claim(session)
-            current = await session.get(TaskRunRecord, run_id, with_for_update=True)
-            if current is None or current.status != "running":
+            await lock_context(session)
+            current = await session.scalar(
+                update(TaskRunRecord)
+                .where(TaskRunRecord.id == run_id, TaskRunRecord.user_id == user_id)
+                .values(updated_at=TaskRunRecord.updated_at)
+                .returning(TaskRunRecord)
+                .execution_options(synchronize_session=False, populate_existing=True)
+            )
+            if (
+                current is None
+                or current.status != "running"
+                or current.contract.get("work_cancel_requested")
+            ):
                 raise BudgetDenied("budget_run_inactive")
+            if current.deadline and utc(current.deadline) <= datetime.now(UTC):
+                raise BudgetDenied("run_deadline_exceeded")
             await transition_run(session, run_id, "succeeded")
+            await session.flush()
+            if min(deadline, utc(current.deadline or deadline)) <= datetime.now(UTC):
+                raise BudgetDenied("run_deadline_exceeded")
         return result
     except BaseException as error:
         async with database.sessions.begin() as session:
