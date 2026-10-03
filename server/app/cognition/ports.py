@@ -2,12 +2,26 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import datetime
 from typing import Protocol
 
 from .models import AttentionResult, CognitiveDecision, SemanticEvent, WorldState
 
 COGNITIVE_POLICY_VERSION = "cognitive-v1"
+
+
+@dataclass(frozen=True, slots=True)
+class DeliberationCompletionResult:
+    text: str
+    provider: str
+    model: str
+
+
+class DeliberationCompletionPort(Protocol):
+    async def complete(
+        self, event: SemanticEvent, state: WorldState, attention: AttentionResult
+    ) -> DeliberationCompletionResult: ...
 
 
 class DecisionRepository(Protocol):

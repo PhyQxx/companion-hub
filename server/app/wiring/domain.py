@@ -45,11 +45,12 @@ from app.cognition import (
     GoalTracker,
     PlanCompletionReporter,
     ProposeActionTool,
-    RouterDeliberator,
     RuleBasedDeliberator,
     SemanticEvent,
+    StructuredDeliberator,
     build_builtin_action_registry,
 )
+from app.cognition.deliberation_sql import SqlDeliberationCompletion
 from app.cognition.world_assembly import WorldAssembler
 from app.cognition.world_sql import SqlWorldFactsRepository
 from app.commute import CommuteService
@@ -373,7 +374,9 @@ def assemble_domain(
             ),
             AttentionEngine(),
             (
-                RouterDeliberator(runtime_config, database=runtime_database)
+                StructuredDeliberator(
+                    SqlDeliberationCompletion(runtime_config, database=runtime_database)
+                )
                 if runtime_config is not None
                 else RuleBasedDeliberator()
             ),

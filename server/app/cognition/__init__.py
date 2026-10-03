@@ -47,6 +47,7 @@ from .models import (
 from .propose import PlanCompletionReporter, ProposeActionTool
 from .reflection import ReflectionEngine
 from .store import CognitiveStore
+from .structured import StructuredDeliberator
 from .world import WorldStateBuilder
 
 __all__ = [
@@ -91,6 +92,7 @@ __all__ = [
     "RouterDeliberator",
     "RuleBasedDeliberator",
     "SemanticEvent",
+    "StructuredDeliberator",
     "ToolActionRunner",
     "Urgency",
     "VerificationPolicy",

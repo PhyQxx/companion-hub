@@ -43,6 +43,10 @@ PURE_COGNITIVE_FLOW = frozenset(
         "app.cognition.attention",
         "app.cognition.models",
         "app.cognition.proactive",
+        "app.cognition.rule",
+        "app.cognition.structured",
+        "app.cognition.action",
+        "app.cognition.reflection",
         "app.memory.models",
         "app.memory.retrieval_models",
         "app.timeline.models",
@@ -78,6 +82,21 @@ def imports(source: str, module: str, *, package: bool = False) -> Iterable[str]
 
 
 def allowed(source: str, target: str) -> bool:
+    if source in PURE_COGNITIVE_FLOW and any(
+        target == prefix or target.startswith(prefix + ".")
+        for prefix in (
+            "sqlalchemy",
+            "sqlite3",
+            "aiosqlite",
+            "asyncpg",
+            "httpx",
+            "requests",
+            "aiohttp",
+            "openai",
+            "anthropic",
+        )
+    ):
+        return False
     if not target.startswith("app."):
         return True
     if source in PURE_COGNITIVE_FLOW:
@@ -86,6 +105,7 @@ def allowed(source: str, target: str) -> bool:
             for prefix in (
                 "app.cognition.models",
                 "app.cognition.proactive",
+                "app.cognition.rule",
                 "app.cognition.ports",
                 "app.cognition.attention",
                 "app.cognition.world_facts",
