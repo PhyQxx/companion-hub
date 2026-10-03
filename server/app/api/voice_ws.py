@@ -76,6 +76,8 @@ DUPLICATE_TRANSCRIPT_WINDOW_SECONDS = 6.0
 VOICE_CONTEXT_MESSAGES = 8
 DEVICE_AUDIO_CHUNK_BYTES = 24 * 1024
 DEVICE_AUDIO_MAX_BYTES = 8 * 1024 * 1024
+VOICE_AUDIO_FRAME_MAX_BYTES = 64 * 1024
+VOICE_UTTERANCE_MAX_BYTES = SUPPORTED_SAMPLE_RATE * SUPPORTED_CHANNELS * 2 * 120
 
 
 @dataclass(slots=True)
@@ -246,6 +248,7 @@ class VoiceSession:
     # 且跳过唤醒词待命门——通话中不应每句话都重新唤醒。
     continuous: bool = False
     ptt_active: bool = False
+    ptt_rejected: bool = False
     collecting: bool = False
     utterance: bytearray = field(default_factory=bytearray)
     generation_id: UUID | None = None
@@ -354,12 +357,7 @@ class VoiceWebSocketManager:
         other = self._session_by_device(result.previous_holder)
         if other is None or other is session:
             return
-        other.collecting = False
-        other.ptt_active = False
-        other.wake_armed = False
-        other.utterance.clear()
-        other.utterance_streamer = None
-        self._discard_asr_prefetch(other)
+        self._discard_capture(other, block_ptt=other.ptt_active)
         try:
             await self._send(
                 other,
@@ -665,7 +663,7 @@ class VoiceWebSocketManager:
             case "voice.hello":
                 await self._on_hello(session, frame)
             case "utterance.begin":
-                self._discard_asr_prefetch(session)
+                self._discard_capture(session)
                 session.ptt_active = True
                 session.wake_armed = True
                 session.collecting = True
@@ -784,6 +782,14 @@ class VoiceWebSocketManager:
             logger.warning("voice vad warmup failed; lazy load on first frame", exc_info=True)
 
     async def _on_audio(self, session: VoiceSession, pcm: bytes) -> None:
+        if not pcm or session.ptt_rejected:
+            return
+        if len(pcm) > VOICE_AUDIO_FRAME_MAX_BYTES or len(pcm) % 2:
+            await self._reject_audio(session, "invalid_audio_frame")
+            return
+        if session.collecting and len(session.utterance) + len(pcm) > VOICE_UTTERANCE_MAX_BYTES:
+            await self._reject_audio(session, "utterance_too_large")
+            return
         # 打断仲裁：回合进行中（生成或播报）时，人声能量立即取消
         if session.generation_id is not None and session.vad.is_voiced(pcm):
             await self._interrupt(session, reason="barge_in")
@@ -1413,7 +1419,7 @@ class VoiceWebSocketManager:
         )
 
     async def disconnect(self, session: VoiceSession) -> None:
-        self._discard_asr_prefetch(session)
+        self._discard_capture(session)
         await self._release_microphone(session)
         task = session.turn_task
         if task is not None:
@@ -1427,6 +1433,25 @@ class VoiceWebSocketManager:
         if self._turns is not None:
             with suppress(Exception):
                 await self._turns.release_audio_lease(session.device_id)
+
+    def _discard_capture(self, session: VoiceSession, *, block_ptt: bool = False) -> None:
+        session.collecting = False
+        session.ptt_active = False
+        session.ptt_rejected = block_ptt
+        session.wake_armed = False
+        session.utterance.clear()
+        session.utterance_streamer = None
+        self._discard_asr_prefetch(session)
+        with suppress(Exception):
+            session.vad.force_end()
+        if session.wake_word is not None:
+            with suppress(Exception):
+                session.wake_word.reset()
+
+    async def _reject_audio(self, session: VoiceSession, reason: str) -> None:
+        self._discard_capture(session, block_ptt=session.ptt_active or session.ptt_rejected)
+        await self._release_microphone(session)
+        await self._send(session, "voice.error", {"reason": reason})
 
     async def _send_failure(
         self, session: VoiceSession, pending: PendingTurn | None, reason_code: str

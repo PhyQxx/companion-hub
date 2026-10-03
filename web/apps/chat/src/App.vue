@@ -283,6 +283,11 @@ const asrUnavailableLabels: Record<string, string> = {
   provider_error: "语音识别服务调用失败",
 };
 
+const voiceErrorLabels: Record<string, string> = {
+  invalid_audio_frame: "音频片段格式或大小不合适，请重新开始录音",
+  utterance_too_large: "单次录音最长两分钟，请分段发送",
+};
+
 let socket: ChatSocket | null = null;
 let reconnectTimer: number | null = null;
 let reconnectAttempts = 0;
@@ -747,7 +752,13 @@ function handleVoiceEvent(event: VoiceControlEvent) {
       break;
     case "voice.error":
       voiceBusy.value = false;
-      voiceStatus.value = `语音请求失败：${event.reason ?? "unknown"}`;
+      if (event.reason === "invalid_audio_frame" || event.reason === "utterance_too_large") {
+        voiceRecording.value = false;
+        voiceLive.value = false;
+        voiceTranscript.value = "";
+        void microphone.stop().catch(() => undefined);
+      }
+      voiceStatus.value = `语音请求失败：${voiceErrorLabels[event.reason ?? ""] ?? event.reason ?? "unknown"}`;
       break;
     case "reply.committed":
       voiceBusy.value = false;
