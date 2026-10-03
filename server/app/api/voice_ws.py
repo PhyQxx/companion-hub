@@ -27,7 +27,9 @@ from app.auth import AuthService, ChatPrincipal, InvalidSession
 from app.avatar import AvatarControlPublisher, control_from_agent_reply, with_reply_text
 from app.chat import ChatService, PendingTurn, TurnCancelled
 from app.harness.budget import BudgetDenied
+from app.harness.guarded_call import guarded_call, guarded_inline_call
 from app.harness.source_cleanup import close_after_source
+from app.harness.voice_sources import VoiceSourceClaim, VoiceSourceGuard
 from app.ids import uuid7
 from app.llm import LLMRoute, LLMRouteExhausted
 from app.privacy import EgressBlocked
@@ -88,6 +90,7 @@ class AsrPrefetch:
 
     recognizer: SpeechRecognizer
     task: asyncio.Task[str]
+    source: VoiceSourceClaim | None = None
 
 
 class UtteranceStreamer:
@@ -239,6 +242,7 @@ class VoiceSession:
 
     websocket: WebSocket
     principal: ChatPrincipal
+    source_actor: str = "browser"
     # 连接级稳定设备身份：多端租约仲裁的持有者标识（同一连接跨回合不变）。
     device_id: UUID = field(default_factory=uuid7)
     conversation_id: UUID | None = None
@@ -260,9 +264,11 @@ class VoiceSession:
     turn_committed: bool = False
     turn_task: asyncio.Task[None] | None = None
     asr_prefetch: AsrPrefetch | None = None
+    asr_tasks: set[asyncio.Task[str]] = field(default_factory=set)
     # 流式 ASR 句柄（docs/04 §6.4 P1）：话语开始时绑定识别器，逐帧喂入；
     # 识别器不具备流式能力时为 None，走原整段转写路径。
     utterance_streamer: UtteranceStreamer | None = None
+    streamer_source: VoiceSourceClaim | None = None
     tts_unavailable_notified: bool = False
     last_transcript: str | None = None
     last_transcript_at: float | None = None
@@ -284,6 +290,7 @@ class VoiceWebSocketManager:
         service: ChatService,
         *,
         voice_source: VoiceProviderSource,
+        source_guard: VoiceSourceGuard,
         turn_coordinator: TurnCoordinator | None = None,
         avatar_control_publisher: AvatarControlPublisher | None = None,
         vad_factory: Callable[[], VoiceActivityDetector] = create_default_vad,
@@ -291,6 +298,7 @@ class VoiceWebSocketManager:
         self._service = service
         self._turns = turn_coordinator
         self._voice_source = voice_source
+        self._source_guard = source_guard
         self._avatar_control = avatar_control_publisher
         self._vad_factory = vad_factory
         self._avatar_tasks: set[asyncio.Task[int]] = set()
@@ -299,6 +307,52 @@ class VoiceWebSocketManager:
         self._satellite_conversations: dict[tuple[UUID, UUID], UUID] = {}
         self._satellite_conversation_locks: dict[tuple[UUID, UUID], asyncio.Lock] = {}
         self._satellite_broadcaster: Callable[..., Awaitable[int]] | None = None
+
+    @staticmethod
+    def _source_claim(session: VoiceSession) -> VoiceSourceClaim:
+        if session.source_actor not in {"browser", "satellite"}:
+            raise BudgetDenied("voice_actor_invalid")
+        return VoiceSourceClaim(
+            session.principal.user_id,
+            session.conversation_id,
+            "satellite" if session.source_actor == "satellite" else "browser",
+            session.device_id
+            if session.source_actor == "satellite"
+            else session.principal.session_id,
+            session.privacy_level,
+        )
+
+    async def _validate_source(self, session: VoiceSession, source: VoiceSourceClaim) -> None:
+        current = self._source_claim(session)
+        if (current.user_id, current.conversation_id, current.actor, current.actor_id) != (
+            source.user_id,
+            source.conversation_id,
+            source.actor,
+            source.actor_id,
+        ):
+            raise BudgetDenied("voice_source_changed")
+        await self._source_guard.validate(source)
+
+    async def _transcribe(
+        self,
+        session: VoiceSession,
+        recognizer: SpeechRecognizer,
+        pcm: bytes,
+        source: VoiceSourceClaim,
+    ) -> str:
+        privacy = session.privacy_level
+
+        async def validate() -> None:
+            await self._validate_source(session, source)
+            if session.privacy_level != privacy:
+                raise SpeechRecognitionUnavailable("asr_privacy_changed")
+            if privacy in {PrivacyLevel.L2, PrivacyLevel.L3} and not recognizer.runs_local:
+                raise SpeechRecognitionUnavailable("local_asr_required")
+
+        return await guarded_inline_call(
+            lambda: recognizer.transcribe(pcm, sample_rate=SUPPORTED_SAMPLE_RATE, language=None),
+            validate,
+        )
 
     def set_satellite_broadcaster(
         self, broadcaster: Callable[..., Awaitable[int]]
@@ -520,6 +574,7 @@ class VoiceWebSocketManager:
                 expires_at=datetime.now(UTC) + timedelta(hours=12),
             ),
             device_id=device_id,
+            source_actor="satellite",
             conversation_id=conversation_id,
             privacy_level=privacy_level,
             wake_word=None,
@@ -614,6 +669,24 @@ class VoiceWebSocketManager:
         text: str,
         privacy_level: PrivacyLevel,
     ) -> bool:
+        source = self._source_claim(session)
+
+        async def validate() -> None:
+            await self._validate_source(session, source)
+            if session.privacy_level != source.privacy_level:
+                raise BudgetDenied("voice_privacy_changed")
+
+        return await guarded_inline_call(
+            lambda: self._send_proactive_body(session, text, privacy_level, source), validate
+        )
+
+    async def _send_proactive_body(
+        self,
+        session: VoiceSession,
+        text: str,
+        privacy_level: PrivacyLevel,
+        source: VoiceSourceClaim,
+    ) -> bool:
         generation_id = uuid7()
         if privacy_level in {PrivacyLevel.L0, PrivacyLevel.L1}:
             self._schedule_avatar_control(
@@ -657,8 +730,10 @@ class VoiceWebSocketManager:
                 },
             )
             try:
+                await self._validate_source(session, source)
                 await self._send_bytes(session, selection.first_chunk)
                 async for chunk in selection.stream:
+                    await self._validate_source(session, source)
                     await self._send_bytes(session, chunk)
             except BudgetDenied:
                 raise
@@ -749,10 +824,23 @@ class VoiceWebSocketManager:
             return
         conversation_raw = frame.get("conversation_id")
         if not isinstance(conversation_raw, str):
-            await self._send(session, "voice.error", {"reason": "conversation_id_required"})
+            await self._send(
+                session, "voice.error", {"reason": "conversation_id_required"}
+            )
             return
-        session.conversation_id = UUID(conversation_raw)
-        session.privacy_level = PrivacyLevel(frame.get("privacy_level", "L1"))
+        try:
+            conversation_id = UUID(conversation_raw)
+            privacy = PrivacyLevel(frame.get("privacy_level", "L1"))
+        except (ValueError, TypeError):
+            await self._send(session, "voice.error", {"reason": "invalid_voice_source"})
+            return
+        original = self._source_claim(session)
+        source = VoiceSourceClaim(
+            original.user_id, conversation_id, original.actor, original.actor_id, privacy
+        )
+        await self._source_guard.validate(source)
+        session.conversation_id = conversation_id
+        session.privacy_level = privacy
         session.continuous = frame.get("continuous") is True
         session.resolve_location(frame.get("location"))
         # Silero/torch 初始化较重，连接建立即后台预热，不落在第一句话上。
@@ -880,6 +968,9 @@ class VoiceWebSocketManager:
         """话语开始时绑定流式识别器并喂入首帧；不具备流式能力则保持 None。"""
 
         session.utterance_streamer = None
+        session.streamer_source = None
+        source = self._source_claim(session)
+        await self._validate_source(session, source)
         try:
             recognizer, _tts = await self._voice_source.resolve()
         except BudgetDenied:
@@ -889,10 +980,12 @@ class VoiceWebSocketManager:
             return
         if recognizer is None or not isinstance(recognizer, StreamingSpeechRecognizer):
             return
+        await self._validate_source(session, source)
         streamer = UtteranceStreamer(recognizer, privacy_level=session.privacy_level)
         if not streamer.active:
             return
         session.utterance_streamer = streamer
+        session.streamer_source = source
         if first_pcm is not None:
             await self._feed_streamer(session, first_pcm)
 
@@ -904,7 +997,10 @@ class VoiceWebSocketManager:
             session.utterance_streamer = None
             return
         privacy = session.privacy_level
-        partial = await streamer.feed(pcm)
+        source = session.streamer_source or self._source_claim(session)
+        partial = await guarded_call(
+            lambda: streamer.feed(pcm), lambda: self._validate_source(session, source)
+        )
         if session.privacy_level != privacy or session.utterance_streamer is not streamer:
             return
         if partial is not None:
@@ -921,12 +1017,18 @@ class VoiceWebSocketManager:
         """
 
         streamer, session.utterance_streamer = session.utterance_streamer, None
+        source, session.streamer_source = (
+            session.streamer_source or self._source_claim(session),
+            None,
+        )
         if streamer is None:
             return None, None, None
         if not streamer.allows(session.privacy_level):
             return None, None, None
         privacy = session.privacy_level
-        final = await streamer.finalize()
+        final = await guarded_call(
+            streamer.finalize, lambda: self._validate_source(session, source)
+        )
         if session.privacy_level != privacy:
             return None, None, None
         stable_ms: int | None = None
@@ -959,7 +1061,14 @@ class VoiceWebSocketManager:
         if len(pcm) < min_bytes:
             self._discard_asr_prefetch(session)
             session.utterance_streamer = None
+            session.streamer_source = None
             return
+        source = (
+            session.streamer_source
+            or (session.asr_prefetch.source if session.asr_prefetch is not None else None)
+            or self._source_claim(session)
+        )
+        await self._validate_source(session, source)
         # 流式识别：断句前逐帧喂入已完成转写，finalize 直接取终稿
         streamed_transcript, streaming_pause_ms, partial_match = (
             await self._finalize_streamer(session)
@@ -1003,6 +1112,7 @@ class VoiceWebSocketManager:
                 prefetched_transcript=prefetched_transcript,
                 streaming_pause_ms=streaming_pause_ms,
                 partial_match=partial_match,
+                source_claim=source,
             ),
             name="voice-utterance",
         )
@@ -1019,15 +1129,21 @@ class VoiceWebSocketManager:
         ):
             return
         pcm = bytes(session.utterance)
+        source = self._source_claim(session)
+        await self._validate_source(session, source)
         task = asyncio.create_task(
-            recognizer.transcribe(
-                pcm,
-                sample_rate=SUPPORTED_SAMPLE_RATE,
-                language=None,
-            ),
+            self._transcribe(session, recognizer, pcm, source),
             name="voice-asr-prefetch",
         )
-        session.asr_prefetch = AsrPrefetch(recognizer=recognizer, task=task)
+        session.asr_prefetch = AsrPrefetch(recognizer=recognizer, task=task, source=source)
+        session.asr_tasks.add(task)
+
+        def finished(completed: asyncio.Task[str]) -> None:
+            session.asr_tasks.discard(completed)
+            if not completed.cancelled():
+                completed.exception()
+
+        task.add_done_callback(finished)
 
     async def _consume_asr_prefetch(
         self,
@@ -1042,6 +1158,8 @@ class VoiceWebSocketManager:
             return None
         try:
             transcript = await prefetch.task
+            if prefetch.source is not None:
+                await self._validate_source(session, prefetch.source)
         except asyncio.CancelledError:
             caller = asyncio.current_task()
             if caller is not None and caller.cancelling():
@@ -1074,6 +1192,7 @@ class VoiceWebSocketManager:
         prefetched_transcript: str | None = None,
         streaming_pause_ms: int | None = None,
         partial_match: str | None = None,
+        source_claim: VoiceSourceClaim | None = None,
     ) -> None:
         if session.conversation_id is None:
             return
@@ -1082,6 +1201,13 @@ class VoiceWebSocketManager:
         pending: PendingTurn | None = None
         keepalive_task: asyncio.Task[None] | None = None
         session.turn_committed = False
+        source = source_claim or self._source_claim(session)
+
+        async def validate_turn_source() -> None:
+            await self._validate_source(session, source)
+            if session.privacy_level != source.privacy_level:
+                raise BudgetDenied("voice_privacy_changed")
+
         try:
             try:
                 asr_privacy = session.privacy_level
@@ -1089,11 +1215,10 @@ class VoiceWebSocketManager:
                     raise SpeechRecognitionUnavailable("local_asr_required")
                 transcript = prefetched_transcript
                 if transcript is None:
-                    transcript = await recognizer.transcribe(
-                        pcm, sample_rate=SUPPORTED_SAMPLE_RATE, language=None
-                    )
+                    transcript = await self._transcribe(session, recognizer, pcm, source)
                 if session.privacy_level != asr_privacy:
                     raise SpeechRecognitionUnavailable("asr_privacy_changed")
+                await self._validate_source(session, source)
             except SpeechRecognitionUnavailable as error:
                 logger.warning(
                     "voice asr unavailable provider=%s reason=%s",
@@ -1135,6 +1260,7 @@ class VoiceWebSocketManager:
                     now - session.last_transcript_at,
                 )
                 return
+            await validate_turn_source()
             session.last_transcript = transcript
             session.last_transcript_at = now
             await self._send(
@@ -1190,8 +1316,9 @@ class VoiceWebSocketManager:
             sentence_index = 0
             # 音频输出被抢占后本回合剩余句子降级为纯文字（delta 仍在发送）
             audio_lost = False
+            streaming_reply = False
 
-            async def speak(sentence: str) -> None:
+            async def speak_body(sentence: str) -> None:
                 nonlocal sentence_index, first_audio_at, audio_lost
                 sentence = speech_filter.clean(sentence)
                 if not sentence:
@@ -1245,6 +1372,7 @@ class VoiceWebSocketManager:
 
                     async def send_audio_chunk(chunk: bytes) -> None:
                         nonlocal first_audio_at, viseme_index
+                        await validate_turn_source()
                         if envelope is not None:
                             for amplitude in envelope.push(chunk):
                                 await self._send(
@@ -1285,8 +1413,16 @@ class VoiceWebSocketManager:
                     )
                     sentence_index += 1
 
+            async def speak(sentence: str) -> None:
+                if streaming_reply:
+                    # The enclosing inline chat watcher owns this same task.
+                    await speak_body(sentence)
+                else:
+                    await guarded_inline_call(lambda: speak_body(sentence), validate_turn_source)
+
             async def on_delta(delta: str) -> None:
                 nonlocal first_token_at
+                await validate_turn_source()
                 if first_token_at == 0.0:
                     first_token_at = time.perf_counter()
                 # 文字与 TTS 共用同一份可见 delta。先把文字发给浏览器，再按句
@@ -1314,7 +1450,14 @@ class VoiceWebSocketManager:
                     },
                 )
 
-            turn = await self._service.run_stream(pending, on_delta, on_tool_event)
+            streaming_reply = True
+            try:
+                turn = await guarded_inline_call(
+                    lambda: self._service.run_stream(pending, on_delta, on_tool_event),
+                    validate_turn_source,
+                )
+            finally:
+                streaming_reply = False
             session.turn_committed = True
             reply_meta = (turn.assistant_message.decision_meta or {}).get("agent_reply")
             avatar_control = control_from_agent_reply(reply_meta)
@@ -1457,6 +1600,8 @@ class VoiceWebSocketManager:
 
     async def disconnect(self, session: VoiceSession) -> None:
         self._discard_capture(session)
+        if session.asr_tasks:
+            await asyncio.gather(*tuple(session.asr_tasks), return_exceptions=True)
         await self._release_microphone(session)
         task = session.turn_task
         if task is not None:
@@ -1478,6 +1623,7 @@ class VoiceWebSocketManager:
         session.wake_armed = False
         session.utterance.clear()
         session.utterance_streamer = None
+        session.streamer_source = None
         self._discard_asr_prefetch(session)
         with suppress(Exception):
             session.vad.force_end()
@@ -1620,6 +1766,7 @@ def create_voice_websocket_router(
     auth_service: AuthService,
     *,
     voice_source: VoiceProviderSource,
+    source_guard: VoiceSourceGuard,
     turn_coordinator: TurnCoordinator | None = None,
     wake_word_factory: Callable[[], WakeWordDetector | None] = create_default_wake_word,
     avatar_control_publisher: AvatarControlPublisher | None = None,
@@ -1629,6 +1776,7 @@ def create_voice_websocket_router(
     manager = VoiceWebSocketManager(
         service,
         voice_source=voice_source,
+        source_guard=source_guard,
         turn_coordinator=turn_coordinator,
         avatar_control_publisher=avatar_control_publisher,
         vad_factory=vad_factory,

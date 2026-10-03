@@ -7,6 +7,7 @@ import asyncio
 import json
 import time
 from collections.abc import AsyncIterator, Awaitable, Callable
+from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, ClassVar, cast
@@ -24,8 +25,10 @@ from app.auth import AuthService, ChatPrincipal
 from app.chat import ChatService, PendingTurn
 from app.config import DatabaseConfigStore
 from app.db import Base, Database, create_database
+from app.harness.voice_sources import VoiceSourceClaim
 from app.ids import uuid7
 from app.llm import CompletionRequest, CompletionResult, LLMRoute, ModelUsage
+from app.runs.voice_sources import SqlVoiceSourceGuard
 from app.schemas import PrivacyLevel
 from app.tools import ClientLocation
 from app.voice import (
@@ -34,6 +37,13 @@ from app.voice import (
     StaticVoiceSource,
     TtsProviderChain,
 )
+
+
+class SyntheticVoiceSourceGuard:
+    """Provider/transport-only fixtures omit application authority deliberately."""
+
+    async def validate(self, source: VoiceSourceClaim) -> None:
+        return None
 
 
 def config_yaml() -> str:
@@ -204,6 +214,7 @@ class RecordingWebSocket:
 async def test_satellite_conversation_moves_only_on_explicit_takeover() -> None:
     manager = VoiceWebSocketManager(
         cast(ChatService, object()),
+        source_guard=SyntheticVoiceSourceGuard(),
         voice_source=StaticVoiceSource(None, None),
     )
     owner = uuid7()
@@ -231,6 +242,7 @@ async def test_voice_generation_keepalive_emits_during_slow_first_token(
     socket = RecordingWebSocket()
     manager = VoiceWebSocketManager(
         cast(ChatService, object()),
+        source_guard=SyntheticVoiceSourceGuard(),
         voice_source=StaticVoiceSource(None, None),
     )
     session = VoiceSession(
@@ -256,13 +268,13 @@ async def test_voice_generation_keepalive_emits_during_slow_first_token(
 async def test_device_speech_streams_audio_and_keeps_l2_local_only() -> None:
     cloud = VoiceWebSocketManager(
         cast(ChatService, object()),
+        source_guard=SyntheticVoiceSourceGuard(),
         voice_source=StaticVoiceSource(None, TtsProviderChain([FakeSynthesizer()])),
     )
     local = VoiceWebSocketManager(
         cast(ChatService, object()),
-        voice_source=StaticVoiceSource(
-            None, TtsProviderChain([FakeSynthesizer(runs_local=True)])
-        ),
+        source_guard=SyntheticVoiceSourceGuard(),
+        voice_source=StaticVoiceSource(None, TtsProviderChain([FakeSynthesizer(runs_local=True)])),
     )
     emitted: list[tuple[str, dict[str, JsonValue]]] = []
 
@@ -294,6 +306,7 @@ async def test_proactive_voice_reaches_matching_session_and_blocks_cloud_l2_tts(
     socket = RecordingWebSocket()
     manager = VoiceWebSocketManager(
         cast(ChatService, object()),
+        source_guard=SyntheticVoiceSourceGuard(),
         voice_source=StaticVoiceSource(None, TtsProviderChain([FakeSynthesizer()])),
     )
     session = VoiceSession(
@@ -387,24 +400,31 @@ def _build(
         async with database.engine.begin() as connection:
             await connection.run_sync(Base.metadata.create_all)
         await store.load()
-        session = await auth.setup(
-            display_name="Owner", password="correct horse battery staple"
-        )
+        session = await auth.setup(display_name="Owner", password="correct horse battery staple")
         conversation = await service.create_conversation(
             user_id=session.principal.user_id, title="语音"
         )
         return session.access_token, str(conversation.id)
 
     token, conversation_id = asyncio.run(setup())
-    app = FastAPI()
+
+    @asynccontextmanager
+    async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
+        try:
+            yield
+        finally:
+            # Match production shutdown before TestClient closes its loop.
+            await service.drain_background_work()
+            await database.close()
+
+    app = FastAPI(lifespan=lifespan)
     router, _ = create_voice_websocket_router(
         service,
         auth,
+        source_guard=SqlVoiceSourceGuard(database),
         voice_source=StaticVoiceSource(
             recognizer or FakeRecognizer("帮我看看今天适合穿什么"),
-            TtsProviderChain(
-                [synthesizer or FakeSynthesizer(delay_s=tts_delay_s)]
-            ),
+            TtsProviderChain([synthesizer or FakeSynthesizer(delay_s=tts_delay_s)]),
         ),
         wake_word_factory=lambda: wake_word,
         # 测试音频是合成方波，Silero 会正确判定"非人声"；固定用能量 VAD
@@ -415,9 +435,7 @@ def _build(
     return app, token, conversation_id
 
 
-def _build_with_recognizer(
-    tmp_path: Path, recognizer: Any
-) -> tuple[FastAPI, str, str]:
+def _build_with_recognizer(tmp_path: Path, recognizer: Any) -> tuple[FastAPI, str, str]:
     database = create_database(f"sqlite+aiosqlite:///{tmp_path / 'voice-unavailable.db'}")
     config_path = tmp_path / "hub-unavailable.yaml"
     config_path.write_text(config_yaml(), encoding="utf-8")
@@ -429,19 +447,27 @@ def _build_with_recognizer(
         async with database.engine.begin() as connection:
             await connection.run_sync(Base.metadata.create_all)
         await store.load()
-        session = await auth.setup(
-            display_name="Owner", password="correct horse battery staple"
-        )
+        session = await auth.setup(display_name="Owner", password="correct horse battery staple")
         conversation = await service.create_conversation(
             user_id=session.principal.user_id, title="语音"
         )
         return session.access_token, str(conversation.id)
 
     token, conversation_id = asyncio.run(setup())
-    app = FastAPI()
+
+    @asynccontextmanager
+    async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
+        try:
+            yield
+        finally:
+            await service.drain_background_work()
+            await database.close()
+
+    app = FastAPI(lifespan=lifespan)
     router, _ = create_voice_websocket_router(
         service,
         auth,
+        source_guard=SqlVoiceSourceGuard(database),
         voice_source=StaticVoiceSource(recognizer, None),
         vad_factory=EnergyVad,
     )
@@ -783,7 +809,21 @@ def test_voice_websocket_barge_in_cancels_turn_and_tts(tmp_path: Path) -> None:
 
 
 def test_voice_websocket_m2_soak_20_complete_and_20_interrupts(tmp_path: Path) -> None:
-    app, token, conversation_id = _build(tmp_path, tts_delay_s=0.01)
+    class InterruptibleSynthesizer(FakeSynthesizer):
+        block_after_chunk = False
+
+        async def synthesize(
+            self, text: str, *, privacy_level: PrivacyLevel
+        ) -> AsyncIterator[bytes]:
+            async for chunk in super().synthesize(text, privacy_level=privacy_level):
+                yield chunk
+                if self.block_after_chunk:
+                    # Keep interrupted samples in flight until the client
+                    # cancels; scheduling speed must not turn them into commits.
+                    await asyncio.Event().wait()
+
+    synthesizer = InterruptibleSynthesizer(delay_s=0.01)
+    app, token, conversation_id = _build(tmp_path, synthesizer=synthesizer)
 
     with TestClient(app) as client, client.websocket_connect("/ws/voice") as websocket:
         websocket.send_json({"type": "authenticate", "access_token": token})
@@ -806,6 +846,7 @@ def test_voice_websocket_m2_soak_20_complete_and_20_interrupts(tmp_path: Path) -
             events, _ = _receive_until(websocket, "reply.committed")
             assert events[-1]["type"] == "reply.committed"
 
+        synthesizer.block_after_chunk = True
         for _ in range(20):
             websocket.send_json({"type": "utterance.begin"})
             websocket.send_bytes(loud_frames(10))
@@ -1335,6 +1376,7 @@ async def test_finalize_streamer_reports_exact_prefix_and_diverged() -> None:
     ) -> tuple[str | None, int | None, str | None]:
         manager = VoiceWebSocketManager(
             cast(ChatService, object()),
+            source_guard=SyntheticVoiceSourceGuard(),
             voice_source=StaticVoiceSource(None, None),
         )
         session = _session_with(stream_recognizer)

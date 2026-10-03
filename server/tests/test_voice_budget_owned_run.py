@@ -8,7 +8,12 @@ import pytest
 from sqlalchemy import select
 from test_run_cancel_fence import prepared
 from test_voice_budget_terminal import AudioStream, Synthesizer, setup
-from test_voice_websocket import FakeRecognizer, StreamingBackend, config_yaml
+from test_voice_websocket import (
+    FakeRecognizer,
+    StreamingBackend,
+    SyntheticVoiceSourceGuard,
+    config_yaml,
+)
 
 from app.api.voice_ws import VoiceWebSocketManager
 from app.chat import ChatService
@@ -47,7 +52,11 @@ async def test_tts_denial_during_owned_chat_does_not_commit_reply(
         _, session, socket = setup()
         session.principal = replace(session.principal, user_id=owner)
         session.conversation_id = conversation.id
-        manager = VoiceWebSocketManager(chat, voice_source=StaticVoiceSource(recognizer, chain))
+        manager = VoiceWebSocketManager(
+            chat,
+            source_guard=SyntheticVoiceSourceGuard(),
+            voice_source=StaticVoiceSource(recognizer, chain),
+        )
         await manager._run_utterance(session, b"\x01\x00" * 16000, recognizer, chain)
         assert [
             message["reason_code"] for message in socket.texts if message["type"] == "turn.failed"

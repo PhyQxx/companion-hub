@@ -10,7 +10,13 @@ from typing import cast
 import pytest
 from fastapi.testclient import TestClient
 from test_voice_streaming_privacy import FactoryRecognizer, session_fixture
-from test_voice_websocket import RecordingWebSocket, _build, _receive_until, loud_frames
+from test_voice_websocket import (
+    RecordingWebSocket,
+    SyntheticVoiceSourceGuard,
+    _build,
+    _receive_until,
+    loud_frames,
+)
 
 from app.api.voice_ws import AsrPrefetch, VoiceSession, VoiceWebSocketManager
 from app.chat import ChatService
@@ -48,7 +54,9 @@ def setup() -> tuple[
     session, socket = cast(VoiceSession, raw_session), cast(RecordingWebSocket, raw_socket)
     recognizer = FactoryRecognizer(parent_local=True, child_local=True)
     manager = VoiceWebSocketManager(
-        cast(ChatService, object()), voice_source=StaticVoiceSource(recognizer, None)
+        cast(ChatService, object()),
+        source_guard=SyntheticVoiceSourceGuard(),
+        voice_source=StaticVoiceSource(recognizer, None),
     )
     vad = CountingVad()
     session.vad = vad

@@ -18,6 +18,7 @@ from uuid import UUID, uuid4
 import pytest
 from fastapi import WebSocket
 from test_runtime import FakeChatService
+from test_voice_websocket import SyntheticVoiceSourceGuard
 
 from app.api.voice_ws import VoiceSession, VoiceWebSocketManager
 from app.auth import ChatPrincipal
@@ -38,9 +39,7 @@ class FakeSynth:
     def __init__(self) -> None:
         self.gate = asyncio.Event()
 
-    async def synthesize(
-        self, text: str, *, privacy_level: PrivacyLevel
-    ) -> AsyncIterator[bytes]:
+    async def synthesize(self, text: str, *, privacy_level: PrivacyLevel) -> AsyncIterator[bytes]:
         del text, privacy_level
         yield b"\x01\x00\x02\x00"
         await self.gate.wait()
@@ -97,6 +96,7 @@ async def coordinator(database: Database) -> TurnCoordinator:
 async def manager(coordinator: TurnCoordinator) -> VoiceWebSocketManager:
     return VoiceWebSocketManager(
         cast(ChatService, object()),
+        source_guard=SyntheticVoiceSourceGuard(),
         voice_source=StaticVoiceSource(None, TtsProviderChain([FakeSynth()])),
         turn_coordinator=coordinator,
     )
@@ -186,6 +186,7 @@ async def test_pet_speech_aborts_when_audio_preempted(
     synth = FakeSynth()
     manager = VoiceWebSocketManager(
         cast(ChatService, object()),
+        source_guard=SyntheticVoiceSourceGuard(),
         voice_source=StaticVoiceSource(None, TtsProviderChain([synth])),
         turn_coordinator=coordinator,
     )
@@ -194,9 +195,7 @@ async def test_pet_speech_aborts_when_audio_preempted(
     async def emit(frame_type: str, payload: dict[str, Any]) -> None:
         emitted.append((frame_type, payload))
 
-    speech = asyncio.create_task(
-        manager.stream_device_speech("你好呀", PrivacyLevel.L1, emit)
-    )
+    speech = asyncio.create_task(manager.stream_device_speech("你好呀", PrivacyLevel.L1, emit))
     # 等第一块音频发出（此时桌宠持有租约）
     for _ in range(100):
         if any(frame == "pet.audio.chunk" for frame, _ in emitted):

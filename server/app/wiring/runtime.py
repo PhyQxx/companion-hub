@@ -78,6 +78,7 @@ from app.mail import (
 from app.mail_awareness import MailAwarenessLoop
 from app.output import ProactiveDeliveryService
 from app.push import PushSubscriptionStore
+from app.runs.voice_sources import SqlVoiceSourceGuard
 from app.runtime import TurnCoordinator
 from app.safety import SafetyActivityScheduler, SafetyAlertService
 from app.screen_awareness import ScreenAwarenessLoop
@@ -504,6 +505,7 @@ def assemble_runtime(
             runtime_chat_service,
             auth_service,
             voice_source=ConfigVoiceSource(runtime_config),
+            source_guard=SqlVoiceSourceGuard(runtime_database),
             turn_coordinator=turn_coordinator,
             avatar_control_publisher=device_command_gateway,
         )

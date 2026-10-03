@@ -6,7 +6,7 @@ from typing import Any, cast
 
 import pytest
 from test_voice_streaming_privacy import session_fixture
-from test_voice_websocket import FakeRecognizer, RecordingWebSocket
+from test_voice_websocket import FakeRecognizer, RecordingWebSocket, SyntheticVoiceSourceGuard
 
 from app.api.voice_ws import AsrPrefetch, VoiceSession, VoiceWebSocketManager
 from app.chat import ChatService
@@ -105,6 +105,7 @@ def setup(
     raw_session, raw_socket = session_fixture()
     manager = VoiceWebSocketManager(
         cast(ChatService, object()),
+        source_guard=SyntheticVoiceSourceGuard(),
         voice_source=StaticVoiceSource(recognizer, chain),
     )
     return manager, cast(VoiceSession, raw_session), cast(RecordingWebSocket, raw_socket)

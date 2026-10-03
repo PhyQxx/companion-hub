@@ -6,6 +6,7 @@ import pytest
 from fastapi.testclient import TestClient
 from test_voice_websocket import (
     FakeStreamingRecognizer,
+    SyntheticVoiceSourceGuard,
     _build,
     _receive_until,
     loud_frames,
@@ -133,7 +134,9 @@ async def test_privacy_change_drops_inflight_partial_and_stops_further_frames(
     raw_session, raw_socket = session_fixture()
     session, socket = cast(VoiceSession, raw_session), cast(RecordingWebSocket, raw_socket)
     manager = VoiceWebSocketManager(
-        cast(ChatService, object()), voice_source=StaticVoiceSource(recognizer, None)
+        cast(ChatService, object()),
+        source_guard=SyntheticVoiceSourceGuard(),
+        voice_source=StaticVoiceSource(recognizer, None),
     )
     await manager._start_streamer(session, None)
     task = asyncio.create_task(manager._feed_streamer(session, b"\x01\x00" * 32))
@@ -164,7 +167,9 @@ async def test_privacy_change_before_finalize_does_not_call_cloud_finalize() -> 
     raw_session, _ = session_fixture()
     session = cast(VoiceSession, raw_session)
     manager = VoiceWebSocketManager(
-        cast(ChatService, object()), voice_source=StaticVoiceSource(recognizer, None)
+        cast(ChatService, object()),
+        source_guard=SyntheticVoiceSourceGuard(),
+        voice_source=StaticVoiceSource(recognizer, None),
     )
     await manager._start_streamer(session, b"\x01\x00" * 32)
     session.privacy_level = PrivacyLevel.L3
@@ -196,7 +201,9 @@ async def test_privacy_change_during_full_asr_rejects_transcript(
     raw_session, raw_socket = session_fixture()
     session, socket = cast(VoiceSession, raw_session), cast(RecordingWebSocket, raw_socket)
     manager = VoiceWebSocketManager(
-        cast(ChatService, object()), voice_source=StaticVoiceSource(recognizer, None)
+        cast(ChatService, object()),
+        source_guard=SyntheticVoiceSourceGuard(),
+        voice_source=StaticVoiceSource(recognizer, None),
     )
     task = asyncio.create_task(manager._run_utterance(session, b"\x01\x00" * 32, recognizer, None))
     try:
@@ -261,6 +268,7 @@ async def test_cloud_tts_adapter_rejects_l3_before_constructing_requests(
         pytest.fail("private TTS attempted to construct an outbound client")
 
     monkeypatch.setattr(httpx, "AsyncClient", forbidden)
+
     class EdgeModule(ModuleType):
         Communicate = staticmethod(forbidden)
 
