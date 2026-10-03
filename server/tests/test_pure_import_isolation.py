@@ -47,6 +47,10 @@ import pytest
         "app.llm:CompletionRequest",
         "app.config:HubConfig",
         "app.voice:SpeechRecognizer",
+        "app.focus",
+        "app.focus.analysis",
+        "app.focus.core",
+        "app.focus:FocusSessionService",
     ],
 )
 def test_pure_import_without_persistence_or_provider_dependencies(module: str) -> None:
@@ -80,7 +84,18 @@ if separator:
 
 
 @pytest.mark.parametrize(
-    "name", ["memory", "timeline", "meetings", "cognition", "perception", "llm", "config", "voice"]
+    "name",
+    [
+        "memory",
+        "timeline",
+        "meetings",
+        "cognition",
+        "perception",
+        "llm",
+        "config",
+        "voice",
+        "focus",
+    ],
 )
 def test_all_legacy_exports_preserve_object_identity_caching_and_discovery(name: str) -> None:
     package = importlib.import_module(f"app.{name}")
