@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import hashlib
 from collections.abc import Sequence
-from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import cast
 from uuid import UUID
@@ -45,12 +44,7 @@ from .models import (
     MemoryType,
     SimilarMemory,
 )
-
-
-@dataclass(frozen=True, slots=True)
-class RetrievalCandidate:
-    entry: MemoryEntry
-    embedding: list[float] | None
+from .retrieval_models import RetrievalCandidate as RetrievalCandidate
 
 
 def _list_filter(

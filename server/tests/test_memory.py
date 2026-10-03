@@ -129,7 +129,7 @@ async def test_grounded_memory_hits_require_actual_relevance(
     def result(hit: MemoryHit) -> RetrievalResult:
         return RetrievalResult(
             hits=(hit,),
-            policy_version="hybrid-subject-v5",
+            policy_version="hybrid-subject-v6",
             candidate_count=1,
             vector_recalled=1,
             lexical_recalled=1,
@@ -267,7 +267,7 @@ async def test_retrieval_ranks_relevant_memory_and_records_access(
         "帮我点菜，我能吃香菜吗", user_id=user.id, privacy_level=PrivacyLevel.L1, now=NOW
     )
 
-    assert result.policy_version == "hybrid-subject-v5"
+    assert result.policy_version == "hybrid-subject-v6"
     assert result.hits
     assert result.hits[0].memory.id == target.id
     assert "香菜" in MemoryRetriever.render_context(result)
@@ -849,7 +849,7 @@ async def test_chat_turn_builds_memory_loop(
     assert "【长期记忆】" in system_prompt
     assert "用户不吃香菜" in system_prompt
     memory_meta = meta_section(second.assistant_message.decision_meta, "memory")
-    assert memory_meta["policy_version"] == "hybrid-subject-v5"
+    assert memory_meta["policy_version"] == "hybrid-subject-v6"
     assert memory_meta["hits"][0]["id"] == memories[0].id
     assert memory_meta["hits"][0]["subject"] == "user"
     assert memory_meta["hits"][0]["subject_key"] == "user:self"
@@ -996,7 +996,7 @@ async def test_admin_memory_api_manages_lifecycle(
     assert edited.json()["subject"] == "user"
     assert edited.json()["subject_key"] == "user:self"
     assert detail.json()["lineage"] or True
-    assert queried.json()["policy_version"] == "hybrid-subject-v5"
+    assert queried.json()["policy_version"] == "hybrid-subject-v6"
     assert queried.json()["hits"]
     assert l3_rejected.status_code == 422
     assert archived.json()["status"] == "archived"
@@ -1774,7 +1774,7 @@ async def test_retrieval_respects_every_context_scope(
         "cilantro preference", user_id=user.id, privacy_level=privacy, now=NOW
     )
     assert {hit.memory.privacy_level for hit in result.hits} == expected
-    assert result.policy_version == "hybrid-subject-v5"
+    assert result.policy_version == "hybrid-subject-v6"
 
 
 async def test_ephemeral_retrieval_does_not_query_or_embed(

@@ -12,18 +12,21 @@ from collections import Counter
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
+from types import MappingProxyType
 from typing import final
 from uuid import UUID
 
+from app.harness.time import utc
 from app.schemas.common import PrivacyLevel, persistent_privacy_levels
 
-from .embeddings import cosine_similarity, lexical_cosine, text_tokens
 from .models import MemoryEntry, MemoryStatus, MemorySubjectKind, MemoryType
 from .retrieval_models import MemoryHit as MemoryHit
+from .retrieval_models import RetrievalCandidate
 from .retrieval_models import RetrievalResult as RetrievalResult
-from .store import MemoryStore, RetrievalCandidate
+from .retrieval_ports import MemoryRetrievalRepository
+from .similarity import cosine_similarity, lexical_cosine, text_tokens
 
-RETRIEVAL_POLICY_VERSION = "hybrid-subject-v5"
+RETRIEVAL_POLICY_VERSION = "hybrid-subject-v6"
 
 DEFAULT_SUBJECT_SCOPES: tuple[tuple[MemorySubjectKind, str], ...] = (
     (MemorySubjectKind.USER, "user:self"),
@@ -57,10 +60,15 @@ class RetrievalPolicy:
     grounded_vector_threshold: float = 0.55
     inventory_k: int = 20
 
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "quotas", MappingProxyType(dict(self.quotas)))
+
 
 @final
 class MemoryRetriever:
-    def __init__(self, store: MemoryStore, *, policy: RetrievalPolicy | None = None) -> None:
+    def __init__(
+        self, store: MemoryRetrievalRepository, *, policy: RetrievalPolicy | None = None
+    ) -> None:
         self._store = store
         self._policy = policy or RetrievalPolicy()
 
@@ -72,7 +80,7 @@ class MemoryRetriever:
         privacy_level: PrivacyLevel,
         now: datetime | None = None,
     ) -> RetrievalResult:
-        moment = now or datetime.now(UTC)
+        moment = utc(now or datetime.now(UTC))
         privacy = PrivacyLevel(privacy_level)
         subject_hint = _infer_subject_hint(query)
         fact_hints = _infer_fact_keys(query)
@@ -88,13 +96,23 @@ class MemoryRetriever:
                 subject_hint=subject_hint,
                 fact_hint=fact_hint,
             )
-        candidates = await self._store.retrieval_candidates(
+        raw_candidates = await self._store.retrieval_candidates(
             user_id,
             subject_scopes=DEFAULT_SUBJECT_SCOPES,
             statuses=(MemoryStatus.ACTIVE,),
             privacy_levels=allowed_levels,
             valid_at=moment,
             limit=self._policy.candidate_limit,
+        )
+        candidates = tuple(
+            RetrievalCandidate(
+                entry=item.entry,
+                embedding=list(item.embedding) if item.embedding is not None else None,
+            )
+            for item in raw_candidates
+            if _eligible_memory(
+                item.entry, user_id=user_id, privacy_levels=allowed_levels, valid_at=moment
+            )
         )
         inventory_subject = _infer_inventory_subject(query)
         if inventory_subject is not None:
@@ -119,14 +137,16 @@ class MemoryRetriever:
                 subject_hint=inventory_subject.value,
             )
         provider = self._store.embedding_provider
-        query_vector = (await provider.embed([query]))[0]
+        provider_version, provider_dimension = provider.version, provider.dimension
+        query_vector = tuple((await provider.embed([query]))[0])
         query_tokens = text_tokens(query)
 
         def similarity_of(item: RetrievalCandidate) -> float:
             if (
                 item.embedding is None
-                or item.entry.embedding_version != provider.version
-                or len(item.embedding) != provider.dimension
+                or item.entry.embedding_version != provider_version
+                or item.entry.embedding_dimension != provider_dimension
+                or len(item.embedding) != provider_dimension
             ):
                 return 0.0
             return cosine_similarity(query_vector, item.embedding)
@@ -137,12 +157,25 @@ class MemoryRetriever:
             vector_ranked = await self._store.vector_recall(
                 query_vector,
                 user_id=user_id,
-                embedding_version=provider.version,
+                embedding_version=provider_version,
                 privacy_levels=[level.value for level in allowed_levels],
                 subject_keys=[key for _, key in DEFAULT_SUBJECT_SCOPES],
                 valid_at=moment,
                 limit=self._policy.recall_k,
             )
+            valid_vector_ids = {
+                item.entry.id
+                for item in candidates
+                if item.embedding is not None
+                and item.entry.embedding_version == provider_version
+                and item.entry.embedding_dimension == provider_dimension
+                and len(item.embedding) == provider_dimension
+            }
+            vector_ranked = [
+                (memory_id, score)
+                for memory_id, score in vector_ranked
+                if memory_id in valid_vector_ids and math.isfinite(score) and score > 0
+            ]
         else:
             vector_ranked = _rank(candidates, similarity_of)
         lexical_ranked = _rank(
@@ -197,13 +230,19 @@ class MemoryRetriever:
 
         exact_entries: list[MemoryEntry] = []
         for exact_fact_key in fact_hints:
+            entries = await self._store.fact_candidates(
+                user_id=user_id,
+                fact_key=exact_fact_key,
+                subject_scopes=DEFAULT_SUBJECT_SCOPES,
+                privacy_levels=allowed_levels,
+                valid_at=moment,
+            )
             exact_entries.extend(
-                await self._store.fact_candidates(
-                    user_id=user_id,
-                    fact_key=exact_fact_key,
-                    subject_scopes=DEFAULT_SUBJECT_SCOPES,
-                    privacy_levels=allowed_levels,
-                    valid_at=moment,
+                entry
+                for entry in entries
+                if entry.fact_key == exact_fact_key
+                and _eligible_memory(
+                    entry, user_id=user_id, privacy_levels=allowed_levels, valid_at=moment
                 )
             )
         if exact_entries:
@@ -340,6 +379,19 @@ class MemoryRetriever:
             "触碰、设备控制或其他实际执行仍以【现实能力边界】为准。"
         )
         return "\n\n".join(blocks)
+
+
+def _eligible_memory(
+    entry: MemoryEntry, *, user_id: UUID, privacy_levels: Sequence[PrivacyLevel], valid_at: datetime
+) -> bool:
+    return (
+        entry.user_id == user_id
+        and entry.status == MemoryStatus.ACTIVE.value
+        and entry.privacy_level in privacy_levels
+        and (entry.subject_kind, entry.subject_key) in DEFAULT_SUBJECT_SCOPES
+        and (entry.valid_from is None or utc(entry.valid_from) <= valid_at)
+        and (entry.valid_to is None or utc(entry.valid_to) > valid_at)
+    )
 
 
 def _infer_subject_hint(query: str) -> MemorySubjectKind | None:

@@ -1,4 +1,3 @@
-# ruff: noqa: RUF001
 """嵌入提供方：记忆向量化的统一入口。
 
 设计要点：
@@ -11,12 +10,12 @@
   Ollama 等，docs/09 §2 SEMB），启用前必须通过连通性探测，
   探测失败回落哈希而不阻断启动。
 """
+
 from __future__ import annotations
 
 import hashlib
 import logging
 import math
-import re
 from collections import Counter
 from collections.abc import Sequence
 from typing import Protocol
@@ -25,10 +24,13 @@ import httpx
 
 from app.config.models import EmbeddingsConfig
 
-logger = logging.getLogger(__name__)
+from .similarity import _TOKEN_SPLIT as _TOKEN_SPLIT
+from .similarity import _ngrams as _ngrams
+from .similarity import cosine_similarity as cosine_similarity
+from .similarity import lexical_cosine as lexical_cosine
+from .similarity import text_tokens as text_tokens
 
-# 中文友好的分词切分：按空白与常见中英文标点切开，再做字符 n-gram
-_TOKEN_SPLIT = re.compile(r"[\s,.;:!?，。；：！？、()\[\]（）【】\"'“”‘’]+")
+logger = logging.getLogger(__name__)
 
 
 class EmbeddingProvider(Protocol):
@@ -86,20 +88,6 @@ class HashingEmbeddingProvider:
         return vector
 
 
-def _ngrams(text: str) -> list[str]:
-    """归一化文本后产出一元 + 二元字符 n-gram（过滤纯空白片段）。"""
-    normalized = _TOKEN_SPLIT.sub(" ", text.strip().lower())
-    if not normalized:
-        return []
-    grams: list[str] = []
-    characters = list(normalized)
-    grams.extend(characters)
-    grams.extend(
-        f"{characters[index]}{characters[index + 1]}" for index in range(len(characters) - 1)
-    )
-    return [gram for gram in grams if gram.strip()]
-
-
 class HttpEmbeddingProvider:
     """OpenAI 兼容 /embeddings 端点的语义嵌入（LM Studio / Ollama 等）。
 
@@ -146,9 +134,7 @@ class HttpEmbeddingProvider:
         if not texts:
             return []
         headers = {"Authorization": f"Bearer {self._api_key}"} if self._api_key else {}
-        async with httpx.AsyncClient(
-            timeout=self._timeout, transport=self._transport
-        ) as client:
+        async with httpx.AsyncClient(timeout=self._timeout, transport=self._transport) as client:
             response = await client.post(
                 self._endpoint,
                 headers=headers,
@@ -209,30 +195,3 @@ async def probe_embedding_provider(provider: HttpEmbeddingProvider) -> bool:
         )
         return False
     return len(vectors) == 1 and len(vectors[0]) == provider.dimension
-
-
-def cosine_similarity(left: Sequence[float], right: Sequence[float]) -> float:
-    """两个向量的余弦相似度；维度不一致视为错误直接抛出。"""
-    if len(left) != len(right):
-        raise ValueError("embedding dimensions do not match")
-    dot = sum(a * b for a, b in zip(left, right, strict=True))
-    norm_left = math.sqrt(sum(a * a for a in left))
-    norm_right = math.sqrt(sum(b * b for b in right))
-    if norm_left == 0 or norm_right == 0:
-        return 0.0
-    return dot / (norm_left * norm_right)
-
-
-def lexical_cosine(left: Counter[str], right: Counter[str]) -> float:
-    """词袋（n-gram 计数）余弦：混合检索的词法通道打分函数。"""
-    if not left or not right:
-        return 0.0
-    dot = sum(count * right.get(token, 0) for token, count in left.items())
-    norm_left = math.sqrt(sum(count * count for count in left.values()))
-    norm_right = math.sqrt(sum(count * count for count in right.values()))
-    return dot / (norm_left * norm_right)
-
-
-def text_tokens(text: str) -> Counter[str]:
-    """把文本转成 n-gram 计数，供词法通道复用。"""
-    return Counter(_ngrams(text))

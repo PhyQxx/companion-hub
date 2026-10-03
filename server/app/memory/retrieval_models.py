@@ -23,3 +23,9 @@ class RetrievalResult:
     lexical_recalled: int
     subject_hint: str | None = None
     fact_hint: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class RetrievalCandidate:
+    entry: MemoryEntry
+    embedding: list[float] | None
