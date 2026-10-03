@@ -49,6 +49,7 @@ from .retrieval import (
     RetrievalResult,
 )
 from .store import MemoryStore
+from .turn_core import CompletedTurnMemoryExtractor
 
 __all__ = [
     "DEFAULT_SUBJECT_SCOPES",
@@ -56,6 +57,7 @@ __all__ = [
     "LLM_EXTRACTOR_VERSION",
     "RETRIEVAL_POLICY_VERSION",
     "RULE_EXTRACTOR_VERSION",
+    "CompletedTurnMemoryExtractor",
     "ConsolidateDecision",
     "ConsolidateOutcome",
     "ConsolidationPolicy",
