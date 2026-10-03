@@ -188,16 +188,27 @@ class RunStore:
         reason: str = "run_cancelled",
     ) -> tuple[bool, tuple[UUID, ...]]:
         async with self._database.sessions.begin() as session:
+            # Fence the owned conversation in the first write, before locating
+            # its Run. An empty match still prevents SQLite read upgrades for
+            # roots without a conversation. Preserve conversation -> Job -> Run.
+            source_id = (
+                select(TaskRunRecord.conversation_id)
+                .where(TaskRunRecord.id == run_id, TaskRunRecord.user_id == user_id)
+                .scalar_subquery()
+            )
+            conversation = await session.scalar(
+                update(ConversationRecord)
+                .where(ConversationRecord.id == source_id, ConversationRecord.user_id == user_id)
+                .values(id=ConversationRecord.id)
+                .returning(ConversationRecord.id)
+                .execution_options(synchronize_session=False)
+            )
             row = await session.get(TaskRunRecord, run_id)
             if row is None or row.user_id != user_id:
                 raise LookupError("run not found")
-            if row.conversation_id is not None:
-                conversation = await session.get(
-                    ConversationRecord, row.conversation_id, with_for_update=True
-                )
-                if conversation is None or conversation.user_id != user_id:
-                    raise LookupError("run not found")
-            else:
+            if row.conversation_id != conversation:
+                raise LookupError("run not found")
+            if row.conversation_id is None:
                 await lock_job(session, run_id)
             job_ids = list(
                 await session.scalars(
@@ -272,8 +283,14 @@ class RunStore:
                 turn.cancel_reason = reason[:160]
                 turn.completed_at = now
                 generations.append(turn.generation_id)
-            row = await session.get(
-                TaskRunRecord, run_id, with_for_update=True, populate_existing=True
+            # Ownership can change while waiting on earlier locks. Scope the
+            # final write fence too; failure rolls back all dependent updates.
+            row = await session.scalar(
+                update(TaskRunRecord)
+                .where(TaskRunRecord.id == run_id, TaskRunRecord.user_id == user_id)
+                .values(updated_at=TaskRunRecord.updated_at)
+                .returning(TaskRunRecord)
+                .execution_options(synchronize_session=False, populate_existing=True)
             )
             if row is None:
                 raise LookupError("run not found")
