@@ -23,6 +23,7 @@ from uuid import UUID
 from PIL import Image
 
 from app.cognition.models import CognitiveDecision, SemanticEvent
+from app.context.observation import ObservationOwnerGuard
 from app.context.owners import observation_owner
 from app.ids import uuid7
 from app.memory.consolidation import MemoryIngester
@@ -282,7 +283,8 @@ class ScreenAwarenessLoop:
         owner = await self._resolve_owner()
         if owner is None:
             return
-        device = await self._resolve_device(owner)
+        guard = ObservationOwnerGuard(owner, self._resolve_owner)
+        device = await guard.call(lambda: self._resolve_device(owner))
         if device is None:
             return
         for display in config.displays:
@@ -311,11 +313,12 @@ class ScreenAwarenessLoop:
         self, config: Any, owner: UUID, device: MonitorDevice, display: int
     ) -> None:
         state = self.state.displays.setdefault(display, DisplayState())
+        guard = ObservationOwnerGuard(owner, self._resolve_owner)
         now = self._clock()
         if state.disabled_until is not None and now < state.disabled_until:
             return
         try:
-            image = await self._capture_bytes(device, display, owner)
+            image = await guard.call(lambda: self._capture_bytes(device, display, owner))
         except ScreenAwarenessError as error:
             state.consecutive_failures += 1
             if state.consecutive_failures >= 3:
@@ -333,9 +336,8 @@ class ScreenAwarenessLoop:
         threshold = config.unchanged_skip_threshold or DEFAULT_UNCHANGED_THRESHOLD
         if state.last_hash is not None and hamming_distance(state.last_hash, digest) <= threshold:
             return
+        analysis = await guard.call(lambda: self._analyze(config, image))
         state.last_hash = digest
-
-        analysis = await self._analyze(config, image)
         state.last_analyzed_at = self._clock()
         state.last_summary = analysis.summary
 
@@ -350,6 +352,7 @@ class ScreenAwarenessLoop:
             metadata={"hash": f"{digest:016x}", "device_id": str(device.id)},
         )
         if analysis.memory_worthy and config.memory_enabled and self._memory_ingester is not None:
+            await guard.check()
             with contextlib.suppress(Exception):
                 await self._memory_ingester.ingest(
                     MemoryCandidate(
@@ -371,6 +374,7 @@ class ScreenAwarenessLoop:
                     actor="screen-awareness",
                 )
         if analysis.notable and config.proactive_enabled:
+            await guard.check()
             self._submit_proactive(owner, observation_id, digest, analysis, display)
 
     async def _capture_bytes(self, device: MonitorDevice, display: int, owner: UUID) -> bytes:
@@ -446,7 +450,7 @@ class ScreenAwarenessLoop:
             self._perception.submit(
                 event,
                 stable_for_seconds=PROACTIVE_STABLE_SECONDS,
-                validate=None,
+                validate=ObservationOwnerGuard(owner, self._resolve_owner).valid,
                 handler=handler,
             )
         else:
@@ -462,6 +466,7 @@ class ScreenAwarenessLoop:
         if decision.decision not in {"inform", "suggest", "ask", "escalate"}:
             return
         with contextlib.suppress(Exception):
+            await ObservationOwnerGuard(event.user_id, self._resolve_owner).check()
             await self._proactive_deliver(
                 str(event.attributes.get("message", event.summary)),
                 entity_id=f"display:{event.attributes.get('display', 1)}",
@@ -478,5 +483,7 @@ class ScreenAwarenessLoop:
             await self._deliver_event(event, None)
             return
         with contextlib.suppress(Exception):
-            decision = await self._cycle.evaluate(event)
+            decision = await ObservationOwnerGuard(event.user_id, self._resolve_owner).call(
+                lambda: self._cycle.evaluate(event)
+            )
             await self._deliver_event(event, decision)

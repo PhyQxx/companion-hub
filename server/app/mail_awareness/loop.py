@@ -20,6 +20,7 @@ from uuid import UUID
 
 from app.cognition.models import CognitiveDecision, SemanticEvent
 from app.config import ConfigStore, DatabaseConfigStore, HubConfig
+from app.context.observation import ObservationOwnerGuard
 from app.context.owners import observation_owner
 from app.db import Database
 from app.ids import uuid7
@@ -273,10 +274,13 @@ class MailAwarenessLoop:
         owner = await self._resolve_owner()
         if owner is None:
             return
+        guard = ObservationOwnerGuard(owner, self._resolve_owner)
         try:
-            messages = await self._reader.fetch_inbox(
-                unread_only=True,
-                limit=max(config.max_messages_per_tick * 4, 20),
+            messages = await guard.call(
+                lambda: self._reader.fetch_inbox(
+                    unread_only=True,
+                    limit=max(config.max_messages_per_tick * 4, 20),
+                )
             )
         except MailError as error:
             # 未配置/授权失败是部署状态问题：按失败计并冷却，不刷日志堆栈。
@@ -305,14 +309,17 @@ class MailAwarenessLoop:
         return await observation_owner(self._database)
 
     async def _observe(self, config: Any, owner: UUID, message: MailSummary, now: datetime) -> None:
+        guard = ObservationOwnerGuard(owner, self._resolve_owner)
         observation_id = uuid7()
         with model_owner(owner):
-            analysis = await self._analyzer.analyze(
-                observation_id=observation_id,
-                sender=message.sender,
-                subject=message.subject,
-                snippet=message.snippet[:SNIPPET_LIMIT],
-                prompt=config.analysis_prompt,
+            analysis = await guard.call(
+                lambda: self._analyzer.analyze(
+                    observation_id=observation_id,
+                    sender=message.sender,
+                    subject=message.subject,
+                    snippet=message.snippet[:SNIPPET_LIMIT],
+                    prompt=config.analysis_prompt,
+                )
             )
         self.state.processed += 1
         self.state.last_summary = analysis.summary
@@ -330,6 +337,7 @@ class MailAwarenessLoop:
             importance=0.3,
         )
         if analysis.memory_worthy and config.memory_enabled and self._memory_ingester is not None:
+            await guard.check()
             with contextlib.suppress(Exception):
                 await self._memory_ingester.ingest(
                     MemoryCandidate(
@@ -351,6 +359,7 @@ class MailAwarenessLoop:
                     actor="mail-awareness",
                 )
         if analysis.notable and config.proactive_enabled:
+            await guard.check()
             self._submit_proactive(owner, observation_id, message, analysis)
 
     def _record_failure(self, reason: str, now: datetime) -> None:
@@ -394,7 +403,7 @@ class MailAwarenessLoop:
             self._perception.submit(
                 event,
                 stable_for_seconds=PROACTIVE_STABLE_SECONDS,
-                validate=None,
+                validate=ObservationOwnerGuard(owner, self._resolve_owner).valid,
                 handler=handler,
             )
         else:
@@ -410,6 +419,7 @@ class MailAwarenessLoop:
         if decision.decision not in {"inform", "suggest", "ask", "escalate"}:
             return
         with contextlib.suppress(Exception):
+            await ObservationOwnerGuard(event.user_id, self._resolve_owner).check()
             await self._proactive_deliver(
                 str(event.attributes.get("message", event.summary)),
                 entity_id="mail:inbox",
@@ -425,5 +435,7 @@ class MailAwarenessLoop:
             await self._deliver_event(event, None)
             return
         with contextlib.suppress(Exception):
-            decision = await self._cycle.evaluate(event)
+            decision = await ObservationOwnerGuard(event.user_id, self._resolve_owner).call(
+                lambda: self._cycle.evaluate(event)
+            )
             await self._deliver_event(event, decision)

@@ -23,6 +23,7 @@ from pydantic import ValidationError
 
 from app.cognition.models import CognitiveDecision, SemanticEvent
 from app.config import ConfigStore, DatabaseConfigStore, HubConfig
+from app.context.observation import ObservationOwnerGuard
 from app.context.owners import observation_owner
 from app.db import Database
 from app.ids import uuid7
@@ -342,7 +343,8 @@ class BrowserAwarenessLoop:
         owner = await self._resolve_owner()
         if owner is None:
             return
-        device = await self._resolve_device(owner)
+        guard = ObservationOwnerGuard(owner, self._resolve_owner)
+        device = await guard.call(lambda: self._resolve_device(owner))
         if device is None:
             return
         if self._tab_hints is not None and self._hint_unchanged(device):
@@ -350,7 +352,7 @@ class BrowserAwarenessLoop:
             self._record_success()
             return
         try:
-            payload = await self._read_document(device, owner)
+            payload = await guard.call(lambda: self._read_document(device, owner))
             await self._observe(config, owner, device, payload, now)
         except BrowserAwarenessError as error:
             if error.reason_code in BENIGN_SKIP_REASONS:
@@ -447,13 +449,16 @@ class BrowserAwarenessLoop:
             self._record_success()
             return
         observation_id = uuid7()
+        guard = ObservationOwnerGuard(owner, self._resolve_owner)
         with model_owner(owner):
-            analysis = await self._analyzer.analyze(
-                observation_id=observation_id,
-                title=payload.title,
-                origin=origin,
-                text=payload.text[: config.max_text_chars],
-                prompt=config.analysis_prompt,
+            analysis = await guard.call(
+                lambda: self._analyzer.analyze(
+                    observation_id=observation_id,
+                    title=payload.title,
+                    origin=origin,
+                    text=payload.text[: config.max_text_chars],
+                    prompt=config.analysis_prompt,
+                )
             )
         self._record_success()
         self.state.last_origin = origin
@@ -472,6 +477,7 @@ class BrowserAwarenessLoop:
             metadata={"hash": digest, "device_id": str(device.id)},
         )
         if analysis.memory_worthy and config.memory_enabled and self._memory_ingester is not None:
+            await guard.check()
             with contextlib.suppress(Exception):
                 await self._memory_ingester.ingest(
                     MemoryCandidate(
@@ -493,6 +499,7 @@ class BrowserAwarenessLoop:
                     actor="browser-awareness",
                 )
         if analysis.notable and config.proactive_enabled:
+            await guard.check()
             self._submit_proactive(owner, observation_id, digest, analysis, host)
 
     def _record_failure(self, reason: str, now: datetime) -> None:
@@ -537,7 +544,7 @@ class BrowserAwarenessLoop:
             self._perception.submit(
                 event,
                 stable_for_seconds=PROACTIVE_STABLE_SECONDS,
-                validate=None,
+                validate=ObservationOwnerGuard(owner, self._resolve_owner).valid,
                 handler=handler,
             )
         else:
@@ -553,6 +560,7 @@ class BrowserAwarenessLoop:
         if decision.decision not in {"inform", "suggest", "ask", "escalate"}:
             return
         with contextlib.suppress(Exception):
+            await ObservationOwnerGuard(event.user_id, self._resolve_owner).check()
             await self._proactive_deliver(
                 str(event.attributes.get("message", event.summary)),
                 entity_id="browser:active_tab",
@@ -568,5 +576,7 @@ class BrowserAwarenessLoop:
             await self._deliver_event(event, None)
             return
         with contextlib.suppress(Exception):
-            decision = await self._cycle.evaluate(event)
+            decision = await ObservationOwnerGuard(event.user_id, self._resolve_owner).call(
+                lambda: self._cycle.evaluate(event)
+            )
             await self._deliver_event(event, decision)
