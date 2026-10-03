@@ -1,16 +1,13 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
 from datetime import UTC, datetime
+from typing import TYPE_CHECKING
 from uuid import UUID
-
-from sqlalchemy import select
 
 from app.cognition import CognitiveDecision
 from app.config import ConfigStore, DatabaseConfigStore, ProactiveChannelConfig
-from app.db import AppUserRecord, Database, ProactiveDeliveryReceiptRecord
 from app.devices import DeviceTargetResolutionError, DeviceTargetResolver
-from app.ids import uuid7
+from app.harness.time import utc
 from app.output.adapter import DeliveryIntent, OutputAdapter
 from app.output.adapters import DesktopNotificationAdapter, VoiceAdapter, WebChatAdapter
 from app.output.protocols import (
@@ -27,27 +24,15 @@ from app.output.protocols import (
 )
 from app.schemas import PrivacyLevel
 
+from .contracts import ProactiveChannelAttempt as ProactiveChannelAttempt
+from .contracts import ProactiveDeliveryResult as ProactiveDeliveryResult
+from .contracts import ProactiveOutputRepository
+
+if TYPE_CHECKING:
+    from app.db import Database
+
 _PRIVACY_RANK = {"L0": 0, "L1": 1, "L2": 2, "L3": 3}
 _CRITICAL_KINDS = {"water_leak", "water_leak_detected", "safety.alarm"}
-
-
-@dataclass(frozen=True, slots=True)
-class ProactiveChannelAttempt:
-    channel: str
-    delivered: bool
-    reason_code: str | None = None
-    external_operation_id: str | None = None
-
-
-@dataclass(frozen=True, slots=True)
-class ProactiveDeliveryResult:
-    user_id: UUID
-    conversation_id: UUID | None
-    attempts: tuple[ProactiveChannelAttempt, ...]
-
-    @property
-    def delivered_channels(self) -> tuple[str, ...]:
-        return tuple(item.channel for item in self.attempts if item.delivered)
 
 
 class ProactiveDeliveryService:
@@ -63,8 +48,13 @@ class ProactiveDeliveryService:
         voice_broadcaster: VoiceProactiveBroadcaster | None = None,
         push_adapter: OutputAdapter | None = None,
         adapters: list[OutputAdapter] | None = None,
+        repository: ProactiveOutputRepository | None = None,
     ) -> None:
-        self._database = database
+        if repository is None:
+            from .sql import SqlProactiveOutputRepository
+
+            repository = SqlProactiveOutputRepository(database)
+        self._repository = repository
         self._config_store = config_store
         self._chat = chat
         self._chat_broadcaster = chat_broadcaster
@@ -76,9 +66,7 @@ class ProactiveDeliveryService:
         if not self._adapters:
             self._adapters.append(WebChatAdapter(chat, chat_broadcaster))
             if device_resolver is not None and device_gateway is not None:
-                self._adapters.append(
-                    DesktopNotificationAdapter(device_resolver, device_gateway)
-                )
+                self._adapters.append(DesktopNotificationAdapter(device_resolver, device_gateway))
             if push_adapter is not None:
                 self._adapters.append(push_adapter)
             if voice_broadcaster is not None:
@@ -103,14 +91,14 @@ class ProactiveDeliveryService:
             else self._config_store.current
         )
         config = snapshot.config.proactive_output
-        if not config.enabled:
+        if not config.enabled or privacy_level == PrivacyLevel.L3:
             return None
         user_id = target_user_id or (
             cognitive_decision.user_id if cognitive_decision is not None else None
         )
         if user_id is None:
             user_id = await self._active_user_id()
-        if user_id is None:
+        if user_id is None or not await self._source_allowed(user_id, cognitive_decision):
             return None
         channels = sorted(
             (
@@ -126,46 +114,59 @@ class ProactiveDeliveryService:
         conversation_id: UUID | None = None
         # 按配置优先级排序适配器
         adapter_map = {a.name: a for a in self._adapters}
-        for channel, policy in channels:
-            if not self._eligible(policy, privacy_level, trigger_kind):
-                continue
-            adapter = adapter_map.get(channel)
-            if adapter is None or not adapter.available:
-                continue
-            intent = DeliveryIntent(
-                user_id=user_id,
-                text=text,
+        try:
+            for channel, policy in channels:
+                if not self._eligible(policy, privacy_level, trigger_kind):
+                    continue
+                adapter = adapter_map.get(channel)
+                if adapter is None or not adapter.available:
+                    continue
+                if not await self._source_allowed(user_id, cognitive_decision):
+                    break
+                current = self._config_store.current.config.proactive_output
+                if not current.enabled:
+                    break
+                if not self._eligible(getattr(current, channel), privacy_level, trigger_kind):
+                    continue
+                intent = DeliveryIntent(
+                    user_id=user_id,
+                    text=text,
+                    privacy_level=privacy_level,
+                    trigger_kind=trigger_kind,
+                    entity_id=entity_id,
+                    rule_id=rule_id,
+                    decision_id=cognitive_decision.id if cognitive_decision else None,
+                )
+                receipt = await adapter.deliver(intent)
+                attempt = ProactiveChannelAttempt(
+                    channel=receipt.channel,
+                    delivered=receipt.delivered,
+                    reason_code=receipt.reason_code,
+                    external_operation_id=receipt.external_operation_id,
+                )
+                attempts.append(attempt)
+                if (
+                    channel == "web_chat"
+                    and receipt.delivered
+                    and receipt.metadata is not None
+                    and "conversation_id" in receipt.metadata
+                ):
+                    from uuid import UUID as _UUID
+
+                    conversation_id = _UUID(str(receipt.metadata["conversation_id"]))
+                if (
+                    attempt.delivered
+                    and config.delivery_mode == "first_available"
+                    and not broadcast
+                ):
+                    break
+        finally:
+            await self._record_attempts(
+                user_id,
+                attempts,
                 privacy_level=privacy_level,
-                trigger_kind=trigger_kind,
-                entity_id=entity_id,
-                rule_id=rule_id,
                 decision_id=cognitive_decision.id if cognitive_decision else None,
             )
-            receipt = await adapter.deliver(intent)
-            attempt = ProactiveChannelAttempt(
-                channel=receipt.channel,
-                delivered=receipt.delivered,
-                reason_code=receipt.reason_code,
-                external_operation_id=receipt.external_operation_id,
-            )
-            attempts.append(attempt)
-            if (
-                channel == "web_chat"
-                and receipt.delivered
-                and receipt.metadata is not None
-                and "conversation_id" in receipt.metadata
-            ):
-                from uuid import UUID as _UUID
-
-                conversation_id = _UUID(str(receipt.metadata["conversation_id"]))
-            if attempt.delivered and config.delivery_mode == "first_available" and not broadcast:
-                break
-        await self._record_attempts(
-            user_id,
-            attempts,
-            privacy_level=privacy_level,
-            decision_id=cognitive_decision.id if cognitive_decision else None,
-        )
         if not any(item.delivered for item in attempts):
             return None
         return ProactiveDeliveryResult(
@@ -199,9 +200,7 @@ class ProactiveDeliveryService:
         _, message = result
         await self._chat_broadcaster.broadcast_proactive(user_id, message)
         return (
-            ProactiveChannelAttempt(
-                "web_chat", True, external_operation_id=str(message.id)
-            ),
+            ProactiveChannelAttempt("web_chat", True, external_operation_id=str(message.id)),
             message.conversation_id,
         )
 
@@ -272,15 +271,16 @@ class ProactiveDeliveryService:
             None if delivered > 0 else "no_idle_voice_session",
         )
 
+    async def _source_allowed(self, user_id: UUID, decision: CognitiveDecision | None) -> bool:
+        if decision is not None and (
+            decision.user_id != user_id
+            or (decision.expires_at is not None and utc(decision.expires_at) <= datetime.now(UTC))
+        ):
+            return False
+        return await self._repository.owner_active(user_id)
+
     async def _active_user_id(self) -> UUID | None:
-        async with self._database.sessions() as session:
-            value = await session.scalar(
-                select(AppUserRecord.id)
-                .where(AppUserRecord.status == "active")
-                .order_by(AppUserRecord.created_at)
-                .limit(1)
-            )
-        return value if isinstance(value, UUID) else None
+        return await self._repository.default_owner()
 
     async def _record_attempts(
         self,
@@ -290,24 +290,9 @@ class ProactiveDeliveryService:
         privacy_level: PrivacyLevel,
         decision_id: UUID | None,
     ) -> None:
-        if not attempts:
-            return
-        now = datetime.now(UTC)
-        async with self._database.sessions.begin() as session:
-            session.add_all(
-                ProactiveDeliveryReceiptRecord(
-                    id=uuid7(),
-                    user_id=user_id,
-                    decision_id=decision_id,
-                    channel=attempt.channel,
-                    status="delivered" if attempt.delivered else "failed",
-                    reason_code=attempt.reason_code,
-                    external_operation_id=attempt.external_operation_id,
-                    privacy_level=str(privacy_level),
-                    created_at=now,
-                )
-                for attempt in attempts
-            )
+        await self._repository.record_attempts(
+            user_id, tuple(attempts), privacy_level=privacy_level, decision_id=decision_id
+        )
 
     @staticmethod
     def _eligible(

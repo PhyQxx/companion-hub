@@ -10,7 +10,7 @@ from sqlalchemy import select
 
 from app.chat import MessageView
 from app.config import ConfigStore, ProactiveOutputConfig
-from app.db import Base, Database, ProactiveDeliveryReceiptRecord, create_database
+from app.db import AppUserRecord, Base, Database, ProactiveDeliveryReceiptRecord, create_database
 from app.ids import uuid7
 from app.output import ProactiveDeliveryService
 from app.output.proactive import (
@@ -89,7 +89,9 @@ class FakeVoice:
         return self.delivered
 
 
-async def service(config: ProactiveOutputConfig) -> tuple[
+async def service(
+    config: ProactiveOutputConfig,
+) -> tuple[
     ProactiveDeliveryService,
     FakeChat,
     FakeChatBroadcaster,
@@ -120,6 +122,20 @@ async def service(config: ProactiveOutputConfig) -> tuple[
     return delivery, chat, broadcaster, gateway, voice, database
 
 
+async def active_owner(database: Database) -> UUID:
+    user_id = uuid7()
+    async with database.sessions.begin() as session:
+        session.add(
+            AppUserRecord(
+                id=user_id,
+                display_name="Output fixture",
+                status="active",
+                created_at=datetime.now(UTC),
+            )
+        )
+    return user_id
+
+
 async def test_all_enabled_delivers_web_desktop_and_voice() -> None:
     config = ProactiveOutputConfig.model_validate(
         {
@@ -130,7 +146,7 @@ async def test_all_enabled_delivers_web_desktop_and_voice() -> None:
         }
     )
     delivery, chat, broadcaster, gateway, voice, database = await service(config)
-    user_id = uuid7()
+    user_id = await active_owner(database)
 
     result = await delivery.deliver(
         "检测到厨房水浸，请立即检查。",
@@ -171,7 +187,7 @@ async def test_first_available_uses_highest_priority_real_channel() -> None:
             "voice": {"enabled": True, "priority": 20},
         }
     )
-    delivery, chat, _, gateway, voice, _ = await service(config)
+    delivery, chat, _, gateway, voice, database = await service(config)
 
     result = await delivery.deliver(
         "欢迎回家。",
@@ -179,7 +195,7 @@ async def test_first_available_uses_highest_priority_real_channel() -> None:
         rule_id="arrival",
         trigger_kind="user_arrived_home",
         privacy_level=PrivacyLevel.L1,
-        target_user_id=uuid7(),
+        target_user_id=await active_owner(database),
     )
 
     assert result is not None
@@ -206,7 +222,7 @@ async def test_channel_privacy_and_critical_only_are_enforced() -> None:
             "voice": {"enabled": False},
         }
     )
-    delivery, chat, _, gateway, _, _ = await service(config)
+    delivery, chat, _, gateway, _, database = await service(config)
 
     normal = await delivery.deliver(
         "普通私密提醒",
@@ -214,7 +230,7 @@ async def test_channel_privacy_and_critical_only_are_enforced() -> None:
         rule_id="private",
         trigger_kind="temperature_high",
         privacy_level=PrivacyLevel.L2,
-        target_user_id=uuid7(),
+        target_user_id=await active_owner(database),
     )
     critical = await delivery.deliver(
         "紧急私密提醒",
@@ -222,7 +238,7 @@ async def test_channel_privacy_and_critical_only_are_enforced() -> None:
         rule_id="private_leak",
         trigger_kind="water_leak",
         privacy_level=PrivacyLevel.L2,
-        target_user_id=uuid7(),
+        target_user_id=await active_owner(database),
     )
 
     assert normal is None
@@ -270,7 +286,7 @@ async def test_broadcast_overrides_first_available_and_hits_all_channels() -> No
             rule_id="smoke_detected",
             trigger_kind="smoke_detected",
             privacy_level=PrivacyLevel.L1,
-            target_user_id=uuid7(),
+            target_user_id=await active_owner(database),
             broadcast=True,
         )
         assert result is not None

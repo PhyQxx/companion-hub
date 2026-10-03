@@ -40,6 +40,7 @@ from app.memory.store import MemoryStore
 from app.observability.selfcheck import DailySelfCheckScheduler
 from app.output import ProactiveDeliveryService
 from app.output.proactive import DesktopCommandGateway
+from app.output.sql import SqlProactiveOutputRepository
 from app.perception import PerceptionPipeline
 from app.push import PushSubscriptionStore, WebPushAdapter
 from app.safety import ActivityTracker, SafetyActivityScheduler, SafetyAlertService
@@ -111,6 +112,7 @@ def register_proactive_stack(
             if push_subscription_store is not None
             else None
         ),
+        repository=SqlProactiveOutputRepository(database),
     )
     app.state.proactive_delivery_service = proactive_delivery
     if deleg_worker is not None:

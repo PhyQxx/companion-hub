@@ -432,6 +432,28 @@ def test_domain_mapping_exports_keep_one_class_and_table_identity() -> None:
         assert domain.metadata is Base.metadata
 
 
+def test_proactive_output_core_uses_detached_repository_contracts() -> None:
+    output = ROOT / "server" / "app" / "output"
+    core = ast.parse((output / "proactive.py").read_text())
+    forbidden = {"select", "AppUserRecord", "ProactiveDeliveryReceiptRecord", "AsyncSession"}
+    assert not {node.id for node in ast.walk(core) if isinstance(node, ast.Name)} & forbidden
+    contract = ast.parse((output / "contracts.py").read_text())
+    assert not any(
+        isinstance(node, ast.ImportFrom)
+        and node.module
+        and node.module.startswith(("app.db", "sqlalchemy", "app.config", "app.llm"))
+        for node in ast.walk(contract)
+    )
+    from app.output import ProactiveChannelAttempt as public_attempt
+    from app.output import ProactiveDeliveryResult as public_result
+    from app.output.contracts import ProactiveChannelAttempt, ProactiveDeliveryResult
+    from app.output.proactive import ProactiveChannelAttempt as legacy_attempt
+    from app.output.proactive import ProactiveDeliveryResult as legacy_result
+
+    assert public_attempt is legacy_attempt is ProactiveChannelAttempt
+    assert public_result is legacy_result is ProactiveDeliveryResult
+
+
 def test_mapped_ddl_is_unchanged_for_sqlite_and_postgresql() -> None:
     expected = json.loads((ROOT / "server" / "architecture" / "mapped_ddl_sha256.json").read_text())
     actual: dict[str, dict[str, str]] = {}
