@@ -9,11 +9,14 @@ from uuid import UUID
 
 from app.schemas import PrivacyLevel
 
+from .unit_costs import UnitCostQuote
+
 
 @dataclass(frozen=True, slots=True)
 class OperationPolicy:
     config_version: int
     budget: tuple[tuple[str, str | int | float | bool | None], ...]
+    unit_quote: UnitCostQuote | None = None
 
 
 @dataclass(frozen=True, slots=True)

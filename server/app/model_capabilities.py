@@ -5,6 +5,7 @@ import hashlib
 import json
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
+from decimal import Decimal
 from time import perf_counter
 from typing import TYPE_CHECKING, Any, Literal, Protocol
 from urllib.error import HTTPError
@@ -15,6 +16,7 @@ from uuid import UUID
 from app.config import ConfigSnapshot, ConfigStore, DatabaseConfigStore, HubConfig
 from app.harness.budget import BudgetDenied, current_tool_budget
 from app.harness.operations import CapabilityExecution, OperationPolicy
+from app.harness.unit_costs import UnitCostQuote, UnitPricing
 from app.llm import EnvSecretProvider, ModelEndpoint, ModelKind
 from app.privacy import EgressDestination, EgressGuard
 from app.runs.completion import current_model_owner
@@ -128,7 +130,9 @@ class CapabilityModelService:
         if execution is None and database is not None:
             from app.runs.capability_sources import SqlCapabilityExecution
 
-            execution = SqlCapabilityExecution(database)
+            execution = SqlCapabilityExecution(
+                database, budget_source=lambda: self.config.run_budget
+            )
         self._execution = execution
 
     @property
@@ -526,9 +530,22 @@ class CapabilityModelService:
             return fields
 
         snapshot: ConfigSnapshot = self._config_store.current
+        ceiling = endpoint.request_cost_ceiling if method == "POST" else endpoint.query_cost_ceiling
+        unit_quote = None
+        if ceiling is not None and endpoint.cost_currency is not None:
+            # A ceiling covers every configured variant and every possible GET
+            # retry. A returned HTTP response does not prove billable usage.
+            unit_quote = UnitCostQuote(
+                pricing=UnitPricing(
+                    unit="request", currency=endpoint.cost_currency, rate_per_unit=ceiling
+                ),
+                maximum_quantity=Decimal(1 if method == "POST" else endpoint.max_retries + 1),
+            )
         return await self._execution.execute(
             OperationPolicy(
-                snapshot.version, tuple(snapshot.config.run_budget.model_dump(mode="json").items())
+                snapshot.version,
+                tuple(snapshot.config.run_budget.model_dump(mode="json").items()),
+                unit_quote,
             ),
             user_id=owner,
             privacy_level=privacy_level,
@@ -550,6 +567,13 @@ def _endpoint_fingerprint(name: str, endpoint: ModelEndpoint, credentials: dict[
         "base_url": str(endpoint.base_url),
         "runs_local": endpoint.runs_local,
     }
+    if endpoint.request_cost_ceiling is not None or endpoint.query_cost_ceiling is not None:
+        data["pricing"] = {
+            "request_ceiling": str(endpoint.request_cost_ceiling),
+            "query_ceiling": str(endpoint.query_cost_ceiling),
+            "currency": endpoint.cost_currency,
+            "max_retries": endpoint.max_retries,
+        }
     return hashlib.sha256(json.dumps(data, sort_keys=True).encode()).hexdigest()
 
 

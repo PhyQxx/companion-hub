@@ -7,6 +7,7 @@ from uuid import UUID
 
 from sqlalchemy import select
 
+from app.config.models import RunBudgetConfig
 from app.db import Database, TaskRunRecord
 from app.harness.budget import BudgetDenied
 from app.harness.operations import GenerationTicket, OperationPolicy
@@ -26,8 +27,11 @@ def _source_fingerprint(row: TaskRunRecord) -> str:
 
 
 class SqlCapabilityExecution:
-    def __init__(self, database: Database) -> None:
+    def __init__(
+        self, database: Database, *, budget_source: Callable[[], RunBudgetConfig] | None = None
+    ) -> None:
         self._database = database
+        self._budget_source = budget_source
 
     async def ticket(self, user_id: UUID, task_id: str) -> GenerationTicket | None:
         async with self._database.sessions() as session:
@@ -84,4 +88,5 @@ class SqlCapabilityExecution:
             evidence=evidence,
             source_guard=source_guard,
             cost_endpoint=cost_endpoint,
+            budget_source=self._budget_source,
         )

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from decimal import Decimal
 from enum import StrEnum
 from typing import Annotated, Any, Literal
 from uuid import UUID
@@ -151,6 +152,21 @@ class ModelEndpoint(StrictModel):
         Annotated[float, Field(ge=0, le=1_000_000_000, allow_inf_nan=False)] | None
     ) = None
     cost_currency: Annotated[str, Field(pattern=r"^[A-Z]{3}$")] | None = None
+    request_cost_ceiling: (
+        Annotated[Decimal, Field(ge=0, le=1_000_000_000, max_digits=24, decimal_places=12)] | None
+    ) = None
+    query_cost_ceiling: (
+        Annotated[Decimal, Field(ge=0, le=1_000_000_000, max_digits=24, decimal_places=12)] | None
+    ) = None
+
+    @model_validator(mode="after")
+    def media_ceiling_requires_currency(self) -> ModelEndpoint:
+        if self.request_cost_ceiling is not None or self.query_cost_ceiling is not None:
+            if self.kind == ModelKind.TEXT:
+                raise ValueError("media_cost_ceiling_requires_non_text_endpoint")
+            if not self.cost_currency:
+                raise ValueError("media_cost_ceiling_requires_currency")
+        return self
 
 
 class RoutePolicy(StrictModel):

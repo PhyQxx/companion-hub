@@ -30,6 +30,8 @@ interface HubModel {
   input_cost_per_million?: number | null;
   output_cost_per_million?: number | null;
   cost_currency?: string | null;
+  request_cost_ceiling?: string | number | null;
+  query_cost_ceiling?: string | number | null;
 }
 
 function setNativeTokenizer(enabled: string | number | boolean) {
@@ -106,6 +108,8 @@ function draftModelToEndpoint(m: DraftModel): HubModel {
     input_cost_per_million: m.input_cost_per_million ?? null,
     output_cost_per_million: m.output_cost_per_million ?? null,
     cost_currency: m.cost_currency.trim().toUpperCase() || null,
+    request_cost_ceiling: m.kind === "text" ? null : m.request_cost_ceiling.trim() || null,
+    query_cost_ceiling: m.kind === "text" ? null : m.query_cost_ceiling.trim() || null,
     context_tokenizer: m.context_tokenizer,
   };
   if (m.secret_mode === "value" && m.secret_value) {
@@ -301,6 +305,8 @@ interface DraftModel {
   input_cost_per_million: number | undefined;
   output_cost_per_million: number | undefined;
   cost_currency: string;
+  request_cost_ceiling: string;
+  query_cost_ceiling: string;
 }
 
 interface DraftRoute {
@@ -403,6 +409,8 @@ const defaultModel = (): DraftModel => ({
   input_cost_per_million: undefined,
   output_cost_per_million: undefined,
   cost_currency: "",
+  request_cost_ceiling: "",
+  query_cost_ceiling: "",
   context_tokenizer: null,
 });
 
@@ -664,6 +672,8 @@ function hubConfigToDraft(config: HubConfig | undefined | null): DraftState {
       input_cost_per_million: m.input_cost_per_million ?? undefined,
       output_cost_per_million: m.output_cost_per_million ?? undefined,
       cost_currency: m.cost_currency ?? "",
+      request_cost_ceiling: m.request_cost_ceiling == null ? "" : String(m.request_cost_ceiling),
+      query_cost_ceiling: m.query_cost_ceiling == null ? "" : String(m.query_cost_ceiling),
       context_tokenizer: m.context_tokenizer ? { ...m.context_tokenizer } : null,
     };
   });
@@ -754,6 +764,8 @@ function draftToHubConfig(d: DraftState): HubConfig {
       input_cost_per_million: m.input_cost_per_million ?? null,
       output_cost_per_million: m.output_cost_per_million ?? null,
       cost_currency: m.cost_currency.trim().toUpperCase() || null,
+    request_cost_ceiling: m.kind === "text" ? null : m.request_cost_ceiling.trim() || null,
+    query_cost_ceiling: m.kind === "text" ? null : m.query_cost_ceiling.trim() || null,
     context_tokenizer: m.context_tokenizer,
     };
     if (m.secret_mode === "value" && m.secret_value) {
@@ -1643,6 +1655,11 @@ onActivated(() => {
                     <label class="field"><span>计价币种（如 CNY、USD）</span><el-input v-model="draft.models[activeModelTab].cost_currency" placeholder="未填写时不跨端点汇总" maxlength="3" /></label>
                     <label class="field"><span>输入单价 / 百万 tokens（留空为未知）</span><el-input-number v-model="draft.models[activeModelTab].input_cost_per_million" :min="0" :step="0.01" controls-position="right" /></label>
                     <label class="field"><span>输出单价 / 百万 tokens（留空为未知）</span><el-input-number v-model="draft.models[activeModelTab].output_cost_per_million" :min="0" :step="0.01" controls-position="right" /></label>
+                    <template v-if="draft.models[activeModelTab].kind !== 'text'">
+                      <label class="field"><span>单次分析/生成费用上限</span><el-input v-model="draft.models[activeModelTab].request_cost_ceiling" placeholder="留空为未知，例如 0.01" /></label>
+                      <label class="field"><span>单次结果查询费用上限</span><el-input v-model="draft.models[activeModelTab].query_cost_ceiling" placeholder="留空为未知，例如 0.001" /></label>
+                      <p class="field">按上述币种填写能覆盖全部参数的单次请求上限。结果查询按最大重试次数预留；用量未知时保留预留，估算不等于账单。</p>
+                    </template>
                   </div>
                   </div>
                 </el-tab-pane>
