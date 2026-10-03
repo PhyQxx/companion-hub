@@ -13,12 +13,14 @@ if TYPE_CHECKING:
         TranscriptSegment,
     )
     from .service import MeetingService
+    from .service_core import MeetingCoordinator
     from .store import MeetingStore
     from .summarizer import LlmMeetingSummarizer, MeetingSummarizer, RuleBasedMeetingSummarizer
     from .summary_core import StructuredMeetingSummarizer
 
 _EXPORTS = {
     "LlmMeetingSummarizer": ("app.meetings.summarizer", "LlmMeetingSummarizer"),
+    "MeetingCoordinator": ("app.meetings.service_core", "MeetingCoordinator"),
     "MeetingActionItem": ("app.meetings.models", "MeetingActionItem"),
     "MeetingDecision": ("app.meetings.models", "MeetingDecision"),
     "MeetingService": ("app.meetings.service", "MeetingService"),
@@ -34,6 +36,7 @@ _EXPORTS = {
 __all__ = [
     "LlmMeetingSummarizer",
     "MeetingActionItem",
+    "MeetingCoordinator",
     "MeetingDecision",
     "MeetingService",
     "MeetingStore",

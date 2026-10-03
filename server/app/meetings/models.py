@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import datetime
 from typing import Annotated, Literal
 from uuid import UUID
@@ -58,3 +59,10 @@ class MeetingView(StrictModel):
     ended_at: datetime | None = None
     created_at: datetime
     updated_at: datetime
+
+
+@dataclass(frozen=True, slots=True)
+class ActionClaim:
+    created: bool
+    status: str
+    task_id: UUID | None

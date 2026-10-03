@@ -63,6 +63,9 @@ import pytest
         "app.tasks",
         "app.tools",
         "app.commute",
+        "app.meetings.service_core",
+        "app.meetings.service_ports",
+        "app.meetings:MeetingCoordinator",
     ],
 )
 def test_pure_import_without_persistence_or_provider_dependencies(module: str) -> None:

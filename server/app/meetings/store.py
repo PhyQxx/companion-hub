@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any, cast
 from uuid import UUID
@@ -13,6 +12,7 @@ from app.db import Database, MeetingActionClaimRecord, MeetingRecord
 from app.ids import uuid7
 from app.schemas import PrivacyLevel
 
+from .models import ActionClaim as ActionClaim
 from .models import (
     MeetingActionItem,
     MeetingDecision,
@@ -20,13 +20,6 @@ from .models import (
     MeetingView,
     TranscriptSegment,
 )
-
-
-@dataclass(frozen=True, slots=True)
-class ActionClaim:
-    created: bool
-    status: str
-    task_id: UUID | None
 
 
 def _aware(value: datetime | None) -> datetime | None:
