@@ -19,9 +19,11 @@ from app.devices import (
     EphemeralDeviceAssetNotFound,
     EphemeralDeviceAssetStore,
 )
+from app.harness.budget import BudgetDenied
 from app.llm import ToolDefinition
 from app.model_capabilities import CapabilityModelError, CapabilityModelService
 from app.privacy import EgressBlocked
+from app.runs.completion import model_owner
 from app.schemas import PrivacyLevel
 
 from .contracts import ToolContext, ToolResult
@@ -215,9 +217,7 @@ class CaptureScreenTool:
                 args=command_args,
                 idempotency_key=f"screen-{context.turn_id}-{device.id}-{args.target}",
                 ttl_seconds=(
-                    INTERACTIVE_COMMAND_TTL_SECONDS
-                    if interactive
-                    else STANDARD_COMMAND_TTL_SECONDS
+                    INTERACTIVE_COMMAND_TTL_SECONDS if interactive else STANDARD_COMMAND_TTL_SECONDS
                 ),
             )
         except (DeviceCommandConflict, DeviceCommandNotFound):
@@ -244,12 +244,15 @@ class CaptureScreenTool:
         except (EphemeralDeviceAssetNotFound, KeyError, ValueError):
             return self._failure("screen_asset_invalid", started)
         try:
-            analysis = await self._analyzer.analyze(
-                data=asset.data,
-                media_type=asset.media_type,
-                prompt=args.question,
-                privacy_level=PrivacyLevel(context.privacy_level),
-            )
+            with model_owner(context.user_id):
+                analysis = await self._analyzer.analyze(
+                    data=asset.data,
+                    media_type=asset.media_type,
+                    prompt=args.question,
+                    privacy_level=PrivacyLevel(context.privacy_level),
+                )
+        except BudgetDenied:
+            raise
         except CapabilityModelError as error:
             return self._failure(error.reason_code, started)
         except EgressBlocked:

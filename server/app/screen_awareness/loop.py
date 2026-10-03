@@ -35,6 +35,7 @@ from app.memory.models import (
     MemoryType,
 )
 from app.perception.models import PerceptionResult
+from app.runs.completion import model_owner
 from app.schemas.common import PrivacyLevel
 from app.timeline.store import TimelineStore
 
@@ -373,7 +374,7 @@ class ScreenAwarenessLoop:
         threshold = config.unchanged_skip_threshold or DEFAULT_UNCHANGED_THRESHOLD
         if state.last_hash is not None and hamming_distance(state.last_hash, digest) <= threshold:
             return
-        analysis = await guard.call(lambda: self._analyze(config, image))
+        analysis = await guard.call(lambda: self._analyze_owned(owner, config, image))
         state.last_hash = digest
         state.last_analyzed_at = self._clock()
         state.last_summary = analysis.summary
@@ -440,6 +441,10 @@ class ScreenAwarenessLoop:
             command_id=command.id,
         )
         return asset.data
+
+    async def _analyze_owned(self, owner: UUID, config: Any, image: bytes) -> ScreenAnalysis:
+        with model_owner(owner):
+            return await self._analyze(config, image)
 
     async def _analyze(self, config: Any, image: bytes) -> ScreenAnalysis:
         result = await self._analyzer.analyze(

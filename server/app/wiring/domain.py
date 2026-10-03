@@ -87,6 +87,7 @@ from app.perception import PerceptionPipeline, PerceptionStore, ProactivePolicy
 from app.perception.pipeline import EventObserver
 from app.persona import PersonaStore
 from app.pnkx import PnkxLifeClient
+from app.runs.capability_sources import SqlCapabilityExecution
 from app.safety import ActivityTracker
 from app.skills.audit import SkillAuditScheduler
 from app.skills.connections import SkillConnectionStore, SkillHttpClient
@@ -219,7 +220,14 @@ def assemble_domain(
         else None
     )
     capability_models = (
-        CapabilityModelService(runtime_config) if runtime_config is not None else None
+        CapabilityModelService(
+            runtime_config,
+            execution=(
+                SqlCapabilityExecution(runtime_database) if runtime_database is not None else None
+            ),
+        )
+        if runtime_config is not None
+        else None
     )
     home_assistant_manager = (
         HomeAssistantManager(runtime_config) if runtime_config is not None else None

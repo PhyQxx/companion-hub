@@ -1,18 +1,27 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from time import perf_counter
-from typing import Any, Literal, Protocol
+from typing import TYPE_CHECKING, Any, Literal, Protocol
 from urllib.error import HTTPError
+from urllib.parse import quote
 from urllib.request import Request, urlopen
+from uuid import UUID
 
-from app.config import ConfigStore, DatabaseConfigStore, HubConfig
+from app.config import ConfigSnapshot, ConfigStore, DatabaseConfigStore, HubConfig
+from app.harness.budget import BudgetDenied, current_tool_budget
+from app.harness.operations import CapabilityExecution, OperationPolicy
 from app.llm import EnvSecretProvider, ModelEndpoint, ModelKind
 from app.privacy import EgressDestination, EgressGuard
+from app.runs.completion import current_model_owner
 from app.schemas import PrivacyLevel
+
+if TYPE_CHECKING:
+    from app.db import Database
 
 
 class CapabilityModelError(RuntimeError):
@@ -109,11 +118,18 @@ class CapabilityModelService:
         secrets: EnvSecretProvider | None = None,
         egress: EgressGuard | None = None,
         request_json: JsonRequester = _request_json,
+        database: Database | None = None,
+        execution: CapabilityExecution | None = None,
     ) -> None:
         self._config_store = config_store
         self._secrets = secrets or EnvSecretProvider()
         self._egress = egress or EgressGuard()
         self._request_json = request_json
+        if execution is None and database is not None:
+            from app.runs.capability_sources import SqlCapabilityExecution
+
+            execution = SqlCapabilityExecution(database)
+        self._execution = execution
 
     @property
     def config(self) -> HubConfig:
@@ -129,6 +145,7 @@ class CapabilityModelService:
         privacy_level: PrivacyLevel = PrivacyLevel.L1,
         thinking: bool = True,
         max_tokens: int = 8_192,
+        user_id: UUID | None = None,
     ) -> VisionAnalysisResult:
         endpoint_name, endpoint = self._selected(ModelKind.VISION)
         self._authorize(endpoint_name, endpoint, privacy_level)
@@ -138,15 +155,11 @@ class CapabilityModelService:
 
         content: list[dict[str, object]] = []
         if image_urls:
-            content.extend(
-                {"type": "image_url", "image_url": {"url": url}} for url in image_urls
-            )
+            content.extend({"type": "image_url", "image_url": {"url": url}} for url in image_urls)
         elif video_url is not None:
             content.append({"type": "video_url", "video_url": {"url": video_url}})
         else:
-            content.extend(
-                {"type": "file_url", "file_url": {"url": url}} for url in file_urls
-            )
+            content.extend({"type": "file_url", "file_url": {"url": url}} for url in file_urls)
         content.append({"type": "text", "text": prompt})
 
         request_body: dict[str, object] = {
@@ -155,15 +168,16 @@ class CapabilityModelService:
             "max_tokens": min(max_tokens, endpoint.max_tokens or max_tokens),
         }
         if endpoint.provider == "zhipu_native":
-            request_body["thinking"] = {
-                "type": "enabled" if thinking else "disabled"
-            }
+            request_body["thinking"] = {"type": "enabled" if thinking else "disabled"}
 
         started = perf_counter()
         payload = await self._post(
             endpoint,
             "/chat/completions",
             request_body,
+            endpoint_name=endpoint_name,
+            privacy_level=privacy_level,
+            user_id=user_id,
         )
         if not isinstance(payload, dict):
             raise CapabilityModelError("provider_invalid_response")
@@ -204,7 +218,14 @@ class CapabilityModelService:
         if user_id:
             body["user_id"] = user_id
         started = perf_counter()
-        payload = await self._post(endpoint, "/images/generations", body)
+        payload = await self._post(
+            endpoint,
+            "/images/generations",
+            body,
+            endpoint_name=endpoint_name,
+            privacy_level=privacy_level,
+            user_id=UUID(user_id) if self._execution is not None and user_id else None,
+        )
         if not isinstance(payload, dict):
             raise CapabilityModelError("provider_invalid_response")
         rows = payload.get("data")
@@ -259,7 +280,14 @@ class CapabilityModelService:
         if user_id:
             body["user_id"] = user_id
         started = perf_counter()
-        payload = await self._post(endpoint, "/videos/generations", body)
+        payload = await self._post(
+            endpoint,
+            "/videos/generations",
+            body,
+            endpoint_name=endpoint_name,
+            privacy_level=privacy_level,
+            user_id=UUID(user_id) if self._execution is not None and user_id else None,
+        )
         if not isinstance(payload, dict):
             raise CapabilityModelError("provider_invalid_response")
         task_id = payload.get("id")
@@ -280,10 +308,39 @@ class CapabilityModelService:
         task_id: str,
         *,
         privacy_level: PrivacyLevel = PrivacyLevel.L1,
+        user_id: UUID | None = None,
     ) -> AsyncGenerationResult:
+        ticket_guard: Callable[[], Awaitable[None]] | None = None
         endpoint_name, endpoint = self._selected(ModelKind.VIDEO_GENERATION)
+        if self._execution is not None:
+            owner = user_id or current_model_owner()
+            if owner is None:
+                raise BudgetDenied("model_run_owner_missing")
+            execution = self._execution
+            ticket = await execution.ticket(owner, task_id)
+            if ticket is None:
+                raise CapabilityModelError("generation_task_not_found")
+            if ticket.endpoint_fingerprint != _endpoint_fingerprint(
+                endpoint_name, endpoint, self._headers(endpoint)
+            ):
+                raise CapabilityModelError("generation_task_endpoint_changed")
+            privacy_level = ticket.privacy_level
+
+            async def verify_ticket() -> None:
+                await execution.validate_ticket(ticket)
+
+            ticket_guard = verify_ticket
         self._authorize(endpoint_name, endpoint, privacy_level)
-        payload = await self._get(endpoint, f"/async-result/{task_id}")
+        payload = await self._request_with_retries(
+            endpoint,
+            "GET",
+            f"/async-result/{quote(task_id, safe='')}",
+            None,
+            endpoint_name=endpoint_name,
+            privacy_level=privacy_level,
+            user_id=user_id,
+            source_guard=ticket_guard,
+        )
         if not isinstance(payload, dict):
             raise CapabilityModelError("provider_invalid_response")
         rows = payload.get("video_result")
@@ -361,16 +418,20 @@ class CapabilityModelService:
         endpoint: ModelEndpoint,
         suffix: str,
         body: dict[str, object],
+        *,
+        endpoint_name: str,
+        privacy_level: PrivacyLevel,
+        user_id: UUID | None,
     ) -> object:
         return await self._request_with_retries(
             endpoint,
             "POST",
             suffix,
             body,
+            endpoint_name=endpoint_name,
+            privacy_level=privacy_level,
+            user_id=user_id,
         )
-
-    async def _get(self, endpoint: ModelEndpoint, suffix: str) -> object:
-        return await self._request_with_retries(endpoint, "GET", suffix, None)
 
     async def _request_with_retries(
         self,
@@ -378,22 +439,118 @@ class CapabilityModelService:
         method: str,
         suffix: str,
         body: dict[str, object] | None,
+        *,
+        endpoint_name: str,
+        privacy_level: PrivacyLevel,
+        user_id: UUID | None,
+        source_guard: Callable[[], Awaitable[None]] | None = None,
     ) -> object:
-        for attempt in range(endpoint.max_retries + 1):
-            try:
-                return await asyncio.to_thread(
-                    self._request_json,
-                    method,
-                    self._url(endpoint, suffix),
-                    self._headers(endpoint),
-                    body,
-                    max(endpoint.timeout_ms / 1_000, 0.1),
-                )
-            except CapabilityModelError as error:
-                if attempt >= endpoint.max_retries or not _retryable_provider_error(error):
-                    raise
+        entry = {
+            "/videos/generations": "capability.video.submit",
+            "/images/generations": "capability.image.generate",
+            "/chat/completions": "capability.vision.analyze",
+        }.get(suffix, "capability.video.query")
+        owner = user_id or current_model_owner()
+        fingerprint = _endpoint_fingerprint(endpoint_name, endpoint, self._headers(endpoint))
+
+        async def check() -> None:
+            if source_guard is not None:
+                await source_guard()
+            if self._selected(ModelKind(endpoint.kind))[0] != endpoint_name:
+                raise BudgetDenied("capability_endpoint_changed")
+            current = self.config.models.get(endpoint_name)
+            if (
+                current is None
+                or not current.enabled
+                or _endpoint_fingerprint(endpoint_name, current, self._headers(current))
+                != fingerprint
+            ):
+                raise BudgetDenied("capability_endpoint_changed")
+            self._authorize(endpoint_name, current, privacy_level)
+
+        async def invoke(mark_started: Callable[[], Awaitable[None]] | None = None) -> object:
+            # A failed generation POST may already be accepted/billed remotely.
+            retries = (
+                0 if self._execution is not None and method == "POST" else endpoint.max_retries
+            )
+            for attempt in range(retries + 1):
+                await check()
+                port = current_tool_budget() if self._execution is not None else None
+                permit = await port.reserve_tool(tool_name=entry, user_id=owner) if port else None
+                returned = False
+                dispatched = False
+                try:
+                    if mark_started is not None:
+                        await mark_started()
+                    dispatched = True
+                    async with asyncio.timeout(
+                        permit.remaining_seconds if permit else endpoint.timeout_ms / 1_000
+                    ):
+                        result = await asyncio.to_thread(
+                            self._request_json,
+                            method,
+                            self._url(endpoint, suffix),
+                            self._headers(endpoint),
+                            body,
+                            max(endpoint.timeout_ms / 1_000, 0.1),
+                        )
+                    returned = True
+                    return result
+                except CapabilityModelError as error:
+                    if attempt >= retries or not _retryable_provider_error(error):
+                        raise
+                finally:
+                    if port is not None and permit is not None:
+                        await port.settle_tool(
+                            permit.call_id,
+                            reported_ok=True if returned else None if dispatched else False,
+                        )
                 await asyncio.sleep(min(0.25 * (2**attempt), 2.0))
-        raise AssertionError("capability model retry loop exhausted")
+            raise AssertionError("capability model retry loop exhausted")
+
+        if self._execution is None:
+            return await invoke()
+        if owner is None:
+            raise BudgetDenied("model_run_owner_missing")
+
+        def evidence(result: object) -> dict[str, str]:
+            fields = {"endpoint_fingerprint": fingerprint}
+            if isinstance(result, dict):
+                receipt = result.get("request_id") or result.get("id")
+                if isinstance(receipt, str) and receipt and len(receipt) <= 200:
+                    fields["provider_request_id"] = receipt
+            if entry == "capability.video.submit" and isinstance(result, dict):
+                identifier = result.get("id")
+                if isinstance(identifier, str) and identifier and len(identifier) <= 256:
+                    fields["provider_task_id"] = identifier
+            return fields
+
+        snapshot: ConfigSnapshot = self._config_store.current
+        return await self._execution.execute(
+            OperationPolicy(
+                snapshot.version, tuple(snapshot.config.run_budget.model_dump(mode="json").items())
+            ),
+            user_id=owner,
+            privacy_level=privacy_level,
+            entry=entry,
+            invoke=invoke,
+            evidence=evidence,
+            source_guard=check,
+            cost_endpoint=endpoint_name,
+        )
+
+
+def _endpoint_fingerprint(name: str, endpoint: ModelEndpoint, credentials: dict[str, str]) -> str:
+    data = {
+        "name": name,
+        "credentials": credentials,
+        "kind": str(endpoint.kind),
+        "provider": endpoint.provider,
+        "model": endpoint.model,
+        "base_url": str(endpoint.base_url),
+        "runs_local": endpoint.runs_local,
+    }
+    return hashlib.sha256(json.dumps(data, sort_keys=True).encode()).hexdigest()
 
 
 def _retryable_provider_error(error: CapabilityModelError) -> bool:

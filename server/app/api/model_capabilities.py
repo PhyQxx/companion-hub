@@ -4,6 +4,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import AnyHttpUrl, Field, model_validator
 
 from app.auth import AuthService, ChatPrincipal
+from app.harness.budget import BudgetDenied
 from app.model_capabilities import CapabilityModelError, CapabilityModelService
 from app.privacy import EgressBlocked
 from app.schemas import PrivacyLevel
@@ -23,8 +24,8 @@ class VisionAnalyzeRequest(StrictModel):
 
     @model_validator(mode="after")
     def exactly_one_modality_family(self) -> Self:
-        families = int(bool(self.image_urls)) + int(self.video_url is not None) + int(
-            bool(self.file_urls)
+        families = (
+            int(bool(self.image_urls)) + int(self.video_url is not None) + int(bool(self.file_urls))
         )
         if families != 1:
             raise ValueError("exactly one of image_urls, video_url or file_urls is required")
@@ -105,6 +106,10 @@ class GenerationTaskResponse(StrictModel):
 
 
 def _raise_capability_http(error: Exception) -> NoReturn:
+    if isinstance(error, BudgetDenied):
+        raise HTTPException(status.HTTP_409_CONFLICT, detail=error.reason_code) from error
+    if isinstance(error, CapabilityModelError) and error.reason_code == "generation_task_not_found":
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail=error.reason_code) from error
     if isinstance(error, EgressBlocked):
         raise HTTPException(
             status.HTTP_403_FORBIDDEN,
@@ -114,9 +119,11 @@ def _raise_capability_http(error: Exception) -> NoReturn:
         code = (
             status.HTTP_409_CONFLICT
             if error.reason_code.endswith("_not_configured")
-            or error.reason_code in {
+            or error.reason_code
+            in {
                 "model_secret_unavailable",
                 "unsupported_capability_provider",
+                "generation_task_endpoint_changed",
             }
             else status.HTTP_502_BAD_GATEWAY
         )
@@ -136,7 +143,6 @@ def create_model_capability_router(
         body: VisionAnalyzeRequest,
         principal: Annotated[ChatPrincipal, Depends(chat_guard)],
     ) -> VisionAnalyzeResponse:
-        del principal
         try:
             result = await service.analyze_vision(
                 prompt=body.prompt,
@@ -146,6 +152,7 @@ def create_model_capability_router(
                 privacy_level=PrivacyLevel(body.privacy_level),
                 thinking=body.thinking,
                 max_tokens=body.max_tokens,
+                user_id=principal.user_id,
             )
         except Exception as error:
             _raise_capability_http(error)
@@ -215,9 +222,8 @@ def create_model_capability_router(
         task_id: str,
         principal: Annotated[ChatPrincipal, Depends(chat_guard)],
     ) -> GenerationTaskResponse:
-        del principal
         try:
-            result = await service.async_result(task_id)
+            result = await service.async_result(task_id, user_id=principal.user_id)
         except Exception as error:
             _raise_capability_http(error)
         return GenerationTaskResponse(

@@ -31,6 +31,10 @@ from .store import append_run_event, transition_run
 _MODEL_OWNER: ContextVar[UUID | None] = ContextVar("model_run_owner", default=None)
 
 
+def current_model_owner() -> UUID | None:
+    return _MODEL_OWNER.get()
+
+
 @contextmanager
 def model_owner(user_id: UUID) -> Iterator[None]:
     """Carry an already authorized owner across legacy analyzer ports."""
