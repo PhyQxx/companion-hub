@@ -46,6 +46,7 @@ MAX_CALENDAR_RESPONSE_BYTES = 8 * 1024 * 1024
 MAX_CALENDAR_RESOURCES = 10_000
 MAX_CALENDAR_OCCURRENCES = 25_000
 MAX_RECURRENCE_STEPS = 10_000
+MAX_CALENDAR_RECURRENCE_STEPS = 25_000
 
 _PROPFIND_BODY = """<?xml version="1.0" encoding="utf-8"?>
 <D:propfind xmlns:D="DAV:" xmlns:C="urn:ietf:params:xml:ns:caldav">
@@ -83,6 +84,16 @@ class CalDavError(RuntimeError):
     def __init__(self, reason_code: str, detail: str = "") -> None:
         self.reason_code = reason_code
         super().__init__(detail or reason_code)
+
+
+@dataclass(slots=True)
+class _RecurrenceBudget:
+    remaining: int
+
+    def consume(self) -> None:
+        if self.remaining <= 0:
+            raise CalDavError("caldav_recurrence_limit")
+        self.remaining -= 1
 
 
 def _successful_status(value: str | None) -> bool:
@@ -203,6 +214,7 @@ class CalDavClient:
         response = await self._request("REPORT", url, _report_body(start, end))
         responses = _multistatus(response)
         occurrences: list[MirrorOccurrence] = []
+        recurrence_budget = _RecurrenceBudget(MAX_CALENDAR_RECURRENCE_STEPS)
         for response_node in responses:
             href_item = response_node.findtext("{DAV:}href", "")
             etag_property = _property(response_node, "{DAV:}getetag")
@@ -216,7 +228,11 @@ class CalDavClient:
                 raise CalDavError("caldav_response_invalid")
             try:
                 expanded = _expand_event(
-                    data.text, etag=etag or href_item, window_start=start, window_end=end
+                    data.text,
+                    etag=etag or href_item,
+                    window_start=start,
+                    window_end=end,
+                    recurrence_budget=recurrence_budget,
                 )
             except (ValueError, TypeError, AttributeError, OverflowError) as error:
                 raise CalDavError("caldav_response_invalid") from error
@@ -255,9 +271,15 @@ class CalDavClient:
 
 
 def _expand_event(
-    ical_data: str, *, etag: str, window_start: datetime, window_end: datetime
+    ical_data: str,
+    *,
+    etag: str,
+    window_start: datetime,
+    window_end: datetime,
+    recurrence_budget: _RecurrenceBudget | None = None,
 ) -> list[MirrorOccurrence]:
     """解析单个 VEVENT 资源；周期规则在窗口内展开，覆盖/剔除按 RECURRENCE-ID/EXDATE。"""
+    recurrence_budget = recurrence_budget or _RecurrenceBudget(MAX_CALENDAR_RECURRENCE_STEPS)
     calendar = Calendar.from_ical(ical_data)
     components = [comp for comp in calendar.walk("VEVENT")]
     if not components or calendar.errors or any(comp.errors for comp in components):
@@ -341,6 +363,7 @@ def _expand_event(
                 break
             if index >= MAX_RECURRENCE_STEPS:
                 raise CalDavError("caldav_recurrence_limit")
+            recurrence_budget.consume()
             if occurrence < lower:
                 continue
             candidate = _occurrence(occurrence)
