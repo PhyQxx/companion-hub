@@ -17,7 +17,8 @@ class DecisionRepository(Protocol):
         *,
         event: SemanticEvent | None = None,
         state: WorldState | None = None,
-    ) -> None: ...
+        proactive_limit: int | None = None,
+    ) -> CognitiveDecision | None: ...
 
 
 class WorldStateSource(Protocol):
@@ -31,6 +32,8 @@ class Deliberator(Protocol):
 
 
 class CognitiveCyclePort(Protocol):
-    async def evaluate(self, event: SemanticEvent) -> CognitiveDecision: ...
+    async def evaluate(
+        self, event: SemanticEvent, *, proactive_limit: int | None = None
+    ) -> CognitiveDecision: ...
 
     async def suppress(self, event: SemanticEvent, *reason_codes: str) -> CognitiveDecision: ...

@@ -86,26 +86,11 @@ class FakePerception:
         self.events.append(event)
 
 
-class _Session:
-    owner_id: UUID | None = None
+class FixtureMailLoop(MailAwarenessLoop):
+    owner_id: UUID
 
-    async def scalar(self, query: Any) -> Any:
-        return type(self).owner_id
-
-
-class _Sessions:
-    def __call__(self) -> _Sessions:
-        return self
-
-    async def __aenter__(self) -> _Session:
-        return _Session()
-
-    async def __aexit__(self, *args: Any) -> None:
-        return None
-
-
-class FakeDatabase:
-    sessions = _Sessions()
+    async def _resolve_owner(self) -> UUID | None:
+        return self.owner_id
 
 
 @dataclass
@@ -153,17 +138,17 @@ def _loop(
     config: MailAwarenessConfig | None = None,
     owner_id: UUID | None = None,
 ) -> tuple[MailAwarenessLoop, FakeTimeline]:
-    _Session.owner_id = owner_id or UUID("00000000-0000-7000-8000-000000000001")
     timeline = FakeTimeline()
     config_view = cast(Any, _ConfigView(_hub_config(config or MailAwarenessConfig(enabled=True))))
-    loop = MailAwarenessLoop(
+    loop = FixtureMailLoop(
         config_store=config_view,
-        database=FakeDatabase(),
+        database=cast(Any, object()),
         reader=reader,
         analyzer=analyzer or FakeAnalyzer(),
         timeline=timeline,  # type: ignore[arg-type]
         perception_pipeline=perception,
     )
+    loop.owner_id = owner_id or UUID("00000000-0000-7000-8000-000000000001")
     return loop, timeline
 
 

@@ -1,16 +1,17 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime, time
+from datetime import datetime, time
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from sqlalchemy import func, select
+from sqlalchemy import select
 
 from app.cognition import SemanticEvent
-from app.db import AppUserRecord, CognitiveDecisionRecord, Database
+from app.cognition.proactive import CRITICAL_EVENTS as CRITICAL_EVENTS
+from app.cognition.proactive import daily_window
+from app.cognition.quota import proactive_count
+from app.db import AppUserRecord, Database
 
 from .models import ProactivePolicySettings
-
-CRITICAL_EVENTS = {"water_leak", "water_leak_detected", "safety.alarm"}
 
 
 class ProactivePolicy:
@@ -39,26 +40,15 @@ class ProactivePolicy:
             critical and self.settings.critical_bypasses_quiet_hours
         ):
             return "quiet_hours"
-        day_start = datetime.combine(local_now.date(), time.min, timezone).astimezone(UTC)
-        async with self._database.sessions() as session:
-            sent_today = int(
-                await session.scalar(
-                    select(func.count(CognitiveDecisionRecord.id)).where(
-                        CognitiveDecisionRecord.user_id == event.user_id,
-                        CognitiveDecisionRecord.created_at >= day_start,
-                        CognitiveDecisionRecord.decision.in_(
-                            ["inform", "ask", "suggest", "escalate"]
-                        ),
-                    )
-                )
-                or 0
-            )
+        day_start, day_end = daily_window(now, timezone.key)
+        async with self._database.sessions.begin() as session:
+            sent_today = await proactive_count(session, event.user_id, day_start, day_end)
         if sent_today >= self.settings.daily_limit and not critical:
             return "daily_limit"
         return None
 
     async def _timezone(self, event: SemanticEvent) -> ZoneInfo:
-        async with self._database.sessions() as session:
+        async with self._database.sessions.begin() as session:
             name = await session.scalar(
                 select(AppUserRecord.timezone).where(AppUserRecord.id == event.user_id)
             )

@@ -2,12 +2,13 @@ from __future__ import annotations
 
 import os
 from datetime import UTC, datetime
+from pathlib import Path
 from uuid import uuid4
 
 import pytest
 from sqlalchemy import text
 
-from app.db import AppUserRecord, Base, create_database
+from app.db import AppUserRecord
 from app.memory import (
     MemoryRetriever,
     MemorySourceKind,
@@ -18,6 +19,7 @@ from app.memory import (
 )
 from app.memory.models import MemoryCandidate
 from app.schemas import PrivacyLevel
+from scripts.benchmark_storage import open_storage
 
 pytestmark = pytest.mark.skipif(
     os.getenv("ARIA_TEST_DATABASE_URL") is None,
@@ -29,21 +31,10 @@ pytestmark = pytest.mark.skipif(
 NOW = datetime(2099, 1, 1, tzinfo=UTC)
 
 
-async def test_pgvector_dual_write_and_ann_recall() -> None:
-    database = create_database(os.environ["ARIA_TEST_DATABASE_URL"])
+async def test_pgvector_dual_write_and_ann_recall(tmp_path: Path) -> None:
+    storage = await open_storage(tmp_path / "memory.db", os.environ["ARIA_TEST_DATABASE_URL"])
+    database = storage.database
     try:
-        # Other integration tests rebuild the schema via create_all; restore
-        # the pgvector artifacts migration 0009 would have created.
-        async with database.engine.begin() as connection:
-            await connection.run_sync(Base.metadata.create_all)
-            await connection.exec_driver_sql("CREATE EXTENSION IF NOT EXISTS vector")
-            await connection.exec_driver_sql(
-                "ALTER TABLE memory ADD COLUMN IF NOT EXISTS embedding_vec vector(256)"
-            )
-            await connection.exec_driver_sql(
-                "CREATE INDEX IF NOT EXISTS ix_memory_embedding_vec"
-                " ON memory USING hnsw (embedding_vec vector_cosine_ops)"
-            )
         store = MemoryStore(database)
         assert store.vector_sql_enabled, "pgvector recall path must be active"
         user_id = uuid4()
@@ -54,9 +45,7 @@ async def test_pgvector_dual_write_and_ann_recall() -> None:
                 type=MemoryType.PREFERENCE,
                 content="用户不吃香菜，点菜要去掉",
                 privacy_level=PrivacyLevel.L1,
-                sources=[
-                    MemorySourceRef(source_kind=MemorySourceKind.MESSAGE, source_id="m1")
-                ],
+                sources=[MemorySourceRef(source_kind=MemorySourceKind.MESSAGE, source_id="m1")],
             ),
             user_id=user_id,
         )
@@ -101,4 +90,4 @@ async def test_pgvector_dual_write_and_ann_recall() -> None:
         remaining = await store.list_memories(user_id=user_id, status=MemoryStatus.ACTIVE)
         assert all(item.id not in ledger_receipt.deleted_ids for item in remaining)
     finally:
-        await database.close()
+        await storage.close()

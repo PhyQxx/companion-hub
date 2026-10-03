@@ -40,12 +40,14 @@ async def test_independent_pipelines_admit_one_decision(
     for pipeline in pipelines:
         cycle = pipeline._cycle
 
-        async def evaluate(value: Any, original: Any = cycle.evaluate) -> Any:
+        async def evaluate(
+            value: Any, original: Any = cycle.evaluate, *, proactive_limit: int | None = None
+        ) -> Any:
             nonlocal calls
             calls += 1
             entered.set()
             await release.wait()
-            return await original(value)
+            return await original(value, proactive_limit=proactive_limit)
 
         pipeline._cycle = SimpleNamespace(evaluate=evaluate, suppress=cycle.suppress)
         pipeline.set_event_observer(observer)
@@ -111,7 +113,7 @@ async def test_interrupted_source_and_cross_source_unknown_are_not_reexecuted(
     pipeline = create_pipeline(database)
     calls = 0
 
-    async def interrupted(value: Any) -> Any:
+    async def interrupted(value: Any, *, proactive_limit: int | None = None) -> Any:
         nonlocal calls
         calls += 1
         raise RuntimeError("private fixture interruption")
@@ -144,7 +146,7 @@ async def test_admitted_event_rejects_late_result_when_any_claim_is_lost(
     original = pipeline._cycle
     entered, cancelled = asyncio.Event(), asyncio.Event()
 
-    async def evaluate(value: Any) -> Any:
+    async def evaluate(value: Any, *, proactive_limit: int | None = None) -> Any:
         assert len(current_claims()) == 2
         entered.set()
         try:
@@ -152,7 +154,7 @@ async def test_admitted_event_rejects_late_result_when_any_claim_is_lost(
         except asyncio.CancelledError:
             cancelled.set()
             # A cancellation-defying port still cannot save its late decision.
-            return await original.evaluate(value)
+            return await original.evaluate(value, proactive_limit=proactive_limit)
 
     pipeline._cycle = SimpleNamespace(evaluate=evaluate, suppress=original.suppress)
     with claim_scope(ExecutionClaim(parent.id, "parent-worker", claimed.attempts)):

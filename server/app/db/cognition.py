@@ -69,6 +69,19 @@ class CognitiveDecisionRecord(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
 
+class ProactiveQuotaEntryRecord(Base):
+    __module__ = "app.db.models"
+
+    __tablename__ = "proactive_quota_entry"
+    __table_args__ = (Index("ix_proactive_quota_user_accepted", "user_id", "accepted_at"),)
+
+    # No content and no cascading foreign key: deleting a decision or account
+    # must not reset quota already spent by that identity.
+    decision_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True)
+    user_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
+    accepted_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
 class CognitiveGoalRecord(Base):
     # Preserve legacy mapper ordering and serialized class references.
     __module__ = "app.db.models"

@@ -19,6 +19,7 @@ from app.db import (
     Database,
     DeletionLedgerRecord,
     MessageRecord,
+    ProactiveQuotaEntryRecord,
     ReflectionCandidateRecord,
     TaskRunRecord,
 )
@@ -34,6 +35,7 @@ from .models import (
     ClaimedGoalReminder,
     CognitiveDecision,
     CognitiveDecisionView,
+    DecisionKind,
     FeedbackKind,
     GoalKind,
     GoalStatus,
@@ -42,6 +44,8 @@ from .models import (
     SemanticEvent,
     WorldState,
 )
+from .proactive import CRITICAL_EVENTS, VISIBLE_DECISIONS, daily_window
+from .quota import proactive_count
 from .reflection import FeedbackSummary
 
 
@@ -61,10 +65,15 @@ class CognitiveStore:
         *,
         event: SemanticEvent | None = None,
         state: WorldState | None = None,
-    ) -> None:
+        proactive_limit: int | None = None,
+    ) -> CognitiveDecision:
         decision = decision.model_copy(deep=True)
         event = event.model_copy(deep=True) if event is not None else None
         state = state.model_copy(deep=True) if state is not None else None
+        if proactive_limit is not None and (
+            event is None or isinstance(proactive_limit, bool) or not 1 <= proactive_limit <= 50
+        ):
+            raise ValueError("proactive_acceptance_policy_invalid")
         if state is not None and event is None:
             raise ValueError("decision_event_required")
         if event is not None and (
@@ -119,6 +128,34 @@ class CognitiveStore:
                 if expiry is not None and expiry <= datetime.now(UTC):
                     raise BudgetDenied("decision_expired")
                 await self.validate_world_snapshot(session, event, state, lock=True)
+            if (
+                proactive_limit is not None
+                and event is not None
+                and str(decision.decision) in VISIBLE_DECISIONS
+            ):
+                accepted_at = datetime.now(UTC)
+                timezone = await session.scalar(
+                    select(AppUserRecord.timezone).where(AppUserRecord.id == decision.user_id)
+                )
+                start, end = daily_window(accepted_at, timezone or "Asia/Shanghai")
+                spent = await proactive_count(session, decision.user_id, start, end)
+                if spent >= proactive_limit and event.kind not in CRITICAL_EVENTS:
+                    decision = decision.model_copy(
+                        update={
+                            "decision": DecisionKind.IGNORE,
+                            "reason_codes": [*decision.reason_codes, "daily_limit"],
+                            "message": None,
+                            "approval_required": False,
+                        }
+                    )
+                else:
+                    session.add(
+                        ProactiveQuotaEntryRecord(
+                            decision_id=decision.id,
+                            user_id=decision.user_id,
+                            accepted_at=accepted_at,
+                        )
+                    )
             session.add(
                 CognitiveDecisionRecord(
                     id=decision.id,
@@ -139,6 +176,7 @@ class CognitiveStore:
                     created_at=decision.created_at,
                 )
             )
+        return decision
 
     async def recent_decisions(
         self,

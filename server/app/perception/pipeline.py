@@ -265,19 +265,26 @@ class PerceptionPipeline:
                 reason_code=rejection,
                 decision=decision,
             )
-        decision = await self._cycle.evaluate(event)
+        decision = await self._cycle.evaluate(
+            event, proactive_limit=self._policy.settings.daily_limit
+        )
+        quota_rejected = decision.decision == "ignore" and "daily_limit" in decision.reason_codes
+        disposition = (
+            PerceptionDisposition.SUPPRESSED if quota_rejected else PerceptionDisposition.PROCESSED
+        )
         self._recent[key] = (event.event_id, now)
         await self._store.record(
             event,
             dedupe_key=dedupe_key,
-            disposition=PerceptionDisposition.PROCESSED,
+            disposition=disposition,
             reason_code=(decision.reason_codes[-1] if decision.reason_codes else None),
             decision_id=decision.id,
             now=now,
         )
         return PerceptionResult(
             event_id=event.event_id,
-            disposition=PerceptionDisposition.PROCESSED,
+            disposition=disposition,
+            reason_code="daily_limit" if quota_rejected else None,
             decision=decision,
         )
 

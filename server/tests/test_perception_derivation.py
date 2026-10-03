@@ -103,8 +103,8 @@ async def test_source_expiring_after_decision_does_not_trigger_an_observer(
     async def observer(value: Any) -> None:
         observed.append(value.event_id)
 
-    async def evaluate(value: Any) -> Any:
-        decision = await cycle.evaluate(value)
+    async def evaluate(value: Any, *, proactive_limit: int | None = None) -> Any:
+        decision = await cycle.evaluate(value, proactive_limit=proactive_limit)
         await asyncio.sleep(1.1)
         return decision
 

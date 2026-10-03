@@ -42,6 +42,7 @@ class MemoryDecisions:
         *,
         event: SemanticEvent | None = None,
         state: WorldState | None = None,
+        proactive_limit: int | None = None,
     ) -> None:
         self.saved.append((decision, event, state))
 

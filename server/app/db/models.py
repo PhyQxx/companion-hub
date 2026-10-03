@@ -37,6 +37,7 @@ from .cognition import (
     CognitiveDecisionRecord,
     CognitiveFeedbackRecord,
     CognitiveGoalRecord,
+    ProactiveQuotaEntryRecord,
     ReflectionCandidateRecord,
     SemanticEventAuditRecord,
 )
@@ -79,6 +80,7 @@ from .identity import (
     AppUserRecord,
     AuthCredentialRecord,
     AuthSessionRecord,
+    ObservationOwnerBindingRecord,
 )
 from .jobs import (
     JobArtifactRecord,
@@ -172,12 +174,14 @@ __all__ = [
     "MemorySourceRecord",
     "MessageRecord",
     "ModelReservationRecord",
+    "ObservationOwnerBindingRecord",
     "OutboxRecord",
     "PendingMutationRecord",
     "PersonaAvatarBindingRecord",
     "PersonaPointerRecord",
     "PersonaVersionRecord",
     "ProactiveDeliveryReceiptRecord",
+    "ProactiveQuotaEntryRecord",
     "PushSubscriptionRecord",
     "ReflectionCandidateRecord",
     "RuntimeLeaseRecord",

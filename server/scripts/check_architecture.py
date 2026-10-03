@@ -42,6 +42,7 @@ PURE_COGNITIVE_FLOW = frozenset(
         "app.cognition.world_facts",
         "app.cognition.attention",
         "app.cognition.models",
+        "app.cognition.proactive",
         "app.memory.models",
         "app.memory.retrieval_models",
         "app.timeline.models",
@@ -84,6 +85,7 @@ def allowed(source: str, target: str) -> bool:
             target == prefix or target.startswith(prefix + ".")
             for prefix in (
                 "app.cognition.models",
+                "app.cognition.proactive",
                 "app.cognition.ports",
                 "app.cognition.attention",
                 "app.cognition.world_facts",

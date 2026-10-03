@@ -23,7 +23,9 @@ class CognitiveCycle:
         self.attention = attention
         self.deliberator = deliberator
 
-    async def evaluate(self, event: SemanticEvent) -> CognitiveDecision:
+    async def evaluate(
+        self, event: SemanticEvent, *, proactive_limit: int | None = None
+    ) -> CognitiveDecision:
         event = event.model_copy(deep=True)
         state = await self.world.build(event)
         attention = self.attention.evaluate(event, state)
@@ -47,7 +49,11 @@ class CognitiveCycle:
         else:
             decision = await self.deliberator.deliberate(event, state, attention)
         if event.privacy_level != PrivacyLevel.L3:
-            await self.store.save_decision(decision, event=event, state=state)
+            accepted = await self.store.save_decision(
+                decision, event=event, state=state, proactive_limit=proactive_limit
+            )
+            if accepted is not None:
+                decision = accepted
         return decision
 
     async def suppress(self, event: SemanticEvent, *reason_codes: str) -> CognitiveDecision:

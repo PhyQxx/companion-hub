@@ -175,6 +175,10 @@
     "postgresql": "cfd277e60c72aec3ddca2f2338a9658e3eb11063ff3f70b4684a8da4d5991239",
     "sqlite": "5b5bc207b5772fe26146c9299d8176ce4a222cd6791cd177b709df07abaa38db"
   },
+  "observation_owner_binding": {
+    "postgresql": "67b00fc8d5ee98e5c54f4285af0e44697f0c7ffd1ddc77bdbab4d118c299a2dc",
+    "sqlite": "beb6d966be77af7661259bee6cc16e9bcfbb9705f38b2ffd9bb4af698e75f7f0"
+  },
   "outbox": {
     "postgresql": "a4e54f77492ef5e17d05ac7776b4dc4f01613e2f83a82f878e2bebfff653c6e5",
     "sqlite": "28a4914a6035995ae2dbb168f5f78673d941febf1cb2572c8abe897a9a2edc99"
@@ -198,6 +202,10 @@
   "proactive_delivery_receipt": {
     "postgresql": "2a41abc38dacdf2c939477932d57fd18502a5ff7971a8f5d302d7c4963a7882d",
     "sqlite": "c3eb3f4dd5ecfe213fd247fbbe0bcffe4be4a8518cbddd8f0a1567c23009fc5c"
+  },
+  "proactive_quota_entry": {
+    "postgresql": "4d82d39f665722be60a6e9c8d161063fa11f699df748c009346646f953b00ef3",
+    "sqlite": "9987cc90b3121b456f9948107e4821b87d924ba418d7f316d9d1ee2e62478497"
   },
   "push_subscription": {
     "postgresql": "e0a08e4415e4af7576f41b15265be9df7fcfcb611176f69bce78668a6e0254e0",
