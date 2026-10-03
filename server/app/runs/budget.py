@@ -80,6 +80,11 @@ class RunModelBudget:
         return self._user_id
 
     @property
+    def budget_config(self) -> RunBudgetConfig:
+        """Frozen limits carried by this parent port, in addition to its Run snapshot."""
+        return self._config
+
+    @property
     def remaining_delivery_seconds(self) -> float:
         return max(0.0, (utc(self._maintenance_deadline) - datetime.now(UTC)).total_seconds())
 

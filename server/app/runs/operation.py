@@ -15,13 +15,14 @@ from app.db.claims import assert_current_claim
 from app.harness.budget import BudgetDenied, budget_scope, current_budget
 from app.harness.guarded_call import guarded_call
 from app.harness.operations import OperationPolicy
+from app.harness.source_cleanup import close_after_source
 from app.harness.time import utc
 from app.harness.unit_costs import unit_charge
 from app.ids import uuid7
 from app.schemas import PrivacyLevel
 
 from .budget import RunModelBudget
-from .costs import check_cost_allowance
+from .costs import assert_cost_window, check_cost_allowance
 from .store import append_run_event, transition_run
 from .unit_costs import lock_unit_cost, reserve_unit_cost, settle_unit_cost
 
@@ -51,6 +52,8 @@ async def operate_with_run(
     parent_id = parent.run_id if isinstance(parent, RunModelBudget) else None
     config = RunBudgetConfig.model_validate(dict(policy.budget))
     quote = policy.unit_quote
+    parent_config = parent.budget_config if isinstance(parent, RunModelBudget) else config
+    admitted_at: datetime | None = None
     run_id = uuid7()
     now = datetime.now(UTC)
     deadline = now + timedelta(seconds=config.maintenance_deadline_seconds)
@@ -62,7 +65,7 @@ async def operate_with_run(
         current_config = budget_source() if budget_source is not None else config
         if quote is None and any(
             candidate.max_daily_cost is not None or candidate.max_monthly_cost is not None
-            for candidate in (config, current_config)
+            for candidate in (config, current_config, parent_config)
         ):
             # Media cannot bypass a monetary cap before unit pricing exists.
             raise BudgetDenied("media_cost_estimate_unavailable")
@@ -98,8 +101,11 @@ async def operate_with_run(
         current = budget_source() if budget_source is not None else config
         snapshots = [
             config,
+            parent_config,
             *(RunBudgetConfig.model_validate(row.budget) for row in rows if row.budget is not None),
         ]
+        if admitted_at is not None:
+            assert_cost_window(admitted_at, datetime.now(UTC), (*snapshots, current))
         for snapshot in snapshots:
             await check_cost_allowance(
                 session,
@@ -175,7 +181,7 @@ async def operate_with_run(
     async with database.sessions.begin() as session:
         authority = await lock_authority(session)
         if quote is not None:
-            await reserve_unit_cost(
+            admitted_at = await reserve_unit_cost(
                 session,
                 call_id=run_id,
                 user_id=user_id,
@@ -184,6 +190,7 @@ async def operate_with_run(
                 config=budget_source() if budget_source is not None else config,
                 snapshot=config,
                 now=datetime.now(UTC),
+                clock=lambda: datetime.now(UTC),
             )
         session.add(
             TaskRunRecord(
@@ -221,6 +228,39 @@ async def operate_with_run(
         else None
     )
     started = False
+    unissued_after_start = False
+
+    async def release_untransferred_quote() -> None:
+        nonlocal unissued_after_start
+        if quote is None:
+            return
+        amount = unit_charge(quote.pricing.rate_per_unit, quote.maximum_quantity)
+        async with database.sessions.begin() as session:
+            released = await session.scalar(
+                update(ModelCostRecord)
+                .where(
+                    ModelCostRecord.call_id == run_id,
+                    ModelCostRecord.user_id == user_id,
+                    ModelCostRecord.unit == quote.pricing.unit,
+                    ModelCostRecord.unit_rate == quote.pricing.rate_per_unit,
+                    ModelCostRecord.unit_maximum_quantity == quote.maximum_quantity,
+                    ModelCostRecord.currency == quote.pricing.currency,
+                    ModelCostRecord.endpoint == cost_endpoint,
+                    ModelCostRecord.state == "unknown",
+                    ModelCostRecord.unit_quantity.is_(None),
+                    ModelCostRecord.provider_request_id.is_(None),
+                    ModelCostRecord.charged_micros == amount,
+                    ModelCostRecord.reserved_micros == amount,
+                )
+                .values(
+                    state="estimated",
+                    charged_micros=0,
+                    unit_quantity=0,
+                    settled_at=datetime.now(UTC),
+                )
+                .returning(ModelCostRecord.call_id)
+            )
+            unissued_after_start = released is not None
 
     async def mark_started() -> None:
         nonlocal started
@@ -265,7 +305,13 @@ async def operate_with_run(
             validate_rows(authority)
         started = True
         if quote is not None:
-            await check(run_id)
+            try:
+                await check(run_id)
+            except BaseException:
+                # The start callback has not returned to the provider adapter.
+                # Release only our untouched quote; any receipt/usage keeps its fee.
+                async with close_after_source(release_untransferred_quote):
+                    raise
 
     try:
         with budget_scope(budget):
@@ -339,7 +385,10 @@ async def operate_with_run(
                     )
                 failed_row.contract = {
                     **failed_row.contract,
-                    "operation_state": "unknown" if started else "not_started",
+                    "operation_state": "unknown"
+                    if not unissued_after_start
+                    and (started or failed_row.contract.get("operation_state") == "started")
+                    else "not_started",
                 }
                 failed_row.state_version += 1
                 failed_row.updated_at = datetime.now(UTC)
@@ -356,10 +405,12 @@ async def recover_expired_operations(database: Database) -> int:
     """Interrupted provider operations are never replayed after their deadline."""
     count = 0
     while True:
-        async with database.sessions.begin() as session:
-            rows = list(
-                await session.scalars(
-                    select(TaskRunRecord)
+        # Advisory inventory is outside the write transaction. SQLite ignores
+        # FOR UPDATE; upgrading a read transaction races live start/recovery.
+        async with database.sessions() as reader:
+            candidates = (
+                await reader.execute(
+                    select(TaskRunRecord.id, TaskRunRecord.user_id)
                     .where(
                         TaskRunRecord.status.in_({"accepted", "running"}),
                         TaskRunRecord.deadline <= datetime.now(UTC),
@@ -368,10 +419,49 @@ async def recover_expired_operations(database: Database) -> int:
                     )
                     .order_by(TaskRunRecord.id)
                     .limit(50)
-                    .with_for_update(skip_locked=True)
                 )
-            )
-            for row in rows:
+            ).all()
+        if not candidates:
+            return count
+        rows: list[TaskRunRecord] = []
+        async with database.sessions.begin() as session:
+            for identifier, owner in candidates:
+                row = cast(
+                    TaskRunRecord | None,
+                    await session.scalar(
+                        update(TaskRunRecord)
+                        .where(
+                            TaskRunRecord.id == identifier,
+                            TaskRunRecord.user_id == owner,
+                            TaskRunRecord.status.in_({"accepted", "running"}),
+                            TaskRunRecord.deadline <= datetime.now(UTC),
+                            TaskRunRecord.contract["criterion"].as_string()
+                            == "provider_response_returned",
+                        )
+                        .values(updated_at=TaskRunRecord.updated_at)
+                        .returning(TaskRunRecord)
+                        .execution_options(synchronize_session=False, populate_existing=True)
+                    ),
+                )
+                if row is None:
+                    continue
+                rows.append(row)
+                if row.contract.get("operation_state") != "started":
+                    await session.execute(
+                        update(ModelCostRecord)
+                        .where(
+                            ModelCostRecord.call_id == row.id,
+                            ModelCostRecord.user_id == row.user_id,
+                            ModelCostRecord.unit.is_not(None),
+                            ModelCostRecord.state == "reserved",
+                        )
+                        .values(
+                            state="estimated",
+                            charged_micros=0,
+                            unit_quantity=0,
+                            settled_at=datetime.now(UTC),
+                        )
+                    )
                 row.contract = {
                     **row.contract,
                     "operation_state": "unknown"
@@ -384,5 +474,5 @@ async def recover_expired_operations(database: Database) -> int:
 
         for row in rows:
             await recover_tool_reservations(database, run_id=row.id, user_id=row.user_id)
-        if len(rows) < 50:
+        if len(candidates) < 50:
             return count

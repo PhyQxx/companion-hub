@@ -1,5 +1,6 @@
 """UTC spending admission using decimal micro-units, never provider bills."""
 
+from collections.abc import Iterable
 from datetime import UTC, datetime, timedelta
 from decimal import ROUND_CEILING, ROUND_FLOOR, Decimal
 from uuid import UUID
@@ -31,6 +32,17 @@ def charge(tokens: int, input_rate: Decimal | None, output_rate: Decimal | None)
         return None
     # Rates per million tokens become micro currency units per token.
     return int((tokens * max(input_rate, output_rate)).to_integral_value(rounding=ROUND_CEILING))
+
+
+def assert_cost_window(
+    admitted_at: datetime, checked_at: datetime, policies: Iterable[RunBudgetConfig]
+) -> None:
+    for policy in policies:
+        if (policy.max_daily_cost is not None and admitted_at.date() != checked_at.date()) or (
+            policy.max_monthly_cost is not None
+            and (admitted_at.year, admitted_at.month) != (checked_at.year, checked_at.month)
+        ):
+            raise BudgetDenied("cost_window_changed")
 
 
 async def check_cost_allowance(

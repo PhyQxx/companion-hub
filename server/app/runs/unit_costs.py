@@ -17,7 +17,7 @@ from app.harness.budget import BudgetDenied
 from app.harness.time import utc
 from app.harness.unit_costs import MAX_COST_MICROS, UnitCostQuote, UnitUsage, unit_charge
 
-from .costs import check_cost_allowance
+from .costs import assert_cost_window, check_cost_allowance
 
 
 async def lock_unit_cost(
@@ -48,7 +48,8 @@ async def reserve_unit_cost(
     config: RunBudgetConfig,
     snapshot: RunBudgetConfig,
     now: datetime,
-) -> None:
+    clock: Callable[[], datetime] | None = None,
+) -> datetime:
     if not endpoint or len(endpoint) > 160:
         raise ValueError("invalid_cost_endpoint")
     # Claim -> active owner -> ledger. This is also a real SQLite first write.
@@ -72,6 +73,9 @@ async def reserve_unit_cost(
         ):
             raise BudgetDenied("cost_reservation_conflict")
         raise BudgetDenied("unit_cost_already_reserved")
+    # A pre-lock timestamp can belong to the previous UTC spending period.
+    current_time = clock or (lambda: now)
+    admitted_at = utc(current_time())
     amount = unit_charge(quote.pricing.rate_per_unit, quote.maximum_quantity)
     await check_cost_allowance(
         session,
@@ -80,7 +84,7 @@ async def reserve_unit_cost(
         currency=quote.pricing.currency,
         config=config,
         snapshot=snapshot,
-        now=now,
+        now=admitted_at,
     )
     session.add(
         ModelCostRecord(
@@ -94,9 +98,12 @@ async def reserve_unit_cost(
             reserved_micros=amount,
             charged_micros=amount,
             state="reserved",
-            created_at=now,
+            created_at=admitted_at,
         )
     )
+    await session.flush()
+    assert_cost_window(admitted_at, utc(current_time()), (config, snapshot))
+    return admitted_at
 
 
 async def settle_unit_cost(
@@ -170,7 +177,7 @@ class UnitCostStore:
     ) -> None:
         try:
             async with self._database.sessions.begin() as session:
-                await reserve_unit_cost(
+                admitted_at = await reserve_unit_cost(
                     session,
                     call_id=call_id,
                     user_id=user_id,
@@ -179,9 +186,16 @@ class UnitCostStore:
                     config=config,
                     snapshot=snapshot or config,
                     now=utc(self._clock()),
+                    clock=self._clock,
                 )
         except IntegrityError as error:
             raise BudgetDenied("cost_reservation_conflict") from error
+        try:
+            assert_cost_window(admitted_at, utc(self._clock()), (config, snapshot or config))
+        except BudgetDenied:
+            # This facade has not returned admission to its caller yet.
+            await self.release_unstarted(call_id=call_id, user_id=user_id)
+            raise
 
     async def mark_started(self, *, call_id: UUID, user_id: UUID) -> None:
         async with self._database.sessions.begin() as session:
