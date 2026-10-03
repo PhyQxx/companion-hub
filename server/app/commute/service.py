@@ -9,21 +9,24 @@ source_ref 复用 TASK-01 调度底座联动撤旧，不引入新调度器。
 from __future__ import annotations
 
 from collections.abc import Callable
+from copy import deepcopy
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from typing import Protocol
 from uuid import UUID
 
-from app.calendar import CalendarEventView
+from app.calendar.models import CalendarEventView
+from app.harness.time import utc
 from app.schemas.common import PrivacyLevel
 from app.tasks.models import TaskKind, TaskTrigger
-from app.tasks.store import TaskStore
+from app.tools.route_parser import parse_route
+
+from .ports import CommuteAmapProvider as CommuteAmapProvider
+from .ports import CommuteCalendarStore as CommuteCalendarStore
+from .ports import CommuteTaskStore
 
 DEPARTURE_SOURCE_PREFIX = "commute:"
 DEFAULT_WITHIN_HOURS = 24
 MAX_BUFFER_FALLBACK_SECONDS = 3 * 3600
-
-
 
 
 @dataclass(frozen=True, slots=True)
@@ -62,47 +65,17 @@ class CommutePlan:
         }
 
 
-class CommuteAmapProvider(Protocol):
-    """出行服务用到的高德能力子集（复用 tools.amap.AmapProvider 实例）。"""
-
-    async def geocode(self, address: str, *, city: str | None = None) -> dict[str, object]: ...
-
-    async def route(
-        self,
-        origin: str,
-        destination: str,
-        *,
-        mode: str,
-        origin_citycode: str | None = None,
-        destination_citycode: str | None = None,
-    ) -> dict[str, object]: ...
-
-
 class CommuteRouteError(RuntimeError):
     def __init__(self, reason_code: str) -> None:
         self.reason_code = reason_code
         super().__init__(reason_code)
 
 
-class CommuteCalendarStore(Protocol):
-    """出行服务用到的日历能力子集（CalendarStore 满足）。"""
-
-    async def list_events(
-        self,
-        user_id: UUID,
-        *,
-        starts_from: datetime | None = None,
-        starts_to: datetime | None = None,
-        include_cancelled: bool = False,
-        limit: int = 200,
-    ) -> list[CalendarEventView]: ...
-
-
 class CommuteService:
     def __init__(
         self,
         calendar_store: CommuteCalendarStore,
-        task_store: TaskStore,
+        task_store: CommuteTaskStore,
         amap: CommuteAmapProvider,
         *,
         origin: str,
@@ -127,16 +100,22 @@ class CommuteService:
         within_hours: int = DEFAULT_WITHIN_HOURS,
     ) -> CalendarEventView | None:
         """时间窗内下一个带地点的日程；无则返回 None。"""
-        now = self._clock()
+        now = utc(self._clock())
         events = await self._calendar.list_events(
             user_id,
             starts_from=now,
             starts_to=now + timedelta(hours=within_hours),
         )
-        for event in events:  # list_events 按 starts_at 升序
-            if (event.location or "").strip():
-                return event
-        return None
+        eligible = [
+            event
+            for event in events
+            if event.user_id == user_id
+            and event.status == "active"
+            and now <= utc(event.starts_at) <= now + timedelta(hours=within_hours)
+            and (event.location or "").strip()
+        ]
+        selected = min(eligible, key=lambda event: utc(event.starts_at), default=None)
+        return selected.model_copy(deep=True) if selected is not None else None
 
     async def plan_commute(
         self,
@@ -146,14 +125,21 @@ class CommuteService:
         reminder: bool = True,
     ) -> CommutePlan:
         """路线耗时 → 建议出发时刻；可选设置出发提醒（撤旧建新）。"""
+        event = event.model_copy(deep=True)
+        if event.user_id != user_id:
+            raise CommuteRouteError("commute_event_not_found")
+        if event.status != "active":
+            raise CommuteRouteError("commute_event_cancelled")
         destination_text = (event.location or "").strip()
-        now = self._clock()
+        if not destination_text:
+            raise CommuteRouteError("commute_destination_missing")
+        now = utc(self._clock())
         starts_at = event.starts_at
         if starts_at.tzinfo is None:
             starts_at = starts_at.replace(tzinfo=UTC)
 
         try:
-            origin_geo = await self._amap.geocode(self._origin, city=self._city)
+            origin_geo = deepcopy(await self._amap.geocode(self._origin, city=self._city))
         except CommuteRouteError:
             raise
         except Exception as error:
@@ -162,7 +148,7 @@ class CommuteService:
         if not origin_coord:
             raise CommuteRouteError("origin_geocode_failed")
         try:
-            destination_geo = await self._amap.geocode(destination_text, city=self._city)
+            destination_geo = deepcopy(await self._amap.geocode(destination_text, city=self._city))
         except CommuteRouteError:
             raise
         except Exception as error:
@@ -179,8 +165,6 @@ class CommuteService:
                 origin_citycode=str(origin_geo.get("citycode") or "") or None,
                 destination_citycode=str(destination_geo.get("citycode") or "") or None,
             )
-            from app.tools.nearby import parse_route
-
             distance, duration, _steps = parse_route(payload, self._mode)
         except CommuteRouteError:
             raise
@@ -216,9 +200,7 @@ class CommuteService:
             event_title=event.title,
             starts_at=starts_at,
             origin_text=self._origin,
-            destination_text=str(
-                destination_geo.get("formatted_address") or destination_text
-            ),
+            destination_text=str(destination_geo.get("formatted_address") or destination_text),
             mode=self._mode,
             distance_m=distance,
             duration_s=duration,
@@ -285,9 +267,7 @@ class CommuteService:
         )
 
 
-def _navigation_uri(
-    origin: str, destination: str, name: str, mode: str
-) -> str:
+def _navigation_uri(origin: str, destination: str, name: str, mode: str) -> str:
     """高德导航 URI Scheme（与 RouteTool 同形状，供客户端一键导航）。"""
     from urllib.parse import quote
 

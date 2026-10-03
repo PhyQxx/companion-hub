@@ -12,7 +12,7 @@ from app.llm import ToolDefinition
 from .amap import AmapProvider, AmapProviderError
 from .contracts import ToolContext, ToolResult
 from .location import normalize_explicit, resolve_location
-from .nearby import parse_route
+from .route_parser import parse_route
 
 
 class PlanRouteArgs(BaseModel):

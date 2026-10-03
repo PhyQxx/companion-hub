@@ -51,6 +51,18 @@ import pytest
         "app.focus.analysis",
         "app.focus.core",
         "app.focus:FocusSessionService",
+        "app.commute.service",
+        "app.commute.ports",
+        "app.calendar.models",
+        "app.tasks.models",
+        "app.tools.amap_models",
+        "app.tools.route_parser",
+        "app.commute:CommuteService",
+        "app.tools:AmapProviderError",
+        "app.calendar",
+        "app.tasks",
+        "app.tools",
+        "app.commute",
     ],
 )
 def test_pure_import_without_persistence_or_provider_dependencies(module: str) -> None:
@@ -95,6 +107,10 @@ if separator:
         "config",
         "voice",
         "focus",
+        "calendar",
+        "tasks",
+        "tools",
+        "commute",
     ],
 )
 def test_all_legacy_exports_preserve_object_identity_caching_and_discovery(name: str) -> None:

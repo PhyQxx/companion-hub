@@ -13,6 +13,8 @@ from app.llm import ToolDefinition
 from .amap import AmapProvider, AmapProviderError
 from .contracts import ToolContext, ToolResult
 from .location import normalize_explicit, resolve_location
+from .route_parser import _integer as _integer
+from .route_parser import parse_route as parse_route
 
 _CATEGORY_TYPES = {
     "hospital": "090000",
@@ -191,41 +193,6 @@ def _marker_uri(location: str, name: str) -> str:
     return "https://uri.amap.com/marker?" + urlencode(
         {"position": location, "name": name, "src": "companion-hub", "callnative": "0"}
     )
-
-
-def _integer(value: Any) -> int | None:
-    try:
-        return int(float(value))
-    except (TypeError, ValueError):
-        return None
-
-
-def parse_route(
-    payload: dict[str, Any], mode: str
-) -> tuple[int, int | None, list[str]]:
-    route = payload.get("route")
-    if not isinstance(route, dict):
-        raise AmapProviderError("route_unavailable")
-    choices = route.get("transits" if mode == "transit" else "paths")
-    if not isinstance(choices, list) or not choices or not isinstance(choices[0], dict):
-        raise AmapProviderError("route_unavailable")
-    choice = choices[0]
-    distance = _integer(choice.get("distance"))
-    if distance is None:
-        raise AmapProviderError("tool_result_invalid")
-    cost = choice.get("cost")
-    duration = _integer(cost.get("duration")) if isinstance(cost, dict) else None
-    if duration is None:
-        duration = _integer(choice.get("duration"))
-    steps: list[str] = []
-    raw_steps = choice.get("steps")
-    if isinstance(raw_steps, list):
-        steps = [
-            str(item["instruction"])
-            for item in raw_steps[:12]
-            if isinstance(item, dict) and item.get("instruction")
-        ]
-    return distance, duration, steps
 
 
 def nearby_tool_definition() -> ToolDefinition:
