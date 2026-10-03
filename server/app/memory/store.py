@@ -451,16 +451,31 @@ class MemoryStore:
         sources: Sequence[MemorySourceRef],
         importance_step: float,
         source_owner_id: UUID | None = None,
+        user_id: UUID | None = None,
     ) -> MemoryEntry:
-        now = datetime.now(UTC)
+        if user_id is not None and source_owner_id is not None and user_id != source_owner_id:
+            raise ValueError("source_owner_mismatch")
+        owner = user_id if user_id is not None else source_owner_id
+        sources = tuple(source.model_copy(deep=True) for source in sources)
         async with self._database.sessions.begin() as session:
             if source_owner_id is not None:
                 await self._guard_sources(session, sources, user_id=source_owner_id)
             await assert_current_claim(session)
 
-            record = await session.get(MemoryRecord, memory_id, with_for_update=True)
+            query = update(MemoryRecord).where(MemoryRecord.id == memory_id)
+            if owner is not None:
+                query = query.where(MemoryRecord.user_id == owner)
+            # A real write fence precedes reads even on SQLite; preserve the
+            # content revision until independent evidence is actually added.
+            record = await session.scalar(
+                query.values(updated_at=MemoryRecord.updated_at)
+                .returning(MemoryRecord)
+                .execution_options(populate_existing=True)
+            )
             if record is None:
                 raise LookupError(f"memory not found: {memory_id}")
+            if record.status != MemoryStatus.ACTIVE.value:
+                raise ValueError("memory_not_active")
             if source_owner_id is not None:
                 old_sources = {
                     (row.source_kind, row.source_id)
@@ -472,6 +487,7 @@ class MemoryStore:
                     (str(source.source_kind), source.source_id) in old_sources for source in sources
                 ):
                     return self._entry(record)
+            now = datetime.now(UTC)
             record.importance = min(1.0, record.importance + importance_step)
             record.access_count += 1
             record.last_accessed_at = now
@@ -925,6 +941,25 @@ class MemoryStore:
         ]
         if not message_ids:
             raise ValueError("durable_turn_requires_message_sources")
+        # Lock the first owned source conversation before any read, then acquire
+        # all source locks in the same ID order as deletion. An empty match still
+        # establishes SQLite's write transaction before source lookups.
+        first_conversation = (
+            select(MessageRecord.conversation_id)
+            .join(ConversationRecord, ConversationRecord.id == MessageRecord.conversation_id)
+            .where(MessageRecord.id.in_(message_ids), ConversationRecord.user_id == user_id)
+            .order_by(MessageRecord.conversation_id)
+            .limit(1)
+            .scalar_subquery()
+        )
+        await session.execute(
+            update(ConversationRecord)
+            .where(
+                ConversationRecord.id == first_conversation, ConversationRecord.user_id == user_id
+            )
+            .values(last_active_at=ConversationRecord.last_active_at)
+            .execution_options(synchronize_session=False)
+        )
         conversation_ids = list(
             await session.scalars(
                 select(MessageRecord.conversation_id)

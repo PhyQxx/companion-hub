@@ -56,4 +56,5 @@ class MemoryConsolidationRepository(Protocol):
         sources: Sequence[MemorySourceRef],
         importance_step: float,
         source_owner_id: UUID | None = None,
+        user_id: UUID | None = None,
     ) -> MemoryEntry: ...

@@ -63,6 +63,7 @@ class CandidateConsolidator:
                 ):
                     updated = await self._repository.register_support(
                         current.id,
+                        user_id=user_id,
                         sources=candidate.sources,
                         source_owner_id=user_id if enforce_sources else None,
                         importance_step=self._policy.support_importance_step,
@@ -109,6 +110,7 @@ class CandidateConsolidator:
         if best is not None and best.similarity >= self._policy.support_threshold:
             updated = await self._repository.register_support(
                 best.entry.id,
+                user_id=user_id,
                 sources=candidate.sources,
                 source_owner_id=user_id if enforce_sources else None,
                 importance_step=self._policy.support_importance_step,

@@ -127,6 +127,7 @@ class Repository:
         sources: Sequence[MemorySourceRef],
         importance_step: float,
         source_owner_id: UUID | None = None,
+        user_id: UUID | None = None,
     ) -> MemoryEntry:
         self.calls.append(
             (
@@ -136,6 +137,7 @@ class Repository:
                     "sources": tuple(sources),
                     "importance_step": importance_step,
                     "source_owner_id": source_owner_id,
+                    "user_id": user_id,
                 },
             )
         )

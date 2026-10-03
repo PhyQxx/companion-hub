@@ -53,6 +53,7 @@ async def test_consolidation_threshold_boundaries(score: float | None, decision:
     operation = repository.calls[-1][1]
     if decision == "supported":
         assert operation["source_owner_id"] == owner and operation["importance_step"] == 0.05
+        assert operation["user_id"] == owner
         assert result.related is repository.entry and result.memory.id == repository.entry.id
     else:
         assert operation["user_id"] == owner and operation["actor"] == "fixture"
