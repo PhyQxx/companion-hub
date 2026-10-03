@@ -42,6 +42,27 @@ class Tasks:
         self.calls.append({"cancel": source_ref})
         return 0
 
+    async def replace_calendar_reminder(
+        self,
+        user_id: Any,
+        event: CalendarEventView,
+        *,
+        title: str,
+        trigger: Any,
+        source: str,
+        now: datetime,
+    ) -> TaskView:
+        return await self.create(
+            user_id=user_id,
+            kind="reminder",
+            title=title,
+            trigger=trigger,
+            source=source,
+            source_ref=f"{source}:{event.id}",
+            privacy_level="L1",
+            now=now,
+        )
+
     async def create(self, **kwargs: Any) -> TaskView:
         self.calls.append(kwargs)
         return TaskView(

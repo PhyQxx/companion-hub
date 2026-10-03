@@ -14,8 +14,7 @@ from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from uuid import UUID
 
-from app.schemas.common import PrivacyLevel
-from app.tasks.models import TaskKind, TaskStatus, TaskTrigger
+from app.tasks.models import TaskStatus, TaskTrigger
 from app.tasks.store import TaskStore
 
 from .models import CalendarEventView, CalendarParticipant, CalendarPreview
@@ -98,7 +97,7 @@ class CalendarService:
             location=location,
             participants=participants,
         )
-        await self._sync_reminder(user_id, record.id, title, starts_at, reminder_lead_minutes)
+        await self._sync_reminder(user_id, record, reminder_lead_minutes)
         return await self._view_with_reminder(user_id, record.id)
 
     async def reschedule_event(
@@ -123,12 +122,9 @@ class CalendarService:
             notes=notes,
         )
         # 改期后重建提醒：撤旧建新，避免旧时间点误提醒
-        await self._tasks.cancel_tasks_by_source_ref(user_id, _ref(event_id))
         await self._sync_reminder(
             user_id,
-            event_id,
-            updated.title,
-            updated.starts_at,
+            updated,
             DEFAULT_REMINDER_LEAD_MINUTES
             if reminder_lead_minutes is None
             else reminder_lead_minutes,
@@ -137,7 +133,6 @@ class CalendarService:
 
     async def cancel_event(self, user_id: UUID, event_id: UUID) -> CalendarEventView:
         cancelled = await self._store.cancel_event(user_id, event_id)
-        await self._tasks.cancel_tasks_by_source_ref(user_id, _ref(event_id))
         return cancelled.model_copy(update={"reminder_task_id": None})
 
     async def list_events(self, user_id: UUID, **kwargs: object) -> list[CalendarEventView]:
@@ -146,26 +141,22 @@ class CalendarService:
     async def _sync_reminder(
         self,
         user_id: UUID,
-        event_id: UUID,
-        title: str,
-        starts_at: datetime,
+        event: CalendarEventView,
         lead_minutes: int,
     ) -> None:
         if lead_minutes <= 0:
             return
         moment = self._clock()
-        fire_at = starts_at - timedelta(minutes=lead_minutes)
+        fire_at = event.starts_at - timedelta(minutes=lead_minutes)
         if fire_at <= moment:
             # 事件太近，提前量已过：改为尽快提醒（仍经任务调度 exactly-once）
             fire_at = moment + timedelta(seconds=1)
-        await self._tasks.create(
-            user_id=user_id,
-            kind=TaskKind.REMINDER,
-            title=f"日程提醒：{title}（{starts_at.strftime('%m-%d %H:%M')}）",
+        await self._tasks.replace_calendar_reminder(
+            user_id,
+            event,
+            title=f"日程提醒：{event.title}（{event.starts_at.strftime('%m-%d %H:%M')}）",
             trigger=TaskTrigger(type="time", at=fire_at),
-            privacy_level=PrivacyLevel.L1,
             source="calendar",
-            source_ref=_ref(event_id),
             now=moment,
         )
 

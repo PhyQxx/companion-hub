@@ -50,3 +50,7 @@ class CalendarPreview(StrictModel):
     participants: list[CalendarParticipant] = Field(default_factory=list)
     reminder_lead_minutes: int
     conflicts: list[CalendarEventView] = Field(default_factory=list)
+
+
+class CalendarSourceInvalidated(ValueError):
+    """A calendar-derived write no longer has its accepted source authority."""

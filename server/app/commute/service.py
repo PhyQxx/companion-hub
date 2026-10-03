@@ -14,10 +14,9 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from uuid import UUID
 
-from app.calendar.models import CalendarEventView
+from app.calendar.models import CalendarEventView, CalendarSourceInvalidated
 from app.harness.time import utc
-from app.schemas.common import PrivacyLevel
-from app.tasks.models import TaskKind, TaskTrigger
+from app.tasks.models import TaskTrigger
 from app.tools.route_parser import parse_route
 
 from .ports import CommuteAmapProvider as CommuteAmapProvider
@@ -188,10 +187,8 @@ class CommuteService:
         if reminder:
             reminder_task_id = await self._sync_reminder(
                 user_id,
-                event_id=str(event.id),
-                event_title=event.title,
+                event=event,
                 leave_by=leave_by,
-                starts_at=starts_at,
                 now=now,
             )
 
@@ -235,25 +232,21 @@ class CommuteService:
         self,
         user_id: UUID,
         *,
-        event_id: str,
-        event_title: str,
+        event: CalendarEventView,
         leave_by: datetime,
-        starts_at: datetime,
         now: datetime,
     ) -> str | None:
-        """出发提醒经 TASK-01 调度，source_ref=commute:{event_id} 撤旧建新。"""
-        ref = f"{DEPARTURE_SOURCE_PREFIX}{event_id}"
-        await self._tasks.cancel_tasks_by_source_ref(user_id, ref)
-        task = await self._tasks.create(
-            user_id=user_id,
-            kind=TaskKind.REMINDER,
-            title=f"该出发了：{event_title}（{starts_at.strftime('%H:%M')} 开始）",
-            trigger=TaskTrigger(type="time", at=leave_by),
-            privacy_level=PrivacyLevel.L1,
-            source="commute",
-            source_ref=ref,
-            now=now,
-        )
+        try:
+            task = await self._tasks.replace_calendar_reminder(
+                user_id,
+                event,
+                title=f"该出发了：{event.title}（{event.starts_at.strftime('%H:%M')} 开始）",
+                trigger=TaskTrigger(type="time", at=leave_by),
+                source="commute",
+                now=now,
+            )
+        except CalendarSourceInvalidated as error:
+            raise CommuteRouteError(str(error)) from error
         return str(task.id)
 
     async def aclose(self) -> None:

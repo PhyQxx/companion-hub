@@ -40,6 +40,17 @@ class CommuteCalendarStore(Protocol):
 
 
 class CommuteTaskStore(Protocol):
+    async def replace_calendar_reminder(
+        self,
+        user_id: UUID,
+        event: CalendarEventView,
+        *,
+        title: str,
+        trigger: TaskTrigger,
+        source: str,
+        now: datetime,
+    ) -> TaskView: ...
+
     async def cancel_tasks_by_source_ref(self, user_id: UUID, source_ref: str) -> int: ...
 
     async def create(

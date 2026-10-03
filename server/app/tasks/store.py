@@ -16,7 +16,8 @@ from sqlalchemy import func, select, update
 from sqlalchemy.engine import CursorResult
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db import AppUserRecord, Database, TaskItemRecord, TaskRunRecord
+from app.calendar.models import CalendarEventView, CalendarSourceInvalidated
+from app.db import AppUserRecord, CalendarEventRecord, Database, TaskItemRecord, TaskRunRecord
 from app.ids import uuid7
 from app.schemas.common import PrivacyLevel
 
@@ -129,29 +130,121 @@ class TaskStore:
             session.add(record)
         return _to_view(record)
 
-    async def cancel_tasks_by_source_ref(self, user_id: UUID, source_ref: str) -> int:
-        """联动取消：外部实体（如日历事件）取消/改期时撤下其提醒任务。"""
-        now = datetime.now(UTC)
-        async with self._database.sessions.begin() as session:
-            result = await session.execute(
-                update(TaskItemRecord)
-                .where(
-                    TaskItemRecord.user_id == user_id,
-                    TaskItemRecord.source_ref == source_ref,
-                    TaskItemRecord.status.in_([str(TaskStatus.ACTIVE), str(TaskStatus.FIRING)]),
-                )
-                .values(
-                    status=str(TaskStatus.CANCELLED),
-                    cancelled_at=now,
-                    next_fire_at=None,
-                    updated_at=now,
-                )
-                .returning(TaskItemRecord.id)
+    async def cancel_tasks_by_source_ref_in_session(
+        self,
+        session: AsyncSession,
+        user_id: UUID,
+        source_ref: str,
+        *,
+        now: datetime,
+        include_dependents: bool = True,
+    ) -> int:
+        refs = [source_ref]
+        if include_dependents and source_ref.startswith("calendar:"):
+            try:
+                event_id = UUID(source_ref.removeprefix("calendar:"))
+            except ValueError:
+                pass
+            else:
+                refs.append(f"commute:{event_id}")
+        result = await session.execute(
+            update(TaskItemRecord)
+            .where(
+                TaskItemRecord.user_id == user_id,
+                TaskItemRecord.source_ref.in_(refs),
+                TaskItemRecord.status.in_([str(TaskStatus.ACTIVE), str(TaskStatus.FIRING)]),
             )
-            identifiers = sorted(result.scalars())
-            for identifier in identifiers:
-                await self._cancel_current_delivery(session, user_id, identifier)
+            .values(
+                status=str(TaskStatus.CANCELLED),
+                cancelled_at=now,
+                next_fire_at=None,
+                updated_at=now,
+            )
+            .returning(TaskItemRecord.id)
+        )
+        identifiers = sorted(result.scalars())
+        for identifier in identifiers:
+            await self._cancel_current_delivery(session, user_id, identifier)
         return len(identifiers)
+
+    async def cancel_tasks_by_source_ref(self, user_id: UUID, source_ref: str) -> int:
+        """Cancel owned source tasks and calendar-dependent departures in one transaction."""
+        async with self._database.sessions.begin() as session:
+            return await self.cancel_tasks_by_source_ref_in_session(
+                session, user_id, source_ref, now=datetime.now(UTC)
+            )
+
+    async def replace_calendar_reminder(
+        self,
+        user_id: UUID,
+        event: CalendarEventView,
+        *,
+        title: str,
+        trigger: TaskTrigger,
+        source: str,
+        now: datetime,
+    ) -> TaskView:
+        """Fence current source, cancel old task and insert its replacement atomically."""
+        event = event.model_copy(deep=True)
+        if (
+            source not in ("calendar", "commute")
+            or event.user_id != user_id
+            or event.status != "active"
+        ):
+            raise CalendarSourceInvalidated("calendar_source_changed")
+        if trigger.type != "time":
+            raise ValueError("calendar reminders require a time trigger")
+        normalized = validate_trigger(trigger.model_copy(deep=True), now=now)
+        ref = f"{source}:{event.id}"
+        async with self._database.sessions.begin() as session:
+            active_owner = await session.scalar(
+                update(AppUserRecord)
+                .where(AppUserRecord.id == user_id, AppUserRecord.status == "active")
+                .values(status=AppUserRecord.status)
+                .returning(AppUserRecord.id)
+            )
+            if active_owner is None:
+                raise CalendarSourceInvalidated("task_owner_inactive")
+            current = await session.scalar(
+                update(CalendarEventRecord)
+                .where(
+                    CalendarEventRecord.id == event.id,
+                    CalendarEventRecord.user_id == user_id,
+                    CalendarEventRecord.status == "active",
+                    CalendarEventRecord.starts_at == event.starts_at,
+                    CalendarEventRecord.ends_at == event.ends_at,
+                    CalendarEventRecord.title == event.title,
+                    CalendarEventRecord.location == event.location,
+                    CalendarEventRecord.updated_at == event.updated_at,
+                )
+                .values(updated_at=CalendarEventRecord.updated_at)
+                .returning(CalendarEventRecord.id)
+            )
+            if current is None:
+                raise CalendarSourceInvalidated("calendar_source_changed")
+            await self.cancel_tasks_by_source_ref_in_session(
+                session, user_id, ref, now=now, include_dependents=False
+            )
+            record = TaskItemRecord(
+                id=uuid7(),
+                user_id=user_id,
+                kind=str(TaskKind.REMINDER),
+                title=title,
+                notes=None,
+                status=str(TaskStatus.ACTIVE),
+                trigger_type=str(normalized.type),
+                trigger_config=normalized.model_dump(mode="json"),
+                event_type=normalized.event_type,
+                source_ref=ref,
+                next_fire_at=normalized.at if normalized.type == "time" else None,
+                fire_count=0,
+                privacy_level=str(PrivacyLevel.L1),
+                source=source,
+                created_at=now,
+                updated_at=now,
+            )
+            session.add(record)
+        return _to_view(record)
 
     async def list_tasks(
         self,

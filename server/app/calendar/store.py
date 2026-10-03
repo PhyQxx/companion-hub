@@ -5,10 +5,13 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import select, update
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db import CalendarEventRecord, Database
+from app.harness.time import utc
 from app.ids import uuid7
+from app.tasks.store import TaskStore
 
 from .models import CalendarEventView, CalendarParticipant
 
@@ -132,6 +135,31 @@ class CalendarStore:
             records = (await session.execute(query)).scalars().all()
         return [_to_view(record) for record in records]
 
+    async def _lock_active(
+        self, session: AsyncSession, user_id: UUID, event_id: UUID
+    ) -> CalendarEventRecord:
+        current = await session.scalar(
+            update(CalendarEventRecord)
+            .where(
+                CalendarEventRecord.id == event_id,
+                CalendarEventRecord.user_id == user_id,
+                CalendarEventRecord.status == "active",
+            )
+            .values(updated_at=CalendarEventRecord.updated_at)
+            .returning(CalendarEventRecord)
+            .execution_options(synchronize_session=False, populate_existing=True)
+        )
+        if current is not None:
+            return current
+        existing = await session.scalar(
+            select(CalendarEventRecord).where(
+                CalendarEventRecord.id == event_id, CalendarEventRecord.user_id == user_id
+            )
+        )
+        if existing is None:
+            raise LookupError("calendar event not found")
+        raise ValueError("only active events can be changed")
+
     async def update_event(
         self,
         user_id: UUID,
@@ -144,17 +172,12 @@ class CalendarStore:
         notes: str | None = None,
         now: datetime | None = None,
     ) -> CalendarEventView:
-        record = await self.get_event(user_id, event_id)
-        if record.status != "active":
-            raise ValueError("only active events can be updated")
         moment = now or datetime.now(UTC)
-        new_start = starts_at or record.starts_at
-        new_end = ends_at or record.ends_at
-        if new_end <= new_start:
-            raise ValueError("结束时间必须晚于开始时间")
         async with self._database.sessions.begin() as session:
-            managed = await session.get(CalendarEventRecord, event_id)
-            assert managed is not None
+            managed = await self._lock_active(session, user_id, event_id)
+            new_start, new_end = starts_at or managed.starts_at, ends_at or managed.ends_at
+            if utc(new_end) <= utc(new_start):
+                raise ValueError("结束时间必须晚于开始时间")
             if title is not None:
                 managed.title = title
             if starts_at is not None:
@@ -166,8 +189,10 @@ class CalendarStore:
             if notes is not None:
                 managed.notes = notes
             managed.updated_at = moment
-        refreshed = await self.get_event(user_id, event_id)
-        return _to_view(refreshed)
+            await TaskStore(self._database).cancel_tasks_by_source_ref_in_session(
+                session, user_id, f"calendar:{event_id}", now=moment
+            )
+        return _to_view(managed)
 
     async def cancel_event(
         self,
@@ -176,14 +201,12 @@ class CalendarStore:
         *,
         now: datetime | None = None,
     ) -> CalendarEventView:
-        record = await self.get_event(user_id, event_id)
-        if record.status != "active":
-            raise ValueError("only active events can be cancelled")
         moment = now or datetime.now(UTC)
         async with self._database.sessions.begin() as session:
-            managed = await session.get(CalendarEventRecord, event_id)
-            assert managed is not None
+            managed = await self._lock_active(session, user_id, event_id)
             managed.status = "cancelled"
             managed.updated_at = moment
-        refreshed = await self.get_event(user_id, event_id)
-        return _to_view(refreshed)
+            await TaskStore(self._database).cancel_tasks_by_source_ref_in_session(
+                session, user_id, f"calendar:{event_id}", now=moment
+            )
+        return _to_view(managed)
