@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import os
 from collections.abc import Awaitable, Callable, Mapping
+from decimal import Decimal, localcontext
 from time import perf_counter
 from typing import Any, Protocol
 
@@ -208,11 +210,19 @@ class LiteLLMProvider:
         )
         # Missing rates or incomplete usage are unknown, including local endpoints.
         # A configured zero is distinct from missing pricing; no currency conversion.
-        estimated_cost = (
-            (input_tokens * input_rate + output_tokens * output_rate) / 1_000_000
-            if split_known and input_rate is not None and output_rate is not None
-            else None
-        )
+        estimated_cost = None
+        if split_known and input_rate is not None and output_rate is not None:
+            with localcontext() as context:
+                context.prec = 64
+                display_cost = float(
+                    (
+                        input_tokens * Decimal(str(input_rate))
+                        + output_tokens * Decimal(str(output_rate))
+                    )
+                    / 1_000_000
+                )
+            if math.isfinite(display_cost):
+                estimated_cost = display_cost
         return CompletionResult(
             text=text,
             provider=self.endpoint.provider,

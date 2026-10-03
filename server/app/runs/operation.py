@@ -76,6 +76,8 @@ async def operate_with_run(
                 or row.contract.get("work_cancel_requested")
             ):
                 raise BudgetDenied("budget_run_inactive")
+            if row.contract.get("budget_usage_overflow"):
+                raise BudgetDenied("budget_usage_overflow")
             if int(str(row.privacy_level)[1]) > int(str(privacy_level)[1]):
                 raise BudgetDenied("operation_privacy_downgrade")
             if row.deadline is not None and utc(row.deadline) <= current_time:

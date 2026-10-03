@@ -2,7 +2,7 @@
 
 from collections.abc import Iterable
 from datetime import UTC, datetime, timedelta
-from decimal import ROUND_CEILING, ROUND_FLOOR, Decimal
+from decimal import ROUND_CEILING, ROUND_FLOOR, Decimal, localcontext
 from uuid import UUID
 
 from sqlalchemy import and_, func, or_, select, update
@@ -11,27 +11,36 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config.models import RunBudgetConfig
 from app.db import Database, ModelCostRecord
 from app.harness.budget import BudgetDenied
+from app.harness.unit_costs import MAX_COST_MICROS
 from app.llm.contracts import ModelPricing, ModelUsage
 from app.schemas.costs import CostCurrencyView, CostSummaryView
 
 
 def micros(value: float) -> int:
-    return int((Decimal(str(value)) * 1_000_000).to_integral_value(rounding=ROUND_FLOOR))
+    with localcontext() as context:
+        context.prec = 64
+        return int((Decimal(str(value)) * 1_000_000).to_integral_value(rounding=ROUND_FLOOR))
 
 
 def rate(value: float | None) -> Decimal | None:
-    return (
-        Decimal(str(value)).quantize(Decimal("0.000000000001"), rounding=ROUND_CEILING)
-        if value is not None
-        else None
-    )
+    with localcontext() as context:
+        context.prec = 64
+        return (
+            Decimal(str(value)).quantize(Decimal("0.000000000001"), rounding=ROUND_CEILING)
+            if value is not None
+            else None
+        )
 
 
 def charge(tokens: int, input_rate: Decimal | None, output_rate: Decimal | None) -> int | None:
     if input_rate is None or output_rate is None:
         return None
     # Rates per million tokens become micro currency units per token.
-    return int((tokens * max(input_rate, output_rate)).to_integral_value(rounding=ROUND_CEILING))
+    with localcontext() as context:
+        context.prec = 64
+        return int(
+            (tokens * max(input_rate, output_rate)).to_integral_value(rounding=ROUND_CEILING)
+        )
 
 
 def assert_cost_window(
@@ -130,6 +139,8 @@ async def reserve_cost(
     pricing = pricing or ModelPricing()
     input_rate, output_rate = rate(pricing.input_rate), rate(pricing.output_rate)
     reserved = charge(tokens, input_rate, output_rate)
+    if reserved is not None and reserved > MAX_COST_MICROS:
+        raise BudgetDenied("cost_reservation_overflow")
     await check_cost_allowance(
         session,
         user_id=user_id,
@@ -162,7 +173,8 @@ async def settle_cost(
     user_id: UUID,
     usage: ModelUsage | None,
     now: datetime,
-) -> None:
+) -> bool:
+    """Commit unknown on amount overflow; the caller rejects after its transaction."""
     row = await session.scalar(
         # Late usage survives source deletion, so its ledger must serialize
         # independently of the Run. SQLite ignores SELECT FOR UPDATE; start
@@ -177,7 +189,7 @@ async def settle_cost(
         .execution_options(synchronize_session=False, populate_existing=True)
     )
     if row is None:
-        return  # Pre-ledger calls cannot be retroactively priced.
+        return False  # Pre-ledger calls cannot be retroactively priced.
     if row.unit is not None:
         raise BudgetDenied("cost_kind_mismatch")
     if (
@@ -196,29 +208,39 @@ async def settle_cost(
         and usage.total_tokens == usage.input_tokens + usage.output_tokens
         and (usage.total_tokens > 0 or usage.usage_known is True)
     ):
-        actual = int(
-            (
-                usage.input_tokens * row.input_rate + usage.output_tokens * row.output_rate
-            ).to_integral_value(rounding=ROUND_CEILING)
-        )
+        with localcontext() as context:
+            context.prec = 64
+            actual = int(
+                (
+                    usage.input_tokens * row.input_rate + usage.output_tokens * row.output_rate
+                ).to_integral_value(rounding=ROUND_CEILING)
+            )
     if row.state == "estimated":
         if actual is not None and row.charged_micros != actual:
             raise BudgetDenied("cost_settlement_conflict")
-        return
-    row.state = "estimated" if actual is not None else "unknown"
-    if actual is not None:
-        row.charged_micros = actual
-    elif usage is not None:
-        observed_hold = charge(
+        return False
+    observed_hold = (
+        charge(
             max(usage.total_tokens, usage.input_tokens + usage.output_tokens),
             row.input_rate,
             row.output_rate,
         )
-        if observed_hold is not None:
-            row.charged_micros = max(row.charged_micros or 0, observed_hold)
+        if usage is not None and actual is None
+        else actual
+    )
+    overflow = observed_hold is not None and observed_hold > MAX_COST_MICROS
+    row.state = "estimated" if actual is not None and not overflow else "unknown"
+    if overflow:
+        row.charged_micros = None
+    elif actual is not None:
+        row.charged_micros = actual
+    elif observed_hold is not None and row.charged_micros is not None:
+        # A partial smaller observation cannot erase a previous overflow.
+        row.charged_micros = max(row.charged_micros, observed_hold)
     if usage is not None and usage.provider_request_id:
         row.provider_request_id = usage.provider_request_id
     row.settled_at = now
+    return overflow
 
 
 async def recover_cost_reservations(database: Database) -> None:

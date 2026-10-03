@@ -24,12 +24,13 @@ from app.db import (
     TaskRunRecord,
 )
 from app.db.claims import assert_current_claim
-from app.harness.budget import BudgetDenied, CallPermit
+from app.harness.budget import MAX_MODEL_TOKENS, BudgetDenied, CallPermit
+from app.harness.source_cleanup import close_after_source
 from app.harness.time import utc as utc
 from app.ids import uuid7
 from app.llm.contracts import ModelPricing, ModelUsage
 
-from .costs import recover_cost_reservations, reserve_cost, settle_cost
+from .costs import assert_cost_window, recover_cost_reservations, reserve_cost, settle_cost
 
 
 def _bounded(value: ColumnElement[int], maximum: int) -> ColumnElement[int]:
@@ -91,7 +92,7 @@ class RunModelBudget:
     async def reserve(
         self, *, endpoint: str, tokens: int, final: bool, pricing: ModelPricing | None = None
     ) -> CallPermit:
-        if tokens < 1:
+        if tokens < 1 or tokens > MAX_MODEL_TOKENS:
             raise ValueError("invalid_budget_reservation")
         async with self._database.sessions.begin() as session:
             await assert_current_claim(session)
@@ -150,6 +151,7 @@ class RunModelBudget:
                 snapshot_tokens.is_not(None),
                 TaskRunRecord.status.in_(statuses),
                 TaskRunRecord.contract["work_cancel_requested"].as_boolean().is_not(True),
+                TaskRunRecord.contract["budget_usage_overflow"].as_boolean().is_not(True),
                 TaskRunRecord.llm_attempts < limit,
                 TaskRunRecord.budget_tokens
                 <= _bounded(snapshot_tokens, self._config.max_tokens) - tokens,
@@ -214,21 +216,25 @@ class RunModelBudget:
                 raise BudgetDenied("run_deadline_exceeded")
             # No provider has received a permit. If flushing crosses a capped
             # period, roll back rather than commit an entry in the wrong one.
-            for policy in (snapshot, self._config):
-                if (policy.max_daily_cost is not None and now.date() != checked_at.date()) or (
-                    policy.max_monthly_cost is not None
-                    and (now.year, now.month) != (checked_at.year, checked_at.month)
-                ):
-                    raise BudgetDenied("cost_window_changed")
+            assert_cost_window(now, checked_at, (snapshot, self._config))
+
         # Include database admission latency in the remaining execution time.
-        remaining = (utc(deadline) - datetime.now(UTC)).total_seconds()
-        if remaining <= 0:
+        async def release_unissued() -> None:
             await self._settle(
                 call_id,
                 ModelUsage(input_tokens=0, output_tokens=0, total_tokens=0, usage_known=True),
                 provider_not_started=True,
             )
-            raise BudgetDenied("run_deadline_exceeded")
+
+        try:
+            checked_at = datetime.now(UTC)
+            remaining = (utc(deadline) - checked_at).total_seconds()
+            if remaining <= 0:
+                raise BudgetDenied("run_deadline_exceeded")
+            assert_cost_window(now, checked_at, (snapshot, self._config))
+        except BudgetDenied:
+            async with close_after_source(release_unissued):
+                raise
         return CallPermit(call_id, remaining)
 
     async def _deny_admission(self, session: AsyncSession, statuses: set[str]) -> NoReturn:
@@ -252,6 +258,8 @@ class RunModelBudget:
             raise BudgetDenied("run_deadline_exceeded")
         if row.status not in statuses or row.contract.get("work_cancel_requested"):
             raise BudgetDenied("budget_run_inactive")
+        if row.contract.get("budget_usage_overflow"):
+            raise BudgetDenied("budget_usage_overflow")
         concurrency = min(
             int(row.budget.get("max_concurrent_llm_calls", self._config.max_concurrent_llm_calls)),
             self._config.max_concurrent_llm_calls,
@@ -284,17 +292,23 @@ class RunModelBudget:
             if usage is not None and usage.usage_known is not False
             else 0
         )
+        observed = max(usage.total_tokens, usage.input_tokens + usage.output_tokens) if usage else 0
+        overflow = False
         now = datetime.now(UTC)
         async with self._database.sessions.begin() as session:
             # Recovery owns Run before reservation/fee. Match that order to
             # avoid waiting on Run while holding the fee recovery needs.
-            run_id = await session.scalar(
-                update(TaskRunRecord)
-                .where(TaskRunRecord.id == self._run_id, TaskRunRecord.user_id == self._user_id)
-                .values(id=TaskRunRecord.id)
-                .returning(TaskRunRecord.id)
-                .execution_options(synchronize_session=False)
-            )
+            run = (
+                await session.execute(
+                    update(TaskRunRecord)
+                    .where(TaskRunRecord.id == self._run_id, TaskRunRecord.user_id == self._user_id)
+                    .values(id=TaskRunRecord.id)
+                    .returning(
+                        TaskRunRecord.id, TaskRunRecord.budget_tokens, TaskRunRecord.contract
+                    )
+                    .execution_options(synchronize_session=False)
+                )
+            ).one_or_none()
             if provider_not_started:
                 # Only reserve's postcommit gate uses this private path: its
                 # permit never left the budget, so even unpriced usage is zero.
@@ -309,13 +323,47 @@ class RunModelBudget:
                     .values(state="estimated", charged_micros=0, settled_at=now)
                 )
             else:
-                await settle_cost(
+                overflow = await settle_cost(
                     session, call_id=call_id, user_id=self._user_id, usage=usage, now=now
                 )
-            if run_id is None:
+            if run is None:
                 # Fees outlive deleted sources, but their Run is never recreated.
-                return
-            if (
+                pass
+            elif overflow or observed > MAX_MODEL_TOKENS:
+                # Do not put out-of-range counters into BIGINT or a fabricated
+                # saturated "actual". Keep the hold and close this Run's model
+                # admission permanently; late exact receipts may fix its fee.
+                affected = await session.scalar(
+                    update(ModelReservationRecord)
+                    .where(
+                        ModelReservationRecord.call_id == call_id,
+                        ModelReservationRecord.run_id == self._run_id,
+                        ModelReservationRecord.state.in_({"reserved", "unknown"}),
+                    )
+                    .values(state="unknown", settled_at=now)
+                    .returning(ModelReservationRecord.call_id)
+                )
+                if affected is not None:
+                    overflow = True
+                    await session.execute(
+                        update(TaskRunRecord)
+                        .where(
+                            TaskRunRecord.id == self._run_id, TaskRunRecord.user_id == self._user_id
+                        )
+                        .values(contract={**run.contract, "budget_usage_overflow": True})
+                    )
+                elif usage is not None and usage.usage_known is not False:
+                    existing = (
+                        await session.execute(
+                            select(ModelReservationRecord.actual_tokens).where(
+                                ModelReservationRecord.call_id == call_id,
+                                ModelReservationRecord.run_id == self._run_id,
+                            )
+                        )
+                    ).one_or_none()
+                    if existing is not None and existing.actual_tokens != actual:
+                        raise BudgetDenied("budget_settlement_conflict")
+            elif (
                 usage is None
                 or usage.usage_known is False
                 or (actual == 0 and usage.usage_known is not True)
@@ -329,41 +377,51 @@ class RunModelBudget:
                     )
                     .values(state="unknown", settled_at=now)
                 )
-                return
-            reserved = await session.scalar(
-                update(ModelReservationRecord)
-                .where(
-                    ModelReservationRecord.call_id == call_id,
-                    ModelReservationRecord.run_id == self._run_id,
-                    ModelReservationRecord.state.in_({"reserved", "unknown"}),
-                )
-                .values(
-                    state="settled", actual_tokens=actual, charged_tokens=actual, settled_at=now
-                )
-                .returning(ModelReservationRecord.reserved_tokens)
-                .execution_options(synchronize_session=False)
-            )
-            if reserved is not None:
-                await session.execute(
-                    update(TaskRunRecord)
-                    .where(TaskRunRecord.id == self._run_id)
-                    .values(
-                        budget_tokens=TaskRunRecord.budget_tokens + actual - reserved
-                    )
-                )
             else:
-                # Only an already-settled/missing call needs a read to distinguish
-                # a replay from a conflict. Successful settlement uses writes.
-                existing = (
+                reserved = await session.scalar(
+                    update(ModelReservationRecord)
+                    .where(
+                        ModelReservationRecord.call_id == call_id,
+                        ModelReservationRecord.run_id == self._run_id,
+                        ModelReservationRecord.state.in_({"reserved", "unknown"}),
+                    )
+                    .values(
+                        state="settled", actual_tokens=actual, charged_tokens=actual, settled_at=now
+                    )
+                    .returning(ModelReservationRecord.reserved_tokens)
+                    .execution_options(synchronize_session=False)
+                )
+                if reserved is not None:
+                    total = run.budget_tokens + actual - reserved
+                    overflow = total > MAX_MODEL_TOKENS
                     await session.execute(
-                        select(ModelReservationRecord.actual_tokens).where(
-                            ModelReservationRecord.call_id == call_id,
-                            ModelReservationRecord.run_id == self._run_id,
+                        update(TaskRunRecord)
+                        .where(
+                            TaskRunRecord.id == self._run_id, TaskRunRecord.user_id == self._user_id
+                        )
+                        .values(
+                            {"contract": {**run.contract, "budget_usage_overflow": True}}
+                            if overflow
+                            else {"budget_tokens": total}
                         )
                     )
-                ).one_or_none()
-                if existing is not None and existing.actual_tokens != actual:
-                    raise BudgetDenied("budget_settlement_conflict")
+                else:
+                    # Only an already-settled/missing call needs a read to distinguish
+                    # a replay from a conflict. Successful settlement uses writes.
+                    existing = (
+                        await session.execute(
+                            select(ModelReservationRecord.actual_tokens).where(
+                                ModelReservationRecord.call_id == call_id,
+                                ModelReservationRecord.run_id == self._run_id,
+                            )
+                        )
+                    ).one_or_none()
+                    if existing is not None and existing.actual_tokens != actual:
+                        raise BudgetDenied("budget_settlement_conflict")
+        # Rejection must occur after commit so neither the receipt nor the
+        # admission fence is erased by exception-driven transaction rollback.
+        if overflow:
+            raise BudgetDenied("budget_usage_overflow")
 
 
 async def recover_stale_reservations(database: Database) -> None:

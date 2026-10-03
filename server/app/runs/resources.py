@@ -85,6 +85,8 @@ class RunToolBudget:
             )
             if row.status not in allowed or row.contract.get("work_cancel_requested"):
                 raise BudgetDenied("budget_run_inactive")
+            if row.contract.get("budget_usage_overflow"):
+                raise BudgetDenied("budget_usage_overflow")
             if not row.budget or not row.budget.get("enabled"):
                 raise BudgetDenied("budget_snapshot_missing")
             deadline = self._deadline if self._maintenance else row.deadline

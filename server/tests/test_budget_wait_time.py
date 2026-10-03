@@ -249,6 +249,42 @@ async def test_unissued_postcommit_expiry_records_confirmed_zero_usage(
 
 
 @pytest.mark.parametrize("backend", ["sqlite", "postgresql"])
+@pytest.mark.parametrize("period", ["day", "month"])
+async def test_unissued_postcommit_spending_boundary_records_confirmed_zero_usage(
+    backend: str, period: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config = RunBudgetConfig(
+        cost_currency="CNY",
+        max_daily_cost=1 if period == "day" else None,
+        max_monthly_cost=1 if period == "month" else None,
+    )
+    storage, budget = await prepared(backend, tmp_path, config, deadline=BASE + timedelta(hours=1))
+    now = clock(monkeypatch)
+    armed = True
+
+    def committing(connection: Any) -> None:
+        nonlocal armed
+        if armed:
+            armed = False
+            now[0] += timedelta(seconds=2)
+
+    event.listen(storage.database.engine.sync_engine, "commit", committing)
+    try:
+        with pytest.raises(BudgetDenied, match="cost_window_changed"):
+            await budget.reserve(endpoint="synthetic", tokens=400, final=True, pricing=PRICING)
+        async with storage.database.sessions() as session:
+            cost = (await session.scalars(select(ModelCostRecord))).one()
+            reservation = (await session.scalars(select(ModelReservationRecord))).one()
+            root = await session.get_one(TaskRunRecord, budget.run_id)
+            assert cost.state == "estimated" and cost.charged_micros == 0
+            assert reservation.state == "settled" and reservation.actual_tokens == 0
+            assert root.llm_attempts == 1 and root.budget_tokens == 0
+    finally:
+        event.remove(storage.database.engine.sync_engine, "commit", committing)
+        await storage.close()
+
+
+@pytest.mark.parametrize("backend", ["sqlite", "postgresql"])
 async def test_waiting_admission_rechecks_the_committed_run_deadline(
     backend: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

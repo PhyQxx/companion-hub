@@ -11,6 +11,8 @@ from uuid import UUID
 
 from app.llm.contracts import ModelPricing, ModelUsage
 
+MAX_MODEL_TOKENS = (1 << 63) - 1
+
 
 class BudgetDenied(RuntimeError):
     def __init__(self, reason_code: str) -> None:
