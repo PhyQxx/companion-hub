@@ -12,6 +12,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from pydantic import JsonValue
 from starlette.websockets import WebSocketDisconnect
+from test_voice_websocket import SyntheticVoiceSourceGuard
 
 from app.api import (
     DeviceCommandGateway,
@@ -22,6 +23,7 @@ from app.api.device_commands import DeviceCommandConnection, PetMessageFrame
 from app.auth import AuthService
 from app.db import Base, DeviceCommandRecord, create_database
 from app.devices import DeviceCommandStore, DevicePrincipal, DeviceRegistry
+from app.harness.voice_sources import VoiceRecipientClaim
 from app.ids import uuid7
 from app.schemas import PrivacyLevel
 
@@ -487,9 +489,12 @@ async def test_pet_message_streams_signed_audio_before_completion(
         del user_id, text, privacy_level
         return ({"message_id": str(uuid7())}, "桌宠聊天已连通")
 
-    async def handle_audio(text: str, privacy_level: PrivacyLevel, emit: Any) -> bool:
+    async def handle_audio(recipient: VoiceRecipientClaim, text: str, emit: Any) -> bool:
         assert text == "桌宠聊天已连通"
-        assert privacy_level is PrivacyLevel.L1
+        assert recipient.privacy_level is PrivacyLevel.L1
+        assert recipient.user_id == connection.principal.owner_user_id
+        assert recipient.device_id == connection.principal.device_id
+        assert recipient.capability == "avatar.chat"
         await emit(
             "pet.audio.start",
             {"mime": "audio/pcm;rate=24000", "sample_rate": 24_000},
@@ -499,7 +504,7 @@ async def test_pet_message_streams_signed_audio_before_completion(
         return True
 
     gateway.set_pet_message_handler(handle_message)
-    gateway.set_pet_audio_handler(handle_audio)
+    gateway.set_pet_audio_handler(handle_audio, source_guard=SyntheticVoiceSourceGuard())
     await gateway.start_pet_message(
         connection,
         PetMessageFrame(

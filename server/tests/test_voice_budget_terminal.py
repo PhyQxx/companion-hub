@@ -6,7 +6,12 @@ from typing import Any, cast
 
 import pytest
 from test_voice_streaming_privacy import session_fixture
-from test_voice_websocket import FakeRecognizer, RecordingWebSocket, SyntheticVoiceSourceGuard
+from test_voice_websocket import (
+    FakeRecognizer,
+    RecordingWebSocket,
+    SyntheticVoiceSourceGuard,
+    synthetic_recipient,
+)
 
 from app.api.voice_ws import AsrPrefetch, VoiceSession, VoiceWebSocketManager
 from app.chat import ChatService
@@ -211,7 +216,9 @@ async def test_audio_output_denial_stops_stream_and_preserves_reason(
 
     with pytest.raises(BudgetDenied) as captured:
         if entry == "device":
-            await manager.stream_device_speech("synthetic speech", PrivacyLevel.L1, emit)
+            await manager.stream_device_speech(
+                synthetic_recipient(PrivacyLevel.L1), "synthetic speech", emit
+            )
         else:
             await manager._send_proactive(session, "synthetic speech", PrivacyLevel.L1)
     assert captured.value is error and backup.calls == 0
@@ -236,7 +243,9 @@ async def test_selected_output_cancel_closes_stream_without_changing_cancellatio
 
     with pytest.raises(asyncio.CancelledError) as captured:
         if entry == "device":
-            await manager.stream_device_speech("synthetic speech", PrivacyLevel.L1, emit)
+            await manager.stream_device_speech(
+                synthetic_recipient(PrivacyLevel.L1), "synthetic speech", emit
+            )
         else:
             await manager._send_proactive(session, "synthetic speech", PrivacyLevel.L1)
     assert captured.value is error and source.stream.closed == 1
@@ -253,7 +262,9 @@ async def test_successful_audio_output_closes_owned_stream_after_last_chunk(entr
         emitted.append((event, payload))
 
     if entry == "device":
-        assert await manager.stream_device_speech("synthetic speech", PrivacyLevel.L1, emit)
+        assert await manager.stream_device_speech(
+            synthetic_recipient(PrivacyLevel.L1), "synthetic speech", emit
+        )
         assert emitted[-1][0] == "pet.audio.end"
         assert sum(event == "pet.audio.chunk" for event, _ in emitted) == 1
     else:
@@ -276,6 +287,8 @@ async def test_output_size_rejection_closes_stream_without_reading_more(
     async def emit(event: str, payload: Any) -> None:
         emitted.append((event, payload))
 
-    assert not await manager.stream_device_speech("synthetic speech", PrivacyLevel.L1, emit)
+    assert not await manager.stream_device_speech(
+        synthetic_recipient(PrivacyLevel.L1), "synthetic speech", emit
+    )
     assert emitted[-1] == ("pet.audio.failed", {"reason_code": "tts_audio_too_large"})
     assert source.stream.closed == source.stream.reads == 1 and not chain._blocked_until

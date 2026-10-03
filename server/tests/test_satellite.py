@@ -8,10 +8,12 @@ from typing import Any, cast
 from uuid import UUID
 
 import pytest
+from test_voice_websocket import SyntheticVoiceSourceGuard
 
 from app.api.device_commands import DeviceCommandConnection, DeviceCommandGateway
 from app.db import create_database
 from app.devices import DeviceCommandStore, DevicePrincipal, DeviceRegistry
+from app.harness.voice_sources import VoiceRecipientClaim
 from app.ids import uuid7
 from app.satellite import (
     SATELLITE_CAPABILITY,
@@ -432,13 +434,16 @@ async def test_satellite_broadcast_routes_normal_and_emergency_by_room_and_priva
         bedroom, SatelliteHelloFrame(room_id="卧室", max_privacy_level="L2")
     )
 
-    async def speak(_text: str, _privacy: PrivacyLevel, emit: Any) -> bool:
+    async def speak(recipient: VoiceRecipientClaim, _text: str, emit: Any) -> bool:
+        assert recipient.user_id == owner
+        assert recipient.device_id in {living.principal.device_id, bedroom.principal.device_id}
+        assert recipient.capability == "voice.satellite"
         await emit("pet.audio.start", {"mime": "audio/mpeg", "sample_rate": 24000})
         await emit("pet.audio.chunk", {"index": 0, "data_b64": "AQI="})
         await emit("pet.audio.end", {"chunks": 1, "bytes": 2})
         return True
 
-    gateway.set_pet_audio_handler(speak)
+    gateway.set_pet_audio_handler(speak, source_guard=SyntheticVoiceSourceGuard())
     assert (
         await gateway.broadcast_satellite(
             owner, "卧室提醒", privacy_level=PrivacyLevel.L2, room_id="卧室"

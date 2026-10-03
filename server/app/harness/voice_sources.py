@@ -16,5 +16,16 @@ class VoiceSourceClaim:
     privacy_level: PrivacyLevel
 
 
+@dataclass(frozen=True, slots=True)
+class VoiceRecipientClaim:
+    user_id: UUID
+    device_id: UUID
+    capability: Literal["avatar.chat", "voice.satellite"]
+    privacy_level: PrivacyLevel
+
+
+VoiceAuthority = VoiceSourceClaim | VoiceRecipientClaim
+
+
 class VoiceSourceGuard(Protocol):
-    async def validate(self, source: VoiceSourceClaim) -> None: ...
+    async def validate(self, source: VoiceAuthority) -> None: ...

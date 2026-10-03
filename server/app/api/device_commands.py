@@ -40,6 +40,8 @@ from app.devices import (
     EphemeralDeviceAssetError,
     EphemeralDeviceAssetStore,
 )
+from app.harness.budget import BudgetDenied
+from app.harness.voice_sources import VoiceRecipientClaim, VoiceSourceGuard
 from app.ids import uuid7
 from app.satellite import (
     SATELLITE_CAPABILITY,
@@ -163,7 +165,7 @@ PetMessageHandler = Callable[
     Awaitable[tuple[dict[str, JsonValue], str]],
 ]
 PetAudioEmitter = Callable[[str, dict[str, JsonValue]], Awaitable[None]]
-PetAudioHandler = Callable[[str, PrivacyLevel, PetAudioEmitter], Awaitable[bool]]
+PetAudioHandler = Callable[[VoiceRecipientClaim, str, PetAudioEmitter], Awaitable[bool]]
 SatelliteUtteranceHandler = Callable[
     [UUID, UUID, bytes, PrivacyLevel, PetAudioEmitter], Awaitable[bool]
 ]
@@ -205,6 +207,7 @@ class DeviceCommandGateway:
         self._avatar_sequences: dict[UUID, int] = {}
         self._pet_message_handler: PetMessageHandler | None = None
         self._pet_audio_handler: PetAudioHandler | None = None
+        self._pet_audio_guard: VoiceSourceGuard | None = None
         self._pet_message_tasks: dict[tuple[UUID, UUID], asyncio.Task[None]] = {}
         self._pet_message_requests: set[tuple[UUID, UUID]] = set()
         self._satellite_utterance_handler: SatelliteUtteranceHandler | None = None
@@ -232,8 +235,11 @@ class DeviceCommandGateway:
     def set_pet_message_handler(self, handler: PetMessageHandler) -> None:
         self._pet_message_handler = handler
 
-    def set_pet_audio_handler(self, handler: PetAudioHandler) -> None:
+    def set_pet_audio_handler(
+        self, handler: PetAudioHandler, *, source_guard: VoiceSourceGuard
+    ) -> None:
         self._pet_audio_handler = handler
+        self._pet_audio_guard = source_guard
 
     def set_satellite_utterance_handler(self, handler: SatelliteUtteranceHandler) -> None:
         self._satellite_utterance_handler = handler
@@ -940,7 +946,12 @@ class DeviceCommandGateway:
         text: str,
         privacy_level: PrivacyLevel,
     ) -> bool:
+        failure_sent = False
+
         async def emit_audio(frame_type: str, payload: dict[str, JsonValue]) -> None:
+            nonlocal failure_sent
+            if frame_type == "pet.audio.failed":
+                failure_sent = True
             await connection.send_signed(
                 {
                     "proto_version": 1,
@@ -956,9 +967,21 @@ class DeviceCommandGateway:
             await emit_audio("pet.audio.failed", {"reason_code": "tts_not_configured"})
             return False
         try:
-            return await handler(text, privacy_level, emit_audio)
+            recipient = VoiceRecipientClaim(
+                connection.principal.owner_user_id,
+                connection.principal.device_id,
+                "avatar.chat",
+                privacy_level,
+            )
+            assert self._pet_audio_guard is not None
+            await self._pet_audio_guard.validate(recipient)
+            return await handler(recipient, text, emit_audio)
         except asyncio.CancelledError:
             raise
+        except BudgetDenied as error:
+            if not failure_sent:
+                await emit_audio("pet.audio.failed", {"reason_code": error.reason_code})
+            return False
         except Exception:
             await emit_audio("pet.audio.failed", {"reason_code": "tts_generation_failed"})
             return False
@@ -1061,6 +1084,14 @@ class DeviceCommandGateway:
         emergency: bool,
     ) -> bool:
         device_id = connection.principal.device_id
+        recipient = VoiceRecipientClaim(
+            connection.principal.owner_user_id, device_id, "voice.satellite", privacy_level
+        )
+        try:
+            assert self._pet_audio_guard is not None
+            await self._pet_audio_guard.validate(recipient)
+        except BudgetDenied:
+            return False
         try:
             state = self.satellites.apply_event(device_id, SatelliteEvent.BROADCAST_READY)
         except (LookupError, InvalidSatelliteTransition):
@@ -1089,6 +1120,7 @@ class DeviceCommandGateway:
                     "sent_at": datetime.now(UTC).isoformat(),
                 }
             )
+            await self._pet_audio_guard.validate(recipient)
             await connection.send_signed(
                 {
                     "proto_version": 1,
@@ -1102,7 +1134,8 @@ class DeviceCommandGateway:
             )
             handler = self._pet_audio_handler
             assert handler is not None
-            delivered = await handler(text, privacy_level, emit)
+            await self._pet_audio_guard.validate(recipient)
+            delivered = await handler(recipient, text, emit)
             return delivered
         except asyncio.CancelledError:
             raise

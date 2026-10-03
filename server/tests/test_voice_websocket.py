@@ -25,7 +25,7 @@ from app.auth import AuthService, ChatPrincipal
 from app.chat import ChatService, PendingTurn
 from app.config import DatabaseConfigStore
 from app.db import Base, Database, create_database
-from app.harness.voice_sources import VoiceSourceClaim
+from app.harness.voice_sources import VoiceAuthority, VoiceRecipientClaim
 from app.ids import uuid7
 from app.llm import CompletionRequest, CompletionResult, LLMRoute, ModelUsage
 from app.runs.voice_sources import SqlVoiceSourceGuard
@@ -42,8 +42,12 @@ from app.voice import (
 class SyntheticVoiceSourceGuard:
     """Provider/transport-only fixtures omit application authority deliberately."""
 
-    async def validate(self, source: VoiceSourceClaim) -> None:
+    async def validate(self, source: VoiceAuthority) -> None:
         return None
+
+
+def synthetic_recipient(privacy: PrivacyLevel = PrivacyLevel.L1) -> VoiceRecipientClaim:
+    return VoiceRecipientClaim(uuid7(), uuid7(), "avatar.chat", privacy)
 
 
 def config_yaml() -> str:
@@ -281,7 +285,9 @@ async def test_device_speech_streams_audio_and_keeps_l2_local_only() -> None:
     async def emit(frame_type: str, payload: dict[str, JsonValue]) -> None:
         emitted.append((frame_type, payload))
 
-    assert await cloud.stream_device_speech("你好", PrivacyLevel.L1, emit) is True
+    assert (
+        await cloud.stream_device_speech(synthetic_recipient(PrivacyLevel.L1), "你好", emit) is True
+    )
     assert [frame_type for frame_type, _ in emitted] == [
         "pet.audio.start",
         "pet.audio.chunk",
@@ -291,13 +297,16 @@ async def test_device_speech_streams_audio_and_keeps_l2_local_only() -> None:
     assert emitted[1][1]["data_b64"] == "AQACAA=="
     emitted.clear()
 
-    assert await cloud.stream_device_speech("秘密", PrivacyLevel.L2, emit) is False
-    assert emitted == [
-        ("pet.audio.failed", {"reason_code": "local_tts_required"})
-    ]
+    assert (
+        await cloud.stream_device_speech(synthetic_recipient(PrivacyLevel.L2), "秘密", emit)
+        is False
+    )
+    assert emitted == [("pet.audio.failed", {"reason_code": "local_tts_required"})]
     emitted.clear()
 
-    assert await local.stream_device_speech("秘密", PrivacyLevel.L2, emit) is True
+    assert (
+        await local.stream_device_speech(synthetic_recipient(PrivacyLevel.L2), "秘密", emit) is True
+    )
     assert emitted[-1] == ("pet.audio.end", {"chunks": 2, "bytes": 8})
 
 

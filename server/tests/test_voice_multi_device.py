@@ -18,7 +18,7 @@ from uuid import UUID, uuid4
 import pytest
 from fastapi import WebSocket
 from test_runtime import FakeChatService
-from test_voice_websocket import SyntheticVoiceSourceGuard
+from test_voice_websocket import SyntheticVoiceSourceGuard, synthetic_recipient
 
 from app.api.voice_ws import VoiceSession, VoiceWebSocketManager
 from app.auth import ChatPrincipal
@@ -195,7 +195,9 @@ async def test_pet_speech_aborts_when_audio_preempted(
     async def emit(frame_type: str, payload: dict[str, Any]) -> None:
         emitted.append((frame_type, payload))
 
-    speech = asyncio.create_task(manager.stream_device_speech("你好呀", PrivacyLevel.L1, emit))
+    speech = asyncio.create_task(
+        manager.stream_device_speech(synthetic_recipient(PrivacyLevel.L1), "你好呀", emit)
+    )
     # 等第一块音频发出（此时桌宠持有租约）
     for _ in range(100):
         if any(frame == "pet.audio.chunk" for frame, _ in emitted):

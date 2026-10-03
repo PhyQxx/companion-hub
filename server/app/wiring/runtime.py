@@ -518,7 +518,10 @@ def assemble_runtime(
             )
         )
         if device_command_gateway is not None:
-            device_command_gateway.set_pet_audio_handler(voice_manager.stream_device_speech)
+            device_command_gateway.set_pet_audio_handler(
+                voice_manager.stream_device_speech,
+                source_guard=SqlVoiceSourceGuard(runtime_database),
+            )
             device_command_gateway.set_satellite_utterance_handler(
                 voice_manager.run_satellite_utterance
             )
