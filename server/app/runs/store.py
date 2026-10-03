@@ -5,6 +5,7 @@ from uuid import UUID
 
 from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm.attributes import set_committed_value
 
 from app.db import (
     ActionPlanRecord,
@@ -37,18 +38,31 @@ _TRANSITIONS = {
 
 
 async def transition_run(session: AsyncSession, run_id: UUID, status: str) -> None:
-    row = await session.scalar(
-        select(TaskRunRecord).where(TaskRunRecord.id == run_id).with_for_update()
-    )
-    if row is None or row.status == status:
+    sources = {source for source, targets in _TRANSITIONS.items() if status in targets}
+    if not sources:
         return
-    if status not in _TRANSITIONS[row.status]:
-        return  # Late results must not overwrite terminal cancellation/failure.
-    row.status = status
-    row.state_version += 1
-    if status == "cancelled":
-        row.cancel_epoch += 1
-    row.updated_at = datetime.now(UTC)
+    # New runs and the caller's already-fenced metadata belong to this same UoW.
+    # The conditional write then decides from current committed state, including
+    # after waiting for another writer; cached identities are not authorities.
+    await session.flush()
+    row = await session.scalar(
+        update(TaskRunRecord)
+        .where(TaskRunRecord.id == run_id, TaskRunRecord.status.in_(sources))
+        .values(
+            status=status,
+            state_version=TaskRunRecord.state_version + 1,
+            cancel_epoch=(
+                TaskRunRecord.cancel_epoch + 1
+                if status == "cancelled"
+                else TaskRunRecord.cancel_epoch
+            ),
+            updated_at=datetime.now(UTC),
+        )
+        .returning(TaskRunRecord)
+        .execution_options(synchronize_session=False, populate_existing=True)
+    )
+    if row is None:
+        return  # Late results cannot overwrite an already terminal run.
     await append_run_event(session, row, f"run.{status}")
 
 
@@ -59,16 +73,31 @@ async def append_run_event(
     *,
     payload: dict[str, object] | None = None,
 ) -> None:
-    row.event_seq += 1
+    await session.flush()
+    allocation = (
+        await session.execute(
+            update(TaskRunRecord)
+            .where(TaskRunRecord.id == row.id)
+            .values(event_seq=TaskRunRecord.event_seq + 1)
+            .returning(
+                TaskRunRecord.event_seq, TaskRunRecord.state_version, TaskRunRecord.privacy_level
+            )
+            .execution_options(synchronize_session=False)
+        )
+    ).one_or_none()
+    if allocation is None:
+        raise LookupError("run not found")
+    # Do not turn this allocation into a later stale ORM flush UPDATE.
+    set_committed_value(row, "event_seq", allocation.event_seq)
     session.add(
         TaskRunEventRecord(
             event_id=uuid7(),
             run_id=row.id,
-            seq=row.event_seq,
+            seq=allocation.event_seq,
             kind=kind,
             schema_version=1,
-            payload={"state_version": row.state_version, **(payload or {})},
-            privacy_level=row.privacy_level,
+            payload={**(payload or {}), "state_version": allocation.state_version},
+            privacy_level=allocation.privacy_level,
             occurred_at=datetime.now(UTC),
         )
     )
