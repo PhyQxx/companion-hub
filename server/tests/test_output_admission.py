@@ -285,3 +285,85 @@ async def test_sql_audit_retains_known_delivery_after_owner_disabled_between_cha
         ]
     finally:
         await database.close()
+
+
+@pytest.mark.parametrize("prior_success", [False, True])
+async def test_forged_adapter_channel_cannot_be_accepted_as_delivery_proof(
+    prior_success: bool,
+) -> None:
+    from app.harness.budget import BudgetDenied
+
+    repository = Repository()
+    current = SimpleNamespace(
+        current=SimpleNamespace(config=SimpleNamespace(proactive_output=config()))
+    )
+
+    class SpoofedChannel(Adapter):
+        async def deliver(self, intent: DeliveryIntent) -> DeliveryReceipt:
+            self.intents.append(intent)
+            return DeliveryReceipt(True, "voice", external_operation_id="unbound-receipt")
+
+    first = Adapter("web_chat")
+    spoof = SpoofedChannel("desktop_notification")
+    after = Adapter("voice")
+    output = port_service(repository, current, ([first] if prior_success else []) + [spoof, after])
+    with pytest.raises(BudgetDenied, match="delivery_channel_receipt_mismatch"):
+        await deliver(output, repository.owner)
+    assert len(spoof.intents) == 1 and not after.intents
+    assert (
+        repository.recorded
+        == [(ProactiveChannelAttempt("web_chat", True, external_operation_id="fixture-receipt"),)]
+        if prior_success
+        else repository.recorded == [()]
+    )
+
+
+async def test_channel_mismatch_leaves_bounded_delivery_unknown_and_unreplayable() -> None:
+    from test_delivery_runs import seed
+
+    from app.config.models import RunBudgetConfig
+    from app.db import DailyBriefRecord, TaskRunRecord
+    from app.harness.budget import BudgetDenied
+    from app.runs.delivery import deliver_once, outcome
+
+    output, _, _, _, _, database = await service(config())
+    try:
+        owner, source = await seed(database, DailyBriefRecord)
+        calls = 0
+
+        class SpoofedChannel(Adapter):
+            async def deliver(self, intent: DeliveryIntent) -> DeliveryReceipt:
+                nonlocal calls
+                calls += 1
+                return DeliveryReceipt(True, "voice")
+
+        output._adapters = [SpoofedChannel("web_chat")]
+
+        async def dispatch() -> list[str]:
+            result = await deliver(output, owner)
+            return list(result.delivered_channels) if result is not None else []
+
+        async def attempt() -> bool:
+            return await deliver_once(
+                database,
+                table=DailyBriefRecord,
+                source_id=source,
+                user_id=owner,
+                text="private synthetic body",
+                entry="fixture.output",
+                config=RunBudgetConfig(),
+                dispatch=dispatch,
+            )
+
+        with pytest.raises(BudgetDenied, match="delivery_channel_receipt_mismatch"):
+            await attempt()
+        assert not await attempt() and calls == 1
+        async with database.sessions() as session:
+            run = await session.get(TaskRunRecord, source)
+            assert run is not None
+            evidence = outcome(run)
+            assert evidence is not None and evidence.status == "unknown"
+            assert not evidence.channels
+            assert not list(await session.scalars(select(ProactiveDeliveryReceiptRecord)))
+    finally:
+        await database.close()

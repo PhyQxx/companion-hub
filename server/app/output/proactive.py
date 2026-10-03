@@ -7,6 +7,7 @@ from uuid import UUID
 from app.cognition import CognitiveDecision
 from app.config import ConfigStore, DatabaseConfigStore, ProactiveChannelConfig
 from app.devices import DeviceTargetResolutionError, DeviceTargetResolver
+from app.harness.budget import BudgetDenied
 from app.harness.time import utc
 from app.output.adapter import DeliveryIntent, OutputAdapter
 from app.output.adapters import DesktopNotificationAdapter, VoiceAdapter, WebChatAdapter
@@ -138,6 +139,8 @@ class ProactiveDeliveryService:
                     decision_id=cognitive_decision.id if cognitive_decision else None,
                 )
                 receipt = await adapter.deliver(intent)
+                if receipt.channel != channel:
+                    raise BudgetDenied("delivery_channel_receipt_mismatch")
                 attempt = ProactiveChannelAttempt(
                     channel=receipt.channel,
                     delivered=receipt.delivered,
