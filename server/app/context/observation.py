@@ -20,12 +20,17 @@ class ObservationOwnerGuard:
     owner: UUID
     resolve: Callable[[], Awaitable[UUID | None]]
     source_active: Callable[[], bool] | None = None
+    source_valid: Callable[[], Awaitable[bool]] | None = None
 
     def enabled(self) -> bool:
         return self.source_active is None or self.source_active()
 
     async def valid(self) -> bool:
-        return self.enabled() and await self.resolve() == self.owner and self.enabled()
+        try:
+            await self.check()
+        except ObservationUnavailable:
+            return False
+        return True
 
     async def check(self) -> None:
         if not self.enabled():
@@ -34,6 +39,14 @@ class ObservationOwnerGuard:
             raise ObservationUnavailable("observation_owner_changed")
         if not self.enabled():
             raise ObservationUnavailable("observation_source_inactive")
+        if self.source_valid is not None:
+            if not await self.source_valid():
+                raise ObservationUnavailable("observation_device_changed")
+            # Device resolution can await I/O; recheck account and config after it.
+            if await self.resolve() != self.owner:
+                raise ObservationUnavailable("observation_owner_changed")
+            if not self.enabled():
+                raise ObservationUnavailable("observation_source_inactive")
 
     async def call(self, invoke: Callable[[], Awaitable[T]]) -> T:
         # Validate before starting, while waiting, and before accepting a result.

@@ -13,7 +13,7 @@ import hashlib
 import json
 import logging
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from typing import Any, Protocol
 from urllib.parse import urlsplit
@@ -353,7 +353,9 @@ class BrowserAwarenessLoop:
             self._record_success()
             return
         try:
-            payload = await guard.call(lambda: self._read_document(device, owner))
+            payload = await self._device_guard(owner, device.id).call(
+                lambda: self._read_document(device, owner)
+            )
             await self._observe(config, owner, device, payload, now)
         except ObservationUnavailable:
             return
@@ -385,6 +387,30 @@ class BrowserAwarenessLoop:
                 and bool(self._config_store.current.config.browser_awareness.enabled)
             ),
         )
+
+    def _device_guard(self, owner: UUID, device_id: UUID) -> ObservationOwnerGuard:
+        return replace(
+            self._owner_guard(owner),
+            source_valid=lambda: self._device_available(owner, device_id),
+        )
+
+    async def _device_available(self, owner: UUID, device_id: UUID) -> bool:
+        from app.devices import DeviceTargetResolutionError
+
+        try:
+            current = await self._resolver.resolve(
+                owner_user_id=owner, target=device_id, capability=CAPABILITY
+            )
+        except DeviceTargetResolutionError:
+            return False
+        return current.id == device_id
+
+    def _event_guard(self, event: SemanticEvent) -> ObservationOwnerGuard:
+        try:
+            device_id = UUID(str(event.attributes.get("device_id")))
+        except (ValueError, TypeError, AttributeError) as error:
+            raise ObservationUnavailable("observation_device_changed") from error
+        return self._device_guard(event.user_id, device_id)
 
     async def _resolve_device(self, owner: UUID) -> BrowserDevice | None:
         from app.devices import (
@@ -462,7 +488,7 @@ class BrowserAwarenessLoop:
             self._record_success()
             return
         observation_id = uuid7()
-        guard = self._owner_guard(owner)
+        guard = self._device_guard(owner, device.id)
         with model_owner(owner):
             analysis = await guard.call(
                 lambda: self._analyzer.analyze(
@@ -513,7 +539,7 @@ class BrowserAwarenessLoop:
                 )
         if analysis.notable and config.proactive_enabled:
             await guard.check()
-            self._submit_proactive(owner, observation_id, digest, analysis, host)
+            self._submit_proactive(owner, observation_id, digest, analysis, host, device.id)
 
     def _record_failure(self, reason: str, now: datetime) -> None:
         self.state.last_error = reason
@@ -533,6 +559,7 @@ class BrowserAwarenessLoop:
         digest: str,
         analysis: BrowserAnalysis,
         host: str,
+        device_id: UUID,
     ) -> None:
         now = self._clock()
         event = SemanticEvent(
@@ -546,7 +573,11 @@ class BrowserAwarenessLoop:
             privacy_level=PrivacyLevel.L1,
             confidence=0.8,
             evidence_ids=[str(observation_id)],
-            attributes={"message": analysis.topic or analysis.summary, "salience": 0.75},
+            attributes={
+                "message": analysis.topic or analysis.summary,
+                "salience": 0.75,
+                "device_id": str(device_id),
+            },
             expires_at=now + timedelta(minutes=5),
         )
 
@@ -557,7 +588,7 @@ class BrowserAwarenessLoop:
             self._perception.submit(
                 event,
                 stable_for_seconds=PROACTIVE_STABLE_SECONDS,
-                validate=self._owner_guard(owner).valid,
+                validate=self._device_guard(owner, device_id).valid,
                 handler=handler,
             )
         else:
@@ -573,7 +604,7 @@ class BrowserAwarenessLoop:
         if decision.decision not in {"inform", "suggest", "ask", "escalate"}:
             return
         with contextlib.suppress(Exception):
-            await self._owner_guard(event.user_id).check()
+            await self._event_guard(event).check()
             await self._proactive_deliver(
                 str(event.attributes.get("message", event.summary)),
                 entity_id="browser:active_tab",
@@ -589,7 +620,5 @@ class BrowserAwarenessLoop:
             await self._deliver_event(event, None)
             return
         with contextlib.suppress(Exception):
-            decision = await self._owner_guard(event.user_id).call(
-                lambda: self._cycle.evaluate(event)
-            )
+            decision = await self._event_guard(event).call(lambda: self._cycle.evaluate(event))
             await self._deliver_event(event, decision)

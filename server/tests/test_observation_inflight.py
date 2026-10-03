@@ -27,6 +27,7 @@ database = save_database
 class ObservationPorts:
     def __init__(self, kind: str) -> None:
         self.kind = kind
+        self.device_id = uuid7()
         self.block_stage: str | None = None
         self.started = asyncio.Event()
         self.cancelled = asyncio.Event()
@@ -58,7 +59,7 @@ class ObservationPorts:
         return await self.hold("read", result)
 
     async def resolve(self, **_: Any) -> Any:
-        return SimpleNamespace(id=uuid7())
+        return SimpleNamespace(id=self.device_id)
 
     async def analyze(self, **_: Any) -> Any:
         self.analyses += 1

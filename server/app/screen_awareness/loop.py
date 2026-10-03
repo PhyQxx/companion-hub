@@ -14,7 +14,7 @@ import contextlib
 import json
 import logging
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
 from io import BytesIO
 from typing import Any, Protocol, cast
@@ -306,6 +306,30 @@ class ScreenAwarenessLoop:
             ),
         )
 
+    def _device_guard(self, owner: UUID, device_id: UUID) -> ObservationOwnerGuard:
+        return replace(
+            self._owner_guard(owner),
+            source_valid=lambda: self._device_available(owner, device_id),
+        )
+
+    async def _device_available(self, owner: UUID, device_id: UUID) -> bool:
+        from app.devices import DeviceTargetResolutionError
+
+        try:
+            current = await self._resolver.resolve(
+                owner_user_id=owner, target=device_id, capability=CAPABILITY
+            )
+        except DeviceTargetResolutionError:
+            return False
+        return current.id == device_id
+
+    def _event_guard(self, event: SemanticEvent) -> ObservationOwnerGuard:
+        try:
+            device_id = UUID(str(event.attributes.get("device_id")))
+        except (ValueError, TypeError, AttributeError) as error:
+            raise ObservationUnavailable("observation_device_changed") from error
+        return self._device_guard(event.user_id, device_id)
+
     async def _resolve_device(self, owner: UUID) -> MonitorDevice | None:
         from app.devices import (
             DeviceTargetAmbiguous,
@@ -324,7 +348,7 @@ class ScreenAwarenessLoop:
         self, config: Any, owner: UUID, device: MonitorDevice, display: int
     ) -> None:
         state = self.state.displays.setdefault(display, DisplayState())
-        guard = self._owner_guard(owner)
+        guard = self._device_guard(owner, device.id)
         now = self._clock()
         if state.disabled_until is not None and now < state.disabled_until:
             return
@@ -388,7 +412,7 @@ class ScreenAwarenessLoop:
                 )
         if analysis.notable and config.proactive_enabled:
             await guard.check()
-            self._submit_proactive(owner, observation_id, digest, analysis, display)
+            self._submit_proactive(owner, observation_id, digest, analysis, display, device.id)
 
     async def _capture_bytes(self, device: MonitorDevice, display: int, owner: UUID) -> bytes:
         command_args: dict[str, Any] = (
@@ -433,6 +457,7 @@ class ScreenAwarenessLoop:
         digest: int,
         analysis: ScreenAnalysis,
         display: int,
+        device_id: UUID,
     ) -> None:
         now = self._clock()
         event = SemanticEvent(
@@ -449,6 +474,7 @@ class ScreenAwarenessLoop:
             attributes={
                 "message": analysis.topic or analysis.summary,
                 "display": display,
+                "device_id": str(device_id),
                 # 视觉判定 notable 的自带显著性：让注意力引擎按内容重要性评分，
                 # 否则 screen.observed 只拿默认基础分永远到不了 deliberation 阈值
                 "salience": 0.75,
@@ -463,7 +489,7 @@ class ScreenAwarenessLoop:
             self._perception.submit(
                 event,
                 stable_for_seconds=PROACTIVE_STABLE_SECONDS,
-                validate=self._owner_guard(owner).valid,
+                validate=self._device_guard(owner, device_id).valid,
                 handler=handler,
             )
         else:
@@ -479,7 +505,7 @@ class ScreenAwarenessLoop:
         if decision.decision not in {"inform", "suggest", "ask", "escalate"}:
             return
         with contextlib.suppress(Exception):
-            await self._owner_guard(event.user_id).check()
+            await self._event_guard(event).check()
             await self._proactive_deliver(
                 str(event.attributes.get("message", event.summary)),
                 entity_id=f"display:{event.attributes.get('display', 1)}",
@@ -496,7 +522,5 @@ class ScreenAwarenessLoop:
             await self._deliver_event(event, None)
             return
         with contextlib.suppress(Exception):
-            decision = await self._owner_guard(event.user_id).call(
-                lambda: self._cycle.evaluate(event)
-            )
+            decision = await self._event_guard(event).call(lambda: self._cycle.evaluate(event))
             await self._deliver_event(event, decision)
