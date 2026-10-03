@@ -8,7 +8,10 @@ from datetime import UTC, datetime, timedelta
 from uuid import UUID
 
 from app.cognition import CognitiveCycle, SemanticEvent
+from app.harness.budget import BudgetDenied
+from app.harness.time import utc
 from app.privacy.service import PolicyService
+from app.schemas import PrivacyLevel
 
 from .models import PerceptionDisposition, PerceptionResult
 from .policy import ProactivePolicy
@@ -87,6 +90,7 @@ class PerceptionPipeline:
             result = await self._process_locked(event, key=key)
         if (
             self._departure_observer is not None
+            and event.privacy_level != PrivacyLevel.L3
             and event.kind == "user_left_home"
             and result.disposition
             in {
@@ -95,16 +99,18 @@ class PerceptionPipeline:
                 PerceptionDisposition.SUPPRESSED,
             }
             and result.reason_code != "event_already_processed"
-            and (event.expires_at is None or event.expires_at > datetime.now(UTC))
+            and (event.expires_at is None or utc(event.expires_at) > datetime.now(UTC))
         ):
             try:
                 await self._departure_observer(event)
             except Exception:
                 logger.exception("departure observer failed: %s", event.event_id)
-        if self._event_observer is not None and result.disposition in {
-            PerceptionDisposition.PROCESSED,
-            PerceptionDisposition.MERGED,
-        }:
+        if (
+            self._event_observer is not None
+            and event.privacy_level != PrivacyLevel.L3
+            and result.disposition == PerceptionDisposition.PROCESSED
+            and (event.expires_at is None or utc(event.expires_at) > datetime.now(UTC))
+        ):
             try:
                 await self._event_observer(event)
             except Exception:
@@ -125,6 +131,19 @@ class PerceptionPipeline:
         }
         existing = await self._store.get(event.event_id)
         if existing is not None:
+            if existing.user_id != event.user_id:
+                raise BudgetDenied("event_source_owner_mismatch")
+            if (
+                existing.kind != event.kind
+                or existing.source_kind != event.source_kind
+                or existing.dedupe_key != dedupe_key
+                or existing.privacy_level != str(event.privacy_level)
+                or existing.evidence_ids != event.evidence_ids
+                or utc(existing.occurred_at) != utc(event.occurred_at)
+                or (utc(existing.expires_at) if existing.expires_at is not None else None)
+                != (utc(event.expires_at) if event.expires_at is not None else None)
+            ):
+                raise BudgetDenied("event_source_changed")
             return PerceptionResult(
                 event_id=event.event_id,
                 disposition=PerceptionDisposition.MERGED,

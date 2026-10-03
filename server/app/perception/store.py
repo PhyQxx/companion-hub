@@ -7,6 +7,7 @@ from sqlalchemy import select
 
 from app.cognition import SemanticEvent
 from app.db import Database, SemanticEventAuditRecord
+from app.db.claims import assert_current_claim
 from app.schemas import PrivacyLevel
 
 from .models import PerceptionDisposition, SemanticEventAuditView
@@ -36,8 +37,7 @@ class PerceptionStore:
                     SemanticEventAuditRecord.user_id == event.user_id,
                     SemanticEventAuditRecord.dedupe_key == dedupe_key,
                     SemanticEventAuditRecord.disposition.in_(["processed", "suppressed"]),
-                    SemanticEventAuditRecord.created_at
-                    >= now - timedelta(seconds=window_seconds),
+                    SemanticEventAuditRecord.created_at >= now - timedelta(seconds=window_seconds),
                 )
                 .order_by(SemanticEventAuditRecord.created_at.desc())
                 .limit(1)
@@ -58,6 +58,7 @@ class PerceptionStore:
         if event.privacy_level == PrivacyLevel.L3:
             return
         async with self.database.sessions.begin() as session:
+            await assert_current_claim(session)
             session.add(
                 SemanticEventAuditRecord(
                     event_id=event.event_id,
