@@ -3,13 +3,16 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, Literal, NoReturn
 
 if TYPE_CHECKING:
     from .resources import RunToolBudget
 from uuid import UUID
 
-from sqlalchemy import func, select, update
+from sqlalchemy import case, func, select, update
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import aliased
+from sqlalchemy.sql.elements import ColumnElement
 
 from app.config.models import RunBudgetConfig
 from app.db import (
@@ -27,6 +30,10 @@ from app.ids import uuid7
 from app.llm.contracts import ModelPricing, ModelUsage
 
 from .costs import recover_cost_reservations, reserve_cost, settle_cost
+
+
+def _bounded(value: ColumnElement[int], maximum: int) -> ColumnElement[int]:
+    return case((value < maximum, value), else_=maximum)
 
 
 class RunModelBudget:
@@ -100,85 +107,78 @@ class RunModelBudget:
                 if owned_run is None:
                     raise BudgetDenied("budget_run_not_found")
                 raise BudgetDenied("budget_owner_invalid")
-            row = await session.scalar(
-                select(TaskRunRecord).where(
-                    TaskRunRecord.id == self._run_id, TaskRunRecord.user_id == self._user_id
-                )
-            )
-            if row is None:
-                raise BudgetDenied("budget_run_not_found")
-            if not row.budget or not row.budget.get("enabled"):
-                raise BudgetDenied("budget_snapshot_missing")
-            max_attempts = min(int(row.budget["max_llm_attempts"]), self._config.max_llm_attempts)
-            max_tokens = min(int(row.budget["max_tokens"]), self._config.max_tokens)
-            deadline = row.deadline if self._phase == "interactive" else self._maintenance_deadline
-            if deadline is None or utc(deadline) <= datetime.now(UTC):
-                raise BudgetDenied("run_deadline_exceeded")
-            # Preserve one model-attempt slot for a tool-free interactive answer.
-            limit = max_attempts - (self._phase == "interactive" and not final)
             statuses = {"accepted", "running"} if self._phase == "interactive" else {"succeeded"}
             if self._phase == "maintenance" and self._allow_active_parent:
                 statuses = {"accepted", "running", "succeeded"}
-            if (
-                self._phase == "maintenance"
-                and self._allow_active_parent
-                and row.status in {"accepted", "running"}
-            ):
-                limit = max_attempts - 1
-            if row.status not in statuses or row.contract.get("work_cancel_requested"):
-                raise BudgetDenied("budget_run_inactive")
-            concurrency = min(
-                int(
-                    row.budget.get(
-                        "max_concurrent_llm_calls", self._config.max_concurrent_llm_calls
-                    )
+            snapshot_attempts = TaskRunRecord.budget["max_llm_attempts"].as_integer()
+            snapshot_tokens = TaskRunRecord.budget["max_tokens"].as_integer()
+            limit = _bounded(snapshot_attempts, self._config.max_llm_attempts)
+            if self._phase == "interactive" and not final:
+                limit = limit - 1
+            elif self._phase == "maintenance" and self._allow_active_parent:
+                limit = limit - case(
+                    (TaskRunRecord.status.in_({"accepted", "running"}), 1), else_=0
+                )
+            concurrency = _bounded(
+                func.coalesce(
+                    TaskRunRecord.budget["max_concurrent_llm_calls"].as_integer(),
+                    self._config.max_concurrent_llm_calls,
                 ),
                 self._config.max_concurrent_llm_calls,
             )
-            in_flight = await session.scalar(
+            owned_runs = aliased(TaskRunRecord)
+            in_flight = (
                 select(func.count())
                 .select_from(ModelReservationRecord)
-                .join(TaskRunRecord, TaskRunRecord.id == ModelReservationRecord.run_id)
+                .join(owned_runs, owned_runs.id == ModelReservationRecord.run_id)
                 .where(
-                    TaskRunRecord.user_id == self._user_id,
+                    owned_runs.user_id == self._user_id,
                     ModelReservationRecord.state == "reserved",
                 )
+                .scalar_subquery()
             )
-            if int(in_flight or 0) >= concurrency:
-                raise BudgetDenied("user_model_concurrency_exhausted")
+            criteria = [
+                TaskRunRecord.id == self._run_id,
+                TaskRunRecord.user_id == self._user_id,
+                TaskRunRecord.budget["enabled"].as_boolean().is_(True),
+                snapshot_attempts.is_not(None),
+                snapshot_tokens.is_not(None),
+                TaskRunRecord.status.in_(statuses),
+                TaskRunRecord.contract["work_cancel_requested"].as_boolean().is_not(True),
+                TaskRunRecord.llm_attempts < limit,
+                TaskRunRecord.budget_tokens
+                <= _bounded(snapshot_tokens, self._config.max_tokens) - tokens,
+                in_flight < concurrency,
+            ]
+            if self._phase == "interactive":
+                criteria.append(TaskRunRecord.deadline > datetime.now(UTC))
+            elif utc(self._maintenance_deadline) <= datetime.now(UTC):
+                raise BudgetDenied("run_deadline_exceeded")
             result = await session.execute(
                 update(TaskRunRecord)
-                .where(
-                    TaskRunRecord.id == self._run_id,
-                    TaskRunRecord.user_id == self._user_id,
-                    TaskRunRecord.status.in_(statuses),
-                    TaskRunRecord.contract["work_cancel_requested"].as_boolean().is_not(True),
-                    TaskRunRecord.llm_attempts < limit,
-                    TaskRunRecord.budget_tokens <= max_tokens - tokens,
-                )
+                .where(*criteria)
                 .values(
                     llm_attempts=TaskRunRecord.llm_attempts + 1,
                     budget_tokens=TaskRunRecord.budget_tokens + tokens,
                 )
-                .returning(TaskRunRecord.id, TaskRunRecord.deadline)
+                .returning(TaskRunRecord.id, TaskRunRecord.deadline, TaskRunRecord.budget)
                 .execution_options(synchronize_session=False)
             )
             admitted = result.one_or_none()
             if admitted is None:
-                await session.refresh(row)
-                if row.status not in statuses or row.contract.get("work_cancel_requested"):
-                    raise BudgetDenied("budget_run_inactive")
-                raise BudgetDenied("run_budget_exhausted")
-            if self._phase == "interactive":
-                deadline = admitted.deadline
-                if deadline is None:
-                    raise BudgetDenied("run_deadline_exceeded")
+                await self._deny_admission(session, statuses)
+            assert admitted is not None
+            deadline = (
+                admitted.deadline if self._phase == "interactive" else self._maintenance_deadline
+            )
+            if deadline is None:
+                raise BudgetDenied("run_deadline_exceeded")
             # Owner/Run UPDATEs can wait across a deadline or a UTC spending
             # boundary. Time before those locks cannot date an accepted call.
             now = datetime.now(UTC)
             if utc(deadline) <= now:
                 raise BudgetDenied("run_deadline_exceeded")
-            snapshot = RunBudgetConfig.model_validate(row.budget)
+            snapshot = RunBudgetConfig.model_validate(admitted.budget)
             call_id = uuid7()
             await reserve_cost(
                 session,
@@ -225,6 +225,44 @@ class RunModelBudget:
             )
             raise BudgetDenied("run_deadline_exceeded")
         return CallPermit(call_id, remaining)
+
+    async def _deny_admission(self, session: AsyncSession, statuses: set[str]) -> NoReturn:
+        # The successful path uses the snapshot in the conditional write.
+        # Only a rejection needs these reads to classify the current reason.
+        row = await session.scalar(
+            select(TaskRunRecord).where(
+                TaskRunRecord.id == self._run_id, TaskRunRecord.user_id == self._user_id
+            )
+        )
+        if row is None:
+            raise BudgetDenied("budget_run_not_found")
+        if (
+            not row.budget
+            or not row.budget.get("enabled")
+            or any(name not in row.budget for name in ("max_llm_attempts", "max_tokens"))
+        ):
+            raise BudgetDenied("budget_snapshot_missing")
+        deadline = row.deadline if self._phase == "interactive" else self._maintenance_deadline
+        if deadline is None or utc(deadline) <= datetime.now(UTC):
+            raise BudgetDenied("run_deadline_exceeded")
+        if row.status not in statuses or row.contract.get("work_cancel_requested"):
+            raise BudgetDenied("budget_run_inactive")
+        concurrency = min(
+            int(row.budget.get("max_concurrent_llm_calls", self._config.max_concurrent_llm_calls)),
+            self._config.max_concurrent_llm_calls,
+        )
+        in_flight = await session.scalar(
+            select(func.count())
+            .select_from(ModelReservationRecord)
+            .join(TaskRunRecord, TaskRunRecord.id == ModelReservationRecord.run_id)
+            .where(
+                TaskRunRecord.user_id == self._user_id,
+                ModelReservationRecord.state == "reserved",
+            )
+        )
+        if int(in_flight or 0) >= concurrency:
+            raise BudgetDenied("user_model_concurrency_exhausted")
+        raise BudgetDenied("run_budget_exhausted")
 
     async def settle(self, call_id: UUID, usage: ModelUsage | None) -> None:
         await self._settle(call_id, usage, provider_not_started=False)

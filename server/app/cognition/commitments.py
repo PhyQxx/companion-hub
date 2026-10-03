@@ -49,7 +49,7 @@ def commitment_instruction(privacy_level: PrivacyLevel) -> str:
         "4. due_at 仅在用户说了明确时间时给出（推断时区 Asia/Shanghai），否则为 null；\n"
         '5. confidence < 0.7 的不要输出；没有承诺时输出 {"commitments":[]}。'
     )
-    if privacy_level is PrivacyLevel.L2:
+    if privacy_level == PrivacyLevel.L2:
         instruction += "\n隐私约束：title 只能是事件级概括，严禁任何生理、身体或露骨细节。"
     return instruction
 
@@ -70,6 +70,7 @@ class CommitmentTracker:
         completion: CommitmentCompletionPort | None = None,
         strict: bool = False,
     ) -> list[GoalView]:
+        privacy_level = PrivacyLevel(privacy_level)
         if privacy_level is PrivacyLevel.L3 or completion is None or not text.strip():
             return []
         request = CommitmentInput(message_id, text[:MAX_EXTRACT_INPUT_CHARS], privacy_level)

@@ -13,10 +13,10 @@ import pytest
 
 from app.cognition.commitment_ports import CommitmentCompletion, CommitmentInput
 from app.cognition.commitments import CommitmentTracker
-from app.cognition.goal_tracker import GoalTracker
+from app.cognition.goal_tracker import GoalTracker, commitment_instruction
 from app.cognition.models import GoalKind, GoalStatus, GoalView
 from app.ids import uuid7
-from app.llm.contracts import CompletionRequest, LLMRoute
+from app.llm.contracts import CompletionRequest, LLMMessage, LLMRoute
 from app.schemas import PrivacyLevel
 from scripts.check_architecture import allowed
 
@@ -248,3 +248,32 @@ def test_commitment_port_values_are_frozen() -> None:
 @pytest.mark.parametrize("adapter", ["app.db", "app.llm", "app.memory.extraction", "httpx"])
 def test_commitment_core_cannot_import_runtime_adapters(module: str, adapter: str) -> None:
     assert not allowed(module, adapter)
+
+
+@pytest.mark.parametrize("privacy", [PrivacyLevel.L2, PrivacyLevel.L3])
+async def test_commitment_policy_normalizes_privacy_from_real_request_dto(
+    privacy: PrivacyLevel,
+) -> None:
+    request = CompletionRequest(
+        trace_id=uuid7(),
+        messages=[LLMMessage(role="user", content="Synthetic commitment")],
+        privacy_level=privacy,
+        route=LLMRoute.PRIVATE,
+    )
+    # StrictModel serializes enum values into strings even though its Python
+    # attribute is annotated with the enum type. This is the real chat shape.
+    assert type(request.privacy_level) is str
+    repository, completion = Repository(), Completion(VALID)
+    values = await CommitmentTracker(repository).ingest_message(
+        user_id=uuid7(),
+        message_id=request.trace_id,
+        text=request.messages[0].content,
+        privacy_level=request.privacy_level,
+        completion=completion,
+    )
+    if privacy == PrivacyLevel.L3:
+        assert values == [] and completion.inputs == [] and repository.owners == []
+    else:
+        assert len(values) == 1
+        assert completion.inputs[0].privacy_level is PrivacyLevel.L2
+        assert "隐私约束" in commitment_instruction(request.privacy_level)

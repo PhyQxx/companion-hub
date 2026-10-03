@@ -119,6 +119,16 @@ async def deliver_once(
             if owner is None or owner.status != "active":
                 raise BudgetDenied("budget_owner_invalid")
             source = await repository.inspect(session, fingerprint, identifier)
+            # The source write fence serializes this request's admission.
+            # Reuse an accepted request before attempting a colliding INSERT;
+            # keep source/owner validation and never replay its transport.
+            existing_id = await session.scalar(
+                select(TaskRunRecord.id).where(
+                    TaskRunRecord.user_id == user_id, TaskRunRecord.request_id == request_id
+                )
+            )
+            if existing_id is not None:
+                return False
             created = TaskRunRecord(
                 id=identifier,
                 user_id=user_id,
