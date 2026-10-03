@@ -11,3 +11,22 @@
 ## 本地分词计数示例
 
 `tokenizer-synthetic.json` 使用附带的四词 WordLevel JSON 与明确声明的 synthetic corpus；库版本和指纹均在报告。只是离线计数流水线复算，不含真实模型用量，不可用该演示词表配置真实端点。命令、范围与失败解释见 [分词校准说明](../tokenizer-calibration.md)。
+
+
+## 规则感知持久准入
+
+`perception-admission-{sqlite,pg}-c{1,4}.json` 保存固定空世界、纯规则 IGNORE 路径的原方法与持久准入样本。每模式 100 次/10 预热，每份复核 220 个决策/审计；正式数据依次在全量测试结束后执行。源码指纹用于定位当时实现，后续源码变更不改写历史测量。两个 fixture 分阶段运行，sample_index_increment 仅是序号对应的差值，不是交替同请求的配对因果估计。
+
+复算 SQLite（并发改为 1 或 4）：
+
+```sh
+uv run python server/scripts/benchmark_perception_admission.py --samples 100 --warmup 10 --concurrency 4 --output /tmp/perception-sqlite-c4.json
+```
+
+PostgreSQL 需操作员明确提供专用、名字以 `_test` 结尾的 asyncpg URL，运行时只创建/删除自己的随机 schema；已安装 pgvector 的测试库沿用共享 fixture 存储工具，报告不保存连接地址：
+
+```sh
+uv run python server/scripts/benchmark_perception_admission.py --samples 100 --warmup 10 --concurrency 4 --postgres-test-url "$ARIA_TEST_DATABASE_URL" --output /tmp/perception-pg-c4.json
+```
+
+SQLite 并发 1/4 的差值 p95 为 9.344/88.756ms；PostgreSQL 16.14 为 15.947/24.930ms。SQLite 尾部仍需优化。范围不含模型、观察者/handler、通知、HTTP/设备、历史大库及完整 Harness，不据此宣布整体 50ms 目标验收。
