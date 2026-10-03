@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-import hashlib
 import json
 import os
 import platform
@@ -43,7 +42,12 @@ from app.perception import (
 )
 from app.schemas import PrivacyLevel
 from scripts.benchmark_harness import distribution
-from scripts.benchmark_storage import FixtureStorage, open_storage, validate_test_url
+from scripts.benchmark_storage import (
+    FixtureStorage,
+    open_storage,
+    source_provenance,
+    validate_test_url,
+)
 
 
 async def run_case(
@@ -131,6 +135,7 @@ async def benchmark(
         raise ValueError("invalid benchmark dimensions")
     if postgres_test_url is not None:
         validate_test_url(postgres_test_url)
+    provenance = source_provenance()
     values: dict[str, list[float]] = {}
     version = None
     with tempfile.TemporaryDirectory(prefix="aria-perception-benchmark-") as directory:
@@ -152,23 +157,13 @@ async def benchmark(
     increments = [
         yes - no for yes, no in zip(values["admitted"], values["previous_path"], strict=True)
     ]
+    if provenance != source_provenance():
+        raise RuntimeError("benchmark_source_changed")
     return {
         "schema_version": 1,
         "fixture": "perception-empty-world-ignore-rule-v1",
         "synthetic": True,
-        "source_fingerprint": hashlib.sha256(
-            b"".join(
-                (Path(__file__).resolve().parents[1] / "app" / name).read_bytes()
-                for name in (
-                    "perception/admission.py",
-                    "perception/pipeline.py",
-                    "db/claims.py",
-                    "cognition/cycle.py",
-                    "cognition/store.py",
-                    "cognition/world.py",
-                )
-            )
-        ).hexdigest(),
+        **provenance.fields(),
         "observed_at": datetime.now(UTC).isoformat(),
         "samples_per_mode": samples,
         "warmup_per_mode": warmup,

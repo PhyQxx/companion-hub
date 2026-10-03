@@ -296,57 +296,50 @@ class JobEngine:
         """
         now = datetime.now(UTC)
         expires = now + timedelta(seconds=lease_seconds)
-
+        criteria = (
+            JobRecord.status.in_({"queued", "admitted"}),
+            or_(JobRecord.lease_expires_at.is_(None), JobRecord.lease_expires_at <= now),
+            JobRecord.available_at <= now,
+            JobRecord.attempts < JobRecord.max_attempts,
+            JobRecord.resource_class == resource_class,
+            JobRecord.cancel_requested_at.is_(None),
+        )
+        if job_id is None:
+            # An idle resource pool must not acquire SQLite's writer lock.
+            # Close this transaction before attempting the conditional write.
+            async with self._database.sessions.begin() as session:
+                ready = await session.scalar(select(JobRecord.id).where(*criteria).limit(1))
+            if ready is None:
+                return None
         async with self._database.sessions.begin() as session:
-            # 找可领取的 Job：queued 或 admitted（租约过期）
+            query = update(JobRecord).where(*criteria)
+            if job_id is not None:
+                query = query.where(JobRecord.id == job_id)
+            else:
+                candidates = (
+                    select(JobRecord.id)
+                    .where(*criteria)
+                    .order_by(JobRecord.priority.desc(), JobRecord.available_at.asc(), JobRecord.id)
+                    .limit(1)
+                    .with_for_update(skip_locked=True)
+                )
+                candidate_ids = candidates
+                if self._database.engine.dialect.name == "postgresql":
+                    materialized = candidates.cte("claim_candidate").prefix_with("MATERIALIZED")
+                    candidate_ids = select(materialized.c.id)
+                query = query.where(JobRecord.id.in_(candidate_ids))
             record = await session.scalar(
-                select(JobRecord)
-                .where(
-                    JobRecord.status.in_({"queued", "admitted"}),
-                    or_(JobRecord.lease_expires_at.is_(None), JobRecord.lease_expires_at <= now),
-                    JobRecord.available_at <= now,
-                    JobRecord.attempts < JobRecord.max_attempts,
-                    JobRecord.resource_class == resource_class,
-                    *([JobRecord.id == job_id] if job_id is not None else []),
-                    JobRecord.cancel_requested_at.is_(None),
+                query.values(
+                    status=case((JobRecord.status == "queued", "admitted"), else_="running"),
+                    lease_owner=worker_id,
+                    lease_expires_at=expires,
+                    started_at=func.coalesce(JobRecord.started_at, now),
+                    attempts=JobRecord.attempts + 1,
                 )
-                .order_by(JobRecord.priority.desc(), JobRecord.available_at.asc())
-                .limit(1)
-                .with_for_update(skip_locked=True)
+                .returning(JobRecord)
+                .execution_options(synchronize_session=False, populate_existing=True)
             )
-            if record is None:
-                return None
-
-            values: dict[str, Any] = {
-                "status": "running",
-                "lease_owner": worker_id,
-                "lease_expires_at": expires,
-                "started_at": now if record.started_at is None else record.started_at,
-                "attempts": record.attempts + 1,
-            }
-            if record.status == "queued":
-                values["status"] = "admitted"
-
-            claimed = await session.execute(
-                update(JobRecord)
-                .where(
-                    JobRecord.id == record.id,
-                    JobRecord.status == record.status,
-                    JobRecord.attempts == record.attempts,
-                    JobRecord.cancel_requested_at.is_(None),
-                    or_(JobRecord.lease_expires_at.is_(None), JobRecord.lease_expires_at <= now),
-                )
-                .values(**values)
-                .execution_options(synchronize_session=False)
-            )
-            if not int(cast(CursorResult[Any], claimed).rowcount or 0):
-                return None
-            record.status = values["status"]
-            record.lease_owner = values["lease_owner"]
-            record.lease_expires_at = values["lease_expires_at"]
-            record.started_at = values["started_at"]
-            record.attempts = values["attempts"]
-            return self._to_view(record)
+            return self._to_view(record) if isinstance(record, JobRecord) else None
 
     async def renew_lease(
         self,

@@ -40,7 +40,12 @@ from app.llm.router import LLMRouter
 from app.memory import MemoryCandidate, MemoryStore, MemoryType, RuleBasedExtractor
 from app.schemas import PrivacyLevel
 from scripts.benchmark_harness import distribution
-from scripts.benchmark_storage import FixtureStorage, open_storage, validate_test_url
+from scripts.benchmark_storage import (
+    FixtureStorage,
+    open_storage,
+    source_provenance,
+    validate_test_url,
+)
 
 TEXT = "请根据合成测试偏好简短回答。"
 REPLY = "synthetic fixed reply"
@@ -202,6 +207,7 @@ async def benchmark(
 ) -> dict[str, Any]:
     if postgres_test_url is not None:
         validate_test_url(postgres_test_url)
+    provenance = source_provenance()
     off_times: list[float] = []
     on_times: list[float] = []
     gate = asyncio.Semaphore(concurrency)
@@ -263,10 +269,13 @@ async def benchmark(
             finally:
                 await off.close()
     increments = [yes - no for yes, no in zip(on_times, off_times, strict=True)]
+    if provenance != source_provenance():
+        raise RuntimeError("benchmark_source_changed")
     return {
         "schema_version": 1,
         "fixture": "whole-chat-history6-memory8-provider0-v1",
         "synthetic": True,
+        **provenance.fields(),
         "observed_at": datetime.now(UTC).isoformat(),
         "environment": {
             "os": platform.system(),

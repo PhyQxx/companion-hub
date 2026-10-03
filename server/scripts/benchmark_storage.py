@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -11,6 +12,33 @@ from sqlalchemy.engine import make_url
 
 from app.db import Base, Database, create_database
 from app.ids import uuid7
+
+
+@dataclass(frozen=True, slots=True)
+class SourceProvenance:
+    fingerprint: str
+    file_count: int
+    scope: str = "server/app and server/scripts Python files"
+
+    def fields(self) -> dict[str, str | int]:
+        return {
+            "source_fingerprint": self.fingerprint,
+            "source_file_count": self.file_count,
+            "source_scope": self.scope,
+        }
+
+
+def source_provenance(root: Path | None = None) -> SourceProvenance:
+    root = root or Path(__file__).resolve().parents[1]
+    paths = sorted((*root.joinpath("app").rglob("*.py"), *root.joinpath("scripts").rglob("*.py")))
+    if not paths:
+        raise ValueError("benchmark_source_missing")
+    digest = hashlib.sha256()
+    for path in paths:
+        digest.update(path.relative_to(root).as_posix().encode())
+        digest.update(b"\0")
+        digest.update(hashlib.sha256(path.read_bytes()).digest())
+    return SourceProvenance(digest.hexdigest(), len(paths))
 
 
 def validate_test_url(url: str) -> None:

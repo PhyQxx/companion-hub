@@ -30,3 +30,10 @@ uv run python server/scripts/benchmark_perception_admission.py --samples 100 --w
 ```
 
 SQLite 并发 1/4 的差值 p95 为 9.344/88.756ms；PostgreSQL 16.14 为 15.947/24.930ms。SQLite 尾部仍需优化。范围不含模型、观察者/handler、通知、HTTP/设备、历史大库及完整 Harness，不据此宣布整体 50ms 目标验收。
+
+
+## 原子领取与写入锁序重测（2026-10-03）
+
+`perception-atomic-claim-{sqlite,pg}-c{1,4}.json` 与 `chat-harness-write-first-{sqlite,pg}-c4.json` 在全量验证结束后串行测量；每模式 100 样本、10 预热，每报告复核 220 提交。六份报告共同完整源指纹 `82d653cfd251d8f484825188d35122766ed1fa55dc439a127c3a103cc3f8df42`，覆盖 server/app 与 server/scripts 的 418 个 Python 文件内容及相对名。新指纹算法与旧感知部分文件摘要不同，不直接比较摘要；测量中源变动会清理 fixture 后拒绝报告。
+
+感知样本序号差值 p95（c1/c4）：SQLite 10.275/105.255ms，PG 23.731/43.069ms；并发 4 聊天交替配对预算增量 p95：SQLite 67.272ms、PG 54.725ms，p99 为 74.095/72.903ms。感知分阶段样本仍不构成因果配对，聊天两侧仍都有 Harness。数据库争锁与调度尾部全部保留；这些切片没有完成整体 50ms 目标，不能把历史不同时间数据解释为受控的性能提升。
