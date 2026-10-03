@@ -4,7 +4,7 @@ from datetime import UTC, datetime, timedelta
 from decimal import ROUND_CEILING, ROUND_FLOOR, Decimal
 from uuid import UUID
 
-from sqlalchemy import and_, case, func, or_, select, update
+from sqlalchemy import and_, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config.models import RunBudgetConfig
@@ -33,28 +33,23 @@ def charge(tokens: int, input_rate: Decimal | None, output_rate: Decimal | None)
     return int((tokens * max(input_rate, output_rate)).to_integral_value(rounding=ROUND_CEILING))
 
 
-async def reserve_cost(
+async def check_cost_allowance(
     session: AsyncSession,
     *,
-    call_id: UUID,
     user_id: UUID,
-    endpoint: str,
-    tokens: int,
-    pricing: ModelPricing | None,
+    amount: int | None,
+    currency: str | None,
     config: RunBudgetConfig,
     snapshot: RunBudgetConfig,
     now: datetime,
 ) -> None:
-    pricing = pricing or ModelPricing()
-    input_rate, output_rate = rate(pricing.input_rate), rate(pricing.output_rate)
-    reserved = charge(tokens, input_rate, output_rate)
     policies = [
         policy
         for policy in (snapshot, config)
         if policy.max_daily_cost is not None or policy.max_monthly_cost is not None
     ]
     for policy in policies:
-        if reserved is None or pricing.currency != policy.cost_currency:
+        if amount is None or currency != policy.cost_currency:
             raise BudgetDenied("cost_pricing_unavailable")
         for reason, cap, start in (
             (
@@ -92,15 +87,46 @@ async def reserve_cost(
             )
             if uncertain:
                 raise BudgetDenied("cost_usage_unknown")
-            held = await session.scalar(
-                select(func.sum(ModelCostRecord.charged_micros)).where(
+            amounts = await session.stream_scalars(
+                select(ModelCostRecord.charged_micros).where(
                     ModelCostRecord.user_id == user_id,
                     ModelCostRecord.currency == policy.cost_currency,
                     ModelCostRecord.created_at >= start,
                 )
             )
-            if int(held or 0) + reserved > micros(cap):
+            # SQLite SUM over BIGINT can overflow across individually valid calls.
+            # Python integers retain exact totals without NUMERIC/float conversion.
+            held = 0
+            async for value in amounts:
+                held += value or 0
+            if held + amount > micros(cap):
                 raise BudgetDenied(reason)
+
+
+async def reserve_cost(
+    session: AsyncSession,
+    *,
+    call_id: UUID,
+    user_id: UUID,
+    endpoint: str,
+    tokens: int,
+    pricing: ModelPricing | None,
+    config: RunBudgetConfig,
+    snapshot: RunBudgetConfig,
+    now: datetime,
+) -> None:
+    pricing = pricing or ModelPricing()
+    input_rate, output_rate = rate(pricing.input_rate), rate(pricing.output_rate)
+    reserved = charge(tokens, input_rate, output_rate)
+    await check_cost_allowance(
+        session,
+        user_id=user_id,
+        amount=reserved,
+        currency=pricing.currency,
+        config=config,
+        snapshot=snapshot,
+        now=now,
+    )
     session.add(
         ModelCostRecord(
             call_id=call_id,
@@ -140,6 +166,8 @@ async def settle_cost(
     )
     if row is None:
         return  # Pre-ledger calls cannot be retroactively priced.
+    if row.unit is not None:
+        raise BudgetDenied("cost_kind_mismatch")
     if (
         usage is not None
         and usage.provider_request_id
@@ -199,37 +227,35 @@ async def cost_summary(database: Database, *, user_id: UUID, days: int = 30) -> 
     now = datetime.now(UTC)
     start = now.replace(hour=0, minute=0, second=0, microsecond=0) - timedelta(days=days - 1)
     async with database.sessions() as session:
-        rows = (
-            await session.execute(
-                select(
-                    ModelCostRecord.currency,
-                    func.coalesce(func.sum(ModelCostRecord.charged_micros), 0),
-                    func.sum(case((ModelCostRecord.state == "estimated", 1), else_=0)),
-                    func.sum(case((ModelCostRecord.state == "reserved", 1), else_=0)),
-                    func.sum(case((ModelCostRecord.state == "unknown", 1), else_=0)),
-                    func.sum(case((ModelCostRecord.charged_micros.is_(None), 1), else_=0)),
-                )
-                .where(
-                    ModelCostRecord.user_id == user_id,
-                    ModelCostRecord.created_at >= start,
-                    ModelCostRecord.created_at <= now,
-                )
-                .group_by(ModelCostRecord.currency)
-                .order_by(ModelCostRecord.currency)
+        rows = await session.stream(
+            select(
+                ModelCostRecord.currency,
+                ModelCostRecord.charged_micros,
+                ModelCostRecord.state,
+            ).where(
+                ModelCostRecord.user_id == user_id,
+                ModelCostRecord.created_at >= start,
+                ModelCostRecord.created_at <= now,
             )
-        ).all()
+        )
+        totals: dict[str | None, list[int]] = {}
+        async for currency, amount, state in rows:
+            counts = totals.setdefault(currency, [0, 0, 0, 0, 0])
+            counts[0] += amount or 0
+            counts[{"estimated": 1, "reserved": 2, "unknown": 3}[state]] += 1
+            counts[4] += amount is None
     return CostSummaryView(
         period_start=start,
         period_end=now,
         currencies=[
             CostCurrencyView(
-                currency=row[0],
-                charged_micros=str(row[1]),
-                estimated_calls=int(row[2]),
-                reserved_calls=int(row[3]),
-                unknown_calls=int(row[4]),
-                unpriced_calls=int(row[5]),
+                currency=currency,
+                charged_micros=str(counts[0]),
+                estimated_calls=counts[1],
+                reserved_calls=counts[2],
+                unknown_calls=counts[3],
+                unpriced_calls=counts[4],
             )
-            for row in rows
+            for currency, counts in sorted(totals.items(), key=lambda item: item[0] or "")
         ],
     )

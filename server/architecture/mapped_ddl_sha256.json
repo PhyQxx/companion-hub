@@ -168,8 +168,8 @@
     "sqlite": "1a77d94eb7d1ff542037ad5cfdc69d928d7aa8d4bfc2c469affd2aacbc25ae11"
   },
   "model_cost": {
-    "postgresql": "1e4b9a93cadacb5c00b6f8882bee9100614c1ae414f04b04455f04a2360a8023",
-    "sqlite": "c01107423648f4de1653fc0d3977a64638de2e7a9f37516d9764f5454aa0fdf1"
+    "postgresql": "955f97aed264535ce66bcd988d12d2866c13375b2ac26cc571348f88e6175ca8",
+    "sqlite": "e81126e01bd6fb6c875dcb326f58e2e4443ebe42bcef8544f657fa65a6687882"
   },
   "model_reservation": {
     "postgresql": "cfd277e60c72aec3ddca2f2338a9658e3eb11063ff3f70b4684a8da4d5991239",
@@ -264,8 +264,8 @@
     "sqlite": "8031fbcbb6434a4d948f1d9f68c57be80f56abd3b7a993365d80f6c53dfa992a"
   },
   "task_item": {
-    "sqlite": "a61d88522e09c6d8969abca372c8319250ad75b75a84f3d4b82a6a9184915ab4",
-    "postgresql": "3835e2174c2e7564fdfced1f8c147fdf6262c8ffea2f0a33f30dd3393f4c9dde"
+    "postgresql": "3835e2174c2e7564fdfced1f8c147fdf6262c8ffea2f0a33f30dd3393f4c9dde",
+    "sqlite": "a61d88522e09c6d8969abca372c8319250ad75b75a84f3d4b82a6a9184915ab4"
   },
   "task_run": {
     "postgresql": "c6284ad979409e57f5aedc83772983c619c1abb877c57c423fd831e42f739204",

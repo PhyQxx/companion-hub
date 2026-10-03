@@ -508,6 +508,7 @@ def test_domain_mapping_definitions_only_depend_on_shared_base() -> None:
             "app.db.base",
             "app.db.base.Base",
             "app.db.base.BIGINT_PK",
+            "app.db.base.ExactDecimal",
         }
         definitions = {
             node.name for node in ast.parse(source).body if isinstance(node, ast.ClassDef)

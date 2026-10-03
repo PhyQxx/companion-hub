@@ -123,7 +123,7 @@ def test_full_sqlite_chain_reaches_private_task_head(tmp_path: Path) -> None:
     path = tmp_path / "private-task-chain.db"
     environment = {**os.environ, "ARIA_DATABASE_URL": f"sqlite+aiosqlite:///{path}"}
     result = subprocess.run(
-        [sys.executable, "-m", "alembic", "upgrade", "head"],
+        [sys.executable, "-m", "alembic", "upgrade", "0066_task_private"],
         cwd=Path(__file__).resolve().parents[2],
         env=environment,
         capture_output=True,

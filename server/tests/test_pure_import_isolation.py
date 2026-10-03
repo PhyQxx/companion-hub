@@ -29,6 +29,7 @@ import pytest
         "app.harness.context",
         "app.harness.loop",
         "app.harness.source_cleanup",
+        "app.harness.unit_costs",
         "app.voice:TtsProviderChain",
         "app.llm.contracts",
         "app.memory",
