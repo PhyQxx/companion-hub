@@ -214,7 +214,15 @@ class DailyReviewService:
         tomorrow_end = day_end + timedelta(days=1)
         items: list[ReviewItem] = []
 
-        for task in await self._tasks.list_tasks(user_id, status=TaskStatus.DONE, limit=200):
+        for task in await self._tasks.list_tasks(
+            user_id, status=TaskStatus.DONE, limit=200, max_privacy_level=PrivacyLevel.L1
+        ):
+            if (
+                task.user_id != user_id
+                or task.status != TaskStatus.DONE
+                or task.privacy_level not in {PrivacyLevel.L0, PrivacyLevel.L1}
+            ):
+                continue
             completed = _aware(task.completed_at)
             if completed is None or not day_start <= completed < day_end:
                 continue
@@ -230,7 +238,15 @@ class DailyReviewService:
         ):
             items.append(ReviewItem(section="completed", text=goal.title, source=f"goal:{goal.id}"))
 
-        for task in await self._tasks.list_tasks(user_id, status=TaskStatus.ACTIVE, limit=200):
+        for task in await self._tasks.list_tasks(
+            user_id, status=TaskStatus.ACTIVE, limit=200, max_privacy_level=PrivacyLevel.L1
+        ):
+            if (
+                task.user_id != user_id
+                or task.status != TaskStatus.ACTIVE
+                or task.privacy_level not in {PrivacyLevel.L0, PrivacyLevel.L1}
+            ):
+                continue
             next_fire = _aware(task.next_fire_at)
             if task.trigger.type != "time" or next_fire is None or next_fire >= day_end:
                 continue
@@ -263,7 +279,15 @@ class DailyReviewService:
                 ReviewItem(section="new_commitment", text=goal.title, source=f"goal:{goal.id}")
             )
 
-        for task in await self._tasks.list_tasks(user_id, status=TaskStatus.ACTIVE, limit=200):
+        for task in await self._tasks.list_tasks(
+            user_id, status=TaskStatus.ACTIVE, limit=200, max_privacy_level=PrivacyLevel.L1
+        ):
+            if (
+                task.user_id != user_id
+                or task.status != TaskStatus.ACTIVE
+                or task.privacy_level not in {PrivacyLevel.L0, PrivacyLevel.L1}
+            ):
+                continue
             next_fire = _aware(task.next_fire_at)
             if task.trigger.type != "time" or next_fire is None:
                 continue

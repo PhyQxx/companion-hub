@@ -20,7 +20,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.calendar.models import CalendarEventView, CalendarSourceInvalidated
 from app.db import AppUserRecord, CalendarEventRecord, Database, TaskItemRecord, TaskRunRecord
 from app.ids import uuid7
-from app.schemas.common import PrivacyLevel
+from app.schemas.common import PrivacyLevel, persistent_privacy_levels
 
 from .models import (
     ClaimedTask,
@@ -107,6 +107,9 @@ class TaskStore:
         source_ref: str | None = None,
         now: datetime | None = None,
     ) -> TaskView:
+        privacy_level = PrivacyLevel(privacy_level)
+        if privacy_level == PrivacyLevel.L3:
+            raise ValueError("task_privacy_level_must_be_persistent")
         moment = now or datetime.now(UTC)
         normalized = validate_trigger(trigger, now=moment)
         record = TaskItemRecord(
@@ -271,10 +274,16 @@ class TaskStore:
         *,
         status: TaskStatus | None = None,
         limit: int = 200,
+        max_privacy_level: PrivacyLevel | None = None,
     ) -> list[TaskView]:
         query = select(TaskItemRecord).where(TaskItemRecord.user_id == user_id)
         if status is not None:
             query = query.where(TaskItemRecord.status == str(status))
+        if max_privacy_level is not None:
+            levels = persistent_privacy_levels(max_privacy_level)
+            if not levels:
+                return []
+            query = query.where(TaskItemRecord.privacy_level.in_([str(level) for level in levels]))
         query = query.order_by(TaskItemRecord.created_at.desc()).limit(limit)
         async with self._database.sessions() as session:
             records = (await session.execute(query)).scalars().all()

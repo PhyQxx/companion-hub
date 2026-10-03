@@ -346,7 +346,15 @@ class DailyBriefService:
                 )
 
         due_tasks = []
-        for task in await self._tasks.list_tasks(user_id, status=TaskStatus.ACTIVE, limit=200):
+        for task in await self._tasks.list_tasks(
+            user_id, status=TaskStatus.ACTIVE, limit=200, max_privacy_level=PrivacyLevel.L1
+        ):
+            if (
+                task.user_id != user_id
+                or task.status != TaskStatus.ACTIVE
+                or task.privacy_level not in {PrivacyLevel.L0, PrivacyLevel.L1}
+            ):
+                continue
             next_fire = _aware(task.next_fire_at)
             if next_fire is None or task.trigger.type != "time":
                 continue

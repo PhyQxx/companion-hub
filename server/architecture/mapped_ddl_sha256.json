@@ -264,8 +264,8 @@
     "sqlite": "8031fbcbb6434a4d948f1d9f68c57be80f56abd3b7a993365d80f6c53dfa992a"
   },
   "task_item": {
-    "postgresql": "342b7082d092c74364e46fa9c50eaba6ad661ea5fa9ecf05b31405944bc0b2c2",
-    "sqlite": "4fdc6a88ef128e98bdc8f634e7586d7589073db707befe21a11c67a033abf6de"
+    "sqlite": "a61d88522e09c6d8969abca372c8319250ad75b75a84f3d4b82a6a9184915ab4",
+    "postgresql": "3835e2174c2e7564fdfced1f8c147fdf6262c8ffea2f0a33f30dd3393f4c9dde"
   },
   "task_run": {
     "postgresql": "c6284ad979409e57f5aedc83772983c619c1abb877c57c423fd831e42f739204",

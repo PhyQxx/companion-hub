@@ -50,7 +50,7 @@ class TaskItemRecord(Base):
             name="ck_task_item_trigger_type",
         ),
         CheckConstraint(
-            "privacy_level IN ('L0','L1')",
+            "privacy_level IN ('L0','L1','L2')",
             name="ck_task_item_privacy_level",
         ),
         Index("ix_task_item_user_status_created", "user_id", "status", "created_at"),
