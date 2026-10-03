@@ -10,6 +10,7 @@ from uuid import UUID
 from pydantic import Field, TypeAdapter, ValidationError
 from sqlalchemy import select, update
 from sqlalchemy.exc import IntegrityError
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config.models import RunBudgetConfig
 from app.db import (
@@ -41,6 +42,18 @@ from .delivery_sources import (
 from .store import append_run_event, transition_run
 
 _CHANNELS: TypeAdapter[list[str]] = TypeAdapter(Annotated[list[TokenName], Field(max_length=16)])
+
+
+async def _lock_active_owner(session: AsyncSession, user_id: UUID) -> bool:
+    return (
+        await session.scalar(
+            update(AppUserRecord)
+            .where(AppUserRecord.id == user_id, AppUserRecord.status == "active")
+            .values(id=AppUserRecord.id)
+            .returning(AppUserRecord.id)
+        )
+        is not None
+    )
 
 
 def outcome(row: TaskRunRecord | None) -> DeliveryRunOutcome | None:
@@ -110,13 +123,13 @@ async def deliver_once(
     try:
         async with database.sessions.begin() as session:
             await assert_current_claim(session)
-            # Acquire the owned source write fence before reading owner state.
-            # SQLite read-to-write upgrades can otherwise deadlock concurrent
-            # admissions even though none has reached the transport yet.
+            # Match owner -> source -> Run order used by source acceptance.
+            # The conditional write keeps owner validation valid until commit
+            # and avoids SQLite read-to-write upgrades.
+            owner_active = await _lock_active_owner(session, user_id)
             if not await repository.lock(session, pending=True):
                 return False
-            owner = await session.get(AppUserRecord, user_id)
-            if owner is None or owner.status != "active":
+            if not owner_active:
                 raise BudgetDenied("budget_owner_invalid")
             source = await repository.inspect(session, fingerprint, identifier)
             # The source write fence serializes this request's admission.
@@ -187,6 +200,8 @@ async def deliver_once(
                 permit = await port.reserve_tool(tool_name=entry, user_id=user_id)
             async with database.sessions.begin() as session:
                 await assert_current_claim(session)
+                if not await _lock_active_owner(session, user_id):
+                    raise BudgetDenied("budget_owner_invalid")
                 if not await repository.lock(session, pending=True):
                     raise BudgetDenied("delivery_source_changed")
                 row = await session.get(TaskRunRecord, identifier, with_for_update=True)
