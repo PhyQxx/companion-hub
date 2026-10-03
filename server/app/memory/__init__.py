@@ -21,6 +21,7 @@ from .extraction import (
     extract_assistant_fact_assertions,
     extraction_instruction,
 )
+from .extraction_core import StructuredMemoryExtractor
 from .models import (
     ConsolidateDecision,
     DeletionLedgerEntry,
@@ -85,6 +86,7 @@ __all__ = [
     "RetrievalResult",
     "RuleBasedExtractor",
     "SimilarMemory",
+    "StructuredMemoryExtractor",
     "TurnMemoryExtractor",
     "build_embedding_provider",
     "cosine_similarity",
