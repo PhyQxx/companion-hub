@@ -299,19 +299,7 @@ class PerceptionPipeline:
                     valid = await valid
                 if not valid:
                     now = datetime.now(UTC)
-                    if event.privacy_level != PrivacyLevel.L3:
-                        await self._store.record(
-                            event,
-                            dedupe_key=key[1],
-                            disposition=PerceptionDisposition.UNSTABLE,
-                            reason_code="stability_check_failed",
-                            now=now,
-                        )
-                    result = PerceptionResult(
-                        event_id=event.event_id,
-                        disposition=PerceptionDisposition.UNSTABLE,
-                        reason_code="stability_check_failed",
-                    )
+                    result = await self._record_unstable(event, dedupe_key=key[1], now=now)
                 else:
                     result = await self.process(event)
             else:
@@ -325,6 +313,30 @@ class PerceptionPipeline:
         finally:
             if self._tasks.get(key) is asyncio.current_task():
                 self._tasks.pop(key, None)
+
+    async def _record_unstable(
+        self, event: SemanticEvent, *, dedupe_key: str, now: datetime
+    ) -> PerceptionResult:
+        if event.privacy_level != PrivacyLevel.L3:
+            await self._admission.verify(event)
+            if await self._store.get(event.event_id) is not None:
+                return await self.process(event)
+
+            async def record() -> None:
+                await self._store.record(
+                    event,
+                    dedupe_key=dedupe_key,
+                    disposition=PerceptionDisposition.UNSTABLE,
+                    reason_code="stability_check_failed",
+                    now=now,
+                )
+
+            await self._admission.execute(event, record)
+        return PerceptionResult(
+            event_id=event.event_id,
+            disposition=PerceptionDisposition.UNSTABLE,
+            reason_code="stability_check_failed",
+        )
 
     @staticmethod
     def _dedupe_key(event: SemanticEvent) -> str:

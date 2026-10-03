@@ -48,9 +48,9 @@ from app.cognition import (
     RouterDeliberator,
     RuleBasedDeliberator,
     SemanticEvent,
-    WorldStateBuilder,
     build_builtin_action_registry,
 )
+from app.cognition.world_assembly import WorldAssembler
 from app.cognition.world_sql import SqlWorldFactsRepository
 from app.commute import CommuteService
 from app.config import ConfigStore, ConfigWatcher, DatabaseConfigStore
@@ -365,12 +365,11 @@ def assemble_domain(
     cognitive_cycle = (
         CognitiveCycle(
             cognitive_store,
-            WorldStateBuilder(
-                runtime_database,
+            WorldAssembler(
+                SqlWorldFactsRepository(runtime_database),
                 cognitive_store,
                 memory_retriever=MemoryRetriever(memory_store) if memory_store else None,
                 timeline_store=timeline_store,
-                repository=SqlWorldFactsRepository(runtime_database),
             ),
             AttentionEngine(),
             (

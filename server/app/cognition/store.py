@@ -376,21 +376,27 @@ class CognitiveStore:
     async def active_goals(
         self, user_id: UUID, *, now: datetime, max_privacy_level: PrivacyLevel | None = None
     ) -> list[GoalView]:
+        expiry_conditions = (
+            CognitiveGoalRecord.user_id == user_id,
+            goal_visibility(max_privacy_level),
+            CognitiveGoalRecord.status == GoalStatus.ACTIVE.value,
+            CognitiveGoalRecord.expires_at.is_not(None),
+            CognitiveGoalRecord.expires_at <= now,
+        )
+        # Finish the idle read before any write. Actual expiry rechecks all
+        # predicates after a concurrent terminal/privacy/schedule change.
         async with self.database.sessions.begin() as session:
-            expired = list(
-                await session.scalars(
-                    select(CognitiveGoalRecord).where(
-                        CognitiveGoalRecord.user_id == user_id,
-                        goal_visibility(max_privacy_level),
-                        CognitiveGoalRecord.status == GoalStatus.ACTIVE.value,
-                        CognitiveGoalRecord.expires_at.is_not(None),
-                        CognitiveGoalRecord.expires_at <= now,
-                    )
-                )
+            expired = await session.scalar(
+                select(CognitiveGoalRecord.id).where(*expiry_conditions).limit(1)
             )
-            for item in expired:
-                item.status = GoalStatus.EXPIRED.value
-                item.updated_at = now
+        async with self.database.sessions.begin() as session:
+            if expired is not None:
+                await session.execute(
+                    update(CognitiveGoalRecord)
+                    .where(*expiry_conditions)
+                    .values(status=GoalStatus.EXPIRED.value, updated_at=now)
+                    .execution_options(synchronize_session=False)
+                )
             rows = list(
                 await session.scalars(
                     select(CognitiveGoalRecord)
@@ -398,6 +404,10 @@ class CognitiveStore:
                         CognitiveGoalRecord.user_id == user_id,
                         goal_visibility(max_privacy_level),
                         CognitiveGoalRecord.status == GoalStatus.ACTIVE.value,
+                        or_(
+                            CognitiveGoalRecord.expires_at.is_(None),
+                            CognitiveGoalRecord.expires_at > now,
+                        ),
                     )
                     .order_by(CognitiveGoalRecord.due_at, CognitiveGoalRecord.created_at)
                     .limit(16)

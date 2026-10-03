@@ -3,11 +3,12 @@ from __future__ import annotations
 from datetime import datetime, timedelta
 from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 
 from app.cognition import SemanticEvent
-from app.db import Database, SemanticEventAuditRecord
+from app.db import AppUserRecord, Database, SemanticEventAuditRecord
 from app.db.claims import assert_current_claim
+from app.harness.budget import BudgetDenied
 from app.schemas import PrivacyLevel
 
 from .models import PerceptionDisposition, SemanticEventAuditView
@@ -72,10 +73,20 @@ class PerceptionStore:
         decision_id: UUID | None = None,
         merged_into_event_id: UUID | None = None,
     ) -> None:
+        event = event.model_copy(deep=True)
         if event.privacy_level == PrivacyLevel.L3:
             return
         async with self.database.sessions.begin() as session:
             await assert_current_claim(session)
+            owner = await session.scalar(
+                update(AppUserRecord)
+                .where(AppUserRecord.id == event.user_id, AppUserRecord.status == "active")
+                .values(status=AppUserRecord.status)
+                .returning(AppUserRecord.id)
+                .execution_options(synchronize_session=False)
+            )
+            if owner is None:
+                raise BudgetDenied("event_owner_inactive")
             session.add(
                 SemanticEventAuditRecord(
                     event_id=event.event_id,

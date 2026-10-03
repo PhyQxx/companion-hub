@@ -156,7 +156,16 @@ def test_project_architecture_boundaries() -> None:
     assert check_architecture.check() == []
 
 
-@pytest.mark.parametrize("module", ["app.cognition.cycle", "app.perception.pipeline"])
+@pytest.mark.parametrize(
+    "module",
+    [
+        "app.cognition.cycle",
+        "app.perception.pipeline",
+        "app.cognition.world_assembly",
+        "app.context.snapshots",
+        "app.memory.retrieval_models",
+    ],
+)
 @pytest.mark.parametrize(
     "dependency", ["app.db", "app.perception.admission", "app.cognition.store"]
 )

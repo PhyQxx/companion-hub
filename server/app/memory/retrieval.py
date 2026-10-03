@@ -19,6 +19,8 @@ from app.schemas.common import PrivacyLevel, persistent_privacy_levels
 
 from .embeddings import cosine_similarity, lexical_cosine, text_tokens
 from .models import MemoryEntry, MemoryStatus, MemorySubjectKind, MemoryType
+from .retrieval_models import MemoryHit as MemoryHit
+from .retrieval_models import RetrievalResult as RetrievalResult
 from .store import MemoryStore, RetrievalCandidate
 
 RETRIEVAL_POLICY_VERSION = "hybrid-subject-v5"
@@ -36,26 +38,6 @@ DEFAULT_TYPE_QUOTAS: Mapping[str, int] = {
     MemoryType.EPISODIC.value: 2,
     MemoryType.EMOTIONAL.value: 2,
 }
-
-
-@dataclass(frozen=True, slots=True)
-class MemoryHit:
-    memory: MemoryEntry
-    vector_score: float
-    lexical_score: float
-    final_score: float
-    reasons: tuple[str, ...]
-
-
-@dataclass(frozen=True, slots=True)
-class RetrievalResult:
-    hits: tuple[MemoryHit, ...]
-    policy_version: str
-    candidate_count: int
-    vector_recalled: int
-    lexical_recalled: int
-    subject_hint: str | None = None
-    fact_hint: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
