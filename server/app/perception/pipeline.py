@@ -13,6 +13,7 @@ from app.harness.time import utc
 from app.privacy.service import PolicyService
 from app.schemas import PrivacyLevel
 
+from .admission import EventAdmission
 from .models import PerceptionDisposition, PerceptionResult
 from .policy import ProactivePolicy
 from .store import PerceptionStore
@@ -35,6 +36,9 @@ class PerceptionPipeline:
         self._cycle = cycle
         self._store = store
         self._policy = policy
+        self._admission = EventAdmission(
+            store.database, window_seconds=policy.settings.dedupe_window_seconds
+        )
         self._tasks: dict[tuple[UUID, str], asyncio.Task[None]] = {}
         self._locks: dict[tuple[UUID, str], asyncio.Lock] = {}
         self._recent: dict[tuple[UUID, str], tuple[UUID, datetime]] = {}
@@ -84,10 +88,22 @@ class PerceptionPipeline:
         self._tasks[key] = task
 
     async def process(self, event: SemanticEvent) -> PerceptionResult:
+        event = event.model_copy(deep=True)
         key = (event.user_id, self._dedupe_key(event))
         lock = self._locks.setdefault(key, asyncio.Lock())
         async with lock:
-            result = await self._process_locked(event, key=key)
+            if event.privacy_level == PrivacyLevel.L3:
+                result = await self._process_locked(event, key=key)
+            else:
+                await self._admission.verify(event)
+                if await self._store.get(event.event_id) is not None:
+                    result = await self._process_locked(event, key=key)
+                else:
+                    result = await self._admission.execute(
+                        event, lambda: self._process_locked(event, key=key)
+                    )
+        # Observers own their derived jobs/runs. Do not let background work inherit
+        # the short-lived inline claim after its decision and audit have committed.
         if (
             self._departure_observer is not None
             and event.privacy_level != PrivacyLevel.L3
@@ -166,7 +182,7 @@ class PerceptionPipeline:
                 reason_code="cross_source_duplicate",
                 merged_into_event_id=memory_duplicate[0],
             )
-        if event.expires_at is not None and event.expires_at <= now:
+        if event.expires_at is not None and utc(event.expires_at) <= now:
             await self._store.record(
                 event,
                 dedupe_key=dedupe_key,

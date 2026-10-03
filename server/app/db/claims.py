@@ -4,15 +4,17 @@ from datetime import UTC, datetime
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.harness.claim import ClaimInvalidated, current_claim
+from app.harness.claim import ClaimInvalidated, ExecutionClaim, current_claims
 
 from .models import JobRecord
 
 
 async def assert_current_claim(session: AsyncSession) -> None:
-    claim = current_claim()
-    if claim is None:
-        return
+    for claim in current_claims():
+        await _assert_claim(session, claim)
+
+
+async def _assert_claim(session: AsyncSession, claim: ExecutionClaim) -> None:
     job = await session.get(JobRecord, claim.job_id, with_for_update=True)
     if job is None:
         raise ClaimInvalidated()
