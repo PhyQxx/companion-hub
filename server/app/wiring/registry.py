@@ -81,7 +81,7 @@ class ModuleRegistry:
             if spec.stop is not None:
                 try:
                     await spec.stop()
-                except Exception:
+                except BaseException:
                     self.reason_codes[name] = "module_start_cleanup_failed"
             if spec.critical or not isinstance(error, Exception):
                 raise
@@ -94,22 +94,35 @@ class ModuleRegistry:
             for name in self.order:
                 await self.start(name)
         except BaseException:
-            with suppress(Exception):
+            # Cleanup interruption must not replace the original startup
+            # failure/cancellation after releasing the started dependencies.
+            with suppress(BaseException):
                 await self.stop_all()
             raise
 
     async def stop_all(self) -> None:
-        errors: list[Exception] = []
+        errors: list[BaseException] = []
         for name in reversed(self._started):
             try:
                 callback = self._specs[name].stop
                 if callback is not None:
                     await callback()
-            except Exception as error:
+            except BaseException as error:
                 self.reason_codes[name] = "module_stop_failed"
                 errors.append(error)
             finally:
                 self.states[name] = "stopped"
         self._started.clear()
         if errors:
-            raise ExceptionGroup("module_shutdown_failed", errors)
+            interruption = next(
+                (error for error in errors if not isinstance(error, Exception)), None
+            )
+            if interruption is not None:
+                # Retain recognizable cancellation/abort after best-effort
+                # reverse cleanup, with any other failures available as cause.
+                others = [error for error in errors if error is not interruption]
+                if others:
+                    raise interruption from BaseExceptionGroup("module_shutdown_failed", others)
+                raise interruption
+            # Python specializes this to ExceptionGroup for ordinary errors.
+            raise BaseExceptionGroup("module_shutdown_failed", errors)
