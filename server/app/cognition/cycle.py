@@ -6,17 +6,15 @@ from app.ids import uuid7
 from app.schemas import PrivacyLevel
 
 from .attention import ATTENTION_POLICY_VERSION, AttentionEngine
-from .deliberation import COGNITIVE_POLICY_VERSION, Deliberator
 from .models import CognitiveDecision, DecisionKind, SemanticEvent, Urgency
-from .store import CognitiveStore
-from .world import WorldStateBuilder
+from .ports import COGNITIVE_POLICY_VERSION, DecisionRepository, Deliberator, WorldStateSource
 
 
 class CognitiveCycle:
     def __init__(
         self,
-        store: CognitiveStore,
-        world: WorldStateBuilder,
+        store: DecisionRepository,
+        world: WorldStateSource,
         attention: AttentionEngine,
         deliberator: Deliberator,
     ) -> None:
@@ -26,6 +24,7 @@ class CognitiveCycle:
         self.deliberator = deliberator
 
     async def evaluate(self, event: SemanticEvent) -> CognitiveDecision:
+        event = event.model_copy(deep=True)
         state = await self.world.build(event)
         attention = self.attention.evaluate(event, state)
         if not attention.should_deliberate:
@@ -52,6 +51,7 @@ class CognitiveCycle:
         return decision
 
     async def suppress(self, event: SemanticEvent, *reason_codes: str) -> CognitiveDecision:
+        event = event.model_copy(deep=True)
         decision = CognitiveDecision(
             id=uuid7(),
             event_id=event.event_id,

@@ -7,7 +7,7 @@ from uuid import UUID
 
 from pydantic import Field
 
-from app.cognition import CognitiveDecision
+from app.cognition.models import CognitiveDecision
 from app.schemas.common import StrictModel
 
 

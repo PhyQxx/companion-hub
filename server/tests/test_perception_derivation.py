@@ -109,7 +109,7 @@ async def test_source_expiring_after_decision_does_not_trigger_an_observer(
         return decision
 
     pipeline.set_event_observer(observer)
-    pipeline._cycle = SimpleNamespace(evaluate=evaluate, suppress=cycle.suppress)  # type: ignore[assignment]
+    pipeline._cycle = SimpleNamespace(evaluate=evaluate, suppress=cycle.suppress)
     source = event(
         user_id, "user_arrived_home", expires_at=datetime.now(UTC) + timedelta(seconds=1)
     )

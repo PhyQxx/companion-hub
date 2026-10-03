@@ -84,6 +84,7 @@ from app.model_capabilities import CapabilityModelService
 from app.observability import apply_observability
 from app.observability.selfcheck import DailySelfCheckScheduler
 from app.perception import PerceptionPipeline, PerceptionStore, ProactivePolicy
+from app.perception.admission import EventAdmission
 from app.perception.pipeline import EventObserver
 from app.persona import PersonaStore
 from app.pnkx import PnkxLifeClient
@@ -382,15 +383,21 @@ def assemble_domain(
         else None
     )
     perception_store = PerceptionStore(runtime_database) if runtime_database is not None else None
+    perception_policy = ProactivePolicy(runtime_database) if runtime_database is not None else None
     perception_pipeline = (
         PerceptionPipeline(
             cognitive_cycle,
             perception_store,
-            ProactivePolicy(runtime_database),
+            perception_policy,
+            admission=EventAdmission(
+                runtime_database,
+                window_seconds=perception_policy.settings.dedupe_window_seconds,
+            ),
         )
         if runtime_database is not None
         and cognitive_cycle is not None
         and perception_store is not None
+        and perception_policy is not None
         else None
     )
     task_store = TaskStore(runtime_database) if runtime_database is not None else None

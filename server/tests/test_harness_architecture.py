@@ -156,6 +156,16 @@ def test_project_architecture_boundaries() -> None:
     assert check_architecture.check() == []
 
 
+@pytest.mark.parametrize("module", ["app.cognition.cycle", "app.perception.pipeline"])
+@pytest.mark.parametrize(
+    "dependency", ["app.db", "app.perception.admission", "app.cognition.store"]
+)
+def test_cognitive_flow_rejects_concrete_adapters(module: str, dependency: str) -> None:
+    assert not check_architecture.allowed(module, dependency)
+    assert check_architecture.allowed(module, "app.cognition.ports")
+    assert check_architecture.allowed(module, "app.perception.ports")
+
+
 @pytest.mark.parametrize(
     "specs",
     [

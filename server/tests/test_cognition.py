@@ -65,6 +65,11 @@ def cognitive_cycle(database: Database) -> CognitiveCycle:
     )
 
 
+def sql_store(cycle: CognitiveCycle) -> CognitiveStore:
+    assert isinstance(cycle.store, CognitiveStore)
+    return cycle.store
+
+
 def semantic_event(
     user_id: UUID,
     kind: str,
@@ -178,13 +183,13 @@ async def test_feedback_creates_traceable_reflection_candidate(
         for _ in range(3)
     ]
     for decision in decisions:
-        await cognitive_cycle.store.add_feedback(
+        await sql_store(cognitive_cycle).add_feedback(
             user_id=user_id,
             decision_id=decision.id,
             kind=FeedbackKind.IGNORED,
         )
 
-    candidate = await cognitive_cycle.store.reflection_candidate(
+    candidate = await sql_store(cognitive_cycle).reflection_candidate(
         user_id=user_id,
         trigger_kind="light_on_too_long",
     )
@@ -199,7 +204,7 @@ async def test_goal_requires_explicit_source_and_supports_cancellation(
     user_id: UUID,
 ) -> None:
     with pytest.raises(ValueError, match="explicit user or manual evidence"):
-        await cognitive_cycle.store.create_goal(
+        await sql_store(cognitive_cycle).create_goal(
             user_id=user_id,
             kind=GoalKind.USER,
             title="每天运动",
@@ -207,14 +212,14 @@ async def test_goal_requires_explicit_source_and_supports_cancellation(
             source_id="inference-1",
         )
 
-    goal = await cognitive_cycle.store.create_goal(
+    goal = await sql_store(cognitive_cycle).create_goal(
         user_id=user_id,
         kind=GoalKind.USER,
         title="每天运动",
         source_kind="manual",
         source_id="api-request",
     )
-    cancelled = await cognitive_cycle.store.set_goal_status(
+    cancelled = await sql_store(cognitive_cycle).set_goal_status(
         user_id=user_id,
         goal_id=goal.id,
         status=GoalStatus.CANCELLED,
@@ -330,13 +335,13 @@ async def test_reflection_engine_generates_candidates_from_feedback(
         for _ in range(3)
     ]
     for decision in decisions:
-        await cognitive_cycle.store.add_feedback(
+        await sql_store(cognitive_cycle).add_feedback(
             user_id=user_id,
             decision_id=decision.id,
             kind=FeedbackKind.IGNORED,
         )
 
-    engine = ReflectionEngine(cognitive_cycle.store)
+    engine = ReflectionEngine(sql_store(cognitive_cycle))
     candidates = await engine.run_for_user(user_id)
 
     assert len(candidates) >= 1
@@ -350,17 +355,16 @@ async def test_reflection_engine_respects_min_total_threshold(
 ) -> None:
     # Only 2 feedbacks, below default min_total=3.
     decisions = [
-        await cognitive_cycle.evaluate(semantic_event(user_id, "device_offline"))
-        for _ in range(2)
+        await cognitive_cycle.evaluate(semantic_event(user_id, "device_offline")) for _ in range(2)
     ]
     for decision in decisions:
-        await cognitive_cycle.store.add_feedback(
+        await sql_store(cognitive_cycle).add_feedback(
             user_id=user_id,
             decision_id=decision.id,
             kind=FeedbackKind.IGNORED,
         )
 
-    engine = ReflectionEngine(cognitive_cycle.store, min_total=3)
+    engine = ReflectionEngine(sql_store(cognitive_cycle), min_total=3)
     candidates = await engine.run_for_user(user_id)
     assert candidates == []
 
@@ -369,7 +373,9 @@ async def test_reflection_engine_detects_forbidden() -> None:
     from app.cognition.reflection import FeedbackSummary, ReflectionEngine
 
     engine = ReflectionEngine(
-        None, forbidden_threshold=2, min_total=2  # type: ignore[arg-type]
+        None,  # type: ignore[arg-type]
+        forbidden_threshold=2,
+        min_total=2,
     )
     summary = FeedbackSummary(
         total=2, accepted=0, ignored=0, snoozed=0, forbidden=2, acceptance_rate=0.0
@@ -386,9 +392,9 @@ async def test_store_saves_and_retrieves_action_results(
 ) -> None:
     decision = await cognitive_cycle.evaluate(semantic_event(user_id, "light_on_too_long"))
     result = await ActionEngine().execute(decision)
-    await cognitive_cycle.store.save_action_result(result, user_id=user_id)
+    await sql_store(cognitive_cycle).save_action_result(result, user_id=user_id)
 
-    results = await cognitive_cycle.store.recent_action_results(user_id, limit=10)
+    results = await sql_store(cognitive_cycle).recent_action_results(user_id, limit=10)
     assert len(results) == 1
     assert results[0].outcome == ActionOutcome.PROMPTED
 
@@ -399,7 +405,7 @@ async def test_store_saves_and_lists_reflection_candidates(
 ) -> None:
     from app.cognition import ReflectionCandidate
 
-    candidate_id = await cognitive_cycle.store.save_candidate(
+    candidate_id = await sql_store(cognitive_cycle).save_candidate(
         user_id=user_id,
         candidate=ReflectionCandidate(
             content="test candidate",
@@ -410,7 +416,7 @@ async def test_store_saves_and_lists_reflection_candidates(
     )
     assert candidate_id is not None
 
-    pending = await cognitive_cycle.store.pending_candidates(user_id, limit=10)
+    pending = await sql_store(cognitive_cycle).pending_candidates(user_id, limit=10)
     assert len(pending) == 1
     assert pending[0].content == "test candidate"
 
@@ -444,8 +450,7 @@ async def test_model_deliberation_is_structured_and_cannot_enable_act(
     assert valid_backend.requests[0].json_mode is True
 
     blocked_backend = FakeCognitiveBackend(
-        '{"decision":"act","reason_codes":["unsafe"],'
-        '"confidence":1,"urgency":"normal"}'
+        '{"decision":"act","reason_codes":["unsafe"],"confidence":1,"urgency":"normal"}'
     )
     safe_cycle = CognitiveCycle(
         cognitive_store,

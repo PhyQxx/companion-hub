@@ -18,6 +18,7 @@ from app.harness.budget import BudgetDenied
 from app.harness.claim import ClaimInvalidated, ExecutionClaim, claim_scope, current_claims
 from app.jobs.engine import JobEngine
 from app.perception import PerceptionDisposition, PerceptionStore
+from app.perception.admission import EventAdmission
 
 database = save_database
 user_id = perception_user
@@ -46,7 +47,7 @@ async def test_independent_pipelines_admit_one_decision(
             await release.wait()
             return await original(value)
 
-        pipeline._cycle = SimpleNamespace(evaluate=evaluate, suppress=cycle.suppress)  # type: ignore[assignment]
+        pipeline._cycle = SimpleNamespace(evaluate=evaluate, suppress=cycle.suppress)
         pipeline.set_event_observer(observer)
     task = asyncio.create_task(pipelines[0].process(first))
     await asyncio.wait_for(entered.wait(), 5)
@@ -115,7 +116,7 @@ async def test_interrupted_source_and_cross_source_unknown_are_not_reexecuted(
         calls += 1
         raise RuntimeError("private fixture interruption")
 
-    pipeline._cycle = SimpleNamespace(evaluate=interrupted)  # type: ignore[assignment]
+    pipeline._cycle = SimpleNamespace(evaluate=interrupted)
     with pytest.raises(RuntimeError, match="private fixture interruption"):
         await pipeline.process(source)
     with pytest.raises(BudgetDenied, match="event_source_already_admitted"):
@@ -153,7 +154,7 @@ async def test_admitted_event_rejects_late_result_when_any_claim_is_lost(
             # A cancellation-defying port still cannot save its late decision.
             return await original.evaluate(value)
 
-    pipeline._cycle = SimpleNamespace(evaluate=evaluate, suppress=original.suppress)  # type: ignore[assignment]
+    pipeline._cycle = SimpleNamespace(evaluate=evaluate, suppress=original.suppress)
     with claim_scope(ExecutionClaim(parent.id, "parent-worker", claimed.attempts)):
         task = asyncio.create_task(pipeline.process(event(user_id, "user_arrived_home")))
     await asyncio.wait_for(entered.wait(), 5)
@@ -233,7 +234,9 @@ async def test_live_claim_blocks_cross_source_after_window_and_expired_claim_can
     source = event(user_id, "user_arrived_home", dedupe_key="fixture:crash")
     pipeline = create_pipeline(database, dedupe_window_seconds=1)
     engine = JobEngine(database)
-    job = await pipeline._admission._admit(source)
+    admission = pipeline._admission
+    assert isinstance(admission, EventAdmission)
+    job = await admission._admit(source)
     assert await engine.claim("lost-process", resource_class="perception-inline", job_id=job.id)
     async with database.sessions.begin() as session:
         await session.execute(

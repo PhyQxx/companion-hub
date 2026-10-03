@@ -40,6 +40,7 @@ from app.perception import (
     ProactivePolicy,
     ProactivePolicySettings,
 )
+from app.perception.admission import EventAdmission
 from app.schemas import PrivacyLevel
 from scripts.benchmark_harness import distribution
 from scripts.benchmark_storage import (
@@ -58,6 +59,9 @@ async def run_case(
     async with database.sessions.begin() as session:
         session.add(AppUserRecord(id=owner, display_name="Synthetic benchmark", status="active"))
     cognitive = CognitiveStore(database)
+    policy = ProactivePolicy(
+        database, ProactivePolicySettings(quiet_hours_start="00:00", quiet_hours_end="00:00")
+    )
     pipeline = PerceptionPipeline(
         CognitiveCycle(
             cognitive,
@@ -66,9 +70,8 @@ async def run_case(
             RuleBasedDeliberator(),
         ),
         PerceptionStore(database),
-        ProactivePolicy(
-            database, ProactivePolicySettings(quiet_hours_start="00:00", quiet_hours_end="00:00")
-        ),
+        policy,
+        admission=EventAdmission(database, window_seconds=policy.settings.dedupe_window_seconds),
     )
     gate = asyncio.Semaphore(concurrency)
 

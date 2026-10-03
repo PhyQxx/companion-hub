@@ -7,16 +7,15 @@ from contextlib import suppress
 from datetime import UTC, datetime, timedelta
 from uuid import UUID
 
-from app.cognition import CognitiveCycle, SemanticEvent
+from app.cognition.models import SemanticEvent
+from app.cognition.ports import CognitiveCyclePort
 from app.harness.budget import BudgetDenied
 from app.harness.time import utc
 from app.privacy.service import PolicyService
 from app.schemas import PrivacyLevel
 
-from .admission import EventAdmission
 from .models import PerceptionDisposition, PerceptionResult
-from .policy import ProactivePolicy
-from .store import PerceptionStore
+from .ports import EventAdmissionPort, EventAuditRepository, EventPolicy
 
 ValidateEvent = Callable[[], bool | Awaitable[bool]]
 HandleResult = Callable[[SemanticEvent, PerceptionResult], Awaitable[None]]
@@ -29,16 +28,16 @@ class PerceptionPipeline:
 
     def __init__(
         self,
-        cycle: CognitiveCycle,
-        store: PerceptionStore,
-        policy: ProactivePolicy,
+        cycle: CognitiveCyclePort,
+        store: EventAuditRepository,
+        policy: EventPolicy,
+        *,
+        admission: EventAdmissionPort,
     ) -> None:
         self._cycle = cycle
         self._store = store
         self._policy = policy
-        self._admission = EventAdmission(
-            store.database, window_seconds=policy.settings.dedupe_window_seconds
-        )
+        self._admission = admission
         self._tasks: dict[tuple[UUID, str], asyncio.Task[None]] = {}
         self._locks: dict[tuple[UUID, str], asyncio.Lock] = {}
         self._recent: dict[tuple[UUID, str], tuple[UUID, datetime]] = {}
@@ -70,6 +69,7 @@ class PerceptionPipeline:
         validate: ValidateEvent | None = None,
         handler: HandleResult | None = None,
     ) -> None:
+        event = event.model_copy(deep=True)
         dedupe_key = self._dedupe_key(event)
         key = (event.user_id, dedupe_key)
         previous = self._tasks.pop(key, None)
@@ -93,7 +93,7 @@ class PerceptionPipeline:
         lock = self._locks.setdefault(key, asyncio.Lock())
         async with lock:
             if event.privacy_level == PrivacyLevel.L3:
-                result = await self._process_locked(event, key=key)
+                result = await self._process_private(event)
             else:
                 await self._admission.verify(event)
                 if await self._store.get(event.event_id) is not None:
@@ -133,6 +133,30 @@ class PerceptionPipeline:
                 logger.exception("event observer failed: %s", event.event_id)
         return result
 
+    async def _process_private(self, event: SemanticEvent) -> PerceptionResult:
+        # Ephemeral ingress must not rely on an adapter to remember to discard
+        # writes, or seed ordinary dedupe with an unpersisted private event ID.
+        now = datetime.now(UTC)
+        if event.expires_at is not None and utc(event.expires_at) <= now:
+            return PerceptionResult(
+                event_id=event.event_id,
+                disposition=PerceptionDisposition.EXPIRED,
+                reason_code="event_expired",
+            )
+        rejection = await self._policy.reject_reason(event, now=now)
+        if rejection is not None:
+            return PerceptionResult(
+                event_id=event.event_id,
+                disposition=PerceptionDisposition.SUPPRESSED,
+                reason_code=rejection,
+                decision=await self._cycle.suppress(event, rejection),
+            )
+        return PerceptionResult(
+            event_id=event.event_id,
+            disposition=PerceptionDisposition.PROCESSED,
+            decision=await self._cycle.evaluate(event),
+        )
+
     async def _process_locked(
         self,
         event: SemanticEvent,
@@ -154,7 +178,7 @@ class PerceptionPipeline:
                 or existing.source_kind != event.source_kind
                 or existing.dedupe_key != dedupe_key
                 or existing.privacy_level != str(event.privacy_level)
-                or existing.evidence_ids != event.evidence_ids
+                or existing.evidence_ids != tuple(event.evidence_ids)
                 or utc(existing.occurred_at) != utc(event.occurred_at)
                 or (utc(existing.expires_at) if existing.expires_at is not None else None)
                 != (utc(event.expires_at) if event.expires_at is not None else None)
@@ -272,13 +296,14 @@ class PerceptionPipeline:
                     valid = await valid
                 if not valid:
                     now = datetime.now(UTC)
-                    await self._store.record(
-                        event,
-                        dedupe_key=key[1],
-                        disposition=PerceptionDisposition.UNSTABLE,
-                        reason_code="stability_check_failed",
-                        now=now,
-                    )
+                    if event.privacy_level != PrivacyLevel.L3:
+                        await self._store.record(
+                            event,
+                            dedupe_key=key[1],
+                            disposition=PerceptionDisposition.UNSTABLE,
+                            reason_code="stability_check_failed",
+                            now=now,
+                        )
                     result = PerceptionResult(
                         event_id=event.event_id,
                         disposition=PerceptionDisposition.UNSTABLE,

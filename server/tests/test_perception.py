@@ -36,6 +36,7 @@ from app.perception import (
     ProactivePolicy,
     ProactivePolicySettings,
 )
+from app.perception.admission import EventAdmission
 from app.schemas import PrivacyLevel
 
 
@@ -81,7 +82,12 @@ def create_pipeline(
             dedupe_window_seconds=dedupe_window_seconds,
         ),
     )
-    return PerceptionPipeline(cycle, perception_store, policy)
+    return PerceptionPipeline(
+        cycle,
+        perception_store,
+        policy,
+        admission=EventAdmission(database, window_seconds=dedupe_window_seconds),
+    )
 
 
 def event(

@@ -23,15 +23,9 @@ from .models import (
     Urgency,
     WorldState,
 )
+from .ports import COGNITIVE_POLICY_VERSION as COGNITIVE_POLICY_VERSION
+from .ports import Deliberator as Deliberator
 from .store import CognitiveStore
-
-COGNITIVE_POLICY_VERSION = "cognitive-v1"
-
-
-class Deliberator(Protocol):
-    async def deliberate(
-        self, event: SemanticEvent, state: WorldState, attention: AttentionResult
-    ) -> CognitiveDecision: ...
 
 
 class CompletionBackend(Protocol):

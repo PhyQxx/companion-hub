@@ -11,16 +11,33 @@ from app.db.claims import assert_current_claim
 from app.schemas import PrivacyLevel
 
 from .models import PerceptionDisposition, SemanticEventAuditView
+from .ports import EventAuditSnapshot
+
+
+def _snapshot(record: SemanticEventAuditRecord | None) -> EventAuditSnapshot | None:
+    if record is None:
+        return None
+    return EventAuditSnapshot(
+        event_id=record.event_id,
+        user_id=record.user_id,
+        kind=record.kind,
+        source_kind=record.source_kind,
+        dedupe_key=record.dedupe_key,
+        privacy_level=record.privacy_level,
+        evidence_ids=tuple(record.evidence_ids),
+        occurred_at=record.occurred_at,
+        expires_at=record.expires_at,
+    )
 
 
 class PerceptionStore:
     def __init__(self, database: Database) -> None:
         self.database = database
 
-    async def get(self, event_id: UUID) -> SemanticEventAuditRecord | None:
+    async def get(self, event_id: UUID) -> EventAuditSnapshot | None:
         async with self.database.sessions() as session:
             record = await session.get(SemanticEventAuditRecord, event_id)
-        return record if isinstance(record, SemanticEventAuditRecord) else None
+            return _snapshot(record)
 
     async def recent_duplicate(
         self,
@@ -29,7 +46,7 @@ class PerceptionStore:
         dedupe_key: str,
         now: datetime,
         window_seconds: int,
-    ) -> SemanticEventAuditRecord | None:
+    ) -> EventAuditSnapshot | None:
         async with self.database.sessions() as session:
             record = await session.scalar(
                 select(SemanticEventAuditRecord)
@@ -42,7 +59,7 @@ class PerceptionStore:
                 .order_by(SemanticEventAuditRecord.created_at.desc())
                 .limit(1)
             )
-        return record if isinstance(record, SemanticEventAuditRecord) else None
+            return _snapshot(record)
 
     async def record(
         self,

@@ -33,6 +33,15 @@ DOMAIN_PACKAGES = frozenset(
         "perception",
     }
 )
+PURE_COGNITIVE_FLOW = frozenset(
+    {
+        "app.cognition.cycle",
+        "app.cognition.ports",
+        "app.perception.pipeline",
+        "app.perception.ports",
+        "app.perception.models",
+    }
+)
 
 
 def module_name(path: Path, root: Path) -> str:
@@ -61,6 +70,21 @@ def imports(source: str, module: str, *, package: bool = False) -> Iterable[str]
 def allowed(source: str, target: str) -> bool:
     if not target.startswith("app."):
         return True
+    if source in PURE_COGNITIVE_FLOW:
+        return any(
+            target == prefix or target.startswith(prefix + ".")
+            for prefix in (
+                "app.cognition.models",
+                "app.cognition.ports",
+                "app.cognition.attention",
+                "app.perception.models",
+                "app.perception.ports",
+                "app.harness",
+                "app.schemas",
+                "app.ids",
+                "app.privacy.service",
+            )
+        )
     if source == "app.schemas" or source.startswith("app.schemas."):
         return target == "app.schemas" or target.startswith("app.schemas.")
     if source == "app.harness" or source.startswith("app.harness."):
