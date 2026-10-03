@@ -258,30 +258,57 @@ class CognitiveStore:
         async with self.database.sessions.begin() as session:
             if source_kind == "message":
                 source_conversation_id = await session.scalar(
-                    select(MessageRecord.conversation_id).where(
-                        MessageRecord.id == message_id,
-                    )
-                )
-                conversation = await session.scalar(
-                    select(ConversationRecord)
+                    update(ConversationRecord)
                     .where(
-                        ConversationRecord.id == source_conversation_id,
+                        ConversationRecord.id.in_(
+                            select(MessageRecord.conversation_id).where(
+                                MessageRecord.id == message_id
+                            )
+                        ),
                         ConversationRecord.user_id == user_id,
                     )
-                    .with_for_update()
+                    .values(id=ConversationRecord.id)
+                    .returning(ConversationRecord.id)
+                    .execution_options(synchronize_session=False)
                 )
-                evidence = await session.get(MessageRecord, message_id)
+                if source_conversation_id is None:
+                    raise ValueError("goal message evidence does not belong to the user")
+            # Preserve source -> claim -> owner -> evidence lock ordering.
+            # Both sourced and manual acceptance require an active account.
+            await assert_current_claim(session)
+            owner = await session.scalar(
+                update(AppUserRecord)
+                .where(AppUserRecord.id == user_id, AppUserRecord.status == "active")
+                .values(status=AppUserRecord.status)
+                .returning(AppUserRecord.id)
+                .execution_options(synchronize_session=False)
+            )
+            if owner is None:
+                raise ValueError("goal owner is inactive or missing")
+            if source_kind == "message":
+                assert source_conversation_id is not None
+                evidence = await session.scalar(
+                    update(MessageRecord)
+                    .where(
+                        MessageRecord.id == message_id,
+                        MessageRecord.conversation_id == source_conversation_id,
+                    )
+                    .values(id=MessageRecord.id)
+                    .returning(MessageRecord)
+                    .execution_options(synchronize_session=False, populate_existing=True)
+                )
                 deleted = await session.scalar(
                     select(DeletionLedgerRecord.id)
                     .where(
                         DeletionLedgerRecord.entity_kind == "message",
-                        DeletionLedgerRecord.entity_id == str(source_conversation_id),
+                        func.lower(func.replace(DeletionLedgerRecord.entity_id, "-", "")).in_(
+                            [source_conversation_id.hex, message_id.hex]
+                        ),
                     )
                     .limit(1)
                 )
-                if conversation is None or evidence is None or deleted is not None:
+                if evidence is None or deleted is not None:
                     raise ValueError("goal message evidence does not belong to the user")
-                await assert_current_claim(session)
                 ranks = {"L0": 0, "L1": 1, "L2": 2}
                 requested = (
                     str(privacy_level) if privacy_level is not None else evidence.privacy_level
@@ -306,7 +333,6 @@ class CognitiveStore:
                         existing.privacy_level = next_level
                         existing.updated_at = moment
                     return _goal(existing)
-            await assert_current_claim(session)
             session.add(record)
         return _goal(record)
 
