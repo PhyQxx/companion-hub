@@ -8,6 +8,7 @@ from .models import (
 from .service import MeetingService
 from .store import MeetingStore
 from .summarizer import LlmMeetingSummarizer, MeetingSummarizer, RuleBasedMeetingSummarizer
+from .summary_core import StructuredMeetingSummarizer
 
 __all__ = [
     "LlmMeetingSummarizer",
@@ -19,5 +20,6 @@ __all__ = [
     "MeetingSummary",
     "MeetingView",
     "RuleBasedMeetingSummarizer",
+    "StructuredMeetingSummarizer",
     "TranscriptSegment",
 ]

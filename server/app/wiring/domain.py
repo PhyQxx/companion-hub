@@ -74,7 +74,9 @@ from app.jobs import (
 )
 from app.llm.factory import build_router
 from app.llm.provider import EnvSecretProvider
-from app.meetings import LlmMeetingSummarizer, MeetingService, MeetingStore
+from app.meetings import MeetingService, MeetingStore
+from app.meetings.summary_core import StructuredMeetingSummarizer
+from app.meetings.summary_sql import SqlMeetingSummaryCompletion
 from app.memory import (
     LlmMemoryExtractor,
     MemoryExtractor,
@@ -641,7 +643,9 @@ def assemble_domain(
             MeetingStore(runtime_database),
             calendar_store,
             task_store,
-            LlmMeetingSummarizer(runtime_config, database=runtime_database),
+            StructuredMeetingSummarizer(
+                SqlMeetingSummaryCompletion(runtime_config, database=runtime_database)
+            ),
         )
         if runtime_database is not None
         and calendar_store is not None
