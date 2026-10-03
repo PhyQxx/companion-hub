@@ -872,6 +872,8 @@ class VoiceWebSocketManager:
             or original.privacy_level != privacy
         ):
             self._discard_capture(session)
+            if session.asr_tasks:
+                await asyncio.gather(*tuple(session.asr_tasks), return_exceptions=True)
             await self._release_microphone(session)
             await self._interrupt(session, reason="voice_source_changed")
         session.conversation_id = conversation_id
@@ -1612,9 +1614,7 @@ class VoiceWebSocketManager:
                 "voice.interrupted",
                 {"generation_id": None, "reason": reason},
             )
-            task.cancel()
-            with suppress(asyncio.CancelledError):
-                await task
+            await self._cancel_turn_task(session, task)
             self._latency_metrics.record_interrupt(
                 int((time.perf_counter() - started) * 1000)
             )
@@ -1638,9 +1638,7 @@ class VoiceWebSocketManager:
                 "turn_cancelled": changed,
             },
         )
-        task.cancel()
-        with suppress(asyncio.CancelledError):
-            await task
+        await self._cancel_turn_task(session, task)
         interrupt_ms = int((time.perf_counter() - started) * 1000)
         self._latency_metrics.record_interrupt(interrupt_ms)
         logger.info(
@@ -1650,6 +1648,23 @@ class VoiceWebSocketManager:
             interrupt_ms,
         )
 
+    @staticmethod
+    async def _cancel_turn_task(session: VoiceSession, task: asyncio.Task[None]) -> None:
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            caller = asyncio.current_task()
+            if caller is not None and caller.cancelling():
+                raise
+        finally:
+            # A task cancelled before its coroutine starts never enters the
+            # utterance's finally block. Do not leave the session pinned busy.
+            if session.turn_task is task:
+                session.turn_task = None
+                session.generation_id = None
+                session.turn_committed = False
+
     async def disconnect(self, session: VoiceSession) -> None:
         self._discard_capture(session)
         if session.asr_tasks:
@@ -1657,11 +1672,8 @@ class VoiceWebSocketManager:
         await self._release_microphone(session)
         task = session.turn_task
         if task is not None:
-            task.cancel()
             try:
-                await task
-            except asyncio.CancelledError:
-                pass
+                await self._cancel_turn_task(session, task)
             except Exception:
                 logger.warning("voice turn task failed on disconnect", exc_info=True)
         if self._turns is not None:

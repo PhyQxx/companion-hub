@@ -13,7 +13,7 @@ from app.config.models import RunBudgetConfig
 from app.db import AppUserRecord, Database, ModelCostRecord, TaskRunRecord
 from app.db.claims import assert_current_claim
 from app.harness.budget import BudgetDenied, budget_scope, current_budget
-from app.harness.guarded_call import guarded_call
+from app.harness.guarded_call import guarded_call, guarded_inline_call
 from app.harness.operations import OperationPolicy
 from app.harness.source_cleanup import close_after_source
 from app.harness.time import utc
@@ -41,6 +41,7 @@ async def operate_with_run(
     source_guard: Callable[[], Awaitable[None]],
     cost_endpoint: str,
     budget_source: Callable[[], RunBudgetConfig] | None = None,
+    cooperative: bool = False,
 ) -> T:
     if privacy_level == PrivacyLevel.L3:
         raise BudgetDenied("ephemeral_operation_run_forbidden")
@@ -319,7 +320,8 @@ async def operate_with_run(
         with budget_scope(budget):
             await check(run_id)
             async with asyncio.timeout(max(0, (deadline - datetime.now(UTC)).total_seconds())):
-                result = await guarded_call(lambda: invoke(mark_started), lambda: check(run_id))
+                guard = guarded_inline_call if cooperative else guarded_call
+                result = await guard(lambda: invoke(mark_started), lambda: check(run_id))
             async with database.sessions.begin() as session:
                 authority = await lock_authority(session, run_id)
                 row = authority[-1]
