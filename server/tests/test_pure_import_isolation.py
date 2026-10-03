@@ -28,6 +28,8 @@ import pytest
         "app.perception.pipeline",
         "app.harness.context",
         "app.harness.loop",
+        "app.harness.source_cleanup",
+        "app.voice:TtsProviderChain",
         "app.llm.contracts",
         "app.memory",
         "app.timeline",

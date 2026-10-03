@@ -27,6 +27,7 @@ from app.auth import AuthService, ChatPrincipal, InvalidSession
 from app.avatar import AvatarControlPublisher, control_from_agent_reply, with_reply_text
 from app.chat import ChatService, PendingTurn, TurnCancelled
 from app.harness.budget import BudgetDenied
+from app.harness.source_cleanup import close_after_source
 from app.ids import uuid7
 from app.llm import LLMRoute, LLMRouteExhausted
 from app.privacy import EgressBlocked
@@ -53,6 +54,7 @@ from app.voice import (
     markdown_to_speech_text,
 )
 from app.voice.contracts import LocalOnlySynthesizerError, StreamingRecognitionSessionFactory
+from app.voice.failover import close_audio_stream
 
 from .auth import ChatSessionGuard
 from .chat_ws import AuthenticateFrame
@@ -137,7 +139,7 @@ class UtteranceStreamer:
             return None
         try:
             partial = await asyncio.to_thread(recognizer.feed, pcm)
-        except asyncio.CancelledError:
+        except (asyncio.CancelledError, BudgetDenied):
             self._recognizer = None
             raise
         except Exception:
@@ -165,6 +167,8 @@ class UtteranceStreamer:
             return None
         try:
             final = await asyncio.to_thread(recognizer.finalize)
+        except BudgetDenied:
+            raise
         except Exception:
             logger.warning(
                 "voice streaming asr finalize failed provider=%s; falling back",
@@ -399,73 +403,80 @@ class VoiceWebSocketManager:
         except LocalOnlySynthesizerError:
             await emit("pet.audio.failed", {"reason_code": "local_tts_required"})
             return False
+        except BudgetDenied as error:
+            await emit("pet.audio.failed", {"reason_code": error.reason_code})
+            raise
         except Exception:
             await emit("pet.audio.failed", {"reason_code": "tts_generation_failed"})
             return False
-        provider = selection.provider
-        lease_device: UUID | None = None
-        if self._turns is not None:
-            try:
-                lease_device = uuid7()
-                lease = await self._turns.acquire_audio_lease(
-                    lease_device, uuid7(), ttl_seconds=120
-                )
-                if lease.previous_holder is not None:
-                    await self._preempt_audio_holder(lease.previous_holder, exclude=None)
-            except Exception:
-                logger.warning("pet audio lease acquire failed", exc_info=True)
-                lease_device = None
-        await emit(
-            "pet.audio.start",
-            {
-                "mime": provider.mime,
-                "sample_rate": provider.sample_rate,
-                "provider": type(provider).__name__,
-            },
-        )
-        index = 0
-        total_bytes = 0
-        try:
-            async for chunk in _prepend_audio_chunk(
-                selection.first_chunk, selection.stream
-            ):
-                if lease_device is not None and not await self._still_holds_audio(
-                    lease_device
-                ):
-                    await emit(
-                        "pet.audio.failed", {"reason_code": "audio_preempted"}
+        async with close_after_source(lambda: close_audio_stream(selection.stream)):
+            provider = selection.provider
+            lease_device: UUID | None = None
+            if self._turns is not None:
+                try:
+                    lease_device = uuid7()
+                    lease = await self._turns.acquire_audio_lease(
+                        lease_device, uuid7(), ttl_seconds=120
                     )
-                    return False
-                for offset in range(0, len(chunk), DEVICE_AUDIO_CHUNK_BYTES):
-                    part = chunk[offset : offset + DEVICE_AUDIO_CHUNK_BYTES]
-                    if total_bytes + len(part) > DEVICE_AUDIO_MAX_BYTES:
+                    if lease.previous_holder is not None:
+                        await self._preempt_audio_holder(lease.previous_holder, exclude=None)
+                except Exception:
+                    logger.warning("pet audio lease acquire failed", exc_info=True)
+                    lease_device = None
+            await emit(
+                "pet.audio.start",
+                {
+                    "mime": provider.mime,
+                    "sample_rate": provider.sample_rate,
+                    "provider": type(provider).__name__,
+                },
+            )
+            index = 0
+            total_bytes = 0
+            try:
+                async for chunk in _prepend_audio_chunk(
+                    selection.first_chunk, selection.stream
+                ):
+                    if lease_device is not None and not await self._still_holds_audio(
+                        lease_device
+                    ):
                         await emit(
-                            "pet.audio.failed",
-                            {"reason_code": "tts_audio_too_large"},
+                            "pet.audio.failed", {"reason_code": "audio_preempted"}
                         )
                         return False
-                    total_bytes += len(part)
-                    await emit(
-                        "pet.audio.chunk",
-                        {
-                            "index": index,
-                            "data_b64": base64.b64encode(part).decode("ascii"),
-                        },
-                    )
-                    index += 1
-        except Exception:
-            tts_chain.report_failure(provider)
-            await emit("pet.audio.failed", {"reason_code": "tts_stream_failed"})
-            return False
-        finally:
-            if lease_device is not None and self._turns is not None:
-                with suppress(Exception):
-                    await self._turns.release_audio_lease(lease_device)
-        await emit(
-            "pet.audio.end",
-            {"chunks": index, "bytes": total_bytes},
-        )
-        return True
+                    for offset in range(0, len(chunk), DEVICE_AUDIO_CHUNK_BYTES):
+                        part = chunk[offset : offset + DEVICE_AUDIO_CHUNK_BYTES]
+                        if total_bytes + len(part) > DEVICE_AUDIO_MAX_BYTES:
+                            await emit(
+                                "pet.audio.failed",
+                                {"reason_code": "tts_audio_too_large"},
+                            )
+                            return False
+                        total_bytes += len(part)
+                        await emit(
+                            "pet.audio.chunk",
+                            {
+                                "index": index,
+                                "data_b64": base64.b64encode(part).decode("ascii"),
+                            },
+                        )
+                        index += 1
+            except BudgetDenied as error:
+                await emit("pet.audio.failed", {"reason_code": error.reason_code})
+                raise
+            except Exception:
+                tts_chain.report_failure(provider)
+                await emit("pet.audio.failed", {"reason_code": "tts_stream_failed"})
+                return False
+            finally:
+                if lease_device is not None and self._turns is not None:
+                    with suppress(Exception):
+                        await self._turns.release_audio_lease(lease_device)
+            await emit(
+                "pet.audio.end",
+                {"chunks": index, "bytes": total_bytes},
+            )
+            return True
 
     async def run_satellite_utterance(
         self,
@@ -552,10 +563,17 @@ class VoiceWebSocketManager:
                 kind = message.get("type")
                 if kind == "websocket.disconnect":
                     break
-                if "text" in message:
-                    await self._on_control(session, message["text"])
-                elif "bytes" in message:
-                    await self._on_audio(session, message["bytes"])
+                try:
+                    if "text" in message:
+                        await self._on_control(session, message["text"])
+                    elif "bytes" in message:
+                        await self._on_audio(session, message["bytes"])
+                except BudgetDenied as error:
+                    self._discard_capture(
+                        session, block_ptt=session.ptt_active or session.ptt_rejected
+                    )
+                    await self._release_microphone(session)
+                    await self._send_failure(session, None, error.reason_code)
         finally:
             self._sessions.pop(key, None)
 
@@ -625,32 +643,35 @@ class VoiceWebSocketManager:
                 {"reason": "local_tts_required"},
             )
             return True
-        await self._send(
-            session,
-            "voice.sentence",
-            {
-                "generation_id": str(generation_id),
-                "index": 0,
-                "text": speech_text,
-                "mime": selection.provider.mime,
-                "sample_rate": selection.provider.sample_rate,
-                "provider": type(selection.provider).__name__,
-            },
-        )
-        try:
-            await self._send_bytes(session, selection.first_chunk)
-            async for chunk in selection.stream:
-                await self._send_bytes(session, chunk)
-        except Exception:
-            tts_chain.report_failure(selection.provider)
-            logger.warning("proactive voice TTS failed", exc_info=True)
+        async with close_after_source(lambda: close_audio_stream(selection.stream)):
+            await self._send(
+                session,
+                "voice.sentence",
+                {
+                    "generation_id": str(generation_id),
+                    "index": 0,
+                    "text": speech_text,
+                    "mime": selection.provider.mime,
+                    "sample_rate": selection.provider.sample_rate,
+                    "provider": type(selection.provider).__name__,
+                },
+            )
+            try:
+                await self._send_bytes(session, selection.first_chunk)
+                async for chunk in selection.stream:
+                    await self._send_bytes(session, chunk)
+            except BudgetDenied:
+                raise
+            except Exception:
+                tts_chain.report_failure(selection.provider)
+                logger.warning("proactive voice TTS failed", exc_info=True)
+                return True
+            await self._send(
+                session,
+                "voice.sentence.end",
+                {"generation_id": str(generation_id), "index": 0},
+            )
             return True
-        await self._send(
-            session,
-            "voice.sentence.end",
-            {"generation_id": str(generation_id), "index": 0},
-        )
-        return True
 
     async def _on_control(self, session: VoiceSession, raw: str) -> None:
         try:
@@ -861,6 +882,8 @@ class VoiceWebSocketManager:
         session.utterance_streamer = None
         try:
             recognizer, _tts = await self._voice_source.resolve()
+        except BudgetDenied:
+            raise
         except Exception:
             logger.warning("voice streamer resolve failed", exc_info=True)
             return
@@ -966,7 +989,11 @@ class VoiceWebSocketManager:
             await self._interrupt(session, reason="barge_in")
         prefetched_transcript = streamed_transcript
         if prefetched_transcript is None:
-            prefetched_transcript = await self._consume_asr_prefetch(session, recognizer)
+            try:
+                prefetched_transcript = await self._consume_asr_prefetch(session, recognizer)
+            except BudgetDenied as error:
+                await self._send_failure(session, None, error.reason_code)
+                return
         session.turn_task = asyncio.create_task(
             self._run_utterance(
                 session,
@@ -1016,7 +1043,12 @@ class VoiceWebSocketManager:
         try:
             transcript = await prefetch.task
         except asyncio.CancelledError:
+            caller = asyncio.current_task()
+            if caller is not None and caller.cancelling():
+                raise
             return None
+        except BudgetDenied:
+            raise
         except Exception:
             logger.warning("voice ASR prefetch failed; falling back", exc_info=True)
             return None
@@ -1072,6 +1104,8 @@ class VoiceWebSocketManager:
                     session, "voice.asr_unavailable", {"reason": error.reason}
                 )
                 return
+            except BudgetDenied:
+                raise
             except Exception as error:
                 logger.error(
                     "voice asr provider failed provider=%s error_type=%s",
@@ -1189,64 +1223,67 @@ class VoiceWebSocketManager:
                 selection = await tts_chain.select(
                     sentence, privacy_level=session.privacy_level
                 )
-                await self._send(
-                    session,
-                    "voice.sentence",
-                    {
-                        "generation_id": str(generation_id),
-                        "index": sentence_index,
-                        "text": sentence,
-                        "mime": selection.provider.mime,
-                        "sample_rate": selection.provider.sample_rate,
-                        "provider": type(selection.provider).__name__,
-                    },
-                )
-                envelope = (
-                    PcmAmplitudeEnvelope(selection.provider.sample_rate)
-                    if selection.provider.mime.startswith("audio/pcm")
-                    else None
-                )
-                viseme_index = 0
-
-                async def send_audio_chunk(chunk: bytes) -> None:
-                    nonlocal first_audio_at, viseme_index
-                    if envelope is not None:
-                        for amplitude in envelope.push(chunk):
-                            await self._send(
-                                session,
-                                "voice.viseme",
-                                {
-                                    "generation_id": str(generation_id),
-                                    "sentence_index": sentence_index,
-                                    "index": viseme_index,
-                                    "amp": round(amplitude, 4),
-                                    "offset_ms": viseme_index * envelope.window_ms,
-                                    "duration_ms": envelope.window_ms,
-                                },
-                            )
-                            viseme_index += 1
-                    await self._send_bytes(session, chunk)
-                    if first_audio_at == 0.0:
-                        first_audio_at = time.perf_counter()
-
-                try:
-                    await send_audio_chunk(selection.first_chunk)
-                    async for chunk in selection.stream:
-                        await send_audio_chunk(chunk)
-                except Exception:
-                    # 中途断流：该句音频残缺，冷却该提供方并跳句，回合继续
-                    tts_chain.report_failure(selection.provider)
-                    logger.warning(
-                        "tts stream broken mid-sentence provider=%s",
-                        type(selection.provider).__name__,
-                        exc_info=True,
+                async with close_after_source(lambda: close_audio_stream(selection.stream)):
+                    await self._send(
+                        session,
+                        "voice.sentence",
+                        {
+                            "generation_id": str(generation_id),
+                            "index": sentence_index,
+                            "text": sentence,
+                            "mime": selection.provider.mime,
+                            "sample_rate": selection.provider.sample_rate,
+                            "provider": type(selection.provider).__name__,
+                        },
                     )
-                await self._send(
-                    session,
-                    "voice.sentence.end",
-                    {"generation_id": str(generation_id), "index": sentence_index},
-                )
-                sentence_index += 1
+                    envelope = (
+                        PcmAmplitudeEnvelope(selection.provider.sample_rate)
+                        if selection.provider.mime.startswith("audio/pcm")
+                        else None
+                    )
+                    viseme_index = 0
+
+                    async def send_audio_chunk(chunk: bytes) -> None:
+                        nonlocal first_audio_at, viseme_index
+                        if envelope is not None:
+                            for amplitude in envelope.push(chunk):
+                                await self._send(
+                                    session,
+                                    "voice.viseme",
+                                    {
+                                        "generation_id": str(generation_id),
+                                        "sentence_index": sentence_index,
+                                        "index": viseme_index,
+                                        "amp": round(amplitude, 4),
+                                        "offset_ms": viseme_index * envelope.window_ms,
+                                        "duration_ms": envelope.window_ms,
+                                    },
+                                )
+                                viseme_index += 1
+                        await self._send_bytes(session, chunk)
+                        if first_audio_at == 0.0:
+                            first_audio_at = time.perf_counter()
+
+                    try:
+                        await send_audio_chunk(selection.first_chunk)
+                        async for chunk in selection.stream:
+                            await send_audio_chunk(chunk)
+                    except BudgetDenied:
+                        raise
+                    except Exception:
+                        # 中途断流：该句音频残缺，冷却该提供方并跳句，回合继续
+                        tts_chain.report_failure(selection.provider)
+                        logger.warning(
+                            "tts stream broken mid-sentence provider=%s",
+                            type(selection.provider).__name__,
+                            exc_info=True,
+                        )
+                    await self._send(
+                        session,
+                        "voice.sentence.end",
+                        {"generation_id": str(generation_id), "index": sentence_index},
+                    )
+                    sentence_index += 1
 
             async def on_delta(delta: str) -> None:
                 nonlocal first_token_at

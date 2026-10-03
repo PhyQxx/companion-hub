@@ -14,6 +14,8 @@ import time
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
 
+from app.harness.budget import BudgetDenied
+from app.harness.source_cleanup import close_after_source
 from app.schemas import PrivacyLevel
 
 from .contracts import LocalOnlySynthesizerError, SpeechSynthesizer
@@ -30,6 +32,22 @@ class TtsSelection:
     provider: SpeechSynthesizer
     first_chunk: bytes
     stream: AsyncIterator[bytes]
+
+
+async def close_audio_stream(stream: AsyncIterator[bytes]) -> None:
+    close = getattr(stream, "aclose", None)
+    if close is not None:
+        await close()
+
+
+@dataclass(slots=True)
+class _StreamOwnership:
+    stream: AsyncIterator[bytes]
+    transferred: bool = False
+
+    async def close(self) -> None:
+        if not self.transferred:
+            await close_audio_stream(self.stream)
 
 
 class TtsProviderChain:
@@ -58,25 +76,28 @@ class TtsProviderChain:
         errors: list[str] = []
         for provider in candidates:
             stream = provider.synthesize(text, privacy_level=privacy_level)
-            try:
-                first_chunk = await stream.__anext__()
-            except StopAsyncIteration:
-                self.report_failure(provider)
-                errors.append(f"{type(provider).__name__}:empty_stream")
-                continue
-            except LocalOnlySynthesizerError:
-                raise
-            except Exception as error:
-                # 首块前失败：标记冷却并换下一家，上层无感知
-                self.report_failure(provider)
-                errors.append(f"{type(provider).__name__}:{type(error).__name__}")
-                logger.warning(
-                    "tts provider failed before first chunk provider=%s error=%s",
-                    type(provider).__name__,
-                    error,
-                )
-                continue
-            return TtsSelection(provider=provider, first_chunk=first_chunk, stream=stream)
+            ownership = _StreamOwnership(stream)
+            async with close_after_source(ownership.close):
+                try:
+                    first_chunk = await stream.__anext__()
+                except StopAsyncIteration:
+                    self.report_failure(provider)
+                    errors.append(f"{type(provider).__name__}:empty_stream")
+                    continue
+                except (LocalOnlySynthesizerError, BudgetDenied):
+                    raise
+                except Exception as error:
+                    # 首块前普通故障：关闭失败流后，再尝试下一家。
+                    self.report_failure(provider)
+                    errors.append(f"{type(provider).__name__}:{type(error).__name__}")
+                    logger.warning(
+                        "tts provider failed before first chunk provider=%s error=%s",
+                        type(provider).__name__,
+                        error,
+                    )
+                    continue
+                ownership.transferred = True
+                return TtsSelection(provider=provider, first_chunk=first_chunk, stream=stream)
         raise RuntimeError(f"all tts providers failed: {', '.join(errors)}")
 
     def report_failure(self, provider: SpeechSynthesizer) -> None:
@@ -91,9 +112,7 @@ class TtsProviderChain:
             if privacy_level not in {PrivacyLevel.L2, PrivacyLevel.L3} or provider.runs_local
         ]
         fresh = [
-            provider
-            for provider in allowed
-            if self._blocked_until.get(id(provider), 0.0) <= now
+            provider for provider in allowed if self._blocked_until.get(id(provider), 0.0) <= now
         ]
         # 冷却把候选清空时退回全量：聊胜于无
         return fresh or allowed
