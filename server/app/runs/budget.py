@@ -281,6 +281,15 @@ class RunModelBudget:
         )
         now = datetime.now(UTC)
         async with self._database.sessions.begin() as session:
+            # Recovery owns Run before reservation/fee. Match that order to
+            # avoid waiting on Run while holding the fee recovery needs.
+            run_id = await session.scalar(
+                update(TaskRunRecord)
+                .where(TaskRunRecord.id == self._run_id, TaskRunRecord.user_id == self._user_id)
+                .values(id=TaskRunRecord.id)
+                .returning(TaskRunRecord.id)
+                .execution_options(synchronize_session=False)
+            )
             if provider_not_started:
                 # Only reserve's postcommit gate uses this private path: its
                 # permit never left the budget, so even unpriced usage is zero.
@@ -298,25 +307,8 @@ class RunModelBudget:
                 await settle_cost(
                     session, call_id=call_id, user_id=self._user_id, usage=usage, now=now
                 )
-            # Match source deletion/recovery lock order before changing usage.
-            run = await session.scalar(
-                select(TaskRunRecord)
-                .where(TaskRunRecord.id == self._run_id, TaskRunRecord.user_id == self._user_id)
-                .with_for_update()
-            )
-            if run is None:
-                return
-            record = await session.scalar(
-                select(ModelReservationRecord)
-                .join(TaskRunRecord, TaskRunRecord.id == ModelReservationRecord.run_id)
-                .where(
-                    ModelReservationRecord.call_id == call_id,
-                    ModelReservationRecord.run_id == self._run_id,
-                    TaskRunRecord.user_id == self._user_id,
-                )
-            )
-            if record is None:
-                # Source deletion also deletes budget records; do not recreate them.
+            if run_id is None:
+                # Fees outlive deleted sources, but their Run is never recreated.
                 return
             if (
                 usage is None
@@ -327,34 +319,45 @@ class RunModelBudget:
                     update(ModelReservationRecord)
                     .where(
                         ModelReservationRecord.call_id == call_id,
+                        ModelReservationRecord.run_id == self._run_id,
                         ModelReservationRecord.state == "reserved",
                     )
                     .values(state="unknown", settled_at=now)
                 )
                 return
-            admitted = await session.scalar(
+            reserved = await session.scalar(
                 update(ModelReservationRecord)
                 .where(
                     ModelReservationRecord.call_id == call_id,
+                    ModelReservationRecord.run_id == self._run_id,
                     ModelReservationRecord.state.in_({"reserved", "unknown"}),
                 )
                 .values(
                     state="settled", actual_tokens=actual, charged_tokens=actual, settled_at=now
                 )
-                .returning(ModelReservationRecord.call_id)
+                .returning(ModelReservationRecord.reserved_tokens)
                 .execution_options(synchronize_session=False)
             )
-            if admitted is not None:
+            if reserved is not None:
                 await session.execute(
                     update(TaskRunRecord)
                     .where(TaskRunRecord.id == self._run_id)
                     .values(
-                        budget_tokens=TaskRunRecord.budget_tokens + actual - record.reserved_tokens
+                        budget_tokens=TaskRunRecord.budget_tokens + actual - reserved
                     )
                 )
             else:
-                await session.refresh(record)
-                if record.actual_tokens != actual:
+                # Only an already-settled/missing call needs a read to distinguish
+                # a replay from a conflict. Successful settlement uses writes.
+                existing = (
+                    await session.execute(
+                        select(ModelReservationRecord.actual_tokens).where(
+                            ModelReservationRecord.call_id == call_id,
+                            ModelReservationRecord.run_id == self._run_id,
+                        )
+                    )
+                ).one_or_none()
+                if existing is not None and existing.actual_tokens != actual:
                     raise BudgetDenied("budget_settlement_conflict")
 
 

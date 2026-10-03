@@ -126,12 +126,17 @@ async def settle_cost(
     now: datetime,
 ) -> None:
     row = await session.scalar(
-        select(ModelCostRecord)
+        # Late usage survives source deletion, so its ledger must serialize
+        # independently of the Run. SQLite ignores SELECT FOR UPDATE; start
+        # with a write fence and inspect the current returned receipt instead.
+        update(ModelCostRecord)
         .where(
             ModelCostRecord.call_id == call_id,
             ModelCostRecord.user_id == user_id,
         )
-        .with_for_update()
+        .values(call_id=ModelCostRecord.call_id)
+        .returning(ModelCostRecord)
+        .execution_options(synchronize_session=False, populate_existing=True)
     )
     if row is None:
         return  # Pre-ledger calls cannot be retroactively priced.
