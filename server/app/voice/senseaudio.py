@@ -51,7 +51,7 @@ class SenseAudioTtsSynthesizer:
         self, text: str, *, privacy_level: PrivacyLevel
     ) -> AsyncIterator[bytes]:
         # 隐私闸门：L2 内容只允许本地 TTS；SenseAudio 是云端服务
-        if privacy_level is PrivacyLevel.L2:
+        if privacy_level in {PrivacyLevel.L2, PrivacyLevel.L3}:
             raise LocalOnlySynthesizerError(privacy_level)
         logger.info(
             "tts synthesize provider=senseaudio voice=%s chars=%d",

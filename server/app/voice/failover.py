@@ -88,7 +88,7 @@ class TtsProviderChain:
         allowed = [
             provider
             for provider in self._providers
-            if privacy_level is not PrivacyLevel.L2 or provider.runs_local
+            if privacy_level not in {PrivacyLevel.L2, PrivacyLevel.L3} or provider.runs_local
         ]
         fresh = [
             provider

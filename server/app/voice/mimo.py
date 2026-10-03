@@ -136,7 +136,7 @@ class MiMoTtsSynthesizer:
         self, text: str, *, privacy_level: PrivacyLevel
     ) -> AsyncIterator[bytes]:
         # 隐私闸门：合成文本不允许随 L2 回复出站到云端
-        if privacy_level is PrivacyLevel.L2:
+        if privacy_level in {PrivacyLevel.L2, PrivacyLevel.L3}:
             raise LocalOnlySynthesizerError(privacy_level)
         payload = {
             "model": self._model,

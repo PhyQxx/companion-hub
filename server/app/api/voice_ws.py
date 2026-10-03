@@ -52,7 +52,7 @@ from app.voice import (
     create_default_wake_word,
     markdown_to_speech_text,
 )
-from app.voice.contracts import LocalOnlySynthesizerError
+from app.voice.contracts import LocalOnlySynthesizerError, StreamingRecognitionSessionFactory
 
 from .auth import ChatSessionGuard
 from .chat_ws import AuthenticateFrame
@@ -95,10 +95,22 @@ class UtteranceStreamer:
     断句后回退整段转写（安全边界与 fallback 语义不变）。
     """
 
-    def __init__(self, recognizer: SpeechRecognizer) -> None:
-        self._recognizer: StreamingSpeechRecognizer | None = (
-            recognizer if isinstance(recognizer, StreamingSpeechRecognizer) else None
-        )
+    def __init__(
+        self, recognizer: SpeechRecognizer, *, privacy_level: PrivacyLevel = PrivacyLevel.L1
+    ) -> None:
+        self._recognizer: StreamingSpeechRecognizer | None = None
+        if isinstance(recognizer, StreamingSpeechRecognizer) and (
+            recognizer.runs_local or privacy_level not in {PrivacyLevel.L2, PrivacyLevel.L3}
+        ):
+            candidate = (
+                recognizer.create_session()
+                if isinstance(recognizer, StreamingRecognitionSessionFactory)
+                else recognizer
+            )
+            if candidate.runs_local or privacy_level not in {
+                PrivacyLevel.L2, PrivacyLevel.L3
+            }:
+                self._recognizer = candidate
         self._last_partial = ""
         # P2 前置测量（docs/04 §6.4）：最后一段 partial 稳定（无变化）的起算点
         self.last_change_monotonic: float | None = None
@@ -111,12 +123,21 @@ class UtteranceStreamer:
     def active(self) -> bool:
         return self._recognizer is not None
 
+    def allows(self, privacy_level: PrivacyLevel) -> bool:
+        recognizer = self._recognizer
+        return recognizer is not None and (
+            recognizer.runs_local or privacy_level not in {PrivacyLevel.L2, PrivacyLevel.L3}
+        )
+
     async def feed(self, pcm: bytes) -> str | None:
         recognizer = self._recognizer
         if recognizer is None:
             return None
         try:
             partial = await asyncio.to_thread(recognizer.feed, pcm)
+        except asyncio.CancelledError:
+            self._recognizer = None
+            raise
         except Exception:
             logger.warning(
                 "voice streaming asr feed failed provider=%s; falling back to full transcription",
@@ -476,7 +497,7 @@ class VoiceWebSocketManager:
         if recognizer is None:
             await emit("voice.asr_unavailable", {"reason": "not_configured"})
             return False
-        if privacy_level is PrivacyLevel.L2 and not recognizer.runs_local:
+        if privacy_level in {PrivacyLevel.L2, PrivacyLevel.L3} and not recognizer.runs_local:
             await emit("voice.asr_unavailable", {"reason": "local_asr_required"})
             return False
 
@@ -839,7 +860,7 @@ class VoiceWebSocketManager:
             return
         if recognizer is None or not isinstance(recognizer, StreamingSpeechRecognizer):
             return
-        streamer = UtteranceStreamer(recognizer)
+        streamer = UtteranceStreamer(recognizer, privacy_level=session.privacy_level)
         if not streamer.active:
             return
         session.utterance_streamer = streamer
@@ -850,7 +871,13 @@ class VoiceWebSocketManager:
         streamer = session.utterance_streamer
         if streamer is None or not streamer.active:
             return
+        if not streamer.allows(session.privacy_level):
+            session.utterance_streamer = None
+            return
+        privacy = session.privacy_level
         partial = await streamer.feed(pcm)
+        if session.privacy_level != privacy or session.utterance_streamer is not streamer:
+            return
         if partial is not None:
             await self._send(session, "voice.partial_transcript", {"text": partial})
 
@@ -867,7 +894,12 @@ class VoiceWebSocketManager:
         streamer, session.utterance_streamer = session.utterance_streamer, None
         if streamer is None:
             return None, None, None
+        if not streamer.allows(session.privacy_level):
+            return None, None, None
+        privacy = session.privacy_level
         final = await streamer.finalize()
+        if session.privacy_level != privacy:
+            return None, None, None
         stable_ms: int | None = None
         if streamer.last_change_monotonic is not None:
             stable_ms = max(
@@ -909,7 +941,10 @@ class VoiceWebSocketManager:
             await self._send(session, "voice.asr_unavailable", {"reason": "not_configured"})
             return
         # 隐私闸门：L2 音频禁止交给云端识别器出站
-        if session.privacy_level is PrivacyLevel.L2 and not recognizer.runs_local:
+        if (
+            session.privacy_level in {PrivacyLevel.L2, PrivacyLevel.L3}
+            and not recognizer.runs_local
+        ):
             self._discard_asr_prefetch(session)
             await self._send(session, "voice.asr_unavailable", {"reason": "local_asr_required"})
             return
@@ -945,7 +980,10 @@ class VoiceWebSocketManager:
         recognizer, _ = await self._voice_source.resolve()
         if recognizer is None:
             return
-        if session.privacy_level is PrivacyLevel.L2 and not recognizer.runs_local:
+        if (
+            session.privacy_level in {PrivacyLevel.L2, PrivacyLevel.L3}
+            and not recognizer.runs_local
+        ):
             return
         pcm = bytes(session.utterance)
         task = asyncio.create_task(
@@ -1008,11 +1046,16 @@ class VoiceWebSocketManager:
         session.turn_committed = False
         try:
             try:
+                asr_privacy = session.privacy_level
+                if asr_privacy in {PrivacyLevel.L2, PrivacyLevel.L3} and not recognizer.runs_local:
+                    raise SpeechRecognitionUnavailable("local_asr_required")
                 transcript = prefetched_transcript
                 if transcript is None:
                     transcript = await recognizer.transcribe(
                         pcm, sample_rate=SUPPORTED_SAMPLE_RATE, language=None
                     )
+                if session.privacy_level != asr_privacy:
+                    raise SpeechRecognitionUnavailable("asr_privacy_changed")
             except SpeechRecognitionUnavailable as error:
                 logger.warning(
                     "voice asr unavailable provider=%s reason=%s",

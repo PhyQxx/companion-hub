@@ -60,9 +60,7 @@ class SpeechRecognizer(Protocol):
 
     runs_local: bool
 
-    async def transcribe(
-        self, pcm: bytes, *, sample_rate: int, language: str | None
-    ) -> str: ...
+    async def transcribe(self, pcm: bytes, *, sample_rate: int, language: str | None) -> str: ...
 
 
 @runtime_checkable
@@ -81,6 +79,13 @@ class StreamingSpeechRecognizer(Protocol):
     def finalize(self) -> str: ...
 
 
+@runtime_checkable
+class StreamingRecognitionSessionFactory(Protocol):
+    """Share model weights while allocating decoder state per utterance."""
+
+    def create_session(self) -> StreamingSpeechRecognizer: ...
+
+
 class SpeechRecognitionUnavailable(RuntimeError):
     """识别器依赖、模型或本地运行条件不可用。"""
 
@@ -96,9 +101,7 @@ class SpeechSynthesizer(Protocol):
     mime: str
     sample_rate: int
 
-    def synthesize(
-        self, text: str, *, privacy_level: PrivacyLevel
-    ) -> AsyncIterator[bytes]: ...
+    def synthesize(self, text: str, *, privacy_level: PrivacyLevel) -> AsyncIterator[bytes]: ...
 
 
 class LocalOnlySynthesizerError(PermissionError):
