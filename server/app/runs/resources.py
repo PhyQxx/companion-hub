@@ -90,6 +90,10 @@ class RunToolBudget:
             if not row.budget or not row.budget.get("enabled"):
                 raise BudgetDenied("budget_snapshot_missing")
             deadline = self._deadline if self._maintenance else row.deadline
+            if self._maintenance and row.status != "succeeded":
+                if row.deadline is None or deadline is None:
+                    raise BudgetDenied("run_deadline_exceeded")
+                deadline = min(utc(deadline), utc(row.deadline))
             if deadline is None or utc(deadline) <= now:
                 raise BudgetDenied("run_deadline_exceeded")
             usage = resource_usage(row)

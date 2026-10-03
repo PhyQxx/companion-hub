@@ -9,7 +9,7 @@ if TYPE_CHECKING:
     from .resources import RunToolBudget
 from uuid import UUID
 
-from sqlalchemy import case, func, select, update
+from sqlalchemy import case, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased
 from sqlalchemy.sql.elements import ColumnElement
@@ -161,6 +161,13 @@ class RunModelBudget:
                 criteria.append(TaskRunRecord.deadline > datetime.now(UTC))
             elif utc(self._maintenance_deadline) <= datetime.now(UTC):
                 raise BudgetDenied("run_deadline_exceeded")
+            elif self._allow_active_parent:
+                criteria.append(
+                    or_(
+                        TaskRunRecord.status == "succeeded",
+                        TaskRunRecord.deadline > datetime.now(UTC),
+                    )
+                )
             result = await session.execute(
                 update(TaskRunRecord)
                 .where(*criteria)
@@ -168,7 +175,12 @@ class RunModelBudget:
                     llm_attempts=TaskRunRecord.llm_attempts + 1,
                     budget_tokens=TaskRunRecord.budget_tokens + tokens,
                 )
-                .returning(TaskRunRecord.id, TaskRunRecord.deadline, TaskRunRecord.budget)
+                .returning(
+                    TaskRunRecord.id,
+                    TaskRunRecord.deadline,
+                    TaskRunRecord.budget,
+                    TaskRunRecord.status,
+                )
                 .execution_options(synchronize_session=False)
             )
             admitted = result.one_or_none()
@@ -178,6 +190,14 @@ class RunModelBudget:
             deadline = (
                 admitted.deadline if self._phase == "interactive" else self._maintenance_deadline
             )
+            if (
+                self._phase == "maintenance"
+                and self._allow_active_parent
+                and admitted.status != "succeeded"
+            ):
+                if admitted.deadline is None:
+                    raise BudgetDenied("run_deadline_exceeded")
+                deadline = min(utc(deadline), utc(admitted.deadline))
             if deadline is None:
                 raise BudgetDenied("run_deadline_exceeded")
             # Owner/Run UPDATEs can wait across a deadline or a UTC spending
@@ -254,6 +274,14 @@ class RunModelBudget:
         ):
             raise BudgetDenied("budget_snapshot_missing")
         deadline = row.deadline if self._phase == "interactive" else self._maintenance_deadline
+        if (
+            self._phase == "maintenance"
+            and self._allow_active_parent
+            and row.status in {"accepted", "running"}
+        ):
+            if row.deadline is None or deadline is None:
+                raise BudgetDenied("run_deadline_exceeded")
+            deadline = min(utc(deadline), utc(row.deadline))
         if deadline is None or utc(deadline) <= datetime.now(UTC):
             raise BudgetDenied("run_deadline_exceeded")
         if row.status not in statuses or row.contract.get("work_cancel_requested"):
@@ -462,7 +490,9 @@ async def job_model_budget(
         run_id = job.task_run_id
         if run_id is None:
             # A sourced job whose run vanished is not an independent task.
-            if (job.input or {}).get("turn_id"):
+            if (job.input or {}).get("turn_id") or (
+                job.kind.startswith("chat.") and (job.input or {}).get("assistant_message_id")
+            ):
                 raise BudgetDenied("budget_run_not_found")
             run_id = job.id
             row = TaskRunRecord(

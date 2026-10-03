@@ -36,6 +36,8 @@ from app.db.claims import assert_current_claim
 from app.db.deletions import purge_conversation
 from app.harness.budget import BudgetDenied, budget_scope
 from app.harness.context import ContextAssembler, ContextBlocks, ContextReference
+from app.harness.guarded_call import guarded_inline_call
+from app.harness.joined_read import joined_read
 from app.harness.loop import CompletionFrame, LoopOutcome, run_agent_loop
 from app.ids import uuid7
 from app.integrations.mcp.chat_tools import McpChatToolProvider, McpReadToolHandler
@@ -57,6 +59,7 @@ from app.memory import (
 )
 from app.persona import PersonaConfig, PersonaStore
 from app.runs.budget import RunModelBudget, recover_stale_reservations
+from app.runs.chat_parent import require_chat_parent, validate_parent
 from app.runs.completion import recover_expired_model_runs
 from app.runs.delivery import recover_expired_deliveries
 from app.runs.resources import recover_tool_reservations
@@ -383,6 +386,8 @@ class PendingTurn:
     conversation_summary: tuple[str, int] | None = None
     context_manifest: tuple[dict[str, object], ...] = ()
     context_references: tuple[ContextReference, ...] = ()
+    parent_run_id: UUID | None = None
+    parent_budget_enabled: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -764,6 +769,7 @@ class ChatService:
         client_location: ClientLocation | None = None,
         llm_route: LLMRoute = LLMRoute.DIALOGUE,
         client_request_id: str | None = None,
+        parent_run_id: UUID | None = None,
     ) -> PendingTurn:
         if client_request_id is not None and not 1 <= len(client_request_id) <= 160:
             raise ValueError("invalid_client_request_id")
@@ -789,8 +795,20 @@ class ChatService:
         turn_id = uuid7()
         generation_id = uuid7()
         user_timezone = "Asia/Shanghai"
+        parent_budget_enabled = False
         try:
             async with self._database.sessions.begin() as session:
+                parent = None
+                if parent_run_id is not None:
+                    parent = await require_chat_parent(
+                        session,
+                        parent_run_id,
+                        user_id=user_id,
+                        conversation_id=conversation_id,
+                        privacy_level=privacy_level,
+                        lock=True,
+                    )
+                    parent_budget_enabled = bool(parent.budget and parent.budget.get("enabled"))
                 user = await session.get(AppUserRecord, user_id)
                 if user is None or user.status != "active":
                     raise LookupError("active user not found")
@@ -874,12 +892,14 @@ class ChatService:
                     request_id=client_request_id,
                     user_id=user_id,
                     conversation_id=conversation_id,
+                    parent_run_id=parent_run_id,
                     contract={
                         "schema_version": 1,
                         "kind": "chat.reply",
                         "input_message_id": str(user_record.id),
                         "criterion": "reply_committed",
                         "required_work": [],
+                        **({"budget_parent_id": str(parent_run_id)} if parent_run_id else {}),
                     },
                     budget=snapshot.config.run_budget.model_dump(mode="json"),
                     deadline=now
@@ -910,6 +930,14 @@ class ChatService:
                         created_at=now,
                     )
                 )
+                if parent is not None:
+                    await session.flush()
+                    validate_parent(
+                        parent,
+                        user_id=user_id,
+                        conversation_id=conversation_id,
+                        privacy_level=privacy_level,
+                    )
 
         except IntegrityError as error:
             if "uq_task_run_user_request" in str(
@@ -1261,6 +1289,8 @@ class ChatService:
             persona=persona,
             persona_version=persona_snapshot.version if persona_snapshot else 0,
             user_timezone=user_timezone,
+            parent_run_id=parent_run_id,
+            parent_budget_enabled=parent_budget_enabled,
             memory_retrieval=memory_retrieval,
             history_recall=history_recall,
             screen_activity_recall=screen_activity_recall,
@@ -1418,20 +1448,35 @@ class ChatService:
     def _model_budget(
         self, pending: PendingTurn, *, phase: Literal["interactive", "maintenance"] = "interactive"
     ) -> RunModelBudget | None:
-        if not pending.config.run_budget.enabled:
+        enabled = (
+            pending.parent_budget_enabled
+            if pending.parent_run_id is not None
+            else pending.config.run_budget.enabled
+        )
+        if not enabled:
             return None
         return RunModelBudget(
             self._database,
-            run_id=pending.turn_id,
+            run_id=pending.parent_run_id or pending.turn_id,
             user_id=pending.user_id,
             config=pending.config.run_budget,
             phase=phase,
+            allow_active_parent=pending.parent_run_id is not None and phase == "maintenance",
         )
 
     def _budgeted_backend(self, pending: PendingTurn) -> CompletionBackend:
-        async def validate() -> None:
+        async def read_source() -> None:
             self._check_cancelled(pending)
             async with self._database.sessions() as session:
+                if pending.parent_run_id is not None:
+                    await require_chat_parent(
+                        session,
+                        pending.parent_run_id,
+                        user_id=pending.user_id,
+                        conversation_id=pending.conversation_id,
+                        privacy_level=pending.request.privacy_level,
+                        child_id=pending.turn_id,
+                    )
                 run = await session.get(TaskRunRecord, pending.turn_id)
                 owner = await session.get(AppUserRecord, pending.user_id)
                 conversation = await session.get(ConversationRecord, pending.conversation_id)
@@ -1458,6 +1503,12 @@ class ChatService:
                     owner_id=pending.user_id,
                     privacy_level=str(pending.request.privacy_level),
                 )
+
+        async def validate() -> None:
+            if pending.parent_run_id is not None:
+                await joined_read(read_source())
+            else:
+                await read_source()
 
         return BudgetedBackend(
             self._router_builder(pending.config), self._model_budget(pending), validate=validate
@@ -1596,6 +1647,20 @@ class ChatService:
             raise TurnCancelled("generation_cancelled")
 
     async def _execute_tool_call(
+        self,
+        pending: PendingTurn,
+        calls: list[ToolCall],
+    ) -> list[ToolExecution]:
+        await self._validate_context(pending)
+        with budget_scope(self._model_budget(pending)):
+            if pending.parent_run_id is not None:
+                return await guarded_inline_call(
+                    lambda: self._execute_tool_calls_body(pending, calls),
+                    lambda: self._validate_context(pending),
+                )
+            return await self._execute_tool_calls_body(pending, calls)
+
+    async def _execute_tool_calls_body(
         self,
         pending: PendingTurn,
         calls: list[ToolCall],
@@ -2284,6 +2349,17 @@ class ChatService:
         ]
         assistant_time = datetime.now(UTC)
         async with self._database.sessions.begin() as session:
+            parent = None
+            if pending.parent_run_id is not None:
+                parent = await require_chat_parent(
+                    session,
+                    pending.parent_run_id,
+                    user_id=pending.user_id,
+                    conversation_id=pending.conversation_id,
+                    privacy_level=pending.request.privacy_level,
+                    child_id=pending.turn_id,
+                    lock=True,
+                )
             conversation = await session.scalar(
                 select(ConversationRecord)
                 .where(ConversationRecord.id == pending.conversation_id)
@@ -2294,7 +2370,12 @@ class ChatService:
                 .where(InteractionTurnRecord.id == pending.turn_id)
                 .with_for_update()
             )
-            if conversation is None or conversation.user_id != pending.user_id or turn is None:
+            if (
+                conversation is None
+                or conversation.user_id != pending.user_id
+                or conversation.status != "active"
+                or turn is None
+            ):
                 raise LookupError("conversation not found")
             if turn.state == "cancelled":
                 raise TurnCancelled("generation_cancelled")
@@ -2355,6 +2436,14 @@ class ChatService:
                     idempotency_key=f"chat:{pending.turn_id}:{operation}",
                     task_run_id=pending.turn_id,
                 )
+            if parent is not None:
+                await session.flush()
+                validate_parent(
+                    parent,
+                    user_id=pending.user_id,
+                    conversation_id=pending.conversation_id,
+                    privacy_level=pending.request.privacy_level,
+                )
 
         turn_result = ChatTurn(
             user_message=pending.user_message,
@@ -2405,8 +2494,31 @@ class ChatService:
             ):
                 raise PostcommitSourceGone()
             run = await session.get(TaskRunRecord, assistant.turn_id)
-            budget_enabled = bool(run and run.budget and run.budget.get("enabled"))
             meta = assistant.decision_meta or {}
+            if run is None and meta.get("task_run_id"):
+                raise PostcommitSourceGone()
+            if run is not None and (
+                run.user_id != user_id
+                or run.conversation_id != assistant.conversation_id
+                or run.status != "succeeded"
+                or run.contract.get("work_cancel_requested")
+            ):
+                raise PostcommitSourceGone()
+            budget_enabled = bool(run and run.budget and run.budget.get("enabled"))
+            parent_run_id = run.parent_run_id if run is not None else None
+            if run is not None and run.contract.get("budget_parent_id"):
+                if parent_run_id is None or str(parent_run_id) != run.contract["budget_parent_id"]:
+                    raise PostcommitSourceGone()
+                parent = await require_chat_parent(
+                    session,
+                    parent_run_id,
+                    user_id=user_id,
+                    conversation_id=assistant.conversation_id,
+                    privacy_level=PrivacyLevel(assistant.privacy_level),
+                    child_id=assistant.turn_id,
+                    allow_succeeded=True,
+                )
+                budget_enabled = bool(parent.budget and parent.budget.get("enabled"))
             references = tuple(
                 ContextReference(**ref)
                 for group in meta.get("context_sources", [])
@@ -2471,6 +2583,8 @@ class ChatService:
             persona_version=persona_snapshot.version if persona_snapshot else 0,
             user_timezone=str(payload.get("user_timezone", "Asia/Shanghai")),
             memory_retrieval=retrieval,
+            parent_run_id=parent_run_id,
+            parent_budget_enabled=budget_enabled if parent_run_id else False,
         )
         with budget_scope(
             self._model_budget(pending, phase="maintenance") if budget_enabled else None
@@ -2910,7 +3024,22 @@ class ChatService:
         return cancelled
 
     async def _validate_context(self, pending: PendingTurn) -> None:
+        if pending.parent_run_id is not None:
+            await joined_read(self._read_context_sources(pending))
+        else:
+            await self._read_context_sources(pending)
+
+    async def _read_context_sources(self, pending: PendingTurn) -> None:
         async with self._database.sessions() as session:
+            if pending.parent_run_id is not None:
+                await require_chat_parent(
+                    session,
+                    pending.parent_run_id,
+                    user_id=pending.user_id,
+                    conversation_id=pending.conversation_id,
+                    privacy_level=pending.request.privacy_level,
+                    child_id=pending.turn_id,
+                )
             await validate_references(
                 session,
                 pending.context_references,
