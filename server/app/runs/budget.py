@@ -12,7 +12,14 @@ from uuid import UUID
 from sqlalchemy import func, select, update
 
 from app.config.models import RunBudgetConfig
-from app.db import AppUserRecord, Database, JobRecord, ModelReservationRecord, TaskRunRecord
+from app.db import (
+    AppUserRecord,
+    Database,
+    JobRecord,
+    ModelCostRecord,
+    ModelReservationRecord,
+    TaskRunRecord,
+)
 from app.db.claims import assert_current_claim
 from app.harness.budget import BudgetDenied, CallPermit
 from app.harness.time import utc as utc
@@ -74,7 +81,6 @@ class RunModelBudget:
     ) -> CallPermit:
         if tokens < 1:
             raise ValueError("invalid_budget_reservation")
-        now = datetime.now(UTC)
         async with self._database.sessions.begin() as session:
             await assert_current_claim(session)
             # Write before reading the snapshot: serialize cross-run owner
@@ -106,7 +112,7 @@ class RunModelBudget:
             max_attempts = min(int(row.budget["max_llm_attempts"]), self._config.max_llm_attempts)
             max_tokens = min(int(row.budget["max_tokens"]), self._config.max_tokens)
             deadline = row.deadline if self._phase == "interactive" else self._maintenance_deadline
-            if deadline is None or utc(deadline) <= now:
+            if deadline is None or utc(deadline) <= datetime.now(UTC):
                 raise BudgetDenied("run_deadline_exceeded")
             # Preserve one model-attempt slot for a tool-free interactive answer.
             limit = max_attempts - (self._phase == "interactive" and not final)
@@ -140,7 +146,7 @@ class RunModelBudget:
             )
             if int(in_flight or 0) >= concurrency:
                 raise BudgetDenied("user_model_concurrency_exhausted")
-            admitted = await session.scalar(
+            result = await session.execute(
                 update(TaskRunRecord)
                 .where(
                     TaskRunRecord.id == self._run_id,
@@ -154,14 +160,25 @@ class RunModelBudget:
                     llm_attempts=TaskRunRecord.llm_attempts + 1,
                     budget_tokens=TaskRunRecord.budget_tokens + tokens,
                 )
-                .returning(TaskRunRecord.id)
+                .returning(TaskRunRecord.id, TaskRunRecord.deadline)
                 .execution_options(synchronize_session=False)
             )
+            admitted = result.one_or_none()
             if admitted is None:
                 await session.refresh(row)
                 if row.status not in statuses or row.contract.get("work_cancel_requested"):
                     raise BudgetDenied("budget_run_inactive")
                 raise BudgetDenied("run_budget_exhausted")
+            if self._phase == "interactive":
+                deadline = admitted.deadline
+                if deadline is None:
+                    raise BudgetDenied("run_deadline_exceeded")
+            # Owner/Run UPDATEs can wait across a deadline or a UTC spending
+            # boundary. Time before those locks cannot date an accepted call.
+            now = datetime.now(UTC)
+            if utc(deadline) <= now:
+                raise BudgetDenied("run_deadline_exceeded")
+            snapshot = RunBudgetConfig.model_validate(row.budget)
             call_id = uuid7()
             await reserve_cost(
                 session,
@@ -171,7 +188,7 @@ class RunModelBudget:
                 tokens=tokens,
                 pricing=pricing,
                 config=self._config,
-                snapshot=RunBudgetConfig.model_validate(row.budget),
+                snapshot=snapshot,
                 now=now,
             )
             session.add(
@@ -186,14 +203,39 @@ class RunModelBudget:
                     created_at=now,
                 )
             )
+            await session.flush()
+            checked_at = datetime.now(UTC)
+            if utc(deadline) <= checked_at:
+                raise BudgetDenied("run_deadline_exceeded")
+            # No provider has received a permit. If flushing crosses a capped
+            # period, roll back rather than commit an entry in the wrong one.
+            for policy in (snapshot, self._config):
+                if (policy.max_daily_cost is not None and now.date() != checked_at.date()) or (
+                    policy.max_monthly_cost is not None
+                    and (now.year, now.month) != (checked_at.year, checked_at.month)
+                ):
+                    raise BudgetDenied("cost_window_changed")
         # Include database admission latency in the remaining execution time.
         remaining = (utc(deadline) - datetime.now(UTC)).total_seconds()
         if remaining <= 0:
-            await self.settle(call_id, None)
+            await self._settle(
+                call_id,
+                ModelUsage(input_tokens=0, output_tokens=0, total_tokens=0, usage_known=True),
+                provider_not_started=True,
+            )
             raise BudgetDenied("run_deadline_exceeded")
         return CallPermit(call_id, remaining)
 
     async def settle(self, call_id: UUID, usage: ModelUsage | None) -> None:
+        await self._settle(call_id, usage, provider_not_started=False)
+
+    async def _settle(
+        self,
+        call_id: UUID,
+        usage: ModelUsage | None,
+        *,
+        provider_not_started: bool,
+    ) -> None:
         actual = (
             max(usage.total_tokens, usage.input_tokens + usage.output_tokens)
             if usage is not None and usage.usage_known is not False
@@ -201,7 +243,23 @@ class RunModelBudget:
         )
         now = datetime.now(UTC)
         async with self._database.sessions.begin() as session:
-            await settle_cost(session, call_id=call_id, user_id=self._user_id, usage=usage, now=now)
+            if provider_not_started:
+                # Only reserve's postcommit gate uses this private path: its
+                # permit never left the budget, so even unpriced usage is zero.
+                await session.execute(
+                    update(ModelCostRecord)
+                    .where(
+                        ModelCostRecord.call_id == call_id,
+                        ModelCostRecord.user_id == self._user_id,
+                        ModelCostRecord.state.in_({"reserved", "unknown"}),
+                        ModelCostRecord.provider_request_id.is_(None),
+                    )
+                    .values(state="estimated", charged_micros=0, settled_at=now)
+                )
+            else:
+                await settle_cost(
+                    session, call_id=call_id, user_id=self._user_id, usage=usage, now=now
+                )
             # Match source deletion/recovery lock order before changing usage.
             run = await session.scalar(
                 select(TaskRunRecord)

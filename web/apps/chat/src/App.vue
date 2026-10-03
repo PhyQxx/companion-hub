@@ -465,6 +465,7 @@ function generationFailureText(reason: unknown, prefix = "生成失败"): string
     monthly_cost_budget_exhausted: "本月已达到模型费用预留上限，请核对用量或在管理界面调整限额。",
     cost_pricing_unavailable: "当前模型没有与限额匹配的完整计价信息，请在管理界面补齐价格和币种。",
     cost_usage_unknown: "已有调用的费用无法确认，暂不能在金额限额内继续，请先核对费用记录。",
+    cost_window_changed: "费用统计刚切换到新的周期，请重试本轮请求。",
     tool_budget_exhausted: "这项任务已达到工具调用上限，请核对已完成部分。",
     run_budget_exhausted: "这轮回复已达到处理上限，可以缩小问题范围继续。",
     run_deadline_exceeded: "这轮回复处理超时，已停止生成。",
