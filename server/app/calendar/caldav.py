@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import logging
 import xml.etree.ElementTree as ET
+from copy import deepcopy
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -28,7 +29,11 @@ from dateutil.rrule import rrulestr
 from icalendar import Calendar
 from sqlalchemy import select
 
-from app.calendar.mirror import CalendarMirrorService, MirrorOccurrence
+from app.calendar.mirror import (
+    CalendarMirrorService,
+    MirrorOccurrence,
+    merge_calendar_occurrences,
+)
 from app.config import ConfigStore, DatabaseConfigStore
 from app.config.models import CalDavConfig
 from app.db import AppUserRecord, Database
@@ -389,14 +394,15 @@ class CalDavSyncService:
 
             wanted = set(config.calendar_names)
             occurrences_by_ref: dict[str, MirrorOccurrence] = {}
+            ambiguous_refs: set[str] = set()
             calendar_slug = "caldav"
             for href, name in calendars:
                 if wanted and name not in wanted:
                     continue
                 stats.calendars += 1
                 try:
-                    fetched = await client.fetch_window(
-                        href, start=window_start, end=window_end
+                    fetched = deepcopy(
+                        await client.fetch_window(href, start=window_start, end=window_end)
                     )
                 except CalDavError as error:
                     stats.errors.append(f"fetch_failed:{name}:{error.reason_code}")
@@ -404,8 +410,13 @@ class CalDavSyncService:
                     continue
                 stats.pulled += len(fetched)
                 calendar_slug = f"{SOURCE_CALDAV}:{_slugify(name)}"
-                for occurrence in fetched:
-                    occurrences_by_ref[occurrence.ref] = occurrence
+                if merge_calendar_occurrences(
+                    occurrences_by_ref,
+                    fetched,
+                    calendar_id=calendar_slug,
+                    ambiguous_refs=ambiguous_refs,
+                ):
+                    stats.errors.append("calendar_reference_ambiguous")
 
             await self._mirror.apply(
                 user_id,
@@ -413,12 +424,14 @@ class CalDavSyncService:
                 occurrences_by_ref,
                 stats=stats,
                 now=self._clock(),
+                authoritative=not stats.errors,
             )
             return stats
         finally:
             closer = getattr(client, "close", None)
             if closer is not None:
                 await closer()
+
 
 def _slugify(name: str) -> str:
     cleaned = "".join(ch if ch.isalnum() or ch in "-_" else "-" for ch in name.strip())

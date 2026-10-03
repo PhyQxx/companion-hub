@@ -20,6 +20,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 import logging
+from copy import deepcopy
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import Any, cast
@@ -30,7 +31,11 @@ import httpx
 from sqlalchemy import delete, select
 from sqlalchemy.engine import CursorResult
 
-from app.calendar.mirror import CalendarMirrorService, MirrorOccurrence
+from app.calendar.mirror import (
+    CalendarMirrorService,
+    MirrorOccurrence,
+    merge_calendar_occurrences,
+)
 from app.config import ConfigStore, DatabaseConfigStore
 from app.config.models import GoogleCalendarConfig
 from app.db import AppUserRecord, CalendarOAuthTokenRecord, Database
@@ -40,6 +45,7 @@ logger = logging.getLogger("app.calendar.google")
 SOURCE_GOOGLE = "google"
 DEFAULT_TZ = ZoneInfo("Asia/Shanghai")
 STATE_TTL_SECONDS = 600
+MAX_EVENT_PAGES = 100
 GOOGLE_AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth"
 GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token"
 GOOGLE_EVENTS_URL = "https://www.googleapis.com/calendar/v3/calendars/{calendar_id}/events"
@@ -279,10 +285,21 @@ class GoogleCalendarClient:
         self, calendar_id: str, *, start: datetime, end: datetime
     ) -> list[MirrorOccurrence]:
         """singleEvents=true 让 Google 展开周期；窗口内逐次生成镜像。"""
+        try:
+            return await self._fetch_events(calendar_id, start=start, end=end)
+        except httpx.HTTPError as error:
+            raise GoogleCalendarError("google_unreachable") from error
+        except (ValueError, TypeError, AttributeError) as error:
+            raise GoogleCalendarError("google_response_invalid") from error
+
+    async def _fetch_events(
+        self, calendar_id: str, *, start: datetime, end: datetime
+    ) -> list[MirrorOccurrence]:
         token = await self._ensure_access()
         occurrences: list[MirrorOccurrence] = []
         page_token: str | None = None
-        while True:
+        seen_tokens: set[str] = set()
+        for _ in range(MAX_EVENT_PAGES):
             params: dict[str, Any] = {
                 "timeMin": start.isoformat(),
                 "timeMax": end.isoformat(),
@@ -302,13 +319,43 @@ class GoogleCalendarClient:
             if response.status_code != 200:
                 raise GoogleCalendarError("google_api_failed", str(response.status_code))
             payload = response.json()
+            if not isinstance(payload, dict) or not isinstance(payload.get("items", []), list):
+                raise GoogleCalendarError("google_response_invalid")
             for event in payload.get("items", []):
-                occurrence = _to_occurrence(event)
+                if not isinstance(event, dict):
+                    raise GoogleCalendarError("google_response_invalid")
+                occurrence = _checked_occurrence(event)
                 if occurrence is not None:
                     occurrences.append(occurrence)
             page_token = payload.get("nextPageToken")
-            if not page_token:
+            if page_token is None:
                 return occurrences
+            if not isinstance(page_token, str) or not page_token:
+                raise GoogleCalendarError("google_response_invalid")
+            if page_token in seen_tokens:
+                raise GoogleCalendarError("google_page_cycle")
+            seen_tokens.add(page_token)
+        raise GoogleCalendarError("google_page_limit")
+
+
+def _checked_occurrence(event: dict[str, Any]) -> MirrorOccurrence | None:
+    event_id = event.get("id")
+    if not isinstance(event_id, str) or not event_id:
+        raise GoogleCalendarError("google_event_invalid")
+    cancelled = event.get("status") == "cancelled"
+    try:
+        if not cancelled and not _end_raw(event):
+            raise GoogleCalendarError("google_event_invalid")
+        occurrence = _to_occurrence(event)
+        if occurrence is None:
+            if cancelled:
+                return None
+            raise GoogleCalendarError("google_event_invalid")
+        if len(occurrence.ref) > 160 or occurrence.ends_at <= occurrence.starts_at:
+            raise GoogleCalendarError("google_event_invalid")
+        return occurrence
+    except (ValueError, TypeError, AttributeError) as error:
+        raise GoogleCalendarError("google_event_invalid") from error
 
 
 def _to_occurrence(event: dict[str, Any]) -> MirrorOccurrence | None:
@@ -329,9 +376,7 @@ def _to_occurrence(event: dict[str, Any]) -> MirrorOccurrence | None:
         ends_at=ends_at,
         all_day=all_day,
         location=(str(event.get("location"))[:240] if event.get("location") else None),
-        description=(
-            str(event.get("description"))[:2000] if event.get("description") else None
-        ),
+        description=(str(event.get("description"))[:2000] if event.get("description") else None),
         cancelled=event.get("status") == "cancelled",
         etag=str(event.get("etag") or event.get("id") or ""),
     )
@@ -416,6 +461,7 @@ class GoogleCalendarSyncService:
         window_end = now + timedelta(days=config.window_days_forward)
         calendar_ids = config.calendar_ids or ["primary"]
         occurrences_by_ref: dict[str, MirrorOccurrence] = {}
+        ambiguous_refs: set[str] = set()
         for calendar_id in calendar_ids:
             stats.calendars += 1
             client = self._client_factory(
@@ -425,7 +471,9 @@ class GoogleCalendarSyncService:
                 timeout_seconds=config.timeout_seconds,
             )
             try:
-                fetched = await client.list_events(calendar_id, start=window_start, end=window_end)
+                fetched = deepcopy(
+                    await client.list_events(calendar_id, start=window_start, end=window_end)
+                )
             except GoogleCalendarError as error:
                 stats.errors.append(f"fetch_failed:{calendar_id}:{error.reason_code}")
                 logger.warning("google calendar fetch failed for %s: %s", calendar_id, error)
@@ -435,14 +483,20 @@ class GoogleCalendarSyncService:
                 if closer is not None:
                     await closer()
             stats.pulled += len(fetched)
-            for occurrence in fetched:
-                occurrences_by_ref[occurrence.ref] = occurrence
+            if merge_calendar_occurrences(
+                occurrences_by_ref,
+                fetched,
+                calendar_id=f"{SOURCE_GOOGLE}:{calendar_id}",
+                ambiguous_refs=ambiguous_refs,
+            ):
+                stats.errors.append("calendar_reference_ambiguous")
         await self._mirror.apply(
             user_id,
             f"{SOURCE_GOOGLE}:{calendar_ids[0]}"[:64],
             occurrences_by_ref,
             stats=stats,
             now=now,
+            authoritative=not stats.errors,
         )
         return stats
 

@@ -31,6 +31,7 @@ class MirrorOccurrence:
 
     __slots__ = (
         "all_day",
+        "calendar_id",
         "cancelled",
         "description",
         "ends_at",
@@ -53,6 +54,7 @@ class MirrorOccurrence:
         description: str | None = None,
         cancelled: bool = False,
         etag: str = "",
+        calendar_id: str | None = None,
     ) -> None:
         self.ref = ref
         self.summary = summary
@@ -63,6 +65,30 @@ class MirrorOccurrence:
         self.description = description
         self.cancelled = cancelled
         self.etag = etag
+        self.calendar_id = calendar_id
+
+
+def merge_calendar_occurrences(
+    target: dict[str, MirrorOccurrence],
+    fetched: list[MirrorOccurrence],
+    *,
+    calendar_id: str,
+    ambiguous_refs: set[str],
+) -> bool:
+    """Ambiguous legacy references preserve their current mirror until resolved."""
+    ambiguous = False
+    for occurrence in fetched:
+        occurrence.calendar_id = calendar_id
+        if occurrence.ref in ambiguous_refs:
+            continue
+        existing = target.get(occurrence.ref)
+        if existing is not None and existing.calendar_id != calendar_id:
+            ambiguous_refs.add(occurrence.ref)
+            target.pop(occurrence.ref)
+            ambiguous = True
+            continue
+        target[occurrence.ref] = occurrence
+    return ambiguous
 
 
 class CalendarMirrorStats:
@@ -132,6 +158,7 @@ class CalendarMirrorService:
         *,
         stats: Any,
         now: datetime | None = None,
+        authoritative: bool = True,
     ) -> None:
         occurrences_by_ref = deepcopy(occurrences_by_ref)
         if any(
@@ -157,6 +184,7 @@ class CalendarMirrorService:
             for duplicate in duplicates:
                 cleanup_refs.add(self._cancel_local(duplicate, counter, moment))
             for ref, occurrence in sorted(occurrences_by_ref.items()):
+                occurrence_calendar = (occurrence.calendar_id or calendar_id)[:64]
                 local = local_by_ref.get(ref)
                 if occurrence.cancelled:
                     if local is not None:
@@ -164,11 +192,13 @@ class CalendarMirrorService:
                     continue
                 if local is None:
                     session.add(
-                        _mirror_record(user_id, self._source, calendar_id, occurrence, moment)
+                        _mirror_record(
+                            user_id, self._source, occurrence_calendar, occurrence, moment
+                        )
                     )
                     counter.mirrors_created += 1
                     continue
-                if _same_occurrence(local, occurrence, calendar_id):
+                if _same_occurrence(local, occurrence, occurrence_calendar):
                     continue
                 local.title = occurrence.summary
                 local.starts_at = occurrence.starts_at
@@ -177,13 +207,13 @@ class CalendarMirrorService:
                 local.location = occurrence.location
                 local.notes = occurrence.description
                 local.status = "active"
-                local.calendar_id = calendar_id
+                local.calendar_id = occurrence_calendar
                 local.external_etag = occurrence.etag[:128] or None
                 local.updated_at = moment
                 cleanup_refs.add(f"calendar:{local.id}")
                 counter.mirrors_updated += 1
             for ref, local in local_by_ref.items():
-                if ref not in occurrences_by_ref:
+                if authoritative and ref not in occurrences_by_ref:
                     cleanup_refs.add(self._cancel_local(local, counter, moment))
             if cleanup_refs:
                 await TaskStore(self._database).cancel_tasks_by_source_refs_in_session(
