@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 import re
+from copy import deepcopy
 from datetime import UTC, datetime, time, timedelta
 from uuid import UUID
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from app.schemas.common import PrivacyLevel
+from app.schemas.common import PrivacyLevel, persistent_privacy_levels
 
 from .models import (
     HistoryRecallResult,
@@ -15,7 +16,7 @@ from .models import (
     TimelineSearchResult,
     TimelineSourceType,
 )
-from .store import TimelineStore
+from .ports import TimelineRecallRepository
 
 _HISTORY_MARKERS = re.compile(
     r"(刚才|之前|以前|昨天|昨晚|前几天|上周|上周末|这个月|上个月|去年|那次|上次|曾经)"
@@ -48,9 +49,7 @@ def _parse_recent_amount(text: str) -> int:
         return 10 + _CN_NUMERAL_DIGITS[text[1]]
     if "十" in text:
         tens, _, ones = text.partition("十")
-        return _CN_NUMERAL_DIGITS[tens] * 10 + (
-            _CN_NUMERAL_DIGITS[ones] if ones else 0
-        )
+        return _CN_NUMERAL_DIGITS[tens] * 10 + (_CN_NUMERAL_DIGITS[ones] if ones else 0)
     return _CN_NUMERAL_DIGITS[text]
 
 
@@ -62,7 +61,7 @@ class TemporalQueryParser:
     def __init__(self, timezone_name: str = "Asia/Shanghai") -> None:
         try:
             self._timezone = ZoneInfo(timezone_name)
-        except ZoneInfoNotFoundError:
+        except (ZoneInfoNotFoundError, ValueError):
             self._timezone = ZoneInfo("Asia/Shanghai")
 
     @property
@@ -75,7 +74,12 @@ class TemporalQueryParser:
 
         recent = _RECENT_DURATION.search(query)
         if recent is not None:
-            amount = _parse_recent_amount(recent.group(1))
+            try:
+                amount = _parse_recent_amount(recent.group(1))
+            except (KeyError, ValueError):
+                return None
+            if amount <= 0:
+                return None
             unit = recent.group(2)
             delta = {
                 "分钟": timedelta(minutes=amount),
@@ -207,7 +211,7 @@ class TemporalQueryParser:
 class HistoryRecallService:
     def __init__(
         self,
-        store: TimelineStore,
+        store: TimelineRecallRepository,
         *,
         timezone_name: str = "Asia/Shanghai",
     ) -> None:
@@ -250,17 +254,24 @@ class HistoryRecallService:
         now: datetime | None = None,
         timezone_name: str | None = None,
     ) -> HistoryRecallResult:
+        privacy = PrivacyLevel(privacy_level)
+        moment = now or datetime.now(UTC)
         parser = (
             self._temporal
             if timezone_name is None or timezone_name == self.timezone_name
             else TemporalQueryParser(timezone_name)
         )
-        plan = self.plan(query, now=now, timezone_name=parser.timezone_name)
-        levels = (
-            (PrivacyLevel.L0, PrivacyLevel.L1, PrivacyLevel.L2)
-            if privacy_level is PrivacyLevel.L2
-            else (PrivacyLevel.L0, PrivacyLevel.L1)
-        )
+        plan = self.plan(query, now=moment, timezone_name=parser.timezone_name)
+        levels = persistent_privacy_levels(privacy)
+        if not levels:
+            return HistoryRecallResult(
+                mode=RecallMode.NONE,
+                plan=plan,
+                events=(),
+                evidence=(),
+                search_count=0,
+                candidate_count=0,
+            )
         search_count = 1
         result = await self._store.search(
             user_id=user_id,
@@ -272,9 +283,10 @@ class HistoryRecallService:
             privacy_levels=levels,
             limit=plan.max_results,
         )
+        result = deepcopy(result)
 
         if (
-            privacy_level is PrivacyLevel.L2
+            privacy is PrivacyLevel.L2
             and plan.start_at is not None
             and plan.end_at is not None
             and not _is_broad_phrase(query)
@@ -294,6 +306,7 @@ class HistoryRecallService:
                 privacy_levels=(PrivacyLevel.L2,),
                 limit=min(plan.max_results, 6),
             )
+            l2_result = deepcopy(l2_result)
             if l2_result.events:
                 seen = {item.id for item in l2_result.events}
                 merged = l2_result.events + tuple(
@@ -306,7 +319,7 @@ class HistoryRecallService:
 
         # Broad relative phrases are allowed one bounded expansion from 30 to 90 days.
         if not result.events and plan.start_at is not None and _is_broad_phrase(query):
-            moment = (now or datetime.now(UTC)).astimezone(ZoneInfo(parser.timezone_name))
+            moment = moment.astimezone(ZoneInfo(parser.timezone_name))
             search_count = 2
             plan = RecallPlan(
                 query=plan.query,
@@ -325,6 +338,7 @@ class HistoryRecallService:
                 privacy_levels=levels,
                 limit=plan.max_results,
             )
+            result = deepcopy(result)
 
         if not result.events:
             return HistoryRecallResult(
@@ -337,9 +351,9 @@ class HistoryRecallService:
             )
 
         evidence = await self._store.expand_sources(
-            result.events,
+            deepcopy(result.events),
             user_id=user_id,
-            privacy_level=privacy_level,
+            privacy_level=privacy,
             limit=6,
         )
         return HistoryRecallResult(
@@ -369,8 +383,7 @@ class HistoryRecallService:
                 lines.append(f"- [{stamp}][{event_item.actor}] {event_item.summary}")
         return (
             "【历史回溯证据】以下内容来自受控 Timeline/Source 检索。"
-            "只能依据这些证据回答过去发生过什么；没有覆盖到的细节不要补全。\n"
-            + "\n".join(lines)
+            "只能依据这些证据回答过去发生过什么；没有覆盖到的细节不要补全。\n" + "\n".join(lines)
         )
 
 

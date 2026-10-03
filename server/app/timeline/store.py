@@ -20,7 +20,7 @@ from app.db import (
     TimelineEventRecord,
 )
 from app.db.claims import assert_current_claim
-from app.schemas.common import PrivacyLevel
+from app.schemas.common import PrivacyLevel, persistent_privacy_levels
 
 from .models import (
     TimelineActor,
@@ -329,15 +329,13 @@ class TimelineStore:
         privacy_level: PrivacyLevel,
         limit: int = MAX_SOURCE_EXPANSION,
     ) -> tuple[TimelineEvidence, ...]:
-        allowed = (
-            {PrivacyLevel.L0.value, PrivacyLevel.L1.value, PrivacyLevel.L2.value}
-            if privacy_level is PrivacyLevel.L2
-            else {PrivacyLevel.L0.value, PrivacyLevel.L1.value}
-        )
+        allowed = {level.value for level in persistent_privacy_levels(PrivacyLevel(privacy_level))}
+        if not allowed:
+            return ()
         evidence: list[TimelineEvidence] = []
         async with self._database.sessions() as session:
             for event in events[:limit]:
-                if event.privacy_level not in allowed:
+                if event.user_id != user_id or event.privacy_level not in allowed:
                     continue
                 if event.source_type == TimelineSourceType.MESSAGE.value:
                     try:

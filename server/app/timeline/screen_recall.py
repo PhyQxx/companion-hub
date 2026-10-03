@@ -1,17 +1,18 @@
 from __future__ import annotations
 
 import re
+from copy import deepcopy
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import TypeVar
 from uuid import UUID
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from app.schemas.common import PrivacyLevel
+from app.schemas.common import PrivacyLevel, persistent_privacy_levels
 
 from .models import TemporalRange, TimelineEvent, TimelineSourceType
+from .ports import TimelineSearchRepository
 from .recall import TemporalQueryParser
-from .store import TimelineStore
 
 SegmentT = TypeVar("SegmentT")
 
@@ -55,7 +56,7 @@ class ScreenActivityRecallService:
 
     def __init__(
         self,
-        store: TimelineStore,
+        store: TimelineSearchRepository,
         *,
         timezone_name: str = "Asia/Shanghai",
         max_events: int = MAX_SCREEN_EVENTS,
@@ -75,6 +76,9 @@ class ScreenActivityRecallService:
         now: datetime,
         timezone_name: str,
     ) -> ScreenActivityRecallResult | None:
+        privacy_levels = persistent_privacy_levels(PrivacyLevel(privacy_level))
+        if not privacy_levels:
+            return None
         if not has_screen_activity_intent(query):
             return None
         parser = (
@@ -85,11 +89,6 @@ class ScreenActivityRecallService:
         temporal_range = parser.parse(query, now=now)
         if temporal_range is None:
             return None
-        privacy_levels = (
-            (PrivacyLevel.L0, PrivacyLevel.L1, PrivacyLevel.L2)
-            if privacy_level is PrivacyLevel.L2
-            else (PrivacyLevel.L0, PrivacyLevel.L1)
-        )
         # 时间总结必须取时间窗内事件，不能拿整句问题做词法相关性过滤。
         result = await self._store.search(
             user_id=user_id,
@@ -102,7 +101,7 @@ class ScreenActivityRecallService:
             limit=self._max_events,
             candidate_limit=self._max_events + 1,
         )
-        events = tuple(sorted(result.events, key=lambda item: item.occurred_at))
+        events = deepcopy(tuple(sorted(result.events, key=lambda item: item.occurred_at)))
         truncated = result.candidate_count > self._max_events
         if truncated:
             events = events[: self._max_events]
@@ -135,8 +134,7 @@ class ScreenActivityRecallService:
         )
         if not result.segments:
             return (
-                header
-                + "\n该范围内没有屏幕观察记录。请明确说明记录为空或感知未覆盖，"
+                header + "\n该范围内没有屏幕观察记录。请明确说明记录为空或感知未覆盖，"
                 "不要用长期记忆猜测用户当时做了什么。"
             )
         lines: list[str] = []
@@ -149,9 +147,7 @@ class ScreenActivityRecallService:
                 f"[{segment.observation_count} 次观察] {summary}"
             )
         suffix = (
-            "\n注意：结果达到读取上限，以下只覆盖时间范围内的部分记录。"
-            if result.truncated
-            else ""
+            "\n注意：结果达到读取上限，以下只覆盖时间范围内的部分记录。" if result.truncated else ""
         )
         return header + "\n" + "\n".join(lines) + suffix
 
@@ -224,16 +220,11 @@ def _display(event: TimelineEvent) -> int:
         return 0
 
 
-def _compact_segments(
-    segments: tuple[SegmentT, ...], limit: int
-) -> tuple[SegmentT, ...]:
+def _compact_segments(segments: tuple[SegmentT, ...], limit: int) -> tuple[SegmentT, ...]:
     """保留时间分布，避免长时间窗只剩开头或结尾（屏幕/浏览分段通用）。"""
     if len(segments) <= limit:
         return segments
     if limit <= 1:
         return segments[:1]
-    indexes = {
-        round(index * (len(segments) - 1) / (limit - 1))
-        for index in range(limit)
-    }
+    indexes = {round(index * (len(segments) - 1) / (limit - 1)) for index in range(limit)}
     return tuple(segments[index] for index in sorted(indexes))
