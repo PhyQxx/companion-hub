@@ -8,6 +8,7 @@ firing，投递结束由调用方 finish；进程中断遗留的 firing 由 reco
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from datetime import UTC, datetime, timedelta
 from typing import Any, cast
 from uuid import UUID
@@ -130,6 +131,48 @@ class TaskStore:
             session.add(record)
         return _to_view(record)
 
+    async def cancel_tasks_by_source_refs_in_session(
+        self,
+        session: AsyncSession,
+        user_id: UUID,
+        source_refs: Sequence[str],
+        *,
+        now: datetime,
+        include_dependents: bool = True,
+    ) -> int:
+        refs = set(source_refs)
+        if include_dependents:
+            for ref in tuple(refs):
+                if not ref.startswith("calendar:"):
+                    continue
+                try:
+                    event_id = UUID(ref.removeprefix("calendar:"))
+                except ValueError:
+                    continue
+                refs.add(f"commute:{event_id}")
+        ordered_refs = sorted(refs)
+        identifiers: set[UUID] = set()
+        for offset in range(0, len(ordered_refs), 500):
+            result = await session.execute(
+                update(TaskItemRecord)
+                .where(
+                    TaskItemRecord.user_id == user_id,
+                    TaskItemRecord.source_ref.in_(ordered_refs[offset : offset + 500]),
+                    TaskItemRecord.status.in_([str(TaskStatus.ACTIVE), str(TaskStatus.FIRING)]),
+                )
+                .values(
+                    status=str(TaskStatus.CANCELLED),
+                    cancelled_at=now,
+                    next_fire_at=None,
+                    updated_at=now,
+                )
+                .returning(TaskItemRecord.id)
+            )
+            identifiers.update(result.scalars())
+        for identifier in sorted(identifiers):
+            await self._cancel_current_delivery(session, user_id, identifier)
+        return len(identifiers)
+
     async def cancel_tasks_by_source_ref_in_session(
         self,
         session: AsyncSession,
@@ -139,33 +182,9 @@ class TaskStore:
         now: datetime,
         include_dependents: bool = True,
     ) -> int:
-        refs = [source_ref]
-        if include_dependents and source_ref.startswith("calendar:"):
-            try:
-                event_id = UUID(source_ref.removeprefix("calendar:"))
-            except ValueError:
-                pass
-            else:
-                refs.append(f"commute:{event_id}")
-        result = await session.execute(
-            update(TaskItemRecord)
-            .where(
-                TaskItemRecord.user_id == user_id,
-                TaskItemRecord.source_ref.in_(refs),
-                TaskItemRecord.status.in_([str(TaskStatus.ACTIVE), str(TaskStatus.FIRING)]),
-            )
-            .values(
-                status=str(TaskStatus.CANCELLED),
-                cancelled_at=now,
-                next_fire_at=None,
-                updated_at=now,
-            )
-            .returning(TaskItemRecord.id)
+        return await self.cancel_tasks_by_source_refs_in_session(
+            session, user_id, (source_ref,), now=now, include_dependents=include_dependents
         )
-        identifiers = sorted(result.scalars())
-        for identifier in identifiers:
-            await self._cancel_current_delivery(session, user_id, identifier)
-        return len(identifiers)
 
     async def cancel_tasks_by_source_ref(self, user_id: UUID, source_ref: str) -> int:
         """Cancel owned source tasks and calendar-dependent departures in one transaction."""
