@@ -1,5 +1,6 @@
 """Long-term memory system: retrieval, traceable sources and correction."""
 from .consolidation import ConsolidateOutcome, ConsolidationPolicy, MemoryIngester
+from .consolidation_core import CandidateConsolidator
 from .embeddings import (
     EmbeddingProvider,
     HashingEmbeddingProvider,
@@ -57,6 +58,7 @@ __all__ = [
     "LLM_EXTRACTOR_VERSION",
     "RETRIEVAL_POLICY_VERSION",
     "RULE_EXTRACTOR_VERSION",
+    "CandidateConsolidator",
     "CompletedTurnMemoryExtractor",
     "ConsolidateDecision",
     "ConsolidateOutcome",
