@@ -9,13 +9,13 @@
 
 from __future__ import annotations
 
-import json
 import re
 from collections.abc import Sequence
 from datetime import datetime, timedelta
 from typing import Protocol, final
 from uuid import UUID
 
+from app.harness.json_payload import load_json_object
 from app.llm import CompletionRequest, CompletionResult, LLMMessage, LLMRoute
 from app.schemas.common import PrivacyLevel
 
@@ -341,19 +341,8 @@ class RuleBasedExtractor:
 
 
 def _load_json_object(raw: str) -> dict[str, object]:
-    """从模型输出中提取第一个 JSON 对象；容忍 markdown 代码围栏。"""
-    stripped = raw.strip()
-    if stripped.startswith("```"):
-        stripped = stripped.strip("`")
-        stripped = stripped.split("\n", 1)[-1]
-    start = stripped.find("{")
-    end = stripped.rfind("}")
-    if start < 0 or end <= start:
-        raise ValueError("no JSON object in extractor output")
-    payload = json.loads(stripped[start : end + 1])
-    if not isinstance(payload, dict):
-        raise ValueError("extractor output is not a JSON object")
-    return payload
+    """Keep the legacy extraction helper available to existing callers."""
+    return load_json_object(raw)
 
 
 def _classify(sentence: str) -> MemoryType | None:

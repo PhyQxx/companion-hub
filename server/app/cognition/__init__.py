@@ -22,6 +22,7 @@ from .action_registry import (
 )
 from .action_runner import ToolActionRunner
 from .attention import ATTENTION_POLICY_VERSION, AttentionEngine
+from .commitments import CommitmentTracker
 from .cycle import CognitiveCycle
 from .deliberation import COGNITIVE_POLICY_VERSION, RouterDeliberator, RuleBasedDeliberator
 from .goal_tracker import GoalTracker
@@ -76,6 +77,7 @@ __all__ = [
     "CognitiveDecision",
     "CognitiveDecisionView",
     "CognitiveStore",
+    "CommitmentTracker",
     "CompiledAction",
     "ConfirmationPolicy",
     "DecisionKind",
