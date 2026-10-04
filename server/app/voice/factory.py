@@ -15,7 +15,7 @@ from typing import Protocol
 from weakref import WeakKeyDictionary
 
 from app.config import ConfigStore, DatabaseConfigStore, HubConfig
-from app.config.models import VoiceCostConfig, VoiceTtsProviderConfig
+from app.config.models import VoiceAsrConfig, VoiceCostConfig, VoiceTtsProviderConfig
 from app.harness.budget import BudgetDenied
 from app.harness.unit_costs import UnitCostQuote, UnitPricing
 from app.llm.provider import EnvSecretProvider, SecretNotFound
@@ -71,6 +71,8 @@ class StaticVoiceSource:
         )
 
     def validate_provider(self, provider: object) -> None:
+        if provider is self._recognizer:
+            return
         if self._tts_chain is None or not any(
             candidate is provider for candidate in self._tts_chain.providers
         ):
@@ -98,10 +100,14 @@ class ConfigVoiceSource:
     def validate_provider(self, provider: object) -> None:
         binding = self.binding_for(provider)
         config = self._config_store.current.config
+        entries: list[VoiceAsrConfig | VoiceTtsProviderConfig] = [
+            entry for entry in config.voice.tts if entry.enabled
+        ]
+        if config.voice.asr is not None:
+            entries.append(config.voice.asr)
         if binding is None or not any(
-            entry.enabled
-            and _provider_fingerprints(config, entry)[1] == binding.authority_fingerprint
-            for entry in config.voice.tts
+            _provider_fingerprints(config, entry)[1] == binding.authority_fingerprint
+            for entry in entries
         ):
             raise BudgetDenied("voice_provider_configuration_changed")
 
@@ -133,7 +139,7 @@ class ConfigVoiceSource:
                     if entry.request_cost_ceiling is not None and entry.cost_currency is not None
                     else None
                 )
-                assert isinstance(entry, VoiceTtsProviderConfig)
+                assert isinstance(entry, (VoiceAsrConfig, VoiceTtsProviderConfig))
                 fingerprint, authority = _provider_fingerprints(snapshot.config, entry)
                 self._pricing[provider] = VoiceProviderBinding(
                     f"voice.{kind}.{fingerprint}", quote, snapshot.version, authority
@@ -144,11 +150,13 @@ class ConfigVoiceSource:
             return self._cache
 
 
-def _provider_fingerprints(config: HubConfig, entry: VoiceTtsProviderConfig) -> tuple[str, str]:
+def _provider_fingerprints(
+    config: HubConfig, entry: VoiceAsrConfig | VoiceTtsProviderConfig
+) -> tuple[str, str]:
     """Keep credential authority in memory; public cost identifiers exclude it."""
     public = entry.model_dump(mode="json", exclude={"secret_ref", "secret_value"})
     authority = entry.model_dump(mode="json")
-    if entry.provider == "senseaudio":
+    if isinstance(entry, VoiceTtsProviderConfig) and entry.provider == "senseaudio":
         shared = config.voice.senseaudio
         if entry.base_url is None:
             public["base_url"] = str(shared.base_url) if shared.base_url is not None else None
@@ -209,6 +217,8 @@ def build_voice_providers(
                     model=asr.model,
                     language=asr.language,
                 )
+        if recognizer is not None and register is not None:
+            register(recognizer, asr, "asr")
 
     providers: list[SpeechSynthesizer] = []
     for provider_config in config.voice.tts:

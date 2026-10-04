@@ -68,7 +68,15 @@ def goal_view(
         except ValidationError:
             pass
     root = contract.get("criterion")
-    reason = contract.get("delivery_reason")
+    reason = (
+        contract.get(
+            "delivery_result"
+            if root in {"audio_frames_sent", "voice_reply_sent"}
+            else "delivery_reason"
+        )
+        if isinstance(root, str)
+        else contract.get("delivery_reason")
+    )
     dispatch = contract.get("dispatch_state")
     return evaluate_criteria(
         RunCriteriaSnapshot(

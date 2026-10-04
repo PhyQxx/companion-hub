@@ -80,6 +80,7 @@ from app.output import ProactiveDeliveryService
 from app.push import PushSubscriptionStore
 from app.runs.speech_delivery import SqlSpeechDelivery
 from app.runs.voice_sources import SqlVoiceSourceGuard
+from app.runs.voice_turn import SqlVoiceTurnDelivery
 from app.runtime import TurnCoordinator
 from app.safety import SafetyActivityScheduler, SafetyAlertService
 from app.screen_awareness import ScreenAwarenessLoop
@@ -504,14 +505,16 @@ def assemble_runtime(
     if runtime_config is not None:
         voice_source = ConfigVoiceSource(runtime_config)
         voice_guard = SqlVoiceSourceGuard(runtime_database)
+        speech_delivery = SqlSpeechDelivery(
+            runtime_database, runtime_config, voice_guard, voice_source
+        )
         voice_router, voice_manager = create_voice_websocket_router(
             runtime_chat_service,
             auth_service,
             voice_source=voice_source,
             source_guard=voice_guard,
-            speech_delivery=SqlSpeechDelivery(
-                runtime_database, runtime_config, voice_guard, voice_source
-            ),
+            speech_delivery=speech_delivery,
+            voice_turn_delivery=SqlVoiceTurnDelivery(speech_delivery),
             turn_coordinator=turn_coordinator,
             avatar_control_publisher=device_command_gateway,
         )

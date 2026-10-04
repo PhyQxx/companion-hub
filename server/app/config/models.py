@@ -41,7 +41,7 @@ class VoiceCostConfig(StrictModel):
         return self
 
 
-class VoiceAsrConfig(StrictModel):
+class VoiceAsrConfig(VoiceCostConfig):
     """语音识别提供方（docs/04）：MiMo 云端、faster-whisper 本地整段，或
     sherpa-onnx 本地流式（model 填流式 Zipformer 模型目录路径）。"""
 

@@ -70,6 +70,29 @@ def evaluate_criteria(
                 validation_level="V1" if state == "passed" else "V0",
             )
         )
+    elif root in {"audio_frames_sent", "voice_reply_sent"}:
+        reason = run.delivery_reason
+        if run.status in {"accepted", "running"}:
+            state, reason = "pending", None
+        elif run.status == "succeeded" and reason == root:
+            state, reason = "passed", None
+        elif reason == "expired_delivery_unknown":
+            state = "inconclusive"
+        elif reason == root:
+            state, reason = "inconclusive", "voice_delivery_returned_after_stop"
+        elif run.status == "succeeded":
+            state, reason = "inconclusive", "voice_delivery_evidence_missing"
+        else:
+            state = "failed"
+        criteria.append(
+            RunCriterionView(
+                kind=root,
+                source_id=run.id,
+                status=state,
+                validation_level="V1" if state == "passed" else "V0",
+                reason_code=reason,
+            )
+        )
     elif root == "delivery_channels_returned":
         dispatch = run.dispatch_state
         reason = run.delivery_reason

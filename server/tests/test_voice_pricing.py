@@ -154,3 +154,58 @@ voice:
     del provider, chain
     gc.collect()
     assert weak() is None and len(source._pricing) == 1
+
+
+async def test_asr_quote_keeps_concrete_provider_and_stops_after_price_change(
+    tmp_path: Path,
+) -> None:
+    from app.voice import FasterWhisperRecognizer
+
+    path = tmp_path / "asr.yaml"
+    payload = (
+        BASE_CONFIG
+        + """
+voice:
+  asr:
+    provider: faster_whisper
+    runs_local: true
+    model: small
+    cost_currency: CNY
+    request_cost_ceiling: '0.003'
+"""
+    )
+    path.write_text(payload)
+    store = ConfigStore(path)
+    await store.load()
+    source = ConfigVoiceSource(store)
+    provider, _ = await source.resolve()
+    assert isinstance(provider, FasterWhisperRecognizer)
+    binding = source.binding_for(provider)
+    assert binding is not None and binding.quote is not None
+    assert binding.quote.pricing.rate_per_unit == Decimal(".003")
+    source.validate_provider(provider)
+    path.write_text(payload.replace("'0.003'", "'0.004'"))
+    await store.reload(force=True)
+    with pytest.raises(BudgetDenied, match="voice_provider_configuration_changed"):
+        source.validate_provider(provider)
+    assert source.binding_for(provider) is binding
+
+
+def test_asr_quote_is_explicit_even_for_local_provider() -> None:
+    from app.config.models import VoiceAsrConfig
+
+    assert VoiceAsrConfig(provider="faster_whisper", runs_local=True).request_cost_ceiling is None
+    with pytest.raises(ValueError, match="voice_cost_ceiling_requires_currency"):
+        VoiceAsrConfig(
+            provider="faster_whisper", runs_local=True, request_cost_ceiling=Decimal("0")
+        )
+    config = VoiceAsrConfig(
+        provider="faster_whisper",
+        runs_local=True,
+        cost_currency="CNY",
+        request_cost_ceiling=Decimal("0.000000000001"),
+    )
+    assert (
+        VoiceAsrConfig.model_validate_json(config.model_dump_json()).request_cost_ceiling
+        == config.request_cost_ceiling
+    )

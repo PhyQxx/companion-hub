@@ -268,6 +268,8 @@ interface HubVoiceAsr {
   device?: "auto" | "cpu" | "cuda";
   compute_type?: string;
   runs_local?: boolean;
+  cost_currency?: string | null;
+  request_cost_ceiling?: string | number | null;
 }
 interface HubVoiceTts {
   provider: "mimo" | "edge_tts" | "senseaudio";
@@ -328,6 +330,8 @@ interface DraftVoiceAsr {
   secret_mode: "value" | "ref" | "none";
   secret_value: string;
   secret_ref: string;
+  cost_currency: string;
+  request_cost_ceiling: string;
 }
 
 interface DraftVoiceTts {
@@ -479,6 +483,8 @@ const defaultVoiceAsr = (): DraftVoiceAsr => ({
   secret_mode: "value",
   secret_value: "",
   secret_ref: "env:MIMO_API_KEY",
+  cost_currency: "",
+  request_cost_ceiling: "",
 });
 
 const defaultVoiceTts = (provider: "mimo" | "edge_tts" | "senseaudio" = "mimo"): DraftVoiceTts => ({
@@ -501,6 +507,8 @@ function onAsrProviderChange(provider: "mimo" | "faster_whisper" | "sherpa_strea
   voiceAsrCheck.value = null;
   const asr = draft.value.voice.asr;
   asr.provider = provider;
+  asr.cost_currency = "";
+  asr.request_cost_ceiling = "";
   if (provider === "faster_whisper") {
     if (asr.model.startsWith("mimo-")) asr.model = "small";
     asr.base_url = "";
@@ -703,6 +711,8 @@ function hubConfigToDraft(config: HubConfig | undefined | null): DraftState {
     ? {
         enabled: true,
         provider: asr.provider ?? "mimo",
+        cost_currency: asr.cost_currency ?? "",
+        request_cost_ceiling: asr.request_cost_ceiling == null ? "" : String(asr.request_cost_ceiling),
         model: asr.model ?? asrDefaultModel,
         base_url: asr.provider === "sherpa_streaming" ? "" : asr.base_url ?? "",
         language: asr.language ?? "auto",
@@ -828,6 +838,10 @@ function draftToHubConfig(d: DraftState): HubConfig {
           ...(assembleSecret(d.voice.asr)),
         }
     : null;
+  if (voiceAsr) {
+    voiceAsr.cost_currency = d.voice.asr.cost_currency.trim().toUpperCase() || null;
+    voiceAsr.request_cost_ceiling = d.voice.asr.request_cost_ceiling.trim() || null;
+  }
   const voiceTts: HubVoiceTts[] = d.voice.tts.map((p) => ({
     provider: p.provider,
     model: p.model,
@@ -1399,6 +1413,11 @@ onActivated(() => {
               <label class="field"><span>模型</span><el-input v-model="draft.voice.asr.model" :placeholder="draft.voice.asr.provider === 'mimo' ? 'mimo-v2.5-asr' : draft.voice.asr.provider === 'sherpa_streaming' ? '流式模型目录，如 models/sherpa-streaming-zipformer' : 'small / large-v3'" /></label>
               <label class="field"><span>识别语种</span><el-select v-model="draft.voice.asr.language"><el-option label="自动检测" value="auto" /><el-option label="中文" value="zh" /><el-option label="英文" value="en" /></el-select></label>
             </div>
+            <div class="form-grid three global-fields">
+              <label class="field"><span>识别费用币种</span><el-input v-model="draft.voice.asr.cost_currency" placeholder="例如 CNY" /></label>
+              <label class="field"><span>单次识别费用上限</span><el-input v-model="draft.voice.asr.request_cost_ceiling" placeholder="留空为未知；免费需明确填 0" /></label>
+            </div>
+            <div class="config-note">每次整段识别或一个流式识别请求分别预留；流式喂入按同一请求处理。启用金额限额时需要明确费用上限，实际费用仍需账单核对。</div>
             <div v-if="draft.voice.asr.provider === 'mimo'" class="form-grid three global-fields">
               <label class="field"><span>Base URL</span><el-input v-model="draft.voice.asr.base_url" placeholder="https://api.xiaomimimo.com/v1" /></label>
               <label class="field"><span>密钥方式</span><el-select v-model="draft.voice.asr.secret_mode"><el-option label="直接填写" value="value" /><el-option label="环境变量引用" value="ref" /><el-option label="暂不配置" value="none" /></el-select></label>
@@ -1490,7 +1509,7 @@ onActivated(() => {
               <label class="field"><span>费用币种</span><el-input v-model="p.cost_currency" placeholder="例如 CNY" /></label>
               <label class="field"><span>单次合成费用上限</span><el-input v-model="p.request_cost_ceiling" placeholder="留空为未知，例如 0.01；免费需明确填 0" /></label>
             </div>
-            <div class="config-note">每家提供方单独声明整次合成的费用上限。设备独立播报启用金额限额时，缺少上限会停止合成；实际费用仍需账单核对。</div>
+            <div class="config-note">每家提供方单独声明每次合成的费用上限。设备播报与语音回复启用金额限额时，缺少上限会停止合成；实际费用仍需账单核对。</div>
             <div v-if="p.provider !== 'edge_tts'" class="form-grid three global-fields">
               <label class="field"><span>模型</span><el-input v-model="p.model" :placeholder="p.provider === 'senseaudio' ? 'sensenova-tts-2.0' : 'mimo-v2.5-tts'" /></label>
               <label class="field"><span>Base URL</span><el-input v-model="p.base_url" :placeholder="p.provider === 'senseaudio' ? '留空 = 使用「声音管理」的连接' : 'https://api.xiaomimimo.com/v1'" /></label>

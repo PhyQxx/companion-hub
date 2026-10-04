@@ -29,6 +29,8 @@ const goalLabels: Record<string, string> = {
 };
 const criterionLabels: Record<string, string> = {
   delivery_channels_returned: "通道返回结果（不代表用户已读）",
+  audio_frames_sent: "音频帧已发送（不代表设备已播放）",
+  voice_reply_sent: "语音回复已发送（不代表用户已听到）",
   reply_committed: "回复保存", action_plan_verified: "操作核实", delegated_result: "委派结果", model_result_returned: "模型结果",
 };
 const active = (run: TaskRun) => ["accepted", "running"].includes(run.status) || (run.goal?.pending ?? 0) > 0;

@@ -27,7 +27,8 @@ from app.auth import AuthService, ChatPrincipal, InvalidSession
 from app.avatar import AvatarControlPublisher, control_from_agent_reply, with_reply_text
 from app.chat import ChatService, PendingTurn, TurnCancelled
 from app.harness.budget import BudgetDenied
-from app.harness.guarded_call import guarded_call, guarded_inline_call
+from app.harness.guarded_call import guarded_inline_call
+from app.harness.joined_read import join_on_cancel
 from app.harness.source_cleanup import close_after_source
 from app.harness.voice_sources import VoiceRecipientClaim, VoiceSourceClaim, VoiceSourceGuard
 from app.ids import uuid7
@@ -56,7 +57,13 @@ from app.voice import (
     markdown_to_speech_text,
 )
 from app.voice.contracts import LocalOnlySynthesizerError, StreamingRecognitionSessionFactory
-from app.voice.delivery_ports import SpeechDelivery, SpeechDeliveryContext
+from app.voice.delivery_ports import (
+    RecognitionRequest,
+    SpeechDelivery,
+    SpeechDeliveryContext,
+    VoiceTurnContext,
+    VoiceTurnDelivery,
+)
 from app.voice.failover import close_audio_stream
 
 from .auth import ChatSessionGuard
@@ -94,6 +101,12 @@ class AsrPrefetch:
     source: VoiceSourceClaim | None = None
 
 
+@dataclass(frozen=True, slots=True)
+class VoiceTurnResult:
+    status: str = "failed"
+    reason: str = "voice_turn_incomplete"
+
+
 class UtteranceStreamer:
     """话语级流式 ASR 句柄（docs/04 §6.4 P1）。
 
@@ -106,6 +119,8 @@ class UtteranceStreamer:
     def __init__(
         self, recognizer: SpeechRecognizer, *, privacy_level: PrivacyLevel = PrivacyLevel.L1
     ) -> None:
+        self.provider = recognizer
+        self.propagate_errors = False
         self._recognizer: StreamingSpeechRecognizer | None = None
         if isinstance(recognizer, StreamingSpeechRecognizer) and (
             recognizer.runs_local or privacy_level not in {PrivacyLevel.L2, PrivacyLevel.L3}
@@ -142,7 +157,12 @@ class UtteranceStreamer:
         if recognizer is None:
             return None
         try:
-            partial = await asyncio.to_thread(recognizer.feed, pcm)
+            partial = (
+                await join_on_cancel(
+                    asyncio.to_thread(recognizer.feed, pcm), name="voice-decoder-feed"
+                )
+                if self.propagate_errors else await asyncio.to_thread(recognizer.feed, pcm)
+            )
         except (asyncio.CancelledError, BudgetDenied):
             self._recognizer = None
             raise
@@ -153,6 +173,8 @@ class UtteranceStreamer:
                 exc_info=True,
             )
             self._recognizer = None
+            if self.propagate_errors:
+                raise
             return None
         if partial is None:
             return None
@@ -170,7 +192,12 @@ class UtteranceStreamer:
         if recognizer is None:
             return None
         try:
-            final = await asyncio.to_thread(recognizer.finalize)
+            final = (
+                await join_on_cancel(
+                    asyncio.to_thread(recognizer.finalize), name="voice-decoder-finalize"
+                )
+                if self.propagate_errors else await asyncio.to_thread(recognizer.finalize)
+            )
         except BudgetDenied:
             raise
         except Exception:
@@ -179,6 +206,8 @@ class UtteranceStreamer:
                 type(recognizer).__name__,
                 exc_info=True,
             )
+            if self.propagate_errors:
+                raise
             return None
         return final.strip() or None
 
@@ -275,6 +304,11 @@ class VoiceSession:
     last_transcript: str | None = None
     last_transcript_at: float | None = None
     send_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    capture_delivery: VoiceTurnContext | None = None
+    turn_delivery: VoiceTurnContext | None = None
+    streamer_request: RecognitionRequest | None = None
+    delivery_tasks: set[asyncio.Task[None]] = field(default_factory=set)
+    delivery_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
 
     def resolve_location(self, payload: object) -> ClientLocation | None:
         """更新或复用连接缓存位置; 非法载荷忽略并保留原值, 不打断语音回合。"""
@@ -297,11 +331,13 @@ class VoiceWebSocketManager:
         avatar_control_publisher: AvatarControlPublisher | None = None,
         vad_factory: Callable[[], VoiceActivityDetector] = create_default_vad,
         speech_delivery: SpeechDelivery | None = None,
+        voice_turn_delivery: VoiceTurnDelivery | None = None,
     ) -> None:
         self._service = service
         self._turns = turn_coordinator
         self._voice_source = voice_source
         self._speech_delivery = speech_delivery
+        self._voice_turn_delivery = voice_turn_delivery
         self._source_guard = source_guard
         self._avatar_control = avatar_control_publisher
         self._vad_factory = vad_factory
@@ -336,6 +372,8 @@ class VoiceWebSocketManager:
         ):
             raise BudgetDenied("voice_source_changed")
         await self._source_guard.validate(source)
+        if source.privacy_level == PrivacyLevel.L3 and self._voice_turn_delivery is not None:
+            self._voice_turn_delivery.validate_ephemeral()
 
     async def _transcribe(
         self,
@@ -343,6 +381,8 @@ class VoiceWebSocketManager:
         recognizer: SpeechRecognizer,
         pcm: bytes,
         source: VoiceSourceClaim,
+        *,
+        delivery: VoiceTurnContext | None = None,
     ) -> str:
         privacy = source.privacy_level
 
@@ -353,10 +393,38 @@ class VoiceWebSocketManager:
             if privacy in {PrivacyLevel.L2, PrivacyLevel.L3} and not recognizer.runs_local:
                 raise SpeechRecognitionUnavailable("local_asr_required")
 
-        return await guarded_inline_call(
-            lambda: recognizer.transcribe(pcm, sample_rate=SUPPORTED_SAMPLE_RATE, language=None),
-            validate,
-        )
+        await validate()
+        if not isinstance(recognizer, SubmittedTextRecognizer):
+            delivery = delivery or await self._ensure_capture_delivery(session, source)
+
+        async def invoke() -> str:
+            if delivery is not None and not isinstance(recognizer, SubmittedTextRecognizer):
+                return await delivery.transcribe(
+                    recognizer, pcm, sample_rate=SUPPORTED_SAMPLE_RATE, language=None
+                )
+            return await recognizer.transcribe(
+                pcm, sample_rate=SUPPORTED_SAMPLE_RATE, language=None
+            )
+
+        return await guarded_inline_call(invoke, validate)
+
+    async def _ensure_capture_delivery(
+        self, session: VoiceSession, source: VoiceSourceClaim
+    ) -> VoiceTurnContext | None:
+        if self._voice_turn_delivery is None or source.privacy_level == PrivacyLevel.L3:
+            return None
+        async with session.delivery_lock:
+            if session.capture_delivery is None:
+                await self._drain_capture_cleanup(session)
+                session.capture_delivery = await self._voice_turn_delivery.start(source)
+            await session.capture_delivery.validate()
+            return session.capture_delivery
+
+    @staticmethod
+    async def _drain_capture_cleanup(session: VoiceSession) -> None:
+        tasks = tuple(session.delivery_tasks)
+        if tasks:
+            await join_on_cancel(asyncio.gather(*tasks), name="voice-capture-drain")
 
     def set_satellite_broadcaster(
         self, broadcaster: Callable[..., Awaitable[int]]
@@ -896,6 +964,7 @@ class VoiceWebSocketManager:
             or original.privacy_level != privacy
         ):
             self._discard_capture(session)
+            await self._drain_capture_cleanup(session)
             if session.asr_tasks:
                 await asyncio.gather(*tuple(session.asr_tasks), return_exceptions=True)
             await self._release_microphone(session)
@@ -1061,17 +1130,39 @@ class VoiceWebSocketManager:
             session.streamer_source is not None
             and session.privacy_level != session.streamer_source.privacy_level
         ):
-            session.utterance_streamer = None
-            session.streamer_source = None
+            self._discard_capture(session)
+            await self._drain_capture_cleanup(session)
             return
         if not streamer.allows(session.privacy_level):
             session.utterance_streamer = None
             return
         privacy = session.privacy_level
         source = session.streamer_source or self._source_claim(session)
-        partial = await guarded_call(
-            lambda: streamer.feed(pcm), lambda: self._validate_source(session, source)
-        )
+        delivery = await self._ensure_capture_delivery(session, source)
+        if delivery is not None and session.streamer_request is None:
+            streamer.propagate_errors = True
+            session.streamer_request = delivery.recognition_request(
+                streamer.provider, streamer.feed, streamer.finalize
+            )
+        request = session.streamer_request
+        try:
+            partial = await guarded_inline_call(
+                lambda: request.feed(pcm) if request is not None else streamer.feed(pcm),
+                lambda: self._validate_source(session, source),
+            )
+        except BudgetDenied as error:
+            if delivery is not None:
+                await delivery.finish("failed", error.reason_code)
+            raise
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            session.utterance_streamer = None
+            session.streamer_request = None
+            if request is not None:
+                await request.aclose()
+            logger.warning("managed streaming ASR failed; falling back", exc_info=True)
+            return
         if session.privacy_level != privacy or session.utterance_streamer is not streamer:
             return
         if partial is not None:
@@ -1088,6 +1179,7 @@ class VoiceWebSocketManager:
         """
 
         streamer, session.utterance_streamer = session.utterance_streamer, None
+        request, session.streamer_request = session.streamer_request, None
         source, session.streamer_source = (
             session.streamer_source or self._source_claim(session),
             None,
@@ -1099,9 +1191,19 @@ class VoiceWebSocketManager:
         if not streamer.allows(session.privacy_level):
             return None, None, None
         privacy = session.privacy_level
-        final = await guarded_call(
-            streamer.finalize, lambda: self._validate_source(session, source)
-        )
+        try:
+            final = await guarded_inline_call(
+                request.finalize if request is not None else streamer.finalize,
+                lambda: self._validate_source(session, source),
+            )
+        except (BudgetDenied, asyncio.CancelledError):
+            raise
+        except Exception:
+            logger.warning("managed streaming ASR finalize failed; falling back", exc_info=True)
+            final = None
+        finally:
+            if request is not None:
+                await request.aclose()
         if session.privacy_level != privacy:
             return None, None, None
         stable_ms: int | None = None
@@ -1132,11 +1234,21 @@ class VoiceWebSocketManager:
         # PTT 是明确的用户意图，保留短话语；自动断句按更长下限滤噪。
         min_bytes = MIN_UTTERANCE_BYTES if explicit else MIN_AUTO_UTTERANCE_BYTES
         if len(pcm) < min_bytes:
-            self._discard_asr_prefetch(session)
-            session.utterance_source = None
-            session.utterance_streamer = None
-            session.streamer_source = None
+            self._discard_capture(session)
+            await self._drain_capture_cleanup(session)
             return
+        try:
+            await self._finalize_captured_utterance(session, pcm)
+        except BudgetDenied as error:
+            if session.capture_delivery is not None:
+                await session.capture_delivery.finish("failed", error.reason_code)
+            raise
+        finally:
+            if session.capture_delivery is not None:
+                self._discard_capture(session)
+                await self._drain_capture_cleanup(session)
+
+    async def _finalize_captured_utterance(self, session: VoiceSession, pcm: bytes) -> None:
         source = (
             session.utterance_source
             or session.streamer_source
@@ -1180,7 +1292,11 @@ class VoiceWebSocketManager:
                 prefetched_transcript = await self._consume_asr_prefetch(session, recognizer)
             except BudgetDenied as error:
                 await self._send_failure(session, None, error.reason_code)
+                if session.capture_delivery is not None:
+                    await session.capture_delivery.finish("failed", error.reason_code)
                 return
+        delivery, session.capture_delivery = session.capture_delivery, None
+        session.turn_delivery = delivery
         session.turn_task = asyncio.create_task(
             self._run_utterance(
                 session,
@@ -1191,6 +1307,7 @@ class VoiceWebSocketManager:
                 streaming_pause_ms=streaming_pause_ms,
                 partial_match=partial_match,
                 source_claim=source,
+                delivery=delivery,
             ),
             name="voice-utterance",
         )
@@ -1271,9 +1388,90 @@ class VoiceWebSocketManager:
         streaming_pause_ms: int | None = None,
         partial_match: str | None = None,
         source_claim: VoiceSourceClaim | None = None,
+        delivery: VoiceTurnContext | None = None,
     ) -> None:
-        if session.conversation_id is None:
+        source = source_claim or self._source_claim(session)
+        result = VoiceTurnResult()
+
+        async def invoke() -> VoiceTurnResult:
+            return await self._run_utterance_body(
+                session, pcm, recognizer, tts_chain,
+                prefetched_transcript=prefetched_transcript,
+                streaming_pause_ms=streaming_pause_ms,
+                partial_match=partial_match,
+                source_claim=source, delivery=delivery,
+            )
+
+        if self._voice_turn_delivery is None or source.privacy_level == PrivacyLevel.L3:
+            await invoke()
             return
+
+        async def validate() -> None:
+            await self._validate_source(session, source)
+            if session.privacy_level != source.privacy_level:
+                raise BudgetDenied("voice_privacy_changed")
+            assert delivery is not None
+            await delivery.validate()
+
+        async def finish() -> None:
+            try:
+                if delivery is not None:
+                    await delivery.finish(result.status, result.reason)
+            finally:
+                session.turn_delivery = None
+                session.turn_task = None
+                session.generation_id = None
+                session.turn_committed = False
+
+        async with close_after_source(finish):
+            try:
+                await self._validate_source(session, source)
+                if session.privacy_level != source.privacy_level:
+                    raise BudgetDenied("voice_privacy_changed")
+                delivery = delivery or await self._voice_turn_delivery.start(source)
+                session.turn_delivery = delivery
+                with delivery.bind():
+                    async with asyncio.timeout(
+                        max(0, (delivery.deadline - datetime.now(UTC)).total_seconds())
+                    ):
+                        result = await guarded_inline_call(invoke, validate)
+            except (TurnCancelled, asyncio.CancelledError) as error:
+                result = VoiceTurnResult("cancelled", "caller_cancelled")
+                if session.generation_id is not None and not session.turn_committed:
+                    await self._send(session, "turn.cancelled", {
+                        "generation_id": str(session.generation_id)
+                    })
+                if isinstance(error, asyncio.CancelledError):
+                    raise
+            except (BudgetDenied, TimeoutError) as error:
+                reason = (
+                    error.reason_code if isinstance(error, BudgetDenied)
+                    else "run_deadline_exceeded"
+                )
+                result = VoiceTurnResult("failed", reason)
+                if session.turn_id is not None and self._turns is not None:
+                    await self._turns.transition(session.turn_id, 2, "failed")
+                await self._send_failure(session, None, reason)
+            except Exception:
+                result = VoiceTurnResult("failed", "voice_provider_error")
+                logger.exception("managed voice turn failed")
+                await self._send_failure(session, None, result.reason)
+
+    async def _run_utterance_body(
+        self,
+        session: VoiceSession,
+        pcm: bytes,
+        recognizer: SpeechRecognizer,
+        tts_chain: TtsProviderChain | None,
+        *,
+        prefetched_transcript: str | None = None,
+        streaming_pause_ms: int | None = None,
+        partial_match: str | None = None,
+        source_claim: VoiceSourceClaim | None = None,
+        delivery: VoiceTurnContext | None = None,
+    ) -> VoiceTurnResult:
+        if session.conversation_id is None:
+            return VoiceTurnResult()
         started = time.perf_counter()
         transcript_at = first_token_at = first_audio_at = 0.0
         pending: PendingTurn | None = None
@@ -1285,6 +1483,8 @@ class VoiceWebSocketManager:
             await self._validate_source(session, source)
             if session.privacy_level != source.privacy_level:
                 raise BudgetDenied("voice_privacy_changed")
+            if delivery is not None:
+                await delivery.validate()
 
         try:
             try:
@@ -1293,7 +1493,9 @@ class VoiceWebSocketManager:
                     raise SpeechRecognitionUnavailable("local_asr_required")
                 transcript = prefetched_transcript
                 if transcript is None:
-                    transcript = await self._transcribe(session, recognizer, pcm, source)
+                    transcript = await self._transcribe(
+                        session, recognizer, pcm, source, delivery=delivery
+                    )
                 if session.privacy_level != asr_privacy:
                     raise SpeechRecognitionUnavailable("asr_privacy_changed")
                 await self._validate_source(session, source)
@@ -1306,7 +1508,7 @@ class VoiceWebSocketManager:
                 await self._send(
                     session, "voice.asr_unavailable", {"reason": error.reason}
                 )
-                return
+                return VoiceTurnResult("failed", error.reason)
             except BudgetDenied:
                 raise
             except Exception as error:
@@ -1319,10 +1521,10 @@ class VoiceWebSocketManager:
                 await self._send(
                     session, "voice.asr_unavailable", {"reason": "provider_error"}
                 )
-                return
+                return VoiceTurnResult("failed", "asr_provider_error")
             transcript_at = time.perf_counter()
             if not transcript.strip():
-                return
+                return VoiceTurnResult("failed", "asr_empty_transcript")
             # 连续对话：噪声触发的幻觉/回声往往逐字重复，短窗口内完全
             # 相同的转写只处理第一次（文字输入与卫星设备不受影响）。
             now = time.monotonic()
@@ -1337,7 +1539,7 @@ class VoiceWebSocketManager:
                     "voice duplicate transcript dropped generation_window_s=%.1f",
                     now - session.last_transcript_at,
                 )
-                return
+                return VoiceTurnResult("cancelled", "duplicate_transcript")
             await validate_turn_source()
             session.last_transcript = transcript
             session.last_transcript_at = now
@@ -1358,6 +1560,7 @@ class VoiceWebSocketManager:
                 max_context_messages=VOICE_CONTEXT_MESSAGES,
                 client_location=session.location,
                 llm_route=LLMRoute.VOICE,
+                parent_run_id=delivery.run_id if delivery is not None else None,
             )
             generation_id = pending.generation_id
             session.generation_id = generation_id
@@ -1394,11 +1597,13 @@ class VoiceWebSocketManager:
             sentence_index = 0
             # 音频输出被抢占后本回合剩余句子降级为纯文字（delta 仍在发送）
             audio_lost = False
+            audio_complete = True
             streaming_reply = False
 
             async def speak_body(sentence: str) -> None:
-                nonlocal sentence_index, first_audio_at, audio_lost
+                nonlocal sentence_index, first_audio_at, audio_lost, audio_complete
                 sentence = speech_filter.clean(sentence)
+                sentence_complete = True
                 if not sentence:
                     return
                 if not audio_lost and self._turns is not None:
@@ -1416,6 +1621,7 @@ class VoiceWebSocketManager:
                     except Exception:
                         logger.warning("audio lease renew failed", exc_info=True)
                 if audio_lost:
+                    audio_complete = False
                     return
                 if tts_chain is None:
                     # 未配置任何 TTS：纯文字语音回合，只提示一次
@@ -1425,9 +1631,23 @@ class VoiceWebSocketManager:
                             session, "voice.tts_unavailable", {"reason": "not_configured"}
                         )
                     return
-                selection = await tts_chain.select(
-                    sentence, privacy_level=session.privacy_level
-                )
+                try:
+                    selection = await tts_chain.select(
+                        sentence, privacy_level=session.privacy_level,
+                        stream_factory=(
+                            (lambda provider: delivery.synthesize(
+                                provider, sentence, source.privacy_level
+                            ))
+                            if delivery is not None else None
+                        ),
+                    )
+                except LocalOnlySynthesizerError:
+                    if not session.tts_unavailable_notified:
+                        session.tts_unavailable_notified = True
+                        await self._send(
+                            session, "voice.tts_unavailable", {"reason": "local_tts_required"}
+                        )
+                    return
                 async with close_after_source(lambda: close_audio_stream(selection.stream)):
                     await self._send(
                         session,
@@ -1479,11 +1699,16 @@ class VoiceWebSocketManager:
                     except Exception:
                         # 中途断流：该句音频残缺，冷却该提供方并跳句，回合继续
                         tts_chain.report_failure(selection.provider)
+                        audio_complete = False
+                        sentence_complete = False
                         logger.warning(
                             "tts stream broken mid-sentence provider=%s",
                             type(selection.provider).__name__,
                             exc_info=True,
                         )
+                    if not sentence_complete and delivery is not None:
+                        sentence_index += 1
+                        return
                     await self._send(
                         session,
                         "voice.sentence.end",
@@ -1570,7 +1795,13 @@ class VoiceWebSocketManager:
                 streaming_pause_ms=streaming_pause_ms,
                 partial_match=partial_match,
             )
+            return VoiceTurnResult(
+                "succeeded" if audio_complete else "failed",
+                "voice_reply_sent" if audio_complete else "audio_delivery_incomplete",
+            )
         except (TurnCancelled, asyncio.CancelledError):
+            if delivery is not None:
+                raise
             if pending is not None:
                 if self._turns is not None:
                     await self._turns.transition(
@@ -1583,9 +1814,12 @@ class VoiceWebSocketManager:
                         {"generation_id": str(pending.generation_id)},
                     )
         except BudgetDenied as error:
+            if delivery is not None:
+                raise
             if pending is not None and self._turns is not None:
                 await self._turns.transition(pending.turn_id, 2, "failed")
             await self._send_failure(session, pending, error.reason_code)
+            return VoiceTurnResult("failed", error.reason_code)
         except LLMRouteExhausted as error:
             if pending is not None and self._turns is not None:
                 await self._turns.transition(pending.turn_id, 2, "failed")
@@ -1595,6 +1829,7 @@ class VoiceWebSocketManager:
                 error.reason_code,
             )
             await self._send_failure(session, pending, error.reason_code)
+            return VoiceTurnResult("failed", error.reason_code)
         except EgressBlocked as error:
             if pending is not None and self._turns is not None:
                 await self._turns.transition(pending.turn_id, 2, "failed")
@@ -1604,6 +1839,7 @@ class VoiceWebSocketManager:
                 error.reason_code,
             )
             await self._send_failure(session, pending, error.reason_code)
+            return VoiceTurnResult("failed", error.reason_code)
         except LocalOnlySynthesizerError:
             # 提供方链没有可用的本地 TTS：语音降级文字，回合继续
             if not session.tts_unavailable_notified:
@@ -1616,15 +1852,17 @@ class VoiceWebSocketManager:
                 keepalive_task.cancel()
                 with suppress(asyncio.CancelledError, Exception):
                     await keepalive_task
-            session.generation_id = None
-            session.turn_committed = False
-            session.turn_task = None
+            if delivery is None:
+                session.generation_id = None
+                session.turn_committed = False
+                session.turn_task = None
             # 释放音频租约（仅当仍是持有者时生效）
             if self._turns is not None:
                 try:
                     await self._turns.release_audio_lease(session.device_id)
                 except Exception:
                     logger.warning("audio lease release failed", exc_info=True)
+        return VoiceTurnResult()
 
     async def _interrupt(self, session: VoiceSession, *, reason: str) -> None:
         started = time.perf_counter()
@@ -1685,12 +1923,16 @@ class VoiceWebSocketManager:
             # A task cancelled before its coroutine starts never enters the
             # utterance's finally block. Do not leave the session pinned busy.
             if session.turn_task is task:
+                delivery, session.turn_delivery = session.turn_delivery, None
+                if delivery is not None:
+                    await delivery.finish("cancelled", "caller_cancelled")
                 session.turn_task = None
                 session.generation_id = None
                 session.turn_committed = False
 
     async def disconnect(self, session: VoiceSession) -> None:
         self._discard_capture(session)
+        await self._drain_capture_cleanup(session)
         if session.asr_tasks:
             await asyncio.gather(*tuple(session.asr_tasks), return_exceptions=True)
         await self._release_microphone(session)
@@ -1705,6 +1947,8 @@ class VoiceWebSocketManager:
                 await self._turns.release_audio_lease(session.device_id)
 
     def _discard_capture(self, session: VoiceSession, *, block_ptt: bool = False) -> None:
+        delivery, session.capture_delivery = session.capture_delivery, None
+        request, session.streamer_request = session.streamer_request, None
         session.collecting = False
         session.ptt_active = False
         session.ptt_rejected = block_ptt
@@ -1714,6 +1958,28 @@ class VoiceWebSocketManager:
         session.utterance_streamer = None
         session.streamer_source = None
         self._discard_asr_prefetch(session)
+        pending = tuple(session.asr_tasks)
+        for task in pending:
+            if not task.done() and not task.cancelling():
+                task.cancel()
+        if delivery is not None or request is not None or pending:
+            async def close() -> None:
+                if pending:
+                    await asyncio.gather(*pending, return_exceptions=True)
+                if request is not None:
+                    await request.aclose()
+                if delivery is not None:
+                    await delivery.finish("cancelled", "capture_discarded")
+
+            cleanup = asyncio.create_task(close(), name="voice-capture-close")
+            session.delivery_tasks.add(cleanup)
+
+            def finished(task: asyncio.Task[None]) -> None:
+                session.delivery_tasks.discard(task)
+                if not task.cancelled() and task.exception() is not None:
+                    logger.error("voice capture cleanup failed", exc_info=task.exception())
+
+            cleanup.add_done_callback(finished)
         with suppress(Exception):
             session.vad.force_end()
         if session.wake_word is not None:
@@ -1722,6 +1988,7 @@ class VoiceWebSocketManager:
 
     async def _reject_audio(self, session: VoiceSession, reason: str) -> None:
         self._discard_capture(session, block_ptt=session.ptt_active or session.ptt_rejected)
+        await self._drain_capture_cleanup(session)
         await self._release_microphone(session)
         await self._send(session, "voice.error", {"reason": reason})
 
@@ -1732,7 +1999,8 @@ class VoiceWebSocketManager:
             session,
             "turn.failed",
             {
-                "generation_id": str(pending.generation_id) if pending else None,
+                "generation_id": str(pending.generation_id if pending else session.generation_id)
+                if pending is not None or session.generation_id is not None else None,
                 "reason_code": reason_code,
             },
         )
@@ -1741,6 +2009,16 @@ class VoiceWebSocketManager:
         self, session: VoiceSession, event_type: str, payload: dict[str, Any]
     ) -> None:
         async with session.send_lock:
+            delivery = (
+                session.capture_delivery if event_type == "voice.partial_transcript"
+                else session.turn_delivery
+            )
+            if delivery is not None and event_type in {
+                "voice.partial_transcript", "voice.transcript", "turn.accepted",
+                "voice.sentence", "voice.viseme", "voice.sentence.end",
+                "reply.delta", "reply.committed", "tool.status",
+            }:
+                await delivery.validate()
             await session.websocket.send_text(
                 json.dumps({"type": event_type, **payload}, ensure_ascii=False)
             )
@@ -1763,9 +2041,10 @@ class VoiceWebSocketManager:
             control = {"speaking": False, "lipSyncMilli": 0}
         self._schedule_avatar_control(session.principal.user_id, control)
 
-    @staticmethod
-    async def _send_bytes(session: VoiceSession, chunk: bytes) -> None:
+    async def _send_bytes(self, session: VoiceSession, chunk: bytes) -> None:
         async with session.send_lock:
+            if session.turn_delivery is not None:
+                await session.turn_delivery.validate()
             await session.websocket.send_bytes(chunk)
 
     async def _keep_connection_alive(
@@ -1861,6 +2140,7 @@ def create_voice_websocket_router(
     avatar_control_publisher: AvatarControlPublisher | None = None,
     vad_factory: Callable[[], VoiceActivityDetector] = create_default_vad,
     speech_delivery: SpeechDelivery | None = None,
+    voice_turn_delivery: VoiceTurnDelivery | None = None,
 ) -> tuple[APIRouter, VoiceWebSocketManager]:
     router = APIRouter(tags=["voice-websocket"])
     manager = VoiceWebSocketManager(
@@ -1871,6 +2151,7 @@ def create_voice_websocket_router(
         avatar_control_publisher=avatar_control_publisher,
         vad_factory=vad_factory,
         speech_delivery=speech_delivery,
+        voice_turn_delivery=voice_turn_delivery,
     )
 
     @router.get("/api/v1/meta/voice/latency")

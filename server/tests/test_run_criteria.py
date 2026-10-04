@@ -127,3 +127,34 @@ def test_invalid_contract_shape_remains_inconclusive(contract: object) -> None:
     goal = goal_view(run, [], [], [])
     assert goal.scope == "declared_run_contract" and goal.status == "inconclusive"
     assert goal.criteria[0].reason_code == "criterion_invalid"
+
+
+@pytest.mark.parametrize("criterion", ["audio_frames_sent", "voice_reply_sent"])
+@pytest.mark.parametrize(
+    ("status", "result", "expected"),
+    [
+        ("running", "matched", "pending"),
+        ("succeeded", "matched", "passed"),
+        ("succeeded", None, "inconclusive"),
+        ("succeeded", "other", "inconclusive"),
+        ("failed", "audio_delivery_incomplete", "failed"),
+        ("failed", "expired_delivery_unknown", "inconclusive"),
+        ("cancelled", "matched", "inconclusive"),
+        ("cancelled", None, "failed"),
+    ],
+)
+def test_voice_goal_requires_matching_transport_evidence(
+    criterion: str, status: str, result: str | None, expected: str
+) -> None:
+    run = TaskRunRecord(
+        id=uuid7(),
+        status=status,
+        contract={
+            "criterion": criterion,
+            "required_work": [],
+            "delivery_result": criterion if result == "matched" else result,
+        },
+    )
+    goal = goal_view(run, [], [], [])
+    assert goal.status == expected
+    assert goal.criteria[0].validation_level == ("V1" if expected == "passed" else "V0")

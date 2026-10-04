@@ -110,9 +110,13 @@ class _Delivery:
         config_version: int,
         config: RunBudgetConfig,
         parent: RunModelBudget | None,
+        *,
+        entry: str = "voice.speech_delivery",
+        criterion: str = "audio_frames_sent",
     ) -> None:
         self.port, self.source, self.run_id = port, source, run_id
         self.config_version, self.config, self.parent = config_version, config, parent
+        self.entry, self.criterion = entry, criterion
         self.created_at = datetime.now(UTC)
         self.deadline = self.created_at + timedelta(seconds=config.maintenance_deadline_seconds)
         self.budget = parent or (
@@ -121,7 +125,7 @@ class _Delivery:
             else None
         )
         self.currency: str | None = config.cost_currency
-        self.provider: SpeechSynthesizer | None = None
+        self.provider: object | None = None
 
     def check_rows(self, rows: list[TaskRunRecord]) -> None:
         now = datetime.now(UTC)
@@ -196,15 +200,15 @@ class _Delivery:
                     if isinstance(self.source, VoiceSourceClaim)
                     else None,
                     parent_run_id=self.parent.run_id if self.parent is not None else None,
-                    request_id=f"voice.speech:{self.run_id}",
+                    request_id=f"{self.entry}:{self.run_id}",
                     status="accepted",
                     privacy_level=str(self.source.privacy_level),
                     config_version=self.config_version,
                     budget=self.config.model_dump(mode="json"),
                     deadline=self.deadline,
                     contract={
-                        "entry": "voice.speech_delivery",
-                        "criterion": "audio_frames_sent",
+                        "entry": self.entry,
+                        "criterion": self.criterion,
                         "required_work": [],
                         "source_actor": source_actor(self.source),
                         "source_id": str(
@@ -371,6 +375,12 @@ def source_actor(source: VoiceAuthority) -> str:
 async def recover_expired_speech_deliveries(database: Database) -> int:
     """Expire interrupted delivery scopes without replaying speech or refunding fees."""
     count = 0
+    kinds = or_(
+        (TaskRunRecord.contract["entry"].as_string() == "voice.speech_delivery")
+        & (TaskRunRecord.contract["criterion"].as_string() == "audio_frames_sent"),
+        (TaskRunRecord.contract["entry"].as_string() == "voice.utterance")
+        & (TaskRunRecord.contract["criterion"].as_string() == "voice_reply_sent"),
+    )
     while True:
         async with database.sessions() as reader:
             candidates = (
@@ -379,8 +389,7 @@ async def recover_expired_speech_deliveries(database: Database) -> int:
                     .where(
                         TaskRunRecord.status.in_({"accepted", "running"}),
                         TaskRunRecord.deadline <= datetime.now(UTC),
-                        TaskRunRecord.contract["entry"].as_string() == "voice.speech_delivery",
-                        TaskRunRecord.contract["criterion"].as_string() == "audio_frames_sent",
+                        kinds,
                     )
                     .order_by(TaskRunRecord.id)
                     .limit(50)
@@ -398,8 +407,7 @@ async def recover_expired_speech_deliveries(database: Database) -> int:
                         TaskRunRecord.user_id == owner,
                         TaskRunRecord.status.in_({"accepted", "running"}),
                         TaskRunRecord.deadline <= datetime.now(UTC),
-                        TaskRunRecord.contract["entry"].as_string() == "voice.speech_delivery",
-                        TaskRunRecord.contract["criterion"].as_string() == "audio_frames_sent",
+                        kinds,
                     )
                     .values(updated_at=TaskRunRecord.updated_at)
                     .returning(TaskRunRecord)
