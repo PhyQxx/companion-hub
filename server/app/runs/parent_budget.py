@@ -9,7 +9,7 @@ from uuid import UUID
 from pydantic import BaseModel, ConfigDict, ValidationError
 
 from app.config.models import RunBudgetConfig
-from app.harness.budget import BudgetDenied
+from app.harness.budget import BudgetDenied, current_budget, current_tool_budget
 from app.harness.time import utc
 
 if TYPE_CHECKING:
@@ -106,3 +106,45 @@ class ParentBudgetScope(BaseModel):
             ),
             delivery_deadline=self.delivery_deadline,
         )
+
+
+def current_parent_budget(database: Database, user_id: UUID) -> RunModelBudget | None:
+    """Freeze a coherent SQL-backed quota from model and explicit tool facets.
+
+    The later owned-run admission still proves the SQL root's authority. A tool
+    facade carries limits and an absolute deadline, never new quota credit.
+    """
+    from .budget import RunModelBudget
+    from .resources import RunToolBudget
+
+    model, tool = current_budget(), current_tool_budget()
+    if model is not None and (not isinstance(model, RunModelBudget) or model.owner_id != user_id):
+        raise BudgetDenied("budget_owner_invalid")
+    if tool is not None and (not isinstance(tool, RunToolBudget) or tool.owner_id != user_id):
+        raise BudgetDenied("budget_owner_invalid")
+    if model is None and tool is None:
+        return None
+    if model is None:
+        assert isinstance(tool, RunToolBudget)
+        model = RunModelBudget(
+            database,
+            run_id=tool.run_id,
+            user_id=user_id,
+            config=tool.budget_config.model_copy(deep=True),
+            phase="maintenance" if tool.maintenance else "interactive",
+            allow_active_parent=tool.maintenance,
+            delivery_deadline=tool.delivery_deadline,
+        )
+    assert isinstance(model, RunModelBudget)
+    scope = ParentBudgetScope.capture(model)
+    if tool is not None:
+        assert isinstance(tool, RunToolBudget)
+        if model.run_id != tool.run_id or (model.phase == "maintenance") != tool.maintenance:
+            raise BudgetDenied("budget_parent_scope_invalid")
+        scope = scope.model_copy(
+            update={
+                "delivery_deadline": min(utc(model.delivery_deadline), utc(tool.delivery_deadline)),
+            }
+        )
+        return scope.restore(database, tool.budget_config)
+    return scope.restore(database, model.budget_config)

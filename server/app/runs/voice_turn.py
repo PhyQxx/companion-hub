@@ -3,14 +3,20 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Awaitable, Callable
-from contextlib import AbstractContextManager, suppress
+from collections.abc import Awaitable, Callable, Iterator
+from contextlib import contextmanager, suppress
 from dataclasses import dataclass
 from datetime import timedelta
 from typing import TypeVar
 
 from app.config import DatabaseConfigStore
-from app.harness.budget import BudgetDenied, budget_scope, current_budget, current_tool_budget
+from app.harness.budget import (
+    BudgetDenied,
+    budget_scope,
+    current_budget,
+    current_tool_budget,
+    tool_budget_scope,
+)
 from app.harness.joined_read import join_on_cancel
 from app.harness.operations import OperationPolicy
 from app.harness.source_cleanup import close_after_source
@@ -19,8 +25,8 @@ from app.ids import uuid7
 from app.voice.contracts import SpeechRecognizer
 from app.voice.delivery_ports import RecognitionRequest, VoiceTurnContext
 
-from .budget import RunModelBudget
 from .operation import operate_with_run
+from .parent_budget import current_parent_budget
 from .speech_delivery import SqlSpeechDelivery, _Delivery, recover_expired_speech_deliveries
 
 T = TypeVar("T")
@@ -46,11 +52,7 @@ class SqlVoiceTurnDelivery:
     async def start(self, source: VoiceSourceClaim) -> VoiceTurnContext:
         if source.privacy_level.value == "L3":
             raise BudgetDenied("ephemeral_operation_run_forbidden")
-        parent = current_budget()
-        if parent is not None and (
-            not isinstance(parent, RunModelBudget) or parent.owner_id != source.user_id
-        ):
-            raise BudgetDenied("budget_owner_invalid")
+        parent = current_parent_budget(self.speech.database, source.user_id)
         await self.speech.source_guard.validate(source)
         await join_on_cancel(
             recover_expired_speech_deliveries(self.speech.database), name="voice-root-recover"
@@ -86,8 +88,13 @@ class SqlVoiceTurnDelivery:
 
 
 class _VoiceTurn(_Delivery):
-    def bind(self) -> AbstractContextManager[None]:
-        return budget_scope(self.budget)
+    @contextmanager
+    def bind(self) -> Iterator[None]:
+        with (
+            budget_scope(self.budget),
+            tool_budget_scope(self.budget.tool_budget if self.budget else None),
+        ):
+            yield
 
     @property
     def requests(self) -> set[_RecognitionRequest]:

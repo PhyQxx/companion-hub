@@ -12,7 +12,7 @@ from app.config import ConfigStore, DatabaseConfigStore
 from app.config.models import RunBudgetConfig
 from app.db import AppUserRecord, ConversationRecord, Database, TaskRunRecord
 from app.db.claims import assert_current_claim
-from app.harness.budget import BudgetDenied, budget_scope, current_budget
+from app.harness.budget import BudgetDenied, budget_scope, tool_budget_scope
 from app.harness.guarded_call import guarded_inline_call
 from app.harness.joined_read import join_on_cancel, joined_read
 from app.harness.operations import OperationPolicy
@@ -31,7 +31,7 @@ from app.voice.delivery_ports import SpeechDeliveryContext, VoicePricingSource
 
 from .budget import RunModelBudget
 from .costs import assert_cost_window, check_cost_allowance
-from .parent_budget import ParentBudgetScope
+from .parent_budget import ParentBudgetScope, current_parent_budget
 from .store import append_run_event, transition_run
 from .stream_operation import stream_with_run
 
@@ -56,11 +56,7 @@ class SqlSpeechDelivery:
     ) -> bool:
         if source.privacy_level == PrivacyLevel.L3:
             raise BudgetDenied("ephemeral_operation_run_forbidden")
-        parent = current_budget()
-        if parent is not None and (
-            not isinstance(parent, RunModelBudget) or parent.owner_id != source.user_id
-        ):
-            raise BudgetDenied("budget_owner_invalid")
+        parent = current_parent_budget(self.database, source.user_id)
         await self.source_guard.validate(source)
         await recover_expired_speech_deliveries(self.database)
         snapshot = (
@@ -87,7 +83,10 @@ class SqlSpeechDelivery:
         async with close_after_source(finish):
             try:
                 await join_on_cancel(context.create(), name="speech-delivery-create")
-                with budget_scope(context.budget):
+                with (
+                    budget_scope(context.budget),
+                    tool_budget_scope(context.budget.tool_budget if context.budget else None),
+                ):
                     async with asyncio.timeout(
                         max(0, (context.deadline - datetime.now(UTC)).total_seconds())
                     ):

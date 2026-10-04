@@ -5,6 +5,7 @@ import hashlib
 import json
 import logging
 from collections.abc import Awaitable, Callable
+from contextlib import nullcontext
 from datetime import UTC, datetime, timedelta
 from enum import StrEnum
 from typing import Annotated, Literal
@@ -15,7 +16,13 @@ from sqlalchemy import or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db import ActionPlanRecord, ActionStepRecord, AppUserRecord, Database
-from app.harness.budget import BudgetDenied, ToolBudget, current_tool_budget, tool_budget_scope
+from app.harness.budget import (
+    BudgetDenied,
+    ToolBudget,
+    budget_scope,
+    current_tool_budget,
+    tool_budget_scope,
+)
 from app.ids import uuid7
 from app.privacy.service import PolicyService
 from app.runs.contracts import lock_source_run, require_work
@@ -534,6 +541,7 @@ class ActionPlanService:
                 try:
                     async with asyncio.timeout(step.timeout_seconds):
                         tool_budget = current_tool_budget()
+                        attached_tool_budget = False
                         raw_result: ActionRunResult | ToolResult
                         try:
                             if (
@@ -543,6 +551,7 @@ class ActionPlanService:
                                 tool_budget = await self._tool_budget_builder(
                                     plan.task_run_id, user_id, plan.expires_at
                                 )
+                                attached_tool_budget = tool_budget is not None
                         except BudgetDenied as error:
                             raw_result = ToolResult(
                                 admission_status="not_admitted",
@@ -552,7 +561,14 @@ class ActionPlanService:
                                 latency_ms=0,
                             )
                         else:
-                            with tool_budget_scope(tool_budget):
+                            # An attached plan executes against its accepted
+                            # source quota. A later confirmation chat can have
+                            # a different model root; it does not replace or
+                            # combine with the plan's provider authority.
+                            with (
+                                budget_scope(None) if attached_tool_budget else nullcontext(),
+                                tool_budget_scope(tool_budget),
+                            ):
                                 raw_result = await self._runner(step, user_id)
                 except TimeoutError:
                     await self._finish_step(

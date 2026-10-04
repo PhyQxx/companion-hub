@@ -12,7 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config.models import RunBudgetConfig
 from app.db import AppUserRecord, Database, ModelCostRecord, TaskRunRecord
 from app.db.claims import assert_current_claim
-from app.harness.budget import BudgetDenied, budget_scope, current_budget
+from app.harness.budget import BudgetDenied, budget_scope, tool_budget_scope
 from app.harness.guarded_call import guarded_call, guarded_inline_call
 from app.harness.operations import OperationPolicy
 from app.harness.source_cleanup import close_after_source
@@ -23,6 +23,7 @@ from app.schemas import PrivacyLevel
 
 from .budget import RunModelBudget
 from .costs import assert_cost_window, check_cost_allowance
+from .parent_budget import current_parent_budget
 from .store import append_run_event, transition_run
 from .unit_costs import lock_unit_cost, reserve_unit_cost, settle_unit_cost
 
@@ -56,21 +57,7 @@ async def operate_with_run(
     """
     if privacy_level == PrivacyLevel.L3:
         raise BudgetDenied("ephemeral_operation_run_forbidden")
-    parent = current_budget()
-    if parent is not None and (
-        not isinstance(parent, RunModelBudget) or parent.owner_id != user_id
-    ):
-        raise BudgetDenied("budget_owner_invalid")
-    if isinstance(parent, RunModelBudget):
-        parent = RunModelBudget(
-            database,
-            run_id=parent.run_id,
-            user_id=parent.owner_id,
-            config=parent.budget_config.model_copy(deep=True),
-            phase=parent.phase,
-            allow_active_parent=parent.allow_active_parent,
-            delivery_deadline=parent.delivery_deadline,
-        )
+    parent = current_parent_budget(database, user_id)
     quota_parent_id = parent.run_id if isinstance(parent, RunModelBudget) else None
     parent_id = trace_parent_id or quota_parent_id
     parent_ids = tuple(dict.fromkeys(value for value in (quota_parent_id, parent_id) if value))
@@ -362,7 +349,7 @@ async def operate_with_run(
                     raise
 
     try:
-        with budget_scope(budget):
+        with budget_scope(budget), tool_budget_scope(budget.tool_budget if budget else None):
             await check(run_id)
             async with asyncio.timeout(max(0, (deadline - datetime.now(UTC)).total_seconds())):
                 guard = guarded_inline_call if cooperative else guarded_call

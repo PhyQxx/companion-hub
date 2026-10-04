@@ -39,6 +39,26 @@ class RunToolBudget:
             seconds=config.maintenance_deadline_seconds
         )
 
+    @property
+    def run_id(self) -> UUID:
+        return self._run_id
+
+    @property
+    def owner_id(self) -> UUID:
+        return self._user_id
+
+    @property
+    def budget_config(self) -> RunBudgetConfig:
+        return self._config
+
+    @property
+    def maintenance(self) -> bool:
+        return self._maintenance
+
+    @property
+    def delivery_deadline(self) -> datetime:
+        return self._deadline
+
     async def _lock_run(self, session: AsyncSession) -> TaskRunRecord | None:
         # A no-op write gives SQLite the same serialization as PostgreSQL row locks.
         return await session.scalar(
