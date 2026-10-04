@@ -27,6 +27,7 @@ class CalendarSyncSource:
         actor_id: UUID | None = None,
     ) -> None:
         self._database, self._owner, self._settings_guard = database, owner, settings_guard
+        self.closing = False
         self._actor_id = actor_id
         self._actor_expires_at: datetime | None = None
         self._token = (
@@ -90,6 +91,9 @@ class CalendarSyncSource:
         self._settings_guard()
         if self._actor_expires_at is not None and self._actor_expires_at <= datetime.now(UTC):
             raise PermissionError("calendar_sync_actor_invalid")
+
+    async def check_memory(self) -> None:
+        self._check_memory()
 
     async def check(self) -> None:
         async with self._database.sessions() as session:

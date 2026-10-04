@@ -3,7 +3,13 @@ import { inject, onMounted, ref } from "vue";
 import { AdminApi } from "@aria/shared";
 import { ElMessage } from "element-plus";
 
+interface SyncCost {
+  cost_currency: string | null;
+  request_cost_ceiling: string | null;
+}
+
 interface CalDavConfig {
+  sync_cost?: SyncCost | null;
   enabled: boolean;
   url: string | null;
   username: string | null;
@@ -16,6 +22,7 @@ interface CalDavConfig {
 }
 
 interface GoogleCalendarConfig {
+  sync_cost?: SyncCost | null;
   enabled: boolean;
   client_id: string | null;
   secret_value: string | null;
@@ -48,6 +55,10 @@ const googleSyncResult = ref<string>("");
 const caldavSyncResult = ref<string>("");
 const loading = ref(false);
 const saving = ref(false);
+const syncPrices = ref({
+  caldav: { currency: "", amount: "" },
+  google: { currency: "", amount: "" },
+});
 
 function defaultCalendar(): CalendarIntegrations {
   return {
@@ -90,6 +101,13 @@ async function load() {
     calendar.value = loaded
       ? { caldav: { ...defaultCalendar().caldav, ...loaded.caldav }, google: { ...defaultCalendar().google, ...loaded.google } }
       : defaultCalendar();
+    for (const provider of ["caldav", "google"] as const) {
+      const price = calendar.value[provider].sync_cost;
+      syncPrices.value[provider] = {
+        currency: price?.cost_currency ?? "",
+        amount: price?.request_cost_ceiling == null ? "" : String(price.request_cost_ceiling),
+      };
+    }
   } catch (error) {
     emit("status", error instanceof Error ? error.message : "日历配置加载失败", true);
   } finally {
@@ -103,7 +121,15 @@ async function save() {
   try {
     const config = clonePlain(current.value.config);
     if (!config.integrations) config.integrations = {};
-    config.integrations.calendar = clonePlain(calendar.value);
+    const savedCalendar = clonePlain(calendar.value);
+    for (const provider of ["caldav", "google"] as const) {
+      const price = syncPrices.value[provider];
+      savedCalendar[provider].sync_cost = price.amount.trim() === "" ? null : {
+        cost_currency: price.currency.trim().toUpperCase() || null,
+        request_cost_ceiling: price.amount.trim(),
+      };
+    }
+    config.integrations.calendar = savedCalendar;
     current.value = await api.request<{ version: number; config: HubConfig }>("/api/v1/admin/config/current", {
       method: "PUT",
       body: JSON.stringify(config),
@@ -165,6 +191,9 @@ onMounted(load);
             <label class="wide"><span>日历名单（逗号分隔，留空同步全部）</span><el-input :model-value="calendar.caldav.calendar_names.join(',')" @update:model-value="(v: string) => { if (calendar) calendar.caldav.calendar_names = parseList(v); }" /></label>
             <label><span>向前窗口（天）</span><el-input-number v-model="calendar.caldav.window_days_forward" :min="1" :max="365" /></label>
             <label><span>向后窗口（天）</span><el-input-number v-model="calendar.caldav.window_days_back" :min="0" :max="90" /></label>
+            <label><span>同步费用币种</span><el-input v-model="syncPrices.caldav.currency" placeholder="CNY / USD" /></label>
+            <label><span>每次完整同步费用上限</span><el-input v-model="syncPrices.caldav.amount" placeholder="留空未知，0 表示明确免费" /></label>
+            <p class="config-note wide">涵盖本次同步的令牌刷新、全部日历与分页；启用金额预算时需要填写，未知实际费用保留上限。</p>
             <label class="actions"><el-button :loading="caldavSyncing" @click="syncCalendar('caldav')">立即同步</el-button></label>
           </div>
           <p v-if="caldavSyncResult" class="config-note">{{ caldavSyncResult }}</p>
@@ -178,6 +207,9 @@ onMounted(load);
             <label class="wide"><span>日历 ID（逗号分隔，留空用 primary）</span><el-input :model-value="calendar.google.calendar_ids.join(',')" @update:model-value="(v: string) => { if (calendar) calendar.google.calendar_ids = parseList(v); }" /></label>
             <label><span>向前窗口（天）</span><el-input-number v-model="calendar.google.window_days_forward" :min="1" :max="365" /></label>
             <label><span>向后窗口（天）</span><el-input-number v-model="calendar.google.window_days_back" :min="0" :max="90" /></label>
+            <label><span>同步费用币种</span><el-input v-model="syncPrices.google.currency" placeholder="CNY / USD" /></label>
+            <label><span>每次完整同步费用上限</span><el-input v-model="syncPrices.google.amount" placeholder="留空未知，0 表示明确免费" /></label>
+            <p class="config-note wide">涵盖本次同步的令牌刷新、全部日历与分页；启用金额预算时需要填写，未知实际费用保留上限。</p>
             <label class="actions">
               <el-button :loading="googleSyncing" @click="syncCalendar('google')">立即同步</el-button>
               <el-button v-if="calendar.google.enabled && calendar.google.client_id" tag="a" target="_blank" :href="`/api/v1/calendar/google/authorize`">打开授权页</el-button>

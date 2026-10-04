@@ -65,6 +65,9 @@ class AdminTokenGuard:
         self._token = token
 
     async def __call__(self, credentials: AdminCredentials) -> None:
+        self.validate(credentials)
+
+    def validate(self, credentials: HTTPAuthorizationCredentials | None) -> None:
         token = _runtime_admin_token if _runtime_admin_token is not None else self._token
         if not token:
             raise HTTPException(
@@ -427,7 +430,8 @@ def create_admin_config_router(
     database: Database | None = None,
     on_publish: Callable[[], Awaitable[None]] | None = None,
     on_proactive_test: Callable[[], Awaitable[bool]] | None = None,
-    on_calendar_sync: Callable[[str], Awaitable[dict[str, object]]] | None = None,
+    on_calendar_sync: Callable[[str, Callable[[], None]], Awaitable[dict[str, object]]]
+    | None = None,
 ) -> APIRouter:
     token_guard = AdminTokenGuard(admin_token)
     router = APIRouter(
@@ -1070,7 +1074,7 @@ def create_admin_config_router(
         )
 
     @router.post("/integrations/calendar/{provider}/sync")
-    async def sync_calendar(provider: str) -> dict[str, object]:
+    async def sync_calendar(provider: str, credentials: AdminCredentials) -> dict[str, object]:
         """Admin 手动触发一次外部日历镜像同步（caldav / google）。"""
         if on_calendar_sync is None:
             raise HTTPException(
@@ -1078,7 +1082,19 @@ def create_admin_config_router(
             )
         if provider not in ("caldav", "google"):
             raise HTTPException(status.HTTP_404_NOT_FOUND, detail="unknown calendar provider")
-        return await on_calendar_sync(provider)
+
+        def check_actor() -> None:
+            try:
+                token_guard.validate(credentials)
+            except HTTPException as error:
+                raise PermissionError("calendar_sync_actor_invalid") from error
+
+        try:
+            return await on_calendar_sync(provider, check_actor)
+        except BudgetDenied as error:
+            raise HTTPException(status.HTTP_409_CONFLICT, error.reason_code) from error
+        except PermissionError as error:
+            raise HTTPException(status.HTTP_409_CONFLICT, "calendar_sync_source_changed") from error
 
     @router.get("/tools/amap/metrics", response_model=AmapMetricsResult)
     async def amap_metrics() -> AmapMetricsResult:

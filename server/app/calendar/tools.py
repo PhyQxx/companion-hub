@@ -10,6 +10,7 @@ from uuid import UUID
 from pydantic import BaseModel, ConfigDict, Field
 
 from app.confirmation import DatabasePendingMutationStore, PendingMutationStore
+from app.harness.budget import BudgetDenied
 from app.llm import ToolDefinition
 from app.schemas.common import PrivacyLevel
 from app.tasks.tools import localize
@@ -251,6 +252,8 @@ class CalendarSyncTool:
                 continue
             try:
                 stats = await service.sync_once(user_id=context.user_id)
+            except (BudgetDenied, PermissionError):
+                raise
             except Exception:
                 results[provider] = {"errors": ["sync_failed"]}
                 continue

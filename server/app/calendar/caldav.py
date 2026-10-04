@@ -22,7 +22,7 @@ from copy import deepcopy
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from functools import partial
-from typing import Any
+from typing import Any, cast
 from uuid import UUID
 from zoneinfo import ZoneInfo
 
@@ -40,7 +40,9 @@ from app.config import ConfigStore, DatabaseConfigStore
 from app.config.models import CalDavConfig
 from app.db import AppUserRecord, Database
 from app.harness.joined_read import join_on_cancel
+from app.runs.calendar_sync import CalendarSyncBatch, owned_calendar_sync
 
+from .sync_requests import CalendarRequestRunner
 from .sync_sources import CalendarSyncSource
 
 logger = logging.getLogger("app.calendar.caldav")
@@ -179,10 +181,24 @@ class CalDavClient:
         self._base_url = base_url.rstrip("/")
         self._auth = (username, secret)
         self._owns_client = client is None
-        self._client = client or httpx.AsyncClient(timeout=timeout_seconds)
+        self._client = client or httpx.AsyncClient(
+            timeout=timeout_seconds,
+            transport=httpx.AsyncHTTPTransport(retries=0),
+            trust_env=False,
+            follow_redirects=False,
+        )
 
     def set_source_guard(self, guard: Callable[[], Awaitable[None]]) -> None:
         self._source_guard = guard
+
+    def set_request_runner(self, runner: CalendarRequestRunner) -> None:
+        self._request_runner = runner
+
+    async def _send(
+        self, method: str, invoke: Callable[[], Awaitable[httpx.Response]]
+    ) -> httpx.Response:
+        runner = getattr(self, "_request_runner", None)
+        return await runner(method, invoke) if runner is not None else await invoke()
 
     async def _check_source(self) -> None:
         guard = getattr(self, "_source_guard", None)
@@ -266,14 +282,25 @@ class CalDavClient:
     async def _request(
         self, method: str, url: str, body: str, *, depth: str = "0"
     ) -> httpx.Response:
+        origin, destination = httpx.URL(self._base_url), httpx.URL(url)
+        if (destination.scheme, destination.host, destination.port) != (
+            origin.scheme,
+            origin.host,
+            origin.port,
+        ) or destination.userinfo:
+            raise CalDavError("caldav_source_origin_invalid")
         try:
             await self._check_source()
-            response = await self._client.request(
+            response = await self._send(
                 method,
-                url,
-                content=body,
-                headers={"Depth": depth, "Content-Type": "application/xml; charset=utf-8"},
-                auth=self._auth,
+                lambda: self._client.request(
+                    method,
+                    url,
+                    content=body,
+                    headers={"Depth": depth, "Content-Type": "application/xml; charset=utf-8"},
+                    auth=self._auth,
+                    follow_redirects=False,
+                ),
             )
         except httpx.HTTPError as error:
             raise CalDavError("caldav_unreachable", str(error)) from error
@@ -472,7 +499,11 @@ class CalDavSyncService:
         return UUID(str(value)) if value is not None else None
 
     async def sync_once(
-        self, *, user_id: UUID | None = None, actor_id: UUID | None = None
+        self,
+        *,
+        user_id: UUID | None = None,
+        actor_id: UUID | None = None,
+        source_guard: Callable[[], None] | None = None,
     ) -> SyncStats:
         stats = SyncStats()
         accepted_version = self._config_store.current.version
@@ -488,6 +519,8 @@ class CalDavSyncService:
             return stats
 
         def check_settings() -> None:
+            if source_guard is not None:
+                source_guard()
             current = self._config_store.current.config.integrations.calendar.caldav
             if (
                 self._config_store.current.version != accepted_version
@@ -504,64 +537,82 @@ class CalDavSyncService:
         window_start = now - timedelta(days=config.window_days_back)
         window_end = now + timedelta(days=config.window_days_forward)
 
-        client = self._client_factory(
-            base_url=config.url,
-            username=config.username or "",
-            secret=secret,
-            timeout_seconds=config.timeout_seconds,
-        )
-        if isinstance(client, CalDavClient):
-            client.set_source_guard(source.check)
-        try:
-            try:
-                calendars = await source.call(client.list_calendars)
-            except CalDavError as error:
-                stats.errors.append(error.reason_code)
-                logger.warning("caldav discovery failed: %s", error)
-                return stats
+        base_url = config.url
 
-            wanted = set(config.calendar_names)
-            occurrences_by_ref: dict[str, MirrorOccurrence] = {}
-            ambiguous_refs: set[str] = set()
-            calendar_slug = "caldav"
-            for href, name in calendars:
-                if wanted and name not in wanted:
-                    continue
-                stats.calendars += 1
-                try:
-                    fetched = deepcopy(
-                        await source.call(
-                            partial(client.fetch_window, href, start=window_start, end=window_end)
-                        )
-                    )
-                except CalDavError as error:
-                    stats.errors.append(f"fetch_failed:{name}:{error.reason_code}")
-                    logger.warning("caldav fetch failed for %s: %s", name, error)
-                    continue
-                stats.pulled += len(fetched)
-                calendar_slug = f"{SOURCE_CALDAV}:{_slugify(name)}"
-                if merge_calendar_occurrences(
-                    occurrences_by_ref,
-                    fetched,
-                    calendar_id=calendar_slug,
-                    ambiguous_refs=ambiguous_refs,
-                ):
-                    stats.errors.append("calendar_reference_ambiguous")
-
-            await self._mirror.apply(
-                user_id,
-                calendar_slug[:64],
-                occurrences_by_ref,
-                stats=stats,
-                now=self._clock(),
-                authoritative=not stats.errors,
-                source=source,
+        async def fetch(requests: CalendarRequestRunner) -> CalendarSyncBatch:
+            client = self._client_factory(
+                base_url=base_url,
+                username=config.username or "",
+                secret=secret,
+                timeout_seconds=config.timeout_seconds,
             )
-            return stats
-        finally:
-            closer = getattr(client, "close", None)
-            if closer is not None:
-                await join_on_cancel(closer(), name="calendar-sync-close")
+            if isinstance(client, CalDavClient):
+                client.set_source_guard(source.check)
+                client.set_request_runner(requests)
+            try:
+                try:
+                    calendars = await source.call(client.list_calendars)
+                except CalDavError as error:
+                    stats.errors.append(error.reason_code)
+                    logger.warning("caldav discovery failed: %s", error.reason_code)
+                    return CalendarSyncBatch("caldav", {}, stats)
+
+                wanted = set(config.calendar_names)
+                occurrences_by_ref: dict[str, MirrorOccurrence] = {}
+                ambiguous_refs: set[str] = set()
+                calendar_slug = "caldav"
+                successful_fetches = 0
+                for href, name in calendars:
+                    if wanted and name not in wanted:
+                        continue
+                    stats.calendars += 1
+                    try:
+                        fetched = deepcopy(
+                            await source.call(
+                                partial(
+                                    client.fetch_window, href, start=window_start, end=window_end
+                                )
+                            )
+                        )
+                    except CalDavError as error:
+                        stats.errors.append(f"fetch_failed:{name}:{error.reason_code}")
+                        logger.warning("caldav fetch failed: %s", error.reason_code)
+                        continue
+                    successful_fetches += 1
+                    stats.pulled += len(fetched)
+                    calendar_slug = f"{SOURCE_CALDAV}:{_slugify(name)}"
+                    if merge_calendar_occurrences(
+                        occurrences_by_ref,
+                        fetched,
+                        calendar_id=calendar_slug,
+                        ambiguous_refs=ambiguous_refs,
+                    ):
+                        stats.errors.append("calendar_reference_ambiguous")
+
+                return CalendarSyncBatch(
+                    calendar_slug[:64], occurrences_by_ref, stats, successful_fetches
+                )
+            finally:
+                closer = getattr(client, "close", None)
+                if closer is not None:
+                    source.closing = True
+                    try:
+                        await join_on_cancel(closer(), name="calendar-sync-close")
+                    finally:
+                        source.closing = False
+
+        batch = await owned_calendar_sync(
+            self._database,
+            self._config_store,
+            user_id=user_id,
+            provider="caldav",
+            price=config.sync_cost,
+            source=source,
+            mirror=self._mirror,
+            fetch=fetch,
+            now=now,
+        )
+        return cast(SyncStats, batch.stats)
 
 
 def _slugify(name: str) -> str:

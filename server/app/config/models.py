@@ -736,6 +736,7 @@ class CalDavConfig(StrictModel):
     本地日历查询/简报/通勤，不创建本地提醒（外部日历自带通知）。
     """
 
+    sync_cost: VoiceCostConfig | None = None
     enabled: bool = False
     url: Annotated[str, Field(min_length=8, max_length=500)] | None = None
     username: Annotated[str, Field(min_length=1, max_length=254)] | None = None
@@ -764,6 +765,7 @@ class GoogleCalendarConfig(StrictModel):
     /api/v1/calendar/google/authorize → callback 换取后落库，不入配置文档。
     """
 
+    sync_cost: VoiceCostConfig | None = None
     enabled: bool = False
     client_id: Annotated[str, Field(min_length=10, max_length=254)] | None = None
     secret_ref: Annotated[str, Field(pattern=r"^env:[A-Z][A-Z0-9_]{2,127}$")] | None = None

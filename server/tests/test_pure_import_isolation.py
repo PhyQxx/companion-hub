@@ -72,6 +72,7 @@ import pytest
         "app.calendar.models",
         "app.calendar.service_core",
         "app.calendar.ports",
+        "app.calendar.sync_requests",
         "app.calendar:CalendarCoordinator",
         "app.tasks.models",
         "app.contacts.models",

@@ -29,6 +29,7 @@ from app.calendar.google import (
     sign_state,
     verify_state,
 )
+from app.harness.budget import BudgetDenied
 from app.schemas.common import StrictModel
 
 from .auth import ChatSessionGuard
@@ -145,6 +146,8 @@ def create_calendar_router(
                 stats = await google_sync.sync_once(
                     user_id=principal.user_id, actor_id=principal.session_id
                 )
+            except BudgetDenied as error:
+                raise HTTPException(status.HTTP_409_CONFLICT, error.reason_code) from error
             except PermissionError as error:
                 raise HTTPException(
                     status.HTTP_409_CONFLICT, "calendar_sync_source_changed"
@@ -175,6 +178,8 @@ def create_calendar_router(
                 stats = await caldav_sync.sync_once(
                     user_id=principal.user_id, actor_id=principal.session_id
                 )
+            except BudgetDenied as error:
+                raise HTTPException(status.HTTP_409_CONFLICT, error.reason_code) from error
             except PermissionError as error:
                 raise HTTPException(
                     status.HTTP_409_CONFLICT, "calendar_sync_source_changed"

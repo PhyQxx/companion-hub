@@ -2,18 +2,20 @@
 
 从 main.py 原样搬移：Admin token 解析、配置/语音/MCP/技能/人格/
 时间线/记忆/删除台账/备份等不依赖运行时数据库装配的路由。
-搬移时删除了从未被引用的 trigger_calendar_sync 死代码。
+日历手动同步复用实际领域服务，并在请求和提交时重验管理凭据。
 """
 
 from __future__ import annotations
 
 import os
 from collections.abc import Awaitable, Callable
+from dataclasses import asdict
 from pathlib import Path
 
 from fastapi import FastAPI
 
 from app import __version__
+from app.calendar import CalDavSyncService, GoogleCalendarSyncService
 from app.cognition import ActionRegistry
 from app.config import DatabaseConfigStore
 from app.db import Database
@@ -75,6 +77,8 @@ def register_admin_routers(
     persona_store: PersonaStore | None,
     timeline_store: TimelineStore | None,
     memory_store: MemoryStore | None,
+    caldav_sync: CalDavSyncService | None = None,
+    google_sync: GoogleCalendarSyncService | None = None,
 ) -> str | None:
     """装配 Admin 前置路由；返回解析后的 runtime_admin_token 供后续段复用。"""
     runtime_admin_token = admin_token if admin_token is not None else os.getenv("ARIA_ADMIN_TOKEN")
@@ -86,6 +90,12 @@ def register_admin_routers(
         if xiaoai_materializer is not None:
             await xiaoai_materializer.write()
 
+    async def sync_calendar(provider: str, source_guard: Callable[[], None]) -> dict[str, object]:
+        service = caldav_sync if provider == "caldav" else google_sync
+        if service is None:
+            return {"errors": ["not_configured"]}
+        return asdict(await service.sync_once(source_guard=source_guard))
+
     app.include_router(
         create_admin_config_router(
             config,
@@ -93,6 +103,7 @@ def register_admin_routers(
             database=database,
             on_publish=reconfigure_integrations,
             on_proactive_test=ha_proactive_test,
+            on_calendar_sync=sync_calendar,
         )
     )
     app.include_router(

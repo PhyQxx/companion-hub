@@ -2,6 +2,7 @@
 
 import asyncio
 from collections.abc import Awaitable, Callable
+from contextlib import AbstractContextManager, nullcontext
 from datetime import UTC, datetime, timedelta
 from typing import Literal, TypeVar, cast
 from uuid import UUID
@@ -54,6 +55,8 @@ async def operate_with_run(
     budget_source: Callable[[], RunBudgetConfig] | None = None,
     cooperative: bool = False,
     defer_watch: Callable[[], bool] | None = None,
+    terminal_write: Callable[[AsyncSession, T], Awaitable[None]] | None = None,
+    transaction_fence: Callable[[AsyncSession], AbstractContextManager[None]] | None = None,
     trace_parent_id: UUID | None = None,
     missing_quote_reason: Literal[
         "media_cost_estimate_unavailable",
@@ -435,52 +438,60 @@ async def operate_with_run(
                     )
                 else:
                     result = await guarded_call(lambda: invoke(mark_started), lambda: check(run_id))
-            async with database.sessions.begin() as session:
-                authority = await lock_authority(session, run_id)
-                row = authority[-1]
-                if row.status != "running":
-                    raise BudgetDenied("budget_run_inactive")
-                returned_evidence = evidence(result)
-                row.contract = {**row.contract, **returned_evidence, "operation_state": "returned"}
-                cost = (
-                    await lock_unit_cost(session, call_id=run_id, user_id=user_id)
-                    if quote is not None
-                    else await session.get(ModelCostRecord, run_id)
-                )
-                if quote is not None and cost is None:
-                    raise BudgetDenied("unit_cost_reservation_inactive")
-                if cost is not None:
-                    if quote is not None:
-                        await settle_unit_cost(
-                            session,
-                            call_id=run_id,
-                            user_id=user_id,
-                            usage=None,
-                            now=datetime.now(UTC),
+            async with database.sessions() as session:
+                with transaction_fence(session) if transaction_fence is not None else nullcontext():
+                    async with session.begin():
+                        authority = await lock_authority(session, run_id)
+                        row = authority[-1]
+                        if row.status != "running":
+                            raise BudgetDenied("budget_run_inactive")
+                        if terminal_write is not None:
+                            await terminal_write(session, result)
+                        returned_evidence = evidence(result)
+                        row.contract = {
+                            **row.contract,
+                            **returned_evidence,
+                            "operation_state": "returned",
+                        }
+                        cost = (
+                            await lock_unit_cost(session, call_id=run_id, user_id=user_id)
+                            if quote is not None
+                            else await session.get(ModelCostRecord, run_id)
                         )
-                    receipt = returned_evidence.get("provider_request_id")
-                    if (
-                        quote is not None
-                        and cost.provider_request_id
-                        and receipt
-                        and (receipt != cost.provider_request_id)
-                    ):
-                        raise BudgetDenied("cost_receipt_conflict")
-                    if receipt is not None:
-                        cost.provider_request_id = receipt
-                    cost.settled_at = datetime.now(UTC)
-                await transition_run(session, run_id, "succeeded")
-                await session.flush()
-                # The terminal child is intentionally excluded from active-state
-                # validation; its time limit and parent authority still apply.
-                validate_rows(authority[:-1])
-                await check_fees(session, authority, accepting=False)
-                await check_origins(session)
-                validate_rows(authority[:-1])
-                if row.deadline and utc(row.deadline) <= datetime.now(UTC):
-                    raise BudgetDenied("run_deadline_exceeded")
-                if source_commit_guard is not None:
-                    await source_commit_guard()
+                        if quote is not None and cost is None:
+                            raise BudgetDenied("unit_cost_reservation_inactive")
+                        if cost is not None:
+                            if quote is not None:
+                                await settle_unit_cost(
+                                    session,
+                                    call_id=run_id,
+                                    user_id=user_id,
+                                    usage=None,
+                                    now=datetime.now(UTC),
+                                )
+                            receipt = returned_evidence.get("provider_request_id")
+                            if (
+                                quote is not None
+                                and cost.provider_request_id
+                                and receipt
+                                and (receipt != cost.provider_request_id)
+                            ):
+                                raise BudgetDenied("cost_receipt_conflict")
+                            if receipt is not None:
+                                cost.provider_request_id = receipt
+                            cost.settled_at = datetime.now(UTC)
+                        await transition_run(session, run_id, "succeeded")
+                        await session.flush()
+                        # The terminal child is intentionally excluded from active-state
+                        # validation; its time limit and parent authority still apply.
+                        validate_rows(authority[:-1])
+                        await check_fees(session, authority, accepting=False)
+                        await check_origins(session)
+                        validate_rows(authority[:-1])
+                        if row.deadline and utc(row.deadline) <= datetime.now(UTC):
+                            raise BudgetDenied("run_deadline_exceeded")
+                        if source_commit_guard is not None:
+                            await source_commit_guard()
             return result
     except BaseException as error:
         async with database.sessions.begin() as session:

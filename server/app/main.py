@@ -205,6 +205,8 @@ def create_app(
             persona_store=persona_store,
             timeline_store=timeline_store,
             memory_store=memory_store,
+            caldav_sync=domain.caldav_sync_service,
+            google_sync=domain.google_calendar_sync_service,
         )
         if runtime_database is not None:
             register_admin_data_routers(
