@@ -18,7 +18,12 @@ from app.harness.joined_read import join_on_cancel, joined_read
 from app.harness.operations import OperationPolicy
 from app.harness.source_cleanup import close_after_source
 from app.harness.time import utc
-from app.harness.voice_sources import VoiceAuthority, VoiceSourceClaim, VoiceSourceGuard
+from app.harness.voice_sources import (
+    RootVoiceSourceGuard,
+    VoiceAuthority,
+    VoiceRunFence,
+    VoiceSourceClaim,
+)
 from app.ids import uuid7
 from app.schemas import PrivacyLevel
 from app.voice.contracts import SpeechSynthesizer
@@ -35,7 +40,7 @@ class SqlSpeechDelivery:
         self,
         database: Database,
         config: ConfigStore | DatabaseConfigStore,
-        source_guard: VoiceSourceGuard,
+        source_guard: RootVoiceSourceGuard,
         pricing: VoicePricingSource,
     ) -> None:
         self.database, self.config = database, config
@@ -282,7 +287,10 @@ class _Delivery:
                 self.check_rows(rows)
 
         await joined_read(read())
-        await self.port.source_guard.validate(self.source)
+        fences: tuple[VoiceRunFence, ...] = (VoiceRunFence(self.run_id, self.config.enabled),)
+        if self.parent is not None:
+            fences += (VoiceRunFence(self.parent.run_id, True),)
+        await self.port.source_guard.validate_live_runs(self.source, fences)
         if self.provider is not None:
             self.port.pricing.validate_provider(self.provider)
 

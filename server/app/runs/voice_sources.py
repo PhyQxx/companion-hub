@@ -4,8 +4,9 @@ import asyncio
 from datetime import UTC, datetime
 from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import aliased
 
 from app.db import (
     AppUserRecord,
@@ -13,11 +14,14 @@ from app.db import (
     ConversationRecord,
     Database,
     DeviceClientRecord,
+    TaskRunRecord,
 )
+from app.db.claims import assert_current_claim
 from app.harness.budget import BudgetDenied
+from app.harness.joined_read import joined_read
 from app.harness.source_cleanup import close_after_source
 from app.harness.time import utc
-from app.harness.voice_sources import VoiceAuthority, VoiceRecipientClaim
+from app.harness.voice_sources import VoiceAuthority, VoiceRecipientClaim, VoiceRunFence
 from app.satellite.models import SATELLITE_CAPABILITY
 
 
@@ -102,6 +106,105 @@ class SqlVoiceSourceGuard:
                 )
             else:
                 raise BudgetDenied("voice_actor_invalid")
+
+    async def validate_live_runs(
+        self, source: VoiceAuthority, fences: tuple[VoiceRunFence, ...]
+    ) -> None:
+        # Preserve the source-specific denial, then read the actor and every
+        # delivery/quota run in one final SQL snapshot. A source read can wait
+        # while a previously checked run is cancelled or expires.
+        await self.validate(source)
+        await joined_read(self._validate_live_runs(source, fences))
+
+    async def _validate_live_runs(
+        self, source: VoiceAuthority, fences: tuple[VoiceRunFence, ...]
+    ) -> None:
+        if not fences or len({fence.run_id for fence in fences}) != len(fences):
+            raise BudgetDenied("budget_run_inactive")
+        root_conversation = aliased(ConversationRecord)
+        query = (
+            select(
+                TaskRunRecord.id,
+                TaskRunRecord.status,
+                TaskRunRecord.privacy_level,
+                TaskRunRecord.deadline,
+                TaskRunRecord.contract["work_cancel_requested"].as_boolean().label("cancel"),
+                TaskRunRecord.contract["budget_usage_overflow"].as_boolean().label("overflow"),
+                TaskRunRecord.budget["enabled"].as_boolean().label("budget_enabled"),
+            )
+            .join(AppUserRecord, AppUserRecord.id == TaskRunRecord.user_id)
+            .outerjoin(root_conversation, root_conversation.id == TaskRunRecord.conversation_id)
+            .where(
+                TaskRunRecord.id.in_([fence.run_id for fence in fences]),
+                TaskRunRecord.user_id == source.user_id,
+                AppUserRecord.status == "active",
+                or_(
+                    TaskRunRecord.conversation_id.is_(None),
+                    (root_conversation.user_id == source.user_id)
+                    & (root_conversation.status == "active"),
+                ),
+            )
+        )
+        if not isinstance(source, VoiceRecipientClaim):
+            query = query.join(
+                ConversationRecord, ConversationRecord.user_id == AppUserRecord.id
+            ).where(
+                ConversationRecord.id == source.conversation_id,
+                ConversationRecord.status == "active",
+            )
+        browser = not isinstance(source, VoiceRecipientClaim) and source.actor == "browser"
+        if browser:
+            assert not isinstance(source, VoiceRecipientClaim)
+            query = (
+                query.add_columns(AuthSessionRecord.expires_at.label("actor_expires_at"))
+                .join(AuthSessionRecord, AuthSessionRecord.user_id == AppUserRecord.id)
+                .where(
+                    AuthSessionRecord.id == source.actor_id,
+                    AuthSessionRecord.revoked_at.is_(None),
+                    AuthSessionRecord.expires_at > datetime.now(UTC),
+                )
+            )
+        else:
+            device_id = (
+                source.device_id if isinstance(source, VoiceRecipientClaim) else source.actor_id
+            )
+            query = (
+                query.add_columns(
+                    DeviceClientRecord.capabilities, DeviceClientRecord.granted_capabilities
+                )
+                .join(DeviceClientRecord, DeviceClientRecord.owner_user_id == AppUserRecord.id)
+                .where(DeviceClientRecord.id == device_id, DeviceClientRecord.revoked_at.is_(None))
+            )
+        session = self._database.sessions()
+        async with close_after_source(session.close):
+            await assert_current_claim(session)
+            rows = (await session.execute(query)).mappings().all()
+        if len(rows) != len(fences):
+            raise BudgetDenied("budget_run_inactive")
+        expected = {fence.run_id: fence.budget_enabled for fence in fences}
+        now = datetime.now(UTC)
+        capability = (
+            source.capability if isinstance(source, VoiceRecipientClaim) else SATELLITE_CAPABILITY
+        )
+        for row in rows:
+            if row["status"] not in {"accepted", "running"} or row["cancel"]:
+                raise BudgetDenied("budget_run_inactive")
+            if row["overflow"]:
+                raise BudgetDenied("budget_usage_overflow")
+            if row["budget_enabled"] is not expected[row["id"]]:
+                raise BudgetDenied("budget_snapshot_missing")
+            if row["privacy_level"] > str(source.privacy_level):
+                raise BudgetDenied("operation_privacy_downgrade")
+            if row["deadline"] is None or utc(row["deadline"]) <= now:
+                raise BudgetDenied("run_deadline_exceeded")
+            if browser:
+                if utc(row["actor_expires_at"]) <= now:
+                    raise BudgetDenied("voice_session_inactive")
+            elif (
+                capability not in row["capabilities"]
+                or capability not in row["granted_capabilities"]
+            ):
+                raise BudgetDenied("voice_device_inactive")
 
     @staticmethod
     async def _validate_device(

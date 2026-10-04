@@ -12,6 +12,7 @@ import json
 import logging
 from collections.abc import Callable
 from typing import Protocol
+from urllib.parse import urlsplit
 from weakref import WeakKeyDictionary
 
 from app.config import ConfigStore, DatabaseConfigStore, HubConfig
@@ -154,17 +155,36 @@ def _provider_fingerprints(
     config: HubConfig, entry: VoiceAsrConfig | VoiceTtsProviderConfig
 ) -> tuple[str, str]:
     """Keep credential authority in memory; public cost identifiers exclude it."""
-    public = entry.model_dump(mode="json", exclude={"secret_ref", "secret_value"})
+    public = entry.model_dump(
+        mode="json",
+        include={
+            "provider",
+            "model",
+            "voice",
+            "language",
+            "device",
+            "compute_type",
+            "runs_local",
+            "cost_currency",
+            "request_cost_ceiling",
+        },
+    )
     authority = entry.model_dump(mode="json")
+    effective_url = entry.base_url
     if isinstance(entry, VoiceTtsProviderConfig) and entry.provider == "senseaudio":
         shared = config.voice.senseaudio
         if entry.base_url is None:
-            public["base_url"] = str(shared.base_url) if shared.base_url is not None else None
-            authority["base_url"] = public["base_url"]
+            effective_url = shared.base_url
+            authority["base_url"] = str(effective_url) if effective_url is not None else None
         if entry.secret_value is None:
             # An unresolved entry reference also falls back to shared credentials.
             authority["shared_secret_ref"] = shared.secret_ref
             authority["shared_secret_value"] = shared.secret_value
+
+    # URLs may carry credentials in userinfo, queries or paths. Only their
+    # public origin groups prices; the full connection authority stays in memory.
+    origin = urlsplit(str(effective_url)) if effective_url is not None else None
+    public["origin"] = (origin.scheme, origin.hostname, origin.port) if origin is not None else None
 
     def digest(payload: object) -> str:
         return hashlib.sha256(

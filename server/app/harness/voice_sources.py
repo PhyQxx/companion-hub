@@ -29,3 +29,15 @@ VoiceAuthority = VoiceSourceClaim | VoiceRecipientClaim
 
 class VoiceSourceGuard(Protocol):
     async def validate(self, source: VoiceAuthority) -> None: ...
+
+
+@dataclass(frozen=True, slots=True)
+class VoiceRunFence:
+    run_id: UUID
+    budget_enabled: bool
+
+
+class RootVoiceSourceGuard(VoiceSourceGuard, Protocol):
+    async def validate_live_runs(
+        self, source: VoiceAuthority, fences: tuple[VoiceRunFence, ...]
+    ) -> None: ...
