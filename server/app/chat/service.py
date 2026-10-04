@@ -2542,8 +2542,17 @@ class ChatService:
                 parent_budget_scope = ParentBudgetScope.read(parent_budget_scope).model_dump(
                     mode="json"
                 )
-            if run is not None and run.contract.get("budget_parent_id"):
-                if parent_run_id is None or str(parent_run_id) != run.contract["budget_parent_id"]:
+            if run is not None and (
+                parent_run_id is not None
+                or "budget_parent_id" in run.contract
+                or "quota_scope" in run.contract
+            ):
+                # A missing/empty descriptor is a broken lineage, never an
+                # invitation to skip the parent's revocable source authority.
+                if (
+                    parent_run_id is None
+                    or str(parent_run_id) != run.contract.get("budget_parent_id")
+                ):
                     raise PostcommitSourceGone()
                 parent = await require_chat_parent(
                     session,
