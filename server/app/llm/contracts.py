@@ -124,6 +124,10 @@ class ContextTokenizer(StrictModel):
 
 
 class ModelEndpoint(StrictModel):
+    admin_probe_cost_currency: Annotated[str, Field(pattern=r"^[A-Z]{3}$")] | None = None
+    admin_probe_request_cost_ceiling: (
+        Annotated[Decimal, Field(ge=0, le=1_000_000_000, max_digits=24, decimal_places=12)] | None
+    ) = None
     context_tokenizer: ContextTokenizer | None = None
     enabled: bool = True
     kind: ModelKind = ModelKind.TEXT

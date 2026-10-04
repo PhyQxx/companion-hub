@@ -13,9 +13,10 @@ from dataclasses import asdict
 from datetime import datetime
 from time import perf_counter
 from typing import Annotated, Literal
-from urllib.error import HTTPError, URLError
+from urllib.error import HTTPError
 from urllib.parse import urlsplit, urlunsplit
 from urllib.request import Request, urlopen
+from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
@@ -26,13 +27,16 @@ from app.config.models import HomeAssistantConfig, VoiceAsrConfig, VoiceCostConf
 from app.config.store import ConfigSnapshot, hash_config
 from app.db import Database
 from app.harness.budget import BudgetDenied
+from app.harness.joined_read import join_on_cancel
 from app.home_assistant import HomeAssistantClient, HomeAssistantError
 from app.home_assistant.inventory_ports import HomeAssistantInventory, HomeAssistantInventoryClient
-from app.llm import EnvSecretProvider, LiteLLMProvider, ModelEndpoint, ModelKind
+from app.llm import EnvSecretProvider, LiteLLMProvider, ModelEndpoint
 from app.llm.provider import SecretNotFound
 from app.observability import apply_observability
 from app.runs.admin_amap import probe_admin_amap
 from app.runs.admin_home_assistant import read_admin_inventory
+from app.runs.admin_model import admin_model_probe
+from app.runs.admin_operation import admin_tool_request, owned_admin_sdk_request
 from app.schemas.common import StrictModel
 from app.tools import AmapProvider, ToolLedger
 from app.tools.amap_probe_ports import AmapProbeClient, AmapProbeFailed
@@ -96,6 +100,7 @@ class ValidationResult(StrictModel):
 
 
 class ModelConnectionTestRequest(StrictModel):
+    endpoint_name: Annotated[str, Field(min_length=1, max_length=160)] | None = None
     endpoint: ModelEndpoint
 
 
@@ -565,141 +570,202 @@ def create_admin_config_router(
     @router.post("/models/test", response_model=ModelConnectionTestResult)
     async def test_model_connection(
         body: ModelConnectionTestRequest,
+        credentials: AdminCredentials,
     ) -> ModelConnectionTestResult:
-        endpoint = body.endpoint
+        endpoint = body.endpoint.model_copy(deep=True)
+        saved = store.current.config.models.get(body.endpoint_name or "")
+        if endpoint.secret_value == _SECRET_MASK:
+            if saved is None or (saved.base_url, saved.provider) != (
+                endpoint.base_url,
+                endpoint.provider,
+            ):
+                raise HTTPException(
+                    status_code=409, detail="模型地址或提供方已改变，请重新填写 Key"
+                )
+            endpoint = endpoint.model_copy(
+                update={"secret_value": saved.secret_value, "secret_ref": saved.secret_ref}
+            )
+
+        def key() -> str | None:
+            if endpoint.secret_value:
+                return endpoint.secret_value
+            if endpoint.secret_ref:
+                return EnvSecretProvider().resolve(endpoint.secret_ref)
+            return None
+
+        def identity() -> str:
+            try:
+                actual_key = key()
+            except SecretNotFound:
+                actual_key = None
+            return hashlib.sha256(
+                json.dumps(
+                    {
+                        "models": {
+                            name: value.model_dump(mode="json")
+                            for name, value in store.current.config.models.items()
+                        },
+                        "request": endpoint.model_dump(mode="json"),
+                        "key": actual_key,
+                    },
+                    sort_keys=True,
+                ).encode()
+            ).hexdigest()
+
+        accepted_identity = identity()
+
+        async def guard() -> None:
+            await token_guard(credentials)
+            if identity() != accepted_identity:
+                raise BudgetDenied("admin_model_config_changed")
+
         started = perf_counter()
-
-        if endpoint.runs_local:
-            target_url = _lm_studio_models_url(str(endpoint.base_url))
-            try:
-                payload = await asyncio.to_thread(
-                    _fetch_json,
-                    target_url,
-                    headers=_authorization_headers(endpoint),
-                    timeout_seconds=max(endpoint.timeout_ms / 1_000, 0.1),
-                )
-                items = _model_probe_items(payload)
-                matched = _model_match(items, endpoint.model)
-                available = matched is not None
-                loaded = matched.loaded_instances > 0 if matched is not None else False
-                if loaded:
-                    message = "连接成功，配置模型已加载"
-                elif available:
-                    message = "连接成功，配置模型已存在但尚未加载"
-                else:
-                    message = "连接成功，但未在本地模型列表中找到配置模型"
-                return ModelConnectionTestResult(
-                    ok=True,
-                    probe_kind="lm_studio_native_v1",
-                    target_url=target_url,
-                    model=endpoint.model,
-                    latency_ms=(perf_counter() - started) * 1_000,
-                    message=message,
-                    model_available=available,
-                    model_loaded=loaded,
-                    models=items,
-                )
-            except HTTPError as error:
-                if error.code != 404:
-                    return ModelConnectionTestResult(
-                        ok=False,
-                        probe_kind="lm_studio_native_v1",
-                        target_url=target_url,
-                        model=endpoint.model,
-                        latency_ms=(perf_counter() - started) * 1_000,
-                        message=f"本地模型服务返回 HTTP {error.code}",
-                        error_type="HTTPError",
-                    )
-                # 非 LM Studio 本地服务可能只有 OpenAI-compatible /v1 接口，
-                # 404 时继续用现有 Provider probe 验证真实推理链路。
-            except (URLError, TimeoutError, OSError, ValueError) as error:
-                return ModelConnectionTestResult(
-                    ok=False,
-                    probe_kind="lm_studio_native_v1",
-                    target_url=target_url,
-                    model=endpoint.model,
-                    latency_ms=(perf_counter() - started) * 1_000,
-                    message=_safe_probe_detail(error),
-                    error_type=type(error).__name__,
-                )
-            except Exception as error:
-                return ModelConnectionTestResult(
-                    ok=False,
-                    probe_kind="lm_studio_native_v1",
-                    target_url=target_url,
-                    model=endpoint.model,
-                    latency_ms=(perf_counter() - started) * 1_000,
-                    message=_safe_probe_detail(error),
-                    error_type=type(error).__name__,
-                )
-
-        if endpoint.provider == "zhipu_native":
-            # Media/vision APIs use capability-specific request bodies. A connection
-            # button should not generate an image/video just to prove credentials.
-            # Probe the same Zhipu account/base URL with the selected free text model.
-            try:
+        target_url = (
+            _lm_studio_models_url(str(endpoint.base_url))
+            if endpoint.runs_local
+            else str(endpoint.base_url)
+        )
+        probe_kind = (
+            "lm_studio_native_v1"
+            if endpoint.runs_local
+            else "zhipu_account_probe"
+            if endpoint.provider == "zhipu_native"
+            else "provider_probe"
+        )
+        if database is None:
+            raise HTTPException(status_code=409, detail="模型自检需要账户运行台账")
+        try:
+            actual_key = key()
+            probe_endpoint = endpoint.model_copy(
+                update={"secret_value": actual_key, "secret_ref": None, "max_retries": 0}
+            )
+            if endpoint.provider == "zhipu_native":
+                # The account probe uses text inference, with its own quote.
                 probe_endpoint = ModelEndpoint(
-                    enabled=True,
-                    kind=ModelKind.TEXT,
                     provider="openai_compatible",
                     model="glm-4.7-flash",
-                    supports_json_mode=False,
                     thinking_mode="disabled",
                     base_url=endpoint.base_url,
-                    secret_ref=endpoint.secret_ref,
-                    secret_value=endpoint.secret_value,
+                    secret_value=actual_key,
                     runs_local=False,
                     max_privacy_level=endpoint.max_privacy_level,
                     timeout_ms=endpoint.timeout_ms,
                     max_retries=0,
                     max_context_tokens=204_800,
                 )
-                provider = LiteLLMProvider(
-                    "admin_zhipu_account_probe",
-                    probe_endpoint,
-                    EnvSecretProvider(),
-                )
-                await provider.probe()
-            except Exception as error:
-                return ModelConnectionTestResult(
-                    ok=False,
-                    probe_kind="zhipu_account_probe",
-                    target_url=str(endpoint.base_url),
-                    model=endpoint.model,
-                    latency_ms=(perf_counter() - started) * 1_000,
-                    message=_safe_probe_detail(error),
-                    error_type=type(error).__name__,
-                )
-            return ModelConnectionTestResult(
-                ok=True,
-                probe_kind="zhipu_account_probe",
-                target_url=str(endpoint.base_url),
-                model=endpoint.model,
-                latency_ms=(perf_counter() - started) * 1_000,
-                message="智谱账号连接正常；该能力模型将在实际调用时使用对应接口",
+            price = VoiceCostConfig(
+                cost_currency=endpoint.admin_probe_cost_currency,
+                request_cost_ceiling=endpoint.admin_probe_request_cost_ceiling,
             )
+            address = urlsplit(str(endpoint.base_url))
+            fingerprint = hashlib.sha256(
+                json.dumps(
+                    {
+                        "scheme": address.scheme,
+                        "host": address.hostname,
+                        "port": address.port,
+                        "price": price.model_dump(mode="json"),
+                    },
+                    sort_keys=True,
+                ).encode()
+            ).hexdigest()
 
-        try:
-            provider = LiteLLMProvider("admin_connection_test", endpoint, EnvSecretProvider())
-            await provider.probe()
+            async def invoke(
+                owner: UUID, mark_started: Callable[[], Awaitable[None]]
+            ) -> ModelConnectionTestResult:
+                nonlocal probe_kind, target_url
+                if endpoint.runs_local:
+
+                    async def catalogue() -> object:
+                        return await join_on_cancel(
+                            asyncio.to_thread(
+                                _fetch_json,
+                                target_url,
+                                headers=_authorization_headers(probe_endpoint),
+                                timeout_seconds=max(endpoint.timeout_ms / 1000, 0.1),
+                            ),
+                            name="admin-model-catalogue",
+                        )
+
+                    try:
+                        payload = await admin_tool_request(
+                            owner=owner,
+                            tool_name="admin.models.catalogue",
+                            invoke=catalogue,
+                            source_guard=guard,
+                            before_start=mark_started,
+                        )
+                    except HTTPError as error:
+                        if error.code != 404:
+                            raise
+                    else:
+                        items = _model_probe_items(payload)
+                        matched = _model_match(items, endpoint.model)
+                        available = matched is not None
+                        loaded = matched.loaded_instances > 0 if matched is not None else False
+                        return ModelConnectionTestResult(
+                            ok=True,
+                            probe_kind=probe_kind,
+                            target_url=target_url,
+                            model=endpoint.model,
+                            latency_ms=(perf_counter() - started) * 1000,
+                            message="连接成功，配置模型已加载"
+                            if loaded
+                            else "连接成功，配置模型已存在但尚未加载"
+                            if available
+                            else "连接成功，但未在本地模型列表中找到配置模型",
+                            model_available=available,
+                            model_loaded=loaded,
+                            models=items,
+                        )
+                    probe_kind = "provider_probe"
+                    target_url = str(endpoint.base_url)
+                await admin_model_probe(
+                    owner=owner,
+                    endpoint=probe_endpoint,
+                    provider_factory=lambda: LiteLLMProvider(
+                        "admin_connection_test", probe_endpoint, EnvSecretProvider()
+                    ),
+                    mark_started=mark_started,
+                    source_guard=guard,
+                )
+                return ModelConnectionTestResult(
+                    ok=True,
+                    probe_kind=probe_kind,
+                    target_url=target_url,
+                    model=endpoint.model,
+                    latency_ms=(perf_counter() - started) * 1000,
+                    message="智谱账号连接正常；该能力模型将在实际调用时使用对应接口"
+                    if endpoint.provider == "zhipu_native"
+                    else "模型连接测试成功",
+                )
+
+            return await owned_admin_sdk_request(
+                database,
+                store,
+                entry="admin.models.probe",
+                price=price,
+                endpoint=f"admin-model:{fingerprint}",
+                invoke=invoke,
+                source_guard=guard,
+                require_quote=True,
+            )
+        except BudgetDenied as error:
+            raise HTTPException(
+                status_code=409, detail=f"模型自检未完成：{error.reason_code}"
+            ) from error
+        except HTTPException:
+            raise
         except Exception as error:
             return ModelConnectionTestResult(
                 ok=False,
-                probe_kind="provider_probe",
-                target_url=str(endpoint.base_url),
+                probe_kind=probe_kind,
+                target_url=target_url,
                 model=endpoint.model,
-                latency_ms=(perf_counter() - started) * 1_000,
-                message=_safe_probe_detail(error),
+                latency_ms=(perf_counter() - started) * 1000,
+                message=f"连接自检失败（{type(error).__name__}）",
                 error_type=type(error).__name__,
             )
-        return ModelConnectionTestResult(
-            ok=True,
-            probe_kind="provider_probe",
-            target_url=str(endpoint.base_url),
-            model=endpoint.model,
-            latency_ms=(perf_counter() - started) * 1_000,
-            message="连接成功，模型探针响应正常",
-        )
 
     @router.post("/voice/asr/check", response_model=VoiceAsrEnvironmentCheckResult)
     async def check_voice_asr_environment(

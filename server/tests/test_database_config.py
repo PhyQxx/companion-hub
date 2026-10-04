@@ -208,6 +208,11 @@ async def test_admin_model_connection_uses_lm_studio_native_model_list(
     bootstrap: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    from app.auth import AuthService
+
+    await AuthService(database).setup(
+        display_name="Synthetic owner", password="synthetic secure test password"
+    )
     captured: dict[str, object] = {}
 
     def fake_fetch_json(
@@ -250,6 +255,8 @@ async def test_admin_model_connection_uses_lm_studio_native_model_list(
         current = await client.get("/api/v1/admin/config/current", headers=headers)
         endpoint = current.json()["config"]["models"]["local"]
         endpoint["base_url"] = "http://127.0.0.1:1234"
+        endpoint["admin_probe_cost_currency"] = "CNY"
+        endpoint["admin_probe_request_cost_ceiling"] = "0"
         response = await client.post(
             "/api/v1/admin/config/models/test",
             headers=headers,

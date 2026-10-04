@@ -33,6 +33,7 @@ async def owned_admin_sdk_request(
     missing_quote_reason: Literal[
         "voice_cost_estimate_unavailable", "admin_cost_estimate_unavailable"
     ] = "admin_cost_estimate_unavailable",
+    require_quote: bool = False,
 ) -> T:
     await source_guard()
     async with database.sessions() as session:
@@ -58,6 +59,8 @@ async def owned_admin_sdk_request(
         and price.request_cost_ceiling is not None
         else None
     )
+    if require_quote and quote is None:
+        raise BudgetDenied(missing_quote_reason)
 
     async def request(mark_started: Callable[[], Awaitable[None]]) -> T:
         return await invoke(owner, mark_started)

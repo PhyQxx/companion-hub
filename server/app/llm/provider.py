@@ -20,7 +20,6 @@ from .contracts import (
     ModelEndpoint,
     ModelUsage,
     ToolCall,
-    ToolDefinition,
 )
 from .text_tool_calls import MAX_TEXT_TOOL_CALLS, extract_text_tool_calls
 
@@ -288,60 +287,9 @@ class LiteLLMProvider:
         )
 
     async def probe(self) -> None:
-        if self.endpoint.supports_tool_calling:
-            result = await self.complete(
-                CompletionRequest(
-                    trace_id=uuid7(),
-                    messages=[
-                        {
-                            "role": "user",
-                            "content": "Call the report_probe function now. Do not answer in text.",
-                        }
-                    ],
-                    privacy_level="L0",
-                    route="utility",
-                    max_tokens=min(self.endpoint.max_tokens or 128, 1024),
-                    temperature=0,
-                    tools=[
-                        ToolDefinition(
-                            name="report_probe",
-                            description="Synthetic Function Calling connectivity check.",
-                            parameters={
-                                "type": "object",
-                                "properties": {},
-                                "additionalProperties": False,
-                            },
-                        )
-                    ],
-                )
-            )
-            if len(result.tool_calls) != 1:
-                raise RuntimeError("provider_probe_tool_call_missing")
-            if result.tool_calls[0].function.name != "report_probe":
-                raise RuntimeError("provider_probe_tool_call_invalid")
-            return
-        probe_prompt = (
-            'Synthetic connectivity check. Reply only with {"ok":true}.'
-            if self.endpoint.supports_json_mode
-            else "Synthetic connectivity check. Reply only with OK."
-        )
-        result = await self.complete(
-            CompletionRequest(
-                trace_id=uuid7(),
-                messages=[{"role": "user", "content": probe_prompt}],
-                privacy_level="L0",
-                route="utility",
-                max_tokens=min(self.endpoint.max_tokens or 128, 1024),
-                temperature=0,
-                json_mode=True,
-            )
-        )
-        if not result.text.strip():
-            raise RuntimeError("provider_probe_empty_response")
-        if self.endpoint.supports_json_mode:
-            parsed = json.loads(result.text)
-            if not isinstance(parsed, dict) or parsed.get("ok") is not True:
-                raise RuntimeError("provider_probe_invalid_response")
+        from .probe import probe_request, validate_probe
+
+        validate_probe(await self.complete(probe_request(self.endpoint)), self.endpoint)
 
 
 def _message_payload(message: Any) -> dict[str, Any]:

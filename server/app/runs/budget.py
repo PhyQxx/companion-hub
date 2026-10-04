@@ -25,13 +25,21 @@ from app.db import (
 )
 from app.db.claims import assert_current_claim
 from app.harness.budget import MAX_MODEL_TOKENS, BudgetDenied, CallPermit
+from app.harness.operations import OperationCost
 from app.harness.source_cleanup import close_after_source
 from app.harness.time import utc as utc
+from app.harness.unit_costs import unit_charge
 from app.ids import uuid7
 from app.llm.contracts import ModelPricing, ModelUsage
 
 from .budget_origins import BudgetOrigin, require_budget_origins
-from .costs import assert_cost_window, recover_cost_reservations, reserve_cost, settle_cost
+from .costs import (
+    assert_cost_window,
+    check_cost_allowance,
+    recover_cost_reservations,
+    reserve_cost,
+    settle_cost,
+)
 
 
 def _bounded(value: ColumnElement[int], maximum: int) -> ColumnElement[int]:
@@ -112,6 +120,27 @@ class RunModelBudget:
 
     async def reserve(
         self, *, endpoint: str, tokens: int, final: bool, pricing: ModelPricing | None = None
+    ) -> CallPermit:
+        return await self._reserve(endpoint=endpoint, tokens=tokens, final=final, pricing=pricing)
+
+    async def reserve_unit_attempt(
+        self, *, cost: OperationCost, tokens: int, final: bool
+    ) -> CallPermit:
+        """One model attempt covered by an already owned whole-request quote."""
+        if cost.user_id != self._user_id or cost.quote.pricing.unit != "request":
+            raise BudgetDenied("unit_cost_reservation_inactive")
+        return await self._reserve(
+            endpoint=cost.endpoint, tokens=tokens, final=final, unit_cost=cost
+        )
+
+    async def _reserve(
+        self,
+        *,
+        endpoint: str,
+        tokens: int,
+        final: bool,
+        pricing: ModelPricing | None = None,
+        unit_cost: OperationCost | None = None,
     ) -> CallPermit:
         if tokens < 1 or tokens > MAX_MODEL_TOKENS:
             raise ValueError("invalid_budget_reservation")
@@ -230,18 +259,59 @@ class RunModelBudget:
             if utc(deadline) <= now:
                 raise BudgetDenied("run_deadline_exceeded")
             snapshot = RunBudgetConfig.model_validate(admitted.budget)
-            call_id = uuid7()
-            await reserve_cost(
-                session,
-                call_id=call_id,
-                user_id=self._user_id,
-                endpoint=endpoint,
-                tokens=tokens,
-                pricing=pricing,
-                config=self._config,
-                snapshot=snapshot,
-                now=now,
-            )
+            call_id = unit_cost.call_id if unit_cost else uuid7()
+            if unit_cost is None:
+                await reserve_cost(
+                    session,
+                    call_id=call_id,
+                    user_id=self._user_id,
+                    endpoint=endpoint,
+                    tokens=tokens,
+                    pricing=pricing,
+                    config=self._config,
+                    snapshot=snapshot,
+                    now=now,
+                )
+            else:
+                from .unit_costs import lock_unit_cost
+
+                fee = await lock_unit_cost(session, call_id=call_id, user_id=self._user_id)
+                source = await session.get(TaskRunRecord, call_id)
+                quote = unit_cost.quote
+                if (
+                    fee is None
+                    or source is None
+                    or source.user_id != self._user_id
+                    or (source.id != self._run_id and source.parent_run_id != self._run_id)
+                    or source.status != "running"
+                    or source.contract.get("work_cancel_requested")
+                    or source.deadline is None
+                    or utc(source.deadline) <= datetime.now(UTC)
+                    or fee.state not in {"reserved", "unknown"}
+                    or fee.endpoint != endpoint
+                    or fee.unit != "request"
+                    or fee.unit_maximum_quantity != 1
+                    or quote.maximum_quantity != 1
+                    or fee.currency != quote.pricing.currency
+                    or fee.unit_rate != quote.pricing.rate_per_unit
+                    or fee.unit_quantity is not None
+                    or fee.provider_request_id is not None
+                    or fee.reserved_micros
+                    != unit_charge(quote.pricing.rate_per_unit, quote.maximum_quantity)
+                    or fee.charged_micros != fee.reserved_micros
+                    or await session.get(ModelReservationRecord, call_id) is not None
+                ):
+                    raise BudgetDenied("unit_cost_reservation_inactive")
+                assert_cost_window(utc(fee.created_at), now, (snapshot, self._config))
+                await check_cost_allowance(
+                    session,
+                    user_id=self._user_id,
+                    amount=0,
+                    currency=quote.pricing.currency,
+                    config=self._config,
+                    snapshot=snapshot,
+                    now=now,
+                )
             session.add(
                 ModelReservationRecord(
                     call_id=call_id,
@@ -271,6 +341,7 @@ class RunModelBudget:
                 call_id,
                 ModelUsage(input_tokens=0, output_tokens=0, total_tokens=0, usage_known=True),
                 provider_not_started=True,
+                unit_priced=unit_cost is not None,
             )
 
         try:
@@ -335,12 +406,16 @@ class RunModelBudget:
     async def settle(self, call_id: UUID, usage: ModelUsage | None) -> None:
         await self._settle(call_id, usage, provider_not_started=False)
 
+    async def settle_unit_attempt(self, call_id: UUID, usage: ModelUsage | None) -> None:
+        await self._settle(call_id, usage, provider_not_started=False, unit_priced=True)
+
     async def _settle(
         self,
         call_id: UUID,
         usage: ModelUsage | None,
         *,
         provider_not_started: bool,
+        unit_priced: bool = False,
     ) -> None:
         actual = (
             max(usage.total_tokens, usage.input_tokens + usage.output_tokens)
@@ -364,7 +439,34 @@ class RunModelBudget:
                     .execution_options(synchronize_session=False)
                 )
             ).one_or_none()
-            if provider_not_started:
+            if unit_priced:
+                unit = await session.scalar(
+                    select(ModelCostRecord.unit).where(
+                        ModelCostRecord.call_id == call_id,
+                        ModelCostRecord.user_id == self._user_id,
+                    )
+                )
+                if unit != "request":
+                    raise BudgetDenied("cost_kind_mismatch")
+                # The containing operation owns this quote, including an
+                # earlier catalogue request. Token receipts cannot refund it.
+                if usage is not None and usage.provider_request_id:
+                    recorded = await session.scalar(
+                        update(ModelCostRecord)
+                        .where(
+                            ModelCostRecord.call_id == call_id,
+                            ModelCostRecord.user_id == self._user_id,
+                            or_(
+                                ModelCostRecord.provider_request_id.is_(None),
+                                ModelCostRecord.provider_request_id == usage.provider_request_id,
+                            ),
+                        )
+                        .values(provider_request_id=usage.provider_request_id)
+                        .returning(ModelCostRecord.call_id)
+                    )
+                    if recorded is None:
+                        raise BudgetDenied("cost_receipt_conflict")
+            elif provider_not_started:
                 # Only reserve's postcommit gate uses this private path: its
                 # permit never left the budget, so even unpriced usage is zero.
                 await session.execute(

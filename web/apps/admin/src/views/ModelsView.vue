@@ -27,6 +27,8 @@ interface HubModel {
   max_retries?: number;
   max_tokens?: number | null;
   max_context_tokens?: number;
+  admin_probe_cost_currency?: string | null;
+  admin_probe_request_cost_ceiling?: string | number | null;
   input_cost_per_million?: number | null;
   output_cost_per_million?: number | null;
   cost_currency?: string | null;
@@ -70,7 +72,7 @@ async function testModelConnection() {
   try {
     const result = await api.request<ModelConnectionTestResult>("/api/v1/admin/config/models/test", {
       method: "POST",
-      body: JSON.stringify({ endpoint: draftModelToEndpoint(model) }),
+      body: JSON.stringify({ endpoint_name: activeModelTab.value, endpoint: draftModelToEndpoint(model) }),
     });
     connectionTest.value = result;
     if (!result.ok) {
@@ -105,6 +107,8 @@ function draftModelToEndpoint(m: DraftModel): HubModel {
     max_retries: m.max_retries,
     max_tokens: m.max_tokens ?? null,
     max_context_tokens: m.max_context_tokens,
+    admin_probe_cost_currency: m.admin_probe_cost_currency.trim().toUpperCase() || null,
+    admin_probe_request_cost_ceiling: m.admin_probe_request_cost_ceiling.trim() || null,
     input_cost_per_million: m.input_cost_per_million ?? null,
     output_cost_per_million: m.output_cost_per_million ?? null,
     cost_currency: m.cost_currency.trim().toUpperCase() || null,
@@ -307,6 +311,8 @@ interface DraftModel {
   max_retries: number;
   max_tokens: number;
   max_context_tokens: number;
+  admin_probe_cost_currency: string;
+  admin_probe_request_cost_ceiling: string;
   input_cost_per_million: number | undefined;
   output_cost_per_million: number | undefined;
   cost_currency: string;
@@ -415,6 +421,8 @@ const defaultModel = (): DraftModel => ({
   max_retries: 1,
   max_tokens: 2048,
   max_context_tokens: 131072,
+  admin_probe_cost_currency: "",
+  admin_probe_request_cost_ceiling: "",
   input_cost_per_million: undefined,
   output_cost_per_million: undefined,
   cost_currency: "",
@@ -693,6 +701,8 @@ function hubConfigToDraft(config: HubConfig | undefined | null): DraftState {
       max_retries: m.max_retries ?? 1,
       max_tokens: m.max_tokens ?? 2048,
       max_context_tokens: m.max_context_tokens ?? 131072,
+      admin_probe_cost_currency: m.admin_probe_cost_currency ?? "",
+      admin_probe_request_cost_ceiling: m.admin_probe_request_cost_ceiling == null ? "" : String(m.admin_probe_request_cost_ceiling),
       input_cost_per_million: m.input_cost_per_million ?? undefined,
       output_cost_per_million: m.output_cost_per_million ?? undefined,
       cost_currency: m.cost_currency ?? "",
@@ -789,7 +799,9 @@ function draftToHubConfig(d: DraftState): HubConfig {
       max_retries: m.max_retries,
       max_tokens: m.max_tokens ?? null,
       max_context_tokens: m.max_context_tokens,
-      input_cost_per_million: m.input_cost_per_million ?? null,
+      admin_probe_cost_currency: m.admin_probe_cost_currency.trim().toUpperCase() || null,
+    admin_probe_request_cost_ceiling: m.admin_probe_request_cost_ceiling.trim() || null,
+    input_cost_per_million: m.input_cost_per_million ?? null,
       output_cost_per_million: m.output_cost_per_million ?? null,
       cost_currency: m.cost_currency.trim().toUpperCase() || null,
     request_cost_ceiling: m.kind === "text" ? null : m.request_cost_ceiling.trim() || null,
@@ -1704,6 +1716,9 @@ onActivated(() => {
                       <label class="field"><span>协议预留 tokens</span><el-input-number v-model="draft.models[activeModelTab].context_tokenizer!.protocol_reserve_tokens" :min="256" :max="131072" /></label>
                     </template>
                     <label class="field"><span>计价币种（如 CNY、USD）</span><el-input v-model="draft.models[activeModelTab].cost_currency" placeholder="未填写时不跨端点汇总" maxlength="3" /></label>
+                    <label class="field"><span>连接自检币种</span><el-input v-model="draft.models[activeModelTab].admin_probe_cost_currency" placeholder="例如 CNY" /></label>
+                    <label class="field"><span>完整连接自检费用上限</span><el-input v-model="draft.models[activeModelTab].admin_probe_request_cost_ceiling" inputmode="decimal" placeholder="需明确报价；免费填 0" /></label>
+                    <p class="hint-text">此报价仅用于一次连接自检：最多一次本地目录请求及一次文本推理，不重试。需填写币种和上限；免费需明确填 0。图片/视频模型的账号自检使用文本模型，不能沿用媒体报价；未知实际账单保留预留费用。</p>
                     <label class="field"><span>输入单价 / 百万 tokens（留空为未知）</span><el-input-number v-model="draft.models[activeModelTab].input_cost_per_million" :min="0" :step="0.01" controls-position="right" /></label>
                     <label class="field"><span>输出单价 / 百万 tokens（留空为未知）</span><el-input-number v-model="draft.models[activeModelTab].output_cost_per_million" :min="0" :step="0.01" controls-position="right" /></label>
                     <template v-if="draft.models[activeModelTab].kind !== 'text'">

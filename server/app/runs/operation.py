@@ -14,7 +14,7 @@ from app.db import AppUserRecord, Database, ModelCostRecord, TaskRunRecord
 from app.db.claims import assert_current_claim
 from app.harness.budget import BudgetDenied, budget_scope, tool_budget_scope
 from app.harness.guarded_call import guarded_call, guarded_inline_call
-from app.harness.operations import OperationPolicy
+from app.harness.operations import OperationCost, OperationPolicy, operation_cost_scope
 from app.harness.source_cleanup import close_after_source
 from app.harness.time import utc
 from app.harness.unit_costs import unit_charge
@@ -377,7 +377,13 @@ async def operate_with_run(
                     raise
 
     try:
-        with budget_scope(budget), tool_budget_scope(budget.tool_budget if budget else None):
+        with (
+            budget_scope(budget),
+            tool_budget_scope(budget.tool_budget if budget else None),
+            operation_cost_scope(
+                OperationCost(run_id, user_id, cost_endpoint, quote) if quote else None
+            ),
+        ):
             await check(run_id)
             async with asyncio.timeout(max(0, (deadline - datetime.now(UTC)).total_seconds())):
                 guard = guarded_inline_call if cooperative else guarded_call

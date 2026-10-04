@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Iterator
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass
 from typing import Protocol
 from uuid import UUID
@@ -17,6 +19,30 @@ class OperationPolicy:
     config_version: int
     budget: tuple[tuple[str, str | int | float | bool | None], ...]
     unit_quote: UnitCostQuote | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class OperationCost:
+    call_id: UUID
+    user_id: UUID
+    endpoint: str
+    quote: UnitCostQuote
+
+
+_OPERATION_COST: ContextVar[OperationCost | None] = ContextVar("operation_cost", default=None)
+
+
+def current_operation_cost() -> OperationCost | None:
+    return _OPERATION_COST.get()
+
+
+@contextmanager
+def operation_cost_scope(cost: OperationCost | None) -> Iterator[None]:
+    token = _OPERATION_COST.set(cost)
+    try:
+        yield
+    finally:
+        _OPERATION_COST.reset(token)
 
 
 @dataclass(frozen=True, slots=True)
