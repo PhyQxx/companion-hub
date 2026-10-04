@@ -70,7 +70,7 @@ def evaluate_criteria(
                 validation_level="V1" if state == "passed" else "V0",
             )
         )
-    elif root in {"audio_frames_sent", "voice_reply_sent"}:
+    elif root in {"audio_frames_sent", "voice_reply_sent", "text_with_optional_audio_sent"}:
         reason = run.delivery_reason
         if run.status in {"accepted", "running"}:
             state, reason = "pending", None

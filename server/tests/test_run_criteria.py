@@ -129,7 +129,9 @@ def test_invalid_contract_shape_remains_inconclusive(contract: object) -> None:
     assert goal.criteria[0].reason_code == "criterion_invalid"
 
 
-@pytest.mark.parametrize("criterion", ["audio_frames_sent", "voice_reply_sent"])
+@pytest.mark.parametrize(
+    "criterion", ["audio_frames_sent", "voice_reply_sent", "text_with_optional_audio_sent"]
+)
 @pytest.mark.parametrize(
     ("status", "result", "expected"),
     [

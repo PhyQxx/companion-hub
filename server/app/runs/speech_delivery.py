@@ -50,6 +50,8 @@ class SqlSpeechDelivery:
         self,
         source: VoiceAuthority,
         invoke: Callable[[SpeechDeliveryContext], Awaitable[bool]],
+        *,
+        with_text: bool = False,
     ) -> bool:
         if source.privacy_level == PrivacyLevel.L3:
             raise BudgetDenied("ephemeral_operation_run_forbidden")
@@ -72,6 +74,8 @@ class SqlSpeechDelivery:
             snapshot.version,
             snapshot.config.run_budget,
             parent if isinstance(parent, RunModelBudget) else None,
+            entry="voice.proactive_output" if with_text else "voice.speech_delivery",
+            criterion="text_with_optional_audio_sent" if with_text else "audio_frames_sent",
         )
         status: Literal["failed", "cancelled", "succeeded"] = "failed"
         reason = "speech_delivery_incomplete"
@@ -90,7 +94,7 @@ class SqlSpeechDelivery:
                             lambda: invoke(context), context.validate
                         )
                 if result:
-                    status, reason = "succeeded", "audio_frames_sent"
+                    status, reason = "succeeded", context.criterion
                 return result
             except asyncio.CancelledError:
                 status, reason = "cancelled", "caller_cancelled"
@@ -388,6 +392,8 @@ async def recover_expired_speech_deliveries(database: Database) -> int:
         & (TaskRunRecord.contract["criterion"].as_string() == "audio_frames_sent"),
         (TaskRunRecord.contract["entry"].as_string() == "voice.utterance")
         & (TaskRunRecord.contract["criterion"].as_string() == "voice_reply_sent"),
+        (TaskRunRecord.contract["entry"].as_string() == "voice.proactive_output")
+        & (TaskRunRecord.contract["criterion"].as_string() == "text_with_optional_audio_sent"),
     )
     while True:
         async with database.sessions() as reader:

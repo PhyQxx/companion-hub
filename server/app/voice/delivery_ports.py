@@ -29,6 +29,8 @@ class VoicePricingSource(Protocol):
 
 
 class SpeechDeliveryContext(Protocol):
+    source: VoiceAuthority
+
     async def validate(self) -> None: ...
 
     def synthesize(
@@ -41,6 +43,8 @@ class SpeechDelivery(Protocol):
         self,
         source: VoiceAuthority,
         invoke: Callable[[SpeechDeliveryContext], Awaitable[bool]],
+        *,
+        with_text: bool = False,
     ) -> bool: ...
 
 

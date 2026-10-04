@@ -403,6 +403,52 @@ async def test_close_reports_terminal_transaction_failure_instead_of_silent_succ
 
 
 @pytest.mark.parametrize("backend", ["sqlite", "postgresql"])
+async def test_close_after_provider_completion_joins_successful_terminal_sql(
+    backend: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from sqlalchemy.ext.asyncio import AsyncSession
+
+    from app.runs import operation
+    from app.runs.store import transition_run
+
+    storage, owner, _, policy = await fixture(backend, tmp_path)
+    provider = Stream()
+    entered, release, cancelled = asyncio.Event(), asyncio.Event(), asyncio.Event()
+    transition = transition_run
+
+    async def finish(session: AsyncSession, identifier: UUID, status: str) -> None:
+        if status == "succeeded":
+            entered.set()
+            await release.wait()
+        elif status == "cancelled":
+            cancelled.set()
+        await transition(session, identifier, status)
+
+    monkeypatch.setattr(operation, "transition_run", finish)
+    stream = execute(storage, owner, policy, lambda: provider)
+    closing = None
+    try:
+        assert await anext(stream) == b"\x01\x00"
+        await asyncio.wait_for(entered.wait(), 3)
+        assert provider.closed == 1
+        closing = asyncio.create_task(stream.aclose())
+        with pytest.raises(TimeoutError):
+            await asyncio.wait_for(asyncio.shield(closing), 0.15)
+        assert not cancelled.is_set()
+        release.set()
+        await asyncio.wait_for(closing, 3)
+        run, fee = await rows(storage)
+        assert run.status == "succeeded" and provider.closed == 1
+        assert fee.state == "unknown" and fee.charged_micros == 5000
+    finally:
+        release.set()
+        if closing is not None:
+            await asyncio.gather(closing, return_exceptions=True)
+        await stream.aclose()
+        await storage.close()
+
+
+@pytest.mark.parametrize("backend", ["sqlite", "postgresql"])
 async def test_producer_inherits_parent_context_and_stops_when_parent_is_cancelled(
     backend: str, tmp_path: Path
 ) -> None:

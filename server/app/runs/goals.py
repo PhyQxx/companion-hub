@@ -71,7 +71,7 @@ def goal_view(
     reason = (
         contract.get(
             "delivery_result"
-            if root in {"audio_frames_sent", "voice_reply_sent"}
+            if root in {"audio_frames_sent", "voice_reply_sent", "text_with_optional_audio_sent"}
             else "delivery_reason"
         )
         if isinstance(root, str)

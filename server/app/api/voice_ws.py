@@ -293,6 +293,9 @@ class VoiceSession:
     turn_id: UUID | None = None
     turn_committed: bool = False
     turn_task: asyncio.Task[None] | None = None
+    proactive_task: asyncio.Task[bool] | None = None
+    proactive_generation_id: UUID | None = None
+    proactive_audio_lease: bool = False
     asr_prefetch: AsrPrefetch | None = None
     asr_tasks: set[asyncio.Task[str]] = field(default_factory=set)
     utterance_source: VoiceSourceClaim | None = None
@@ -362,7 +365,9 @@ class VoiceWebSocketManager:
             session.privacy_level,
         )
 
-    async def _validate_source(self, session: VoiceSession, source: VoiceSourceClaim) -> None:
+    def _check_source(
+        self, session: VoiceSession, source: VoiceSourceClaim, *, privacy: bool = True
+    ) -> None:
         current = self._source_claim(session)
         if (current.user_id, current.conversation_id, current.actor, current.actor_id) != (
             source.user_id,
@@ -371,7 +376,13 @@ class VoiceWebSocketManager:
             source.actor_id,
         ):
             raise BudgetDenied("voice_source_changed")
+        if privacy and session.privacy_level != source.privacy_level:
+            raise BudgetDenied("voice_privacy_changed")
+
+    async def _validate_source(self, session: VoiceSession, source: VoiceSourceClaim) -> None:
+        self._check_source(session, source, privacy=False)
         await self._source_guard.validate(source)
+        self._check_source(session, source, privacy=False)
         if source.privacy_level == PrivacyLevel.L3 and self._voice_turn_delivery is not None:
             self._voice_turn_delivery.validate_ephemeral()
 
@@ -456,13 +467,13 @@ class VoiceWebSocketManager:
         if other is None or other is exclude:
             return
         try:
-            if other.turn_task is not None:
+            if other.turn_task is not None or other.proactive_task is not None:
                 await self._send(
                     other,
                     "voice.audio_preempted",
                     {
-                        "generation_id": str(other.generation_id)
-                        if other.generation_id
+                        "generation_id": str(other.generation_id or other.proactive_generation_id)
+                        if other.generation_id or other.proactive_generation_id
                         else None,
                         "by_device": str(exclude.device_id) if exclude else None,
                     },
@@ -760,6 +771,8 @@ class VoiceWebSocketManager:
             if session.principal.user_id == user_id
             and session.conversation_id is not None
             and session.turn_task is None
+            and session.proactive_task is None
+            and not session.collecting
             and _privacy_rank(privacy_level) <= _privacy_rank(session.privacy_level)
         ]
         results = await asyncio.gather(
@@ -784,16 +797,56 @@ class VoiceWebSocketManager:
         text: str,
         privacy_level: PrivacyLevel,
     ) -> bool:
+        if (
+            session.turn_task is not None or session.proactive_task is not None
+            or session.collecting
+        ):
+            return False
         source = self._source_claim(session)
+        task = asyncio.current_task()
+        assert task is not None
+        session.proactive_task = task
+        text_sent = False
+
+        def committed() -> None:
+            nonlocal text_sent
+            text_sent = True
 
         async def validate() -> None:
             await self._validate_source(session, source)
             if session.privacy_level != source.privacy_level:
                 raise BudgetDenied("voice_privacy_changed")
+            if session.turn_task is not None or session.collecting:
+                raise BudgetDenied("voice_output_preempted")
+            if session.proactive_audio_lease and not await self._still_holds_audio(
+                session.device_id
+            ):
+                raise BudgetDenied("voice_audio_preempted")
 
-        return await guarded_inline_call(
-            lambda: self._send_proactive_body(session, text, privacy_level, source), validate
-        )
+        try:
+            if self._speech_delivery is not None and source.privacy_level != PrivacyLevel.L3:
+                async def deliver(context: SpeechDeliveryContext) -> bool:
+                    return await guarded_inline_call(
+                        lambda: self._send_proactive_body(
+                            session, text, privacy_level, source, delivery=context,
+                            source_validate=validate, on_text_sent=committed,
+                        ),
+                        validate,
+                    )
+
+                result = await self._speech_delivery.execute(source, deliver, with_text=True)
+                # Notification fanout counts the text already sent even when
+                # selected audio fails; the owned delivery run records failure.
+                return result or text_sent
+            return await guarded_inline_call(
+                lambda: self._send_proactive_body(
+                    session, text, privacy_level, source, source_validate=validate
+                ), validate
+            )
+        finally:
+            if session.proactive_task is task:
+                session.proactive_task = None
+                session.proactive_generation_id = None
 
     async def _send_proactive_body(
         self,
@@ -801,14 +854,26 @@ class VoiceWebSocketManager:
         text: str,
         privacy_level: PrivacyLevel,
         source: VoiceSourceClaim,
+        *,
+        delivery: SpeechDeliveryContext | None = None,
+        source_validate: Callable[[], Awaitable[None]] | None = None,
+        on_text_sent: Callable[[], None] | None = None,
     ) -> bool:
+        async def check() -> None:
+            if source_validate is not None:
+                await source_validate()
+            if delivery is not None:
+                await delivery.validate()
+            self._check_source(session, source)
+            if session.turn_task is not None or session.collecting:
+                raise BudgetDenied("voice_output_preempted")
+
+        async def send(kind: str, payload: dict[str, Any]) -> None:
+            await self._send(session, kind, payload, validate=check)
+
         generation_id = uuid7()
-        if privacy_level in {PrivacyLevel.L0, PrivacyLevel.L1}:
-            self._schedule_avatar_control(
-                session.principal.user_id, with_reply_text({}, text)
-            )
-        await self._send(
-            session,
+        session.proactive_generation_id = generation_id
+        await send(
             "proactive.committed",
             {
                 "generation_id": str(generation_id),
@@ -816,6 +881,12 @@ class VoiceWebSocketManager:
                 "privacy_level": str(privacy_level),
             },
         )
+        if on_text_sent is not None:
+            on_text_sent()
+        if privacy_level in {PrivacyLevel.L0, PrivacyLevel.L1}:
+            self._schedule_avatar_control(
+                session.principal.user_id, with_reply_text({}, text)
+            )
         _, tts_chain = await self._voice_source.resolve()
         if tts_chain is None:
             return True
@@ -823,17 +894,54 @@ class VoiceWebSocketManager:
         if not speech_text:
             return True
         try:
-            selection = await tts_chain.select(speech_text, privacy_level=privacy_level)
+            selection = await tts_chain.select(
+                speech_text, privacy_level=source.privacy_level,
+                stream_factory=(
+                    (lambda provider: delivery.synthesize(
+                        provider, speech_text, source.privacy_level
+                    ))
+                    if delivery is not None else None
+                ),
+            )
         except LocalOnlySynthesizerError:
-            await self._send(
-                session,
+            await send(
                 "voice.tts_unavailable",
                 {"reason": "local_tts_required"},
             )
             return True
-        async with close_after_source(lambda: close_audio_stream(selection.stream)):
-            await self._send(
-                session,
+        except BudgetDenied:
+            raise
+        except Exception:
+            if delivery is None:
+                raise
+            logger.warning("proactive voice TTS generation failed", exc_info=True)
+            return False
+        async def release_audio() -> None:
+            if session.proactive_audio_lease and self._turns is not None:
+                try:
+                    await self._turns.release_audio_lease(session.device_id)
+                finally:
+                    session.proactive_audio_lease = False
+
+        async def close() -> None:
+            async with close_after_source(release_audio):
+                await close_audio_stream(selection.stream)
+
+        async with close_after_source(close):
+            if self._turns is not None:
+                async def acquire() -> None:
+                    assert self._turns is not None
+                    lease = await self._turns.acquire_audio_lease(
+                        session.device_id, generation_id, ttl_seconds=120
+                    )
+                    session.proactive_audio_lease = lease.acquired
+                    if not lease.acquired:
+                        raise BudgetDenied("voice_audio_lease_unavailable")
+                    if lease.previous_holder is not None:
+                        await self._preempt_audio_holder(lease.previous_holder, exclude=session)
+
+                await join_on_cancel(acquire(), name="voice-proactive-lease")
+            await send(
                 "voice.sentence",
                 {
                     "generation_id": str(generation_id),
@@ -845,19 +953,16 @@ class VoiceWebSocketManager:
                 },
             )
             try:
-                await self._validate_source(session, source)
-                await self._send_bytes(session, selection.first_chunk)
+                await self._send_bytes(session, selection.first_chunk, validate=check)
                 async for chunk in selection.stream:
-                    await self._validate_source(session, source)
-                    await self._send_bytes(session, chunk)
+                    await self._send_bytes(session, chunk, validate=check)
             except BudgetDenied:
                 raise
             except Exception:
                 tts_chain.report_failure(selection.provider)
                 logger.warning("proactive voice TTS failed", exc_info=True)
-                return True
-            await self._send(
-                session,
+                return delivery is None
+            await send(
                 "voice.sentence.end",
                 {"generation_id": str(generation_id), "index": 0},
             )
@@ -874,6 +979,8 @@ class VoiceWebSocketManager:
             case "voice.hello":
                 await self._on_hello(session, frame)
             case "utterance.begin":
+                if session.proactive_task is not None:
+                    await self._interrupt(session, reason="user_speech")
                 self._discard_capture(session)
                 session.ptt_active = True
                 session.wake_armed = True
@@ -905,6 +1012,7 @@ class VoiceWebSocketManager:
         if session.turn_task is not None:
             await self._send(session, "voice.error", {"reason": "turn_in_progress"})
             return
+        await self._interrupt(session, reason="text_submit")
         source = self._source_claim(session)
         # 文字输入无需 ASR，但仍即时解析 TTS 配置，确保后台保存后立刻生效。
         _, tts_chain = await self._voice_source.resolve()
@@ -1030,7 +1138,9 @@ class VoiceWebSocketManager:
             await self._reject_audio(session, "utterance_too_large")
             return
         # 打断仲裁：回合进行中（生成或播报）时，人声能量立即取消
-        if session.generation_id is not None and session.vad.is_voiced(pcm):
+        if (
+            session.generation_id is not None or session.proactive_task is not None
+        ) and session.vad.is_voiced(pcm):
             await self._interrupt(session, reason="barge_in")
             return
         was_speaking = session.vad.speaking
@@ -1866,6 +1976,16 @@ class VoiceWebSocketManager:
 
     async def _interrupt(self, session: VoiceSession, *, reason: str) -> None:
         started = time.perf_counter()
+        proactive_id = session.proactive_generation_id
+        if session.proactive_task is not None:
+            await self._cancel_proactive(session)
+            await self._send(
+                session, "voice.interrupted",
+                {
+                    "generation_id": str(proactive_id) if proactive_id is not None else None,
+                    "reason": reason,
+                },
+            )
         generation_id = session.generation_id
         task = session.turn_task
         if task is None:
@@ -1930,7 +2050,19 @@ class VoiceWebSocketManager:
                 session.generation_id = None
                 session.turn_committed = False
 
+    @staticmethod
+    async def _cancel_proactive(session: VoiceSession) -> None:
+        task = session.proactive_task
+        if task is None or task is asyncio.current_task():
+            return
+        if not task.done() and not task.cancelling():
+            task.cancel()
+        await join_on_cancel(
+            asyncio.gather(task, return_exceptions=True), name="voice-proactive-close"
+        )
+
     async def disconnect(self, session: VoiceSession) -> None:
+        await self._cancel_proactive(session)
         self._discard_capture(session)
         await self._drain_capture_cleanup(session)
         if session.asr_tasks:
@@ -2006,9 +2138,12 @@ class VoiceWebSocketManager:
         )
 
     async def _send(
-        self, session: VoiceSession, event_type: str, payload: dict[str, Any]
+        self, session: VoiceSession, event_type: str, payload: dict[str, Any],
+        *, validate: Callable[[], Awaitable[None]] | None = None,
     ) -> None:
         async with session.send_lock:
+            if validate is not None:
+                await validate()
             delivery = (
                 session.capture_delivery if event_type == "voice.partial_transcript"
                 else session.turn_delivery
@@ -2019,6 +2154,14 @@ class VoiceWebSocketManager:
                 "reply.delta", "reply.committed", "tool.status",
             }:
                 await delivery.validate()
+                if isinstance(delivery.source, VoiceSourceClaim):
+                    self._check_source(session, delivery.source)
+                current_delivery = (
+                    session.capture_delivery if event_type == "voice.partial_transcript"
+                    else session.turn_delivery
+                )
+                if current_delivery is not delivery:
+                    raise BudgetDenied("voice_output_preempted")
             await session.websocket.send_text(
                 json.dumps({"type": event_type, **payload}, ensure_ascii=False)
             )
@@ -2041,10 +2184,20 @@ class VoiceWebSocketManager:
             control = {"speaking": False, "lipSyncMilli": 0}
         self._schedule_avatar_control(session.principal.user_id, control)
 
-    async def _send_bytes(self, session: VoiceSession, chunk: bytes) -> None:
+    async def _send_bytes(
+        self, session: VoiceSession, chunk: bytes,
+        *, validate: Callable[[], Awaitable[None]] | None = None,
+    ) -> None:
         async with session.send_lock:
+            if validate is not None:
+                await validate()
             if session.turn_delivery is not None:
-                await session.turn_delivery.validate()
+                delivery = session.turn_delivery
+                await delivery.validate()
+                if isinstance(delivery.source, VoiceSourceClaim):
+                    self._check_source(session, delivery.source)
+                if session.turn_delivery is not delivery:
+                    raise BudgetDenied("voice_output_preempted")
             await session.websocket.send_bytes(chunk)
 
     async def _keep_connection_alive(

@@ -33,11 +33,11 @@ async def _close_stream(stream: AsyncIterator[object]) -> None:
         await close()
 
 
-async def _join_producer(task: asyncio.Task[None]) -> None:
+async def _join_producer(task: asyncio.Task[None], *, cancel: bool) -> None:
     owner = asyncio.current_task()
     assert owner is not None
     initial_cancellations = owner.cancelling()
-    if not task.done():
+    if cancel and not task.done() and not task.cancelling():
         task.cancel()
     # Consumer close must wait for the operation's SQL/stream cleanup. Further
     # caller cancellation is recorded without cancelling that cleanup again.
@@ -81,11 +81,20 @@ async def stream_with_run(
     """
     queue: asyncio.Queue[_Chunk[T] | _Terminal] = asyncio.Queue(maxsize=1)
     closing = False
+    finishing = False
 
     async def invoke(start: Callable[[], Awaitable[None]]) -> dict[str, str]:
         await start()
         stream = create_stream()
-        async with close_after_source(lambda: _close_stream(stream)):
+
+        async def close() -> None:
+            nonlocal finishing
+            # Once the provider has ended, consumer close joins its cleanup
+            # and SQL result instead of injecting a new cancellation there.
+            finishing = True
+            await _close_stream(stream)
+
+        async with close_after_source(close):
             async for chunk in stream:
                 await queue.put(_Chunk(chunk))
         return evidence()
@@ -121,7 +130,7 @@ async def stream_with_run(
     async def close_producer() -> None:
         nonlocal closing
         closing = True
-        await _join_producer(producer)
+        await _join_producer(producer, cancel=not finishing)
 
     async with close_after_source(close_producer):
         while True:
