@@ -20,7 +20,13 @@ from app.db import (
     TaskRunRecord,
 )
 from app.db.claims import assert_current_claim
-from app.harness.budget import BudgetDenied, budget_scope, current_budget, tool_budget_scope
+from app.harness.budget import (
+    BudgetDenied,
+    budget_scope,
+    current_budget,
+    current_tool_budget,
+    tool_budget_scope,
+)
 from app.harness.guarded_call import guarded_call
 from app.harness.run_trace import DisabledRunTrace, current_run_trace, run_trace_scope
 from app.ids import uuid7
@@ -28,6 +34,8 @@ from app.llm.contracts import CompletionRequest, CompletionResult
 from app.schemas import PrivacyLevel
 
 from .budget import RunModelBudget, utc
+from .budget_origins import require_budget_origins
+from .parent_budget import ParentBudgetScope, current_parent_budget
 from .store import append_run_event, transition_run
 from .trace_sources import check_trace_binding, extend_run_trace, require_run_trace, trace_source
 
@@ -91,6 +99,17 @@ async def complete_with_run(
         if len(trace.sources) >= 32:
             raise BudgetDenied("run_trace_changed")
 
+    inherited = None if trace else current_budget()
+    if trace is None and (
+        isinstance(inherited, RunModelBudget)
+        or (inherited is None and current_tool_budget() is not None)
+    ):
+        inherited = current_parent_budget(database, user_id)
+        if inherited is not None:
+            inherited = ParentBudgetScope.capture(inherited).restore(
+                database, snapshot.config.run_budget
+            )
+
     async def validate(run_id: UUID | None) -> None:
         async with database.sessions() as session:
             await assert_current_claim(session)
@@ -114,7 +133,39 @@ async def complete_with_run(
                     or run.contract.get("work_cancel_requested")
                 ):
                     raise BudgetDenied("budget_run_inactive")
-                if run.deadline and utc(run.deadline) <= datetime.now(UTC):
+                completed_parent = (
+                    isinstance(inherited, RunModelBudget)
+                    and inherited.phase == "maintenance"
+                    and run.status == "succeeded"
+                )
+                if isinstance(inherited, RunModelBudget):
+                    if not run.budget or run.budget.get("enabled") is not True:
+                        raise BudgetDenied("budget_snapshot_missing")
+                    statuses = (
+                        {"accepted", "running"}
+                        if inherited.phase == "interactive"
+                        else {"succeeded"}
+                    )
+                    if inherited.phase == "maintenance" and inherited.allow_active_parent:
+                        statuses |= {"accepted", "running"}
+                    if run.status not in statuses:
+                        raise BudgetDenied("budget_run_inactive")
+                    if run.contract.get("budget_usage_overflow"):
+                        raise BudgetDenied("budget_usage_overflow")
+                    if str(run.privacy_level) > str(request.privacy_level):
+                        raise BudgetDenied("operation_privacy_downgrade")
+                    if utc(inherited.delivery_deadline) <= datetime.now(UTC):
+                        raise BudgetDenied("run_deadline_exceeded")
+                    await require_budget_origins(
+                        session,
+                        inherited.origins,
+                        run_id=inherited.run_id,
+                        user_id=user_id,
+                        privacy_level=request.privacy_level,
+                    )
+                    if not completed_parent and run.deadline is None:
+                        raise BudgetDenied("run_deadline_exceeded")
+                if not completed_parent and run.deadline and utc(run.deadline) <= datetime.now(UTC):
                     raise BudgetDenied("run_deadline_exceeded")
         if expires_at is not None and utc(expires_at) <= datetime.now(UTC):
             raise BudgetDenied("run_deadline_exceeded")
@@ -126,15 +177,17 @@ async def complete_with_run(
             except Exception as error:
                 raise BudgetDenied("model_source_check_failed") from error
 
-    inherited = None if trace else current_budget()
     if isinstance(inherited, RunModelBudget) and inherited.owner_id != user_id:
         raise BudgetDenied("budget_owner_invalid")
     if inherited is not None:
         # Workers already own a durable run and its cancellation/budget fence.
-        return await guarded_call(
-            lambda: complete(request),
-            lambda: validate(inherited.run_id if isinstance(inherited, RunModelBudget) else None),
-        )
+        with budget_scope(inherited), tool_budget_scope(None):
+            return await guarded_call(
+                lambda: complete(request),
+                lambda: validate(
+                    inherited.run_id if isinstance(inherited, RunModelBudget) else None
+                ),
+            )
     await validate(None)
     await recover_expired_model_runs(database)
     now = datetime.now(UTC)
