@@ -10,7 +10,7 @@ from datetime import timedelta
 from typing import TypeVar
 
 from app.config import DatabaseConfigStore
-from app.harness.budget import BudgetDenied, budget_scope, current_budget
+from app.harness.budget import BudgetDenied, budget_scope, current_budget, current_tool_budget
 from app.harness.joined_read import join_on_cancel
 from app.harness.operations import OperationPolicy
 from app.harness.source_cleanup import close_after_source
@@ -32,8 +32,15 @@ class SqlVoiceTurnDelivery:
 
     def validate_ephemeral(self) -> None:
         config = self.speech.config.current.config.run_budget
-        if config.max_daily_cost is not None or config.max_monthly_cost is not None:
-            # L3 cannot create the durable reservation needed by a money cap.
+        if (
+            current_budget() is not None
+            or current_tool_budget() is not None
+            or config.max_daily_cost is not None
+            or config.max_monthly_cost is not None
+        ):
+            # A durable parent may retain a monetary cap absent from the
+            # current global config. L3 cannot create its unit reservations or
+            # safely replace that quota with an unmetered legacy invocation.
             raise BudgetDenied("ephemeral_operation_run_forbidden")
 
     async def start(self, source: VoiceSourceClaim) -> VoiceTurnContext:

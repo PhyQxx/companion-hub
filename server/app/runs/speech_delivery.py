@@ -151,6 +151,12 @@ class _Delivery:
         if self.deadline <= now:
             raise BudgetDenied("run_deadline_exceeded")
         for row in rows:
+            completed_parent = (
+                self.parent is not None
+                and row.id == self.parent.run_id
+                and self.parent.phase == "maintenance"
+                and row.status == "succeeded"
+            )
             if row.id == self.run_id and (
                 row.parent_run_id != (self.parent.run_id if self.parent else None)
                 or row.conversation_id
@@ -173,7 +179,7 @@ class _Delivery:
                 raise BudgetDenied("chat_parent_scope_invalid")
             if (
                 row.user_id != self.source.user_id
-                or row.status not in {"accepted", "running"}
+                or (row.status not in {"accepted", "running"} and not completed_parent)
                 or row.contract.get("work_cancel_requested")
             ):
                 raise BudgetDenied("budget_run_inactive")
@@ -187,7 +193,7 @@ class _Delivery:
                 raise BudgetDenied("budget_snapshot_missing")
             if row.privacy_level > str(self.source.privacy_level):
                 raise BudgetDenied("operation_privacy_downgrade")
-            if row.deadline is not None and utc(row.deadline) <= now:
+            if not completed_parent and row.deadline is not None and utc(row.deadline) <= now:
                 raise BudgetDenied("run_deadline_exceeded")
 
     async def create(self) -> None:
@@ -214,7 +220,8 @@ class _Delivery:
                 )
                 if row is None:
                     raise BudgetDenied("budget_run_inactive")
-                if row.deadline is None:
+                completed_parent = self.parent.phase == "maintenance" and row.status == "succeeded"
+                if not completed_parent and row.deadline is None:
                     raise BudgetDenied("run_deadline_exceeded")
                 self.parent_conversation_id = row.conversation_id
                 assert self._quota_scope is not None
@@ -230,7 +237,8 @@ class _Delivery:
                         else None,
                     }
                 )
-                self.deadline = min(self.deadline, utc(row.deadline))
+                if not completed_parent and row.deadline is not None:
+                    self.deadline = min(self.deadline, utc(row.deadline))
                 assert self._quota_scope is not None
                 self.deadline = min(self.deadline, utc(self._quota_scope.delivery_deadline))
                 if row.conversation_id is not None:
@@ -362,6 +370,7 @@ class _Delivery:
                     True,
                     check_lineage=True,
                     conversation_id=self.parent_conversation_id,
+                    allow_succeeded=self.parent.phase == "maintenance",
                 ),
             )
         await self.port.source_guard.validate_live_runs(self.source, fences)

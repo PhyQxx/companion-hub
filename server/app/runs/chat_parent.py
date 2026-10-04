@@ -199,7 +199,7 @@ async def require_chat_parent(
                 True,
                 check_lineage=True,
                 conversation_id=scope.quota_conversation_id,
-                allow_succeeded=allow_succeeded,
+                allow_succeeded=allow_succeeded or scope.phase == "maintenance",
             ),
         )
         if child_id is not None:

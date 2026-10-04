@@ -86,7 +86,11 @@ async def test_operation_rechecks_authority_between_guard_and_write(
                     variants: dict[str, dict[str, Any]] = {
                         "cancel": {"status": "cancelled"},
                         "privacy": {"privacy_level": "L2"},
-                        "cost": {"budget": {"cost_currency": "CNY", "max_daily_cost": 1}},
+                        "cost": {
+                            "budget": RunBudgetConfig(
+                                cost_currency="CNY", max_daily_cost=1
+                            ).model_dump(mode="json")
+                        },
                         "deadline": {"deadline": datetime.now(UTC) - timedelta(seconds=1)},
                     }
                     await session.execute(

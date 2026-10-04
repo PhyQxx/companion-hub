@@ -54,6 +54,16 @@ async def operate_with_run(
         not isinstance(parent, RunModelBudget) or parent.owner_id != user_id
     ):
         raise BudgetDenied("budget_owner_invalid")
+    if isinstance(parent, RunModelBudget):
+        parent = RunModelBudget(
+            database,
+            run_id=parent.run_id,
+            user_id=parent.owner_id,
+            config=parent.budget_config.model_copy(deep=True),
+            phase=parent.phase,
+            allow_active_parent=parent.allow_active_parent,
+            delivery_deadline=parent.delivery_deadline,
+        )
     quota_parent_id = parent.run_id if isinstance(parent, RunModelBudget) else None
     parent_id = trace_parent_id or quota_parent_id
     parent_ids = tuple(dict.fromkeys(value for value in (quota_parent_id, parent_id) if value))
@@ -64,6 +74,8 @@ async def operate_with_run(
     run_id = uuid7()
     now = datetime.now(UTC)
     deadline = now + timedelta(seconds=config.maintenance_deadline_seconds)
+    if isinstance(parent, RunModelBudget):
+        deadline = min(deadline, utc(parent.delivery_deadline))
 
     def validate_rows(rows: list[TaskRunRecord]) -> None:
         current_time = datetime.now(UTC)
@@ -77,9 +89,21 @@ async def operate_with_run(
             # Media cannot bypass a monetary cap before unit pricing exists.
             raise BudgetDenied(missing_quote_reason)
         for row in rows:
+            completed_parent = (
+                row.id == quota_parent_id
+                and isinstance(parent, RunModelBudget)
+                and parent.phase == "maintenance"
+                and row.status == "succeeded"
+            )
+            if row.id == quota_parent_id and (
+                not row.budget or row.budget.get("enabled") is not True
+            ):
+                raise BudgetDenied("budget_snapshot_missing")
+            if row.id == quota_parent_id and not completed_parent and row.deadline is None:
+                raise BudgetDenied("run_deadline_exceeded")
             if (
                 row.user_id != user_id
-                or row.status not in {"accepted", "running"}
+                or (row.status not in {"accepted", "running"} and not completed_parent)
                 or row.contract.get("work_cancel_requested")
             ):
                 raise BudgetDenied("budget_run_inactive")
@@ -87,7 +111,11 @@ async def operate_with_run(
                 raise BudgetDenied("budget_usage_overflow")
             if int(str(row.privacy_level)[1]) > int(str(privacy_level)[1]):
                 raise BudgetDenied("operation_privacy_downgrade")
-            if row.deadline is not None and utc(row.deadline) <= current_time:
+            if (
+                not completed_parent
+                and row.deadline is not None
+                and utc(row.deadline) <= current_time
+            ):
                 raise BudgetDenied("run_deadline_exceeded")
             if (
                 quote is None
