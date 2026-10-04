@@ -32,9 +32,15 @@ class RunToolBudget:
         config: RunBudgetConfig,
         maintenance: bool = False,
         deadline: datetime | None = None,
+        allow_active_model_parent: bool | None = None,
     ) -> None:
         self._database, self._run_id, self._user_id = database, run_id, user_id
         self._config, self._maintenance = config, maintenance
+        # Tool maintenance may execute on an active root, while a model-origin
+        # facade can still forbid model maintenance until that root completes.
+        self._allow_active_model_parent = (
+            maintenance if allow_active_model_parent is None else allow_active_model_parent
+        )
         self._deadline = deadline or datetime.now(UTC) + timedelta(
             seconds=config.maintenance_deadline_seconds
         )
@@ -54,6 +60,10 @@ class RunToolBudget:
     @property
     def maintenance(self) -> bool:
         return self._maintenance
+
+    @property
+    def allow_active_model_parent(self) -> bool:
+        return self._allow_active_model_parent
 
     @property
     def delivery_deadline(self) -> datetime:

@@ -132,7 +132,7 @@ def current_parent_budget(database: Database, user_id: UUID) -> RunModelBudget |
             user_id=user_id,
             config=tool.budget_config.model_copy(deep=True),
             phase="maintenance" if tool.maintenance else "interactive",
-            allow_active_parent=tool.maintenance,
+            allow_active_parent=tool.allow_active_model_parent,
             delivery_deadline=tool.delivery_deadline,
         )
     assert isinstance(model, RunModelBudget)
@@ -144,6 +144,7 @@ def current_parent_budget(database: Database, user_id: UUID) -> RunModelBudget |
         scope = scope.model_copy(
             update={
                 "delivery_deadline": min(utc(model.delivery_deadline), utc(tool.delivery_deadline)),
+                "allow_active_parent": model.allow_active_parent and tool.allow_active_model_parent,
             }
         )
         return scope.restore(database, tool.budget_config)

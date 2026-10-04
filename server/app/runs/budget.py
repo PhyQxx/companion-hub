@@ -69,6 +69,7 @@ class RunModelBudget:
             user_id=self._user_id,
             config=self._config,
             maintenance=self._phase == "maintenance",
+            allow_active_model_parent=self._allow_active_parent,
             deadline=self._maintenance_deadline,
         )
 
