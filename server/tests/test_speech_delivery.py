@@ -514,15 +514,23 @@ async def test_speech_trace_children_share_an_existing_root_budget(
 
 @pytest.mark.parametrize("backend", ["sqlite", "postgresql"])
 async def test_recovery_fails_only_expired_speech_scopes_and_keeps_unknown_fee(
-    backend: str, tmp_path: Path
+    backend: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     from datetime import timedelta
 
-    from app.runs.speech_delivery import recover_expired_speech_deliveries
+    from app.runs.speech_delivery import _Delivery, recover_expired_speech_deliveries
 
     provider = Synthesizer(AudioStream(None))
     storage, recipient, manager, _, _ = await fixture(backend, tmp_path, [provider])
     entered, release = asyncio.Event(), asyncio.Event()
+    validation_lock = asyncio.Lock()
+    original_validate = _Delivery.validate
+
+    async def validate(context: _Delivery) -> None:
+        async with validation_lock:
+            await original_validate(context)
+
+    monkeypatch.setattr(_Delivery, "validate", validate)
 
     async def emit(kind: str, payload: dict[str, JsonValue]) -> None:
         if kind == "pet.audio.end":
@@ -539,13 +547,16 @@ async def test_recovery_fails_only_expired_speech_scopes_and_keeps_unknown_fee(
                 )
             )
             assert root is not None
-        async with storage.database.sessions.begin() as session:
-            await session.execute(
-                update(TaskRunRecord)
-                .where(TaskRunRecord.id == root.id)
-                .values(deadline=datetime.now(UTC) - timedelta(seconds=1))
-            )
-        assert await recover_expired_speech_deliveries(storage.database) == 1
+        # Recovery owns this transition; keep the live delivery watcher from
+        # racing the same expiry and legitimately finishing the row first.
+        async with validation_lock:
+            async with storage.database.sessions.begin() as session:
+                await session.execute(
+                    update(TaskRunRecord)
+                    .where(TaskRunRecord.id == root.id)
+                    .values(deadline=datetime.now(UTC) - timedelta(seconds=1))
+                )
+            assert await recover_expired_speech_deliveries(storage.database) == 1
         assert await recover_expired_speech_deliveries(storage.database) == 0
         with pytest.raises(BudgetDenied):
             await asyncio.wait_for(task, 3)

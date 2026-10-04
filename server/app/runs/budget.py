@@ -86,6 +86,18 @@ class RunModelBudget:
         return self._config
 
     @property
+    def phase(self) -> Literal["interactive", "maintenance"]:
+        return self._phase
+
+    @property
+    def allow_active_parent(self) -> bool:
+        return self._allow_active_parent
+
+    @property
+    def delivery_deadline(self) -> datetime:
+        return self._maintenance_deadline
+
+    @property
     def remaining_delivery_seconds(self) -> float:
         return max(0.0, (utc(self._maintenance_deadline) - datetime.now(UTC)).total_seconds())
 

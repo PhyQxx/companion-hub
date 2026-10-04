@@ -60,6 +60,9 @@ class VoiceTurnContext(SpeechDeliveryContext, Protocol):
     run_id: UUID
     deadline: datetime
 
+    @property
+    def quota_scope(self) -> dict[str, object] | None: ...
+
     def bind(self) -> AbstractContextManager[None]: ...
 
     async def transcribe(

@@ -1671,6 +1671,7 @@ class VoiceWebSocketManager:
                 client_location=session.location,
                 llm_route=LLMRoute.VOICE,
                 parent_run_id=delivery.run_id if delivery is not None else None,
+                parent_budget_scope=delivery.quota_scope if delivery is not None else None,
             )
             generation_id = pending.generation_id
             session.generation_id = generation_id

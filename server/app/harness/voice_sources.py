@@ -35,6 +35,14 @@ class VoiceSourceGuard(Protocol):
 class VoiceRunFence:
     run_id: UUID
     budget_enabled: bool
+    check_lineage: bool = False
+    parent_run_id: UUID | None = None
+    conversation_id: UUID | None = None
+    quota_scope: dict[str, object] | None = None
+    allow_succeeded: bool = False
+    check_source: bool = False
+    source_actor: str | None = None
+    source_id: UUID | None = None
 
 
 class RootVoiceSourceGuard(VoiceSourceGuard, Protocol):

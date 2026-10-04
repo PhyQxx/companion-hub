@@ -62,6 +62,7 @@ from app.runs.budget import RunModelBudget, recover_stale_reservations
 from app.runs.chat_parent import require_chat_parent, validate_parent
 from app.runs.completion import recover_expired_model_runs
 from app.runs.delivery import recover_expired_deliveries
+from app.runs.parent_budget import ParentBudgetScope
 from app.runs.resources import recover_tool_reservations
 from app.runs.speech_delivery import recover_expired_speech_deliveries
 from app.runs.store import RunStore, append_run_event, transition_run
@@ -389,6 +390,7 @@ class PendingTurn:
     context_references: tuple[ContextReference, ...] = ()
     parent_run_id: UUID | None = None
     parent_budget_enabled: bool = False
+    parent_budget_scope: dict[str, object] | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -771,7 +773,14 @@ class ChatService:
         llm_route: LLMRoute = LLMRoute.DIALOGUE,
         client_request_id: str | None = None,
         parent_run_id: UUID | None = None,
+        parent_budget_scope: dict[str, object] | None = None,
     ) -> PendingTurn:
+        if parent_budget_scope is not None:
+            if parent_run_id is None:
+                raise BudgetDenied("chat_parent_scope_invalid")
+            parent_budget_scope = ParentBudgetScope.read(parent_budget_scope).model_dump(
+                mode="json"
+            )
         if client_request_id is not None and not 1 <= len(client_request_id) <= 160:
             raise ValueError("invalid_client_request_id")
         if privacy_level is PrivacyLevel.L3:
@@ -808,8 +817,11 @@ class ChatService:
                         conversation_id=conversation_id,
                         privacy_level=privacy_level,
                         lock=True,
+                        quota_scope=parent_budget_scope,
                     )
-                    parent_budget_enabled = bool(parent.budget and parent.budget.get("enabled"))
+                    parent_budget_enabled = parent_budget_scope is not None or bool(
+                        parent.budget and parent.budget.get("enabled")
+                    )
                 user = await session.get(AppUserRecord, user_id)
                 if user is None or user.status != "active":
                     raise LookupError("active user not found")
@@ -901,6 +913,7 @@ class ChatService:
                         "criterion": "reply_committed",
                         "required_work": [],
                         **({"budget_parent_id": str(parent_run_id)} if parent_run_id else {}),
+                        **({"quota_scope": parent_budget_scope} if parent_budget_scope else {}),
                     },
                     budget=snapshot.config.run_budget.model_dump(mode="json"),
                     deadline=now
@@ -915,6 +928,13 @@ class ChatService:
                     created_at=now,
                     updated_at=now,
                 )
+                if parent is not None and parent.deadline is not None:
+                    inherited_deadline = _aware(parent.deadline)
+                    run.deadline = (
+                        min(_aware(run.deadline), inherited_deadline)
+                        if run.deadline is not None
+                        else inherited_deadline
+                    )
                 session.add(run)
                 await session.flush()
                 await append_run_event(session, run, "run.accepted")
@@ -938,6 +958,7 @@ class ChatService:
                         user_id=user_id,
                         conversation_id=conversation_id,
                         privacy_level=privacy_level,
+                        quota_scope=parent_budget_scope,
                     )
 
         except IntegrityError as error:
@@ -1292,6 +1313,7 @@ class ChatService:
             user_timezone=user_timezone,
             parent_run_id=parent_run_id,
             parent_budget_enabled=parent_budget_enabled,
+            parent_budget_scope=parent_budget_scope,
             memory_retrieval=memory_retrieval,
             history_recall=history_recall,
             screen_activity_recall=screen_activity_recall,
@@ -1456,6 +1478,10 @@ class ChatService:
         )
         if not enabled:
             return None
+        if pending.parent_budget_scope is not None:
+            return ParentBudgetScope.read(pending.parent_budget_scope).restore(
+                self._database, pending.config.run_budget, maintenance=phase == "maintenance"
+            )
         return RunModelBudget(
             self._database,
             run_id=pending.parent_run_id or pending.turn_id,
@@ -1477,6 +1503,7 @@ class ChatService:
                         conversation_id=pending.conversation_id,
                         privacy_level=pending.request.privacy_level,
                         child_id=pending.turn_id,
+                        quota_scope=pending.parent_budget_scope,
                     )
                 run = await session.get(TaskRunRecord, pending.turn_id)
                 owner = await session.get(AppUserRecord, pending.user_id)
@@ -2361,6 +2388,7 @@ class ChatService:
                     privacy_level=pending.request.privacy_level,
                     child_id=pending.turn_id,
                     lock=True,
+                    quota_scope=pending.parent_budget_scope,
                 )
             conversation = await session.scalar(
                 select(ConversationRecord)
@@ -2445,6 +2473,7 @@ class ChatService:
                     user_id=pending.user_id,
                     conversation_id=pending.conversation_id,
                     privacy_level=pending.request.privacy_level,
+                    quota_scope=pending.parent_budget_scope,
                 )
 
         turn_result = ChatTurn(
@@ -2508,6 +2537,11 @@ class ChatService:
                 raise PostcommitSourceGone()
             budget_enabled = bool(run and run.budget and run.budget.get("enabled"))
             parent_run_id = run.parent_run_id if run is not None else None
+            parent_budget_scope = run.contract.get("quota_scope") if run is not None else None
+            if parent_budget_scope is not None:
+                parent_budget_scope = ParentBudgetScope.read(parent_budget_scope).model_dump(
+                    mode="json"
+                )
             if run is not None and run.contract.get("budget_parent_id"):
                 if parent_run_id is None or str(parent_run_id) != run.contract["budget_parent_id"]:
                     raise PostcommitSourceGone()
@@ -2519,8 +2553,11 @@ class ChatService:
                     privacy_level=PrivacyLevel(assistant.privacy_level),
                     child_id=assistant.turn_id,
                     allow_succeeded=True,
+                    quota_scope=parent_budget_scope,
                 )
-                budget_enabled = bool(parent.budget and parent.budget.get("enabled"))
+                budget_enabled = parent_budget_scope is not None or bool(
+                    parent.budget and parent.budget.get("enabled")
+                )
             references = tuple(
                 ContextReference(**ref)
                 for group in meta.get("context_sources", [])
@@ -2587,6 +2624,7 @@ class ChatService:
             memory_retrieval=retrieval,
             parent_run_id=parent_run_id,
             parent_budget_enabled=budget_enabled if parent_run_id else False,
+            parent_budget_scope=parent_budget_scope,
         )
         with budget_scope(
             self._model_budget(pending, phase="maintenance") if budget_enabled else None
@@ -3041,6 +3079,7 @@ class ChatService:
                     conversation_id=pending.conversation_id,
                     privacy_level=pending.request.privacy_level,
                     child_id=pending.turn_id,
+                    quota_scope=pending.parent_budget_scope,
                 )
             await validate_references(
                 session,

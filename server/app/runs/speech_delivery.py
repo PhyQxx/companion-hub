@@ -31,6 +31,7 @@ from app.voice.delivery_ports import SpeechDeliveryContext, VoicePricingSource
 
 from .budget import RunModelBudget
 from .costs import assert_cost_window, check_cost_allowance
+from .parent_budget import ParentBudgetScope
 from .store import append_run_event, transition_run
 from .stream_operation import stream_with_run
 
@@ -124,11 +125,16 @@ class _Delivery:
         criterion: str = "audio_frames_sent",
     ) -> None:
         self.port, self.source, self.run_id = port, source, run_id
-        self.config_version, self.config, self.parent = config_version, config, parent
+        self.config_version, self.config = config_version, config
+        self._quota_scope = ParentBudgetScope.capture(parent) if parent is not None else None
+        self.parent = (
+            self._quota_scope.restore(port.database, config) if self._quota_scope else None
+        )
+        self.parent_conversation_id: UUID | None = None
         self.entry, self.criterion = entry, criterion
         self.created_at = datetime.now(UTC)
         self.deadline = self.created_at + timedelta(seconds=config.maintenance_deadline_seconds)
-        self.budget = parent or (
+        self.budget = self.parent or (
             RunModelBudget(port.database, run_id=run_id, user_id=source.user_id, config=config)
             if config.enabled
             else None
@@ -136,11 +142,35 @@ class _Delivery:
         self.currency: str | None = config.cost_currency
         self.provider: object | None = None
 
+    @property
+    def quota_scope(self) -> dict[str, object] | None:
+        return self._quota_scope.model_dump(mode="json") if self._quota_scope else None
+
     def check_rows(self, rows: list[TaskRunRecord]) -> None:
         now = datetime.now(UTC)
         if self.deadline <= now:
             raise BudgetDenied("run_deadline_exceeded")
         for row in rows:
+            if row.id == self.run_id and (
+                row.parent_run_id != (self.parent.run_id if self.parent else None)
+                or row.conversation_id
+                != (
+                    self.source.conversation_id
+                    if isinstance(self.source, VoiceSourceClaim)
+                    else None
+                )
+                or row.contract.get("quota_scope") != self.quota_scope
+            ):
+                raise BudgetDenied("chat_parent_changed")
+            if (
+                self.parent is not None
+                and row.id == self.parent.run_id
+                and (
+                    row.parent_run_id is not None
+                    or row.conversation_id != self.parent_conversation_id
+                )
+            ):
+                raise BudgetDenied("chat_parent_scope_invalid")
             if (
                 row.user_id != self.source.user_id
                 or row.status not in {"accepted", "running"}
@@ -186,7 +216,23 @@ class _Delivery:
                     raise BudgetDenied("budget_run_inactive")
                 if row.deadline is None:
                     raise BudgetDenied("run_deadline_exceeded")
+                self.parent_conversation_id = row.conversation_id
+                assert self._quota_scope is not None
+                self._quota_scope = self._quota_scope.model_copy(
+                    update={
+                        "quota_conversation_id": row.conversation_id,
+                        "source_actor": source_actor(self.source),
+                        "source_id": self.source.actor_id
+                        if isinstance(self.source, VoiceSourceClaim)
+                        else self.source.device_id,
+                        "conversation_id": self.source.conversation_id
+                        if isinstance(self.source, VoiceSourceClaim)
+                        else None,
+                    }
+                )
                 self.deadline = min(self.deadline, utc(row.deadline))
+                assert self._quota_scope is not None
+                self.deadline = min(self.deadline, utc(self._quota_scope.delivery_deadline))
                 if row.conversation_id is not None:
                     conversation = await session.scalar(
                         select(ConversationRecord.id)
@@ -219,6 +265,7 @@ class _Delivery:
                         "entry": self.entry,
                         "criterion": self.criterion,
                         "required_work": [],
+                        **({"quota_scope": self.quota_scope} if self.parent else {}),
                         "source_actor": source_actor(self.source),
                         "source_id": str(
                             self.source.actor_id
@@ -291,9 +338,32 @@ class _Delivery:
                 self.check_rows(rows)
 
         await joined_read(read())
-        fences: tuple[VoiceRunFence, ...] = (VoiceRunFence(self.run_id, self.config.enabled),)
+        fences: tuple[VoiceRunFence, ...] = (
+            VoiceRunFence(
+                self.run_id,
+                self.config.enabled,
+                check_lineage=True,
+                parent_run_id=self.parent.run_id if self.parent else None,
+                conversation_id=self.source.conversation_id
+                if isinstance(self.source, VoiceSourceClaim)
+                else None,
+                quota_scope=self.quota_scope,
+                check_source=True,
+                source_actor=source_actor(self.source),
+                source_id=self.source.actor_id
+                if isinstance(self.source, VoiceSourceClaim)
+                else self.source.device_id,
+            ),
+        )
         if self.parent is not None:
-            fences += (VoiceRunFence(self.parent.run_id, True),)
+            fences += (
+                VoiceRunFence(
+                    self.parent.run_id,
+                    True,
+                    check_lineage=True,
+                    conversation_id=self.parent_conversation_id,
+                ),
+            )
         await self.port.source_guard.validate_live_runs(self.source, fences)
         if self.provider is not None:
             self.port.pricing.validate_provider(self.provider)
