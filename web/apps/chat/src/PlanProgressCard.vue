@@ -34,6 +34,8 @@ const VERIFICATION_LABELS: Record<string, string> = {
 };
 
 const REASON_LABELS: Record<string, string> = {
+  run_trace_changed: "原任务已变化或不可用，请重新发起并确认计划。",
+  budget_snapshot_missing: "计划缺少有效的任务来源，请重新发起计划。",
   mcp_tool_source_changed: "外部工具的连接或参数已变化，请重新预览并确认计划。",
   mcp_tool_source_missing: "计划缺少有效的工具信息，请重新预览并确认。",
   mcp_tool_unavailable: "外部工具当前不可用，请刷新连接后重新预览计划。",

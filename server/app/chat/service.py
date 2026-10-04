@@ -34,11 +34,12 @@ from app.db import (
 )
 from app.db.claims import assert_current_claim
 from app.db.deletions import purge_conversation
-from app.harness.budget import BudgetDenied, budget_scope
+from app.harness.budget import BudgetDenied, budget_scope, tool_budget_scope
 from app.harness.context import ContextAssembler, ContextBlocks, ContextReference
 from app.harness.guarded_call import guarded_inline_call
 from app.harness.joined_read import joined_read
 from app.harness.loop import CompletionFrame, LoopOutcome, run_agent_loop
+from app.harness.run_trace import run_trace_scope
 from app.ids import uuid7
 from app.integrations.mcp.chat_tools import McpChatToolProvider, McpReadToolHandler
 from app.llm import CompletionRequest, CompletionResult, LLMMessage, LLMRoute, ToolCall
@@ -66,6 +67,7 @@ from app.runs.parent_budget import ParentBudgetScope
 from app.runs.resources import recover_tool_reservations
 from app.runs.speech_delivery import recover_expired_speech_deliveries
 from app.runs.store import RunStore, append_run_event, transition_run
+from app.runs.trace_sources import capture_disabled_trace
 from app.schemas import PrivacyLevel
 from app.skills.drafts import SkillDraftAssistant
 from app.skills.learning import SkillRevisionLearner, TurnSkillRun
@@ -1680,7 +1682,15 @@ class ChatService:
         calls: list[ToolCall],
     ) -> list[ToolExecution]:
         await self._validate_context(pending)
-        with budget_scope(self._model_budget(pending)):
+        budget = self._model_budget(pending)
+        trace = (
+            await capture_disabled_trace(
+                self._database, pending.turn_id, pending.user_id, require_disabled=True
+            )
+            if budget is None and pending.request.privacy_level != PrivacyLevel.L3
+            else None
+        )
+        with budget_scope(budget), tool_budget_scope(None), run_trace_scope(trace):
             if pending.parent_run_id is not None:
                 return await guarded_inline_call(
                     lambda: self._execute_tool_calls_body(pending, calls),
@@ -2549,9 +2559,8 @@ class ChatService:
             ):
                 # A missing/empty descriptor is a broken lineage, never an
                 # invitation to skip the parent's revocable source authority.
-                if (
-                    parent_run_id is None
-                    or str(parent_run_id) != run.contract.get("budget_parent_id")
+                if parent_run_id is None or str(parent_run_id) != run.contract.get(
+                    "budget_parent_id"
                 ):
                     raise PostcommitSourceGone()
                 parent = await require_chat_parent(
@@ -2635,8 +2644,17 @@ class ChatService:
             parent_budget_enabled=budget_enabled if parent_run_id else False,
             parent_budget_scope=parent_budget_scope,
         )
-        with budget_scope(
-            self._model_budget(pending, phase="maintenance") if budget_enabled else None
+        trace = (
+            await capture_disabled_trace(self._database, pending.turn_id, user_id, maintenance=True)
+            if not budget_enabled and run is not None
+            else None
+        )
+        with (
+            budget_scope(
+                self._model_budget(pending, phase="maintenance") if budget_enabled else None
+            ),
+            tool_budget_scope(None),
+            run_trace_scope(trace),
         ):
             backend = self._router_builder(snapshot.config)
             if kind == "chat.memory":

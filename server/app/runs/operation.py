@@ -15,6 +15,7 @@ from app.db.claims import assert_current_claim
 from app.harness.budget import BudgetDenied, budget_scope, tool_budget_scope
 from app.harness.guarded_call import guarded_call, guarded_inline_call
 from app.harness.operations import OperationCost, OperationPolicy, operation_cost_scope
+from app.harness.run_trace import DisabledRunTrace, current_run_trace, run_trace_scope
 from app.harness.source_cleanup import close_after_source
 from app.harness.time import utc
 from app.harness.unit_costs import unit_charge
@@ -26,6 +27,13 @@ from .budget_origins import require_budget_origins
 from .costs import assert_cost_window, check_cost_allowance
 from .parent_budget import current_parent_budget
 from .store import append_run_event, transition_run
+from .trace_sources import (
+    capture_disabled_trace,
+    check_trace_binding,
+    extend_run_trace,
+    require_run_trace,
+    trace_source,
+)
 from .unit_costs import lock_unit_cost, reserve_unit_cost, settle_unit_cost
 
 T = TypeVar("T")
@@ -60,10 +68,29 @@ async def operate_with_run(
     """
     if privacy_level == PrivacyLevel.L3:
         raise BudgetDenied("ephemeral_operation_run_forbidden")
-    parent = current_parent_budget(database, user_id)
+    trace = current_run_trace()
+    if trace is None and trace_parent_id is not None:
+        trace = await capture_disabled_trace(database, trace_parent_id, user_id)
+    if trace is not None:
+        check_trace_binding(trace, database, user_id)
+        if len(trace.sources) >= 32:
+            raise BudgetDenied("run_trace_changed")
+        if trace_parent_id is not None and trace_parent_id != trace.run_id:
+            raise BudgetDenied("run_trace_changed")
+    parent = None if trace else current_parent_budget(database, user_id)
     quota_parent_id = parent.run_id if isinstance(parent, RunModelBudget) else None
-    parent_id = trace_parent_id or quota_parent_id
-    parent_ids = tuple(dict.fromkeys(value for value in (quota_parent_id, parent_id) if value))
+    parent_id = trace.run_id if trace else trace_parent_id or quota_parent_id
+    parent_ids = tuple(
+        dict.fromkeys(
+            value
+            for value in (
+                *((ref.run_id for ref in trace.sources) if trace else ()),
+                quota_parent_id,
+                parent_id,
+            )
+            if value
+        )
+    )
     config = RunBudgetConfig.model_validate(dict(policy.budget))
     quote = policy.unit_quote
     parent_config = parent.budget_config if isinstance(parent, RunModelBudget) else config
@@ -73,6 +100,8 @@ async def operate_with_run(
     deadline = now + timedelta(seconds=config.maintenance_deadline_seconds)
     if isinstance(parent, RunModelBudget):
         deadline = min(deadline, utc(parent.delivery_deadline))
+    if trace and trace.expires_at is not None:
+        deadline = min(deadline, utc(trace.expires_at))
 
     def validate_rows(rows: list[TaskRunRecord]) -> None:
         current_time = datetime.now(UTC)
@@ -87,6 +116,12 @@ async def operate_with_run(
             raise BudgetDenied(missing_quote_reason)
         for row in rows:
             completed_parent = (
+                trace is not None
+                and any(
+                    ref.run_id == row.id and ref.allow_succeeded and row.status == "succeeded"
+                    for ref in trace.sources
+                )
+            ) or (
                 row.id == quota_parent_id
                 and isinstance(parent, RunModelBudget)
                 and parent.phase == "maintenance"
@@ -164,6 +199,10 @@ async def operate_with_run(
         )
 
     async def check_origins(session: AsyncSession, *, lock: bool = False) -> None:
+        if trace is not None:
+            await require_run_trace(
+                session, trace, user_id=user_id, privacy_level=privacy_level, lock=lock
+            )
         if parent is not None:
             await require_budget_origins(
                 session,
@@ -240,36 +279,31 @@ async def operate_with_run(
                 now=datetime.now(UTC),
                 clock=lambda: datetime.now(UTC),
             )
-        session.add(
-            TaskRunRecord(
-                id=run_id,
-                user_id=user_id,
-                parent_run_id=parent_id,
-                request_id=f"{entry}:{run_id}",
-                status="accepted",
-                privacy_level=str(privacy_level),
-                config_version=policy.config_version,
-                created_at=now,
-                updated_at=now,
-                budget=config.model_dump(mode="json") if parent is None or quote else None,
-                deadline=deadline,
-                contract={
-                    "entry": entry,
-                    "criterion": "provider_response_returned",
-                    "required_work": [],
-                    "operation_state": "not_started",
-                    **(
-                        {
-                            "quota_origins": [
-                                origin.model_dump(mode="json") for origin in parent.origins
-                            ]
-                        }
-                        if parent is not None and parent.origins
-                        else {}
-                    ),
-                },
-            )
+        child_row = TaskRunRecord(
+            id=run_id,
+            user_id=user_id,
+            parent_run_id=parent_id,
+            request_id=f"{entry}:{run_id}",
+            status="accepted",
+            privacy_level=str(privacy_level),
+            config_version=policy.config_version,
+            created_at=now,
+            updated_at=now,
+            budget=config.model_dump(mode="json") if parent is None or quote else None,
+            deadline=deadline,
+            contract={
+                "entry": entry,
+                "criterion": "provider_response_returned",
+                "required_work": [],
+                "operation_state": "not_started",
+                **(
+                    {"quota_origins": [origin.model_dump(mode="json") for origin in parent.origins]}
+                    if parent is not None and parent.origins
+                    else {}
+                ),
+            },
         )
+        session.add(child_row)
         await session.flush()
         await append_run_event(
             session, await session.get_one(TaskRunRecord, run_id), "run.accepted"
@@ -284,11 +318,18 @@ async def operate_with_run(
             await source_commit_guard()
     budget = parent or (
         RunModelBudget(database, run_id=run_id, user_id=user_id, config=config)
-        if config.enabled and trace_parent_id is None
+        if config.enabled and trace_parent_id is None and trace is None
         else None
     )
     started = False
     unissued_after_start = False
+    call_trace = (
+        extend_run_trace(trace, child_row)
+        if trace
+        else DisabledRunTrace(id(database), user_id, (trace_source(child_row, maintenance=False),))
+        if not config.enabled and trace_parent_id is None
+        else None
+    )
 
     async def release_untransferred_quote() -> None:
         nonlocal unissued_after_start
@@ -380,6 +421,7 @@ async def operate_with_run(
         with (
             budget_scope(budget),
             tool_budget_scope(budget.tool_budget if budget else None),
+            run_trace_scope(call_trace),
             operation_cost_scope(
                 OperationCost(run_id, user_id, cost_endpoint, quote) if quote else None
             ),

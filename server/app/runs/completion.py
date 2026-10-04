@@ -20,14 +20,16 @@ from app.db import (
     TaskRunRecord,
 )
 from app.db.claims import assert_current_claim
-from app.harness.budget import BudgetDenied, budget_scope, current_budget
+from app.harness.budget import BudgetDenied, budget_scope, current_budget, tool_budget_scope
 from app.harness.guarded_call import guarded_call
+from app.harness.run_trace import DisabledRunTrace, current_run_trace, run_trace_scope
 from app.ids import uuid7
 from app.llm.contracts import CompletionRequest, CompletionResult
 from app.schemas import PrivacyLevel
 
 from .budget import RunModelBudget, utc
 from .store import append_run_event, transition_run
+from .trace_sources import check_trace_binding, extend_run_trace, require_run_trace, trace_source
 
 _MODEL_OWNER: ContextVar[UUID | None] = ContextVar("model_run_owner", default=None)
 
@@ -83,6 +85,11 @@ async def complete_with_run(
 ) -> CompletionResult:
     if request.privacy_level == PrivacyLevel.L3:
         raise BudgetDenied("ephemeral_model_run_forbidden")
+    trace = current_run_trace()
+    if trace is not None:
+        check_trace_binding(trace, database, user_id)
+        if len(trace.sources) >= 32:
+            raise BudgetDenied("run_trace_changed")
 
     async def validate(run_id: UUID | None) -> None:
         async with database.sessions() as session:
@@ -90,6 +97,10 @@ async def complete_with_run(
             owner = await session.get(AppUserRecord, user_id)
             if owner is None or owner.status != "active":
                 raise BudgetDenied("budget_owner_invalid")
+            if trace is not None:
+                await require_run_trace(
+                    session, trace, user_id=user_id, privacy_level=request.privacy_level
+                )
             if conversation_id is not None:
                 conversation = await session.get(ConversationRecord, conversation_id)
                 if conversation is None or conversation.user_id != user_id:
@@ -115,7 +126,7 @@ async def complete_with_run(
             except Exception as error:
                 raise BudgetDenied("model_source_check_failed") from error
 
-    inherited = current_budget()
+    inherited = None if trace else current_budget()
     if isinstance(inherited, RunModelBudget) and inherited.owner_id != user_id:
         raise BudgetDenied("budget_owner_invalid")
     if inherited is not None:
@@ -130,6 +141,8 @@ async def complete_with_run(
     deadline = now + timedelta(seconds=snapshot.config.run_budget.maintenance_deadline_seconds)
     if expires_at is not None:
         deadline = min(deadline, utc(expires_at))
+    if trace and trace.expires_at is not None:
+        deadline = min(deadline, utc(trace.expires_at))
     if deadline <= now:
         raise BudgetDenied("run_deadline_exceeded")
     run_id = uuid7()
@@ -158,6 +171,10 @@ async def complete_with_run(
         )
         if owner is None:
             raise BudgetDenied("budget_owner_invalid")
+        if trace is not None:
+            await require_run_trace(
+                session, trace, user_id=user_id, privacy_level=request.privacy_level, lock=True
+            )
         if deadline <= datetime.now(UTC):
             raise BudgetDenied("run_deadline_exceeded")
 
@@ -167,6 +184,7 @@ async def complete_with_run(
             row = TaskRunRecord(
                 id=run_id,
                 user_id=user_id,
+                parent_run_id=trace.run_id if trace else None,
                 conversation_id=conversation_id,
                 request_id=f"{kind}:{source_id}",
                 status="accepted",
@@ -189,6 +207,10 @@ async def complete_with_run(
             await append_run_event(session, row, "run.accepted")
             await transition_run(session, run_id, "running")
             await session.flush()
+            if trace is not None:
+                await require_run_trace(
+                    session, trace, user_id=user_id, privacy_level=request.privacy_level
+                )
             if deadline <= datetime.now(UTC):
                 raise BudgetDenied("run_deadline_exceeded")
     except IntegrityError as error:
@@ -197,11 +219,23 @@ async def complete_with_run(
         raise BudgetDenied("model_run_source_already_processed") from error
     budget = (
         RunModelBudget(database, run_id=run_id, user_id=user_id, config=snapshot.config.run_budget)
-        if snapshot.config.run_budget.enabled
+        if snapshot.config.run_budget.enabled and trace is None
         else None
     )
     try:
-        with budget_scope(budget):
+        with (
+            budget_scope(budget),
+            tool_budget_scope(None),
+            run_trace_scope(
+                extend_run_trace(trace, row)
+                if trace
+                else DisabledRunTrace(
+                    id(database), user_id, (trace_source(row, maintenance=False),)
+                )
+                if not snapshot.config.run_budget.enabled
+                else None
+            ),
+        ):
             async with asyncio.timeout(max(0, (deadline - datetime.now(UTC)).total_seconds())):
                 result = await guarded_call(lambda: complete(request), lambda: validate(run_id))
         async with database.sessions.begin() as session:
@@ -223,6 +257,10 @@ async def complete_with_run(
                 raise BudgetDenied("run_deadline_exceeded")
             await transition_run(session, run_id, "succeeded")
             await session.flush()
+            if trace is not None:
+                await require_run_trace(
+                    session, trace, user_id=user_id, privacy_level=request.privacy_level
+                )
             if min(deadline, utc(current.deadline or deadline)) <= datetime.now(UTC):
                 raise BudgetDenied("run_deadline_exceeded")
         return result

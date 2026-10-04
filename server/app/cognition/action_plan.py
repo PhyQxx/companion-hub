@@ -23,9 +23,11 @@ from app.harness.budget import (
     current_tool_budget,
     tool_budget_scope,
 )
+from app.harness.run_trace import DisabledRunTrace, run_trace_scope
 from app.ids import uuid7
 from app.privacy.service import PolicyService
 from app.runs.contracts import lock_source_run, require_work
+from app.runs.trace_sources import capture_disabled_trace, validate_disabled_trace
 from app.schemas.common import StrictModel, TokenName
 from app.tools import ToolResult
 
@@ -519,6 +521,8 @@ class ActionPlanService:
                 total=total_steps,
             )
         )
+        trace: DisabledRunTrace | None = None
+        trace_captured = False
         try:
             while True:
                 step = await self._claim_next_step(user_id=user_id, plan_id=plan_id)
@@ -544,6 +548,17 @@ class ActionPlanService:
                         attached_tool_budget = False
                         raw_result: ActionRunResult | ToolResult
                         try:
+                            if plan.task_run_id is not None and not trace_captured:
+                                trace = await capture_disabled_trace(
+                                    self._database,
+                                    plan.task_run_id,
+                                    user_id,
+                                    maintenance=True,
+                                    expires_at=plan.expires_at,
+                                )
+                                trace_captured = True
+                            if trace is not None:
+                                await validate_disabled_trace(self._database, trace)
                             if (
                                 plan.task_run_id is not None
                                 and self._tool_budget_builder is not None
@@ -551,7 +566,10 @@ class ActionPlanService:
                                 tool_budget = await self._tool_budget_builder(
                                     plan.task_run_id, user_id, plan.expires_at
                                 )
-                                attached_tool_budget = tool_budget is not None
+                                attached_tool_budget = True
+                            if trace is not None:
+                                attached_tool_budget = True
+                                tool_budget = None
                         except BudgetDenied as error:
                             raw_result = ToolResult(
                                 admission_status="not_admitted",
@@ -568,6 +586,7 @@ class ActionPlanService:
                             with (
                                 budget_scope(None) if attached_tool_budget else nullcontext(),
                                 tool_budget_scope(tool_budget),
+                                run_trace_scope(trace),
                             ):
                                 raw_result = await self._runner(step, user_id)
                 except TimeoutError:

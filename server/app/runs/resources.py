@@ -264,7 +264,11 @@ async def plan_tool_budget(
             budget = scope.restore(database, config, maintenance=True)
             origins = tuple(dict.fromkeys((*scope.origins, *origins)))
         else:
-            if not root.budget or not root.budget.get("enabled"):
+            if not root.budget or (
+                root.budget.get("enabled") is not True and root.budget.get("enabled") is not False
+            ):
+                raise BudgetDenied("budget_snapshot_missing")
+            if root.budget.get("enabled") is False:
                 return None
             frozen = RunBudgetConfig.model_validate(root.budget)
             config = current_config or frozen
