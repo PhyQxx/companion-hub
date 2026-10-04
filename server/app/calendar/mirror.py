@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 import logging
+from contextlib import nullcontext
 from copy import deepcopy
 from datetime import UTC, datetime
 from typing import Any
@@ -22,6 +23,8 @@ from app.db import AppUserRecord, CalendarEventRecord, Database
 from app.harness.time import utc
 from app.ids import uuid7
 from app.tasks.store import TaskStore
+
+from .sync_sources import CalendarSyncSource
 
 logger = logging.getLogger("app.calendar.mirror")
 
@@ -159,6 +162,7 @@ class CalendarMirrorService:
         stats: Any,
         now: datetime | None = None,
         authoritative: bool = True,
+        source: CalendarSyncSource | None = None,
     ) -> None:
         occurrences_by_ref = deepcopy(occurrences_by_ref)
         if any(
@@ -169,56 +173,63 @@ class CalendarMirrorService:
         calendar_id = calendar_id[:64]
         moment = now or datetime.now(UTC)
         counter = CalendarMirrorStats()
-        async with self._database.sessions.begin() as session:
-            owner = await session.scalar(
-                update(AppUserRecord)
-                .where(AppUserRecord.id == user_id, AppUserRecord.status == "active")
-                .values(status=AppUserRecord.status)
-                .returning(AppUserRecord.id)
-            )
-            if owner is None:
-                raise PermissionError("calendar_mirror_owner_inactive")
-            records = await self._local_rows(session, user_id, lock=True)
-            local_by_ref, duplicates = _canonical_records(records)
-            cleanup_refs: set[str] = set()
-            for duplicate in duplicates:
-                cleanup_refs.add(self._cancel_local(duplicate, counter, moment))
-            for ref, occurrence in sorted(occurrences_by_ref.items()):
-                occurrence_calendar = (occurrence.calendar_id or calendar_id)[:64]
-                local = local_by_ref.get(ref)
-                if occurrence.cancelled:
-                    if local is not None:
-                        cleanup_refs.add(self._cancel_local(local, counter, moment))
-                    continue
-                if local is None:
-                    session.add(
-                        _mirror_record(
-                            user_id, self._source, occurrence_calendar, occurrence, moment
-                        )
+        async with self._database.sessions() as session:
+            with source.commit_fence(session) if source is not None else nullcontext():
+                async with session.begin():
+                    owner = await session.scalar(
+                        update(AppUserRecord)
+                        .where(AppUserRecord.id == user_id, AppUserRecord.status == "active")
+                        .values(status=AppUserRecord.status)
+                        .returning(AppUserRecord.id)
                     )
-                    counter.mirrors_created += 1
-                    continue
-                if _same_occurrence(local, occurrence, occurrence_calendar):
-                    continue
-                local.title = occurrence.summary
-                local.starts_at = occurrence.starts_at
-                local.ends_at = occurrence.ends_at
-                local.all_day = occurrence.all_day
-                local.location = occurrence.location
-                local.notes = occurrence.description
-                local.status = "active"
-                local.calendar_id = occurrence_calendar
-                local.external_etag = occurrence.etag[:128] or None
-                local.updated_at = moment
-                cleanup_refs.add(f"calendar:{local.id}")
-                counter.mirrors_updated += 1
-            for ref, local in local_by_ref.items():
-                if authoritative and ref not in occurrences_by_ref:
-                    cleanup_refs.add(self._cancel_local(local, counter, moment))
-            if cleanup_refs:
-                await TaskStore(self._database).cancel_tasks_by_source_refs_in_session(
-                    session, user_id, sorted(cleanup_refs), now=moment
-                )
+                    if owner is None:
+                        raise PermissionError("calendar_mirror_owner_inactive")
+                    if source is not None:
+                        await source.validate(session, lock=True)
+                    records = await self._local_rows(session, user_id, lock=True)
+                    local_by_ref, duplicates = _canonical_records(records)
+                    cleanup_refs: set[str] = set()
+                    for duplicate in duplicates:
+                        cleanup_refs.add(self._cancel_local(duplicate, counter, moment))
+                    for ref, occurrence in sorted(occurrences_by_ref.items()):
+                        occurrence_calendar = (occurrence.calendar_id or calendar_id)[:64]
+                        local = local_by_ref.get(ref)
+                        if occurrence.cancelled:
+                            if local is not None:
+                                cleanup_refs.add(self._cancel_local(local, counter, moment))
+                            continue
+                        if local is None:
+                            session.add(
+                                _mirror_record(
+                                    user_id, self._source, occurrence_calendar, occurrence, moment
+                                )
+                            )
+                            counter.mirrors_created += 1
+                            continue
+                        if _same_occurrence(local, occurrence, occurrence_calendar):
+                            continue
+                        local.title = occurrence.summary
+                        local.starts_at = occurrence.starts_at
+                        local.ends_at = occurrence.ends_at
+                        local.all_day = occurrence.all_day
+                        local.location = occurrence.location
+                        local.notes = occurrence.description
+                        local.status = "active"
+                        local.calendar_id = occurrence_calendar
+                        local.external_etag = occurrence.etag[:128] or None
+                        local.updated_at = moment
+                        cleanup_refs.add(f"calendar:{local.id}")
+                        counter.mirrors_updated += 1
+                    for ref, local in local_by_ref.items():
+                        if authoritative and ref not in occurrences_by_ref:
+                            cleanup_refs.add(self._cancel_local(local, counter, moment))
+                    if cleanup_refs:
+                        await TaskStore(self._database).cancel_tasks_by_source_refs_in_session(
+                            session, user_id, sorted(cleanup_refs), now=moment
+                        )
+                    await session.flush()
+                    if source is not None:
+                        await source.validate(session, lock=True)
         counter.merge_into(stats)
 
 

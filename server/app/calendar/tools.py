@@ -147,9 +147,7 @@ class CalendarCreateTool:
     async def cancel(self, user_id: UUID, draft_id: UUID) -> dict[str, object]:
         return (await self._drafts.cancel(user_id, draft_id)).view()
 
-    async def confirm(
-        self, user_id: UUID, draft_id: UUID, digest: str
-    ) -> dict[str, object]:
+    async def confirm(self, user_id: UUID, draft_id: UUID, digest: str) -> dict[str, object]:
         draft = await self._drafts.claim(user_id, draft_id, digest)
         if draft.status == "completed":
             return draft.view()
@@ -240,11 +238,11 @@ class CalendarSyncTool:
     async def execute(self, arguments: BaseModel, context: ToolContext) -> ToolResult:
         started = perf_counter()
         args = cast(CalendarSyncArgs, arguments)
+        if context.user_id is None:
+            return self._failure("invalid_user", started)
         if context.privacy_level == PrivacyLevel.L2:
             return self._failure("private_session_unsupported", started)
-        providers: list[str] = (
-            ["caldav", "google"] if args.provider == "all" else [args.provider]
-        )
+        providers: list[str] = ["caldav", "google"] if args.provider == "all" else [args.provider]
         results: dict[str, dict[str, object]] = {}
         for provider in providers:
             service = self._caldav if provider == "caldav" else self._google
@@ -252,7 +250,7 @@ class CalendarSyncTool:
                 results[provider] = {"errors": ["not_configured"]}
                 continue
             try:
-                stats = await service.sync_once()
+                stats = await service.sync_once(user_id=context.user_id)
             except Exception:
                 results[provider] = {"errors": ["sync_failed"]}
                 continue

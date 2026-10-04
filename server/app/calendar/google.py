@@ -20,9 +20,11 @@ from __future__ import annotations
 import hashlib
 import hmac
 import logging
+from collections.abc import Awaitable, Callable
 from copy import deepcopy
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
+from functools import partial
 from typing import Any, cast
 from uuid import UUID, uuid4
 from zoneinfo import ZoneInfo
@@ -39,6 +41,9 @@ from app.calendar.mirror import (
 from app.config import ConfigStore, DatabaseConfigStore
 from app.config.models import GoogleCalendarConfig
 from app.db import AppUserRecord, CalendarOAuthTokenRecord, Database
+from app.harness.joined_read import join_on_cancel
+
+from .sync_sources import CalendarSyncSource
 
 logger = logging.getLogger("app.calendar.google")
 
@@ -218,6 +223,14 @@ class GoogleCalendarClient:
         self._access_token: str | None = None
         self._access_expires_at: datetime = datetime.min.replace(tzinfo=UTC)
 
+    def set_source_guard(self, guard: Callable[[], Awaitable[None]]) -> None:
+        self._source_guard = guard
+
+    async def _check_source(self) -> None:
+        guard = getattr(self, "_source_guard", None)
+        if guard is not None:
+            await guard()
+
     async def close(self) -> None:
         if self._owns_client:
             await self._client.aclose()
@@ -261,6 +274,7 @@ class GoogleCalendarClient:
     async def _ensure_access(self) -> str:
         if self._access_token and datetime.now(UTC) < self._access_expires_at:
             return self._access_token
+        await self._check_source()
         response = await self._client.post(
             GOOGLE_TOKEN_URL,
             data={
@@ -309,6 +323,7 @@ class GoogleCalendarClient:
             }
             if page_token:
                 params["pageToken"] = page_token
+            await self._check_source()
             response = await self._client.get(
                 GOOGLE_EVENTS_URL.format(calendar_id=calendar_id),
                 params=params,
@@ -441,14 +456,18 @@ class GoogleCalendarSyncService:
             )
         return UUID(str(value)) if value is not None else None
 
-    async def sync_once(self) -> SyncStats:
+    async def sync_once(
+        self, *, user_id: UUID | None = None, actor_id: UUID | None = None
+    ) -> SyncStats:
         stats = SyncStats()
-        config = self._config_store.current.config.integrations.calendar.google
+        accepted_version = self._config_store.current.version
+        config = deepcopy(self._config_store.current.config.integrations.calendar.google)
         secret = resolve_google_secret(config)
         if not config.enabled or config.client_id is None or secret is None:
             stats.errors.append("google_not_configured")
             return stats
-        user_id = await self.default_user_id()
+        if user_id is None:
+            user_id = await self.default_user_id()
         if user_id is None:
             stats.errors.append("no_active_user")
             return stats
@@ -456,6 +475,24 @@ class GoogleCalendarSyncService:
         if token_record is None:
             stats.errors.append("google_not_authorized")
             return stats
+
+        def check_settings() -> None:
+            current = self._config_store.current.config.integrations.calendar.google
+            if (
+                self._config_store.current.version != accepted_version
+                or current != config
+                or resolve_google_secret(current) != secret
+            ):
+                raise PermissionError("calendar_sync_source_changed")
+
+        source = CalendarSyncSource(
+            self._database,
+            owner=user_id,
+            settings_guard=check_settings,
+            token=token_record,
+            actor_id=actor_id,
+        )
+        await source.check()
         now = self._clock()
         window_start = now - timedelta(days=config.window_days_back)
         window_end = now + timedelta(days=config.window_days_forward)
@@ -464,15 +501,20 @@ class GoogleCalendarSyncService:
         ambiguous_refs: set[str] = set()
         for calendar_id in calendar_ids:
             stats.calendars += 1
+            await source.check()
             client = self._client_factory(
                 client_id=config.client_id,
                 client_secret=secret,
                 refresh_token=token_record.refresh_token,
                 timeout_seconds=config.timeout_seconds,
             )
+            if isinstance(client, GoogleCalendarClient):
+                client.set_source_guard(source.check)
             try:
                 fetched = deepcopy(
-                    await client.list_events(calendar_id, start=window_start, end=window_end)
+                    await source.call(
+                        partial(client.list_events, calendar_id, start=window_start, end=window_end)
+                    )
                 )
             except GoogleCalendarError as error:
                 stats.errors.append(f"fetch_failed:{calendar_id}:{error.reason_code}")
@@ -481,7 +523,7 @@ class GoogleCalendarSyncService:
             finally:
                 closer = getattr(client, "close", None)
                 if closer is not None:
-                    await closer()
+                    await join_on_cancel(closer(), name="calendar-sync-close")
             stats.pulled += len(fetched)
             if merge_calendar_occurrences(
                 occurrences_by_ref,
@@ -497,6 +539,7 @@ class GoogleCalendarSyncService:
             stats=stats,
             now=now,
             authoritative=not stats.errors,
+            source=source,
         )
         return stats
 

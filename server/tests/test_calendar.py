@@ -269,9 +269,7 @@ async def test_calendar_draft_api_binds_user_content_and_confirmation(database: 
     owner = await auth.setup(display_name="Calendar draft", password="correct horse")
     service = _service(database, clock=lambda: datetime.now(UTC))
     tool = CalendarCreateTool(service, timezone_name="Asia/Shanghai")
-    context = ToolContext(
-        privacy_level="L1", user_id=owner.principal.user_id, turn_id=uuid7()
-    )
+    context = ToolContext(privacy_level="L1", user_id=owner.principal.user_id, turn_id=uuid7())
     payload = {
         "title": "确认后创建",
         "starts_at": (datetime.now(UTC) + timedelta(days=2)).isoformat(),
@@ -331,9 +329,11 @@ class _FakeSyncService:
     def __init__(self, *, fail: bool = False) -> None:
         self.fail = fail
         self.calls = 0
+        self.owner: UUID | None = None
 
-    async def sync_once(self) -> _FakeStats:
+    async def sync_once(self, *, user_id: UUID | None = None) -> _FakeStats:
         self.calls += 1
+        self.owner = user_id
         if self.fail:
             raise RuntimeError("boom")
         return _FakeStats()
@@ -357,6 +357,7 @@ async def test_calendar_sync_tool_dispatch_and_privacy() -> None:
     )
     assert result.ok is True
     assert caldav.calls == 1 and google.calls == 0
+    assert caldav.owner == context.user_id
     providers = result.data["providers"]
     assert providers["caldav"]["pulled"] == 5
 
@@ -368,6 +369,15 @@ async def test_calendar_sync_tool_dispatch_and_privacy() -> None:
     providers = both.data["providers"]
     assert providers["caldav"]["errors"] == []
     assert providers["google"]["errors"] == ["sync_failed"]
+    assert google.owner == context.user_id
+
+    calls = caldav.calls + google.calls
+    anonymous = await tool.execute(
+        CalendarSyncTool.arguments_model.model_validate({}),
+        context.model_copy(update={"user_id": None}),
+    )
+    assert not anonymous.ok and anonymous.reason_code == "invalid_user"
+    assert caldav.calls + google.calls == calls
 
     # 全部失败 → ok=False
     failing = CalendarSyncTool(caldav_sync=_FakeSyncService(fail=True))

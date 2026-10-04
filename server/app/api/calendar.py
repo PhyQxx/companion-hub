@@ -141,7 +141,14 @@ def create_calendar_router(
         async def sync_google(
             principal: Annotated[ChatPrincipal, Depends(guard)],
         ) -> dict[str, object]:
-            stats = await google_sync.sync_once()
+            try:
+                stats = await google_sync.sync_once(
+                    user_id=principal.user_id, actor_id=principal.session_id
+                )
+            except PermissionError as error:
+                raise HTTPException(
+                    status.HTTP_409_CONFLICT, "calendar_sync_source_changed"
+                ) from error
             return {
                 "calendars": stats.calendars,
                 "pulled": stats.pulled,
@@ -164,7 +171,14 @@ def create_calendar_router(
         async def sync_caldav(
             principal: Annotated[ChatPrincipal, Depends(guard)],
         ) -> dict[str, object]:
-            stats = await caldav_sync.sync_once()
+            try:
+                stats = await caldav_sync.sync_once(
+                    user_id=principal.user_id, actor_id=principal.session_id
+                )
+            except PermissionError as error:
+                raise HTTPException(
+                    status.HTTP_409_CONFLICT, "calendar_sync_source_changed"
+                ) from error
             return {
                 "calendars": stats.calendars,
                 "pulled": stats.pulled,

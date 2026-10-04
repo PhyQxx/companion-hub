@@ -17,9 +17,11 @@ from __future__ import annotations
 
 import logging
 import xml.etree.ElementTree as ET
+from collections.abc import Awaitable, Callable
 from copy import deepcopy
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
+from functools import partial
 from typing import Any
 from uuid import UUID
 from zoneinfo import ZoneInfo
@@ -37,6 +39,9 @@ from app.calendar.mirror import (
 from app.config import ConfigStore, DatabaseConfigStore
 from app.config.models import CalDavConfig
 from app.db import AppUserRecord, Database
+from app.harness.joined_read import join_on_cancel
+
+from .sync_sources import CalendarSyncSource
 
 logger = logging.getLogger("app.calendar.caldav")
 
@@ -176,6 +181,14 @@ class CalDavClient:
         self._owns_client = client is None
         self._client = client or httpx.AsyncClient(timeout=timeout_seconds)
 
+    def set_source_guard(self, guard: Callable[[], Awaitable[None]]) -> None:
+        self._source_guard = guard
+
+    async def _check_source(self) -> None:
+        guard = getattr(self, "_source_guard", None)
+        if guard is not None:
+            await guard()
+
     async def close(self) -> None:
         if self._owns_client:
             await self._client.aclose()
@@ -254,6 +267,7 @@ class CalDavClient:
         self, method: str, url: str, body: str, *, depth: str = "0"
     ) -> httpx.Response:
         try:
+            await self._check_source()
             response = await self._client.request(
                 method,
                 url,
@@ -457,17 +471,35 @@ class CalDavSyncService:
             )
         return UUID(str(value)) if value is not None else None
 
-    async def sync_once(self) -> SyncStats:
+    async def sync_once(
+        self, *, user_id: UUID | None = None, actor_id: UUID | None = None
+    ) -> SyncStats:
         stats = SyncStats()
-        config = self._config_store.current.config.integrations.calendar.caldav
+        accepted_version = self._config_store.current.version
+        config = deepcopy(self._config_store.current.config.integrations.calendar.caldav)
         secret = resolve_caldav_secret(config)
         if not config.enabled or config.url is None or secret is None:
             stats.errors.append("caldav_not_configured")
             return stats
-        user_id = await self.default_user_id()
+        if user_id is None:
+            user_id = await self.default_user_id()
         if user_id is None:
             stats.errors.append("no_active_user")
             return stats
+
+        def check_settings() -> None:
+            current = self._config_store.current.config.integrations.calendar.caldav
+            if (
+                self._config_store.current.version != accepted_version
+                or current != config
+                or resolve_caldav_secret(current) != secret
+            ):
+                raise PermissionError("calendar_sync_source_changed")
+
+        source = CalendarSyncSource(
+            self._database, owner=user_id, settings_guard=check_settings, actor_id=actor_id
+        )
+        await source.check()
         now = self._clock()
         window_start = now - timedelta(days=config.window_days_back)
         window_end = now + timedelta(days=config.window_days_forward)
@@ -478,9 +510,11 @@ class CalDavSyncService:
             secret=secret,
             timeout_seconds=config.timeout_seconds,
         )
+        if isinstance(client, CalDavClient):
+            client.set_source_guard(source.check)
         try:
             try:
-                calendars = await client.list_calendars()
+                calendars = await source.call(client.list_calendars)
             except CalDavError as error:
                 stats.errors.append(error.reason_code)
                 logger.warning("caldav discovery failed: %s", error)
@@ -496,7 +530,9 @@ class CalDavSyncService:
                 stats.calendars += 1
                 try:
                     fetched = deepcopy(
-                        await client.fetch_window(href, start=window_start, end=window_end)
+                        await source.call(
+                            partial(client.fetch_window, href, start=window_start, end=window_end)
+                        )
                     )
                 except CalDavError as error:
                     stats.errors.append(f"fetch_failed:{name}:{error.reason_code}")
@@ -519,12 +555,13 @@ class CalDavSyncService:
                 stats=stats,
                 now=self._clock(),
                 authoritative=not stats.errors,
+                source=source,
             )
             return stats
         finally:
             closer = getattr(client, "close", None)
             if closer is not None:
-                await closer()
+                await join_on_cancel(closer(), name="calendar-sync-close")
 
 
 def _slugify(name: str) -> str:
