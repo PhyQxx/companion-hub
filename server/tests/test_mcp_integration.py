@@ -8,7 +8,7 @@ from uuid import uuid4
 import pytest
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
-from pydantic import ValidationError
+from pydantic import BaseModel, ValidationError
 
 from app.api import create_admin_mcp_router
 from app.config import HubConfig, McpServerConfig
@@ -362,12 +362,22 @@ async def test_sync_mcp_actions_registers_only_write_tools_with_a2_policy() -> N
     assert action.definition.risk == ActionRisk.A2_CONFIRM.value
     assert action.definition.confirmation_policy == ConfirmationPolicy.ALWAYS.value
     assert action.definition.tool_name == MCP_TOOL_NAME
-    assert action.definition.bound_arguments == {"tool": "mcp.books.create"}
+    assert action.definition.bound_arguments == {
+        "tool": "mcp.books.create",
+        "catalogue_ticket": next(
+            item.catalogue_ticket for item in manager.catalog()
+            if item.internal_name == "mcp.books.create"
+        ),
+    }
     compiled = registry.compile(
         "mcp.books.create", {"arguments": {"title": "新书", "copies": 3}}
     )
     assert compiled.tool_arguments == {
         "tool": "mcp.books.create",
+        "catalogue_ticket": next(
+            item.catalogue_ticket for item in manager.catalog()
+            if item.internal_name == "mcp.books.create"
+        ),
         "arguments": {"title": "新书", "copies": 3},
     }
 
@@ -409,7 +419,11 @@ async def test_mcp_tool_call_tool_routes_through_call_write_and_bounds_payload()
     tool = McpToolCallTool(manager)
 
     ok = await tool.execute(
-        McpToolCallArgs(tool="mcp.books.create", arguments={"title": "新书"}),
+        McpToolCallArgs(
+            tool="mcp.books.create",
+            arguments={"title": "新书"},
+            catalogue_ticket=manager.catalog()[0].catalogue_ticket,
+        ),
         ToolContext(privacy_level="L1", user_id=None),
     )
     assert ok.ok is True
@@ -425,7 +439,11 @@ async def test_mcp_tool_call_tool_routes_through_call_write_and_bounds_payload()
     assert oversized.reason_code == "mcp_arguments_too_large"
 
     missing = await tool.execute(
-        McpToolCallArgs(tool="mcp.books.missing", arguments={}),
+        McpToolCallArgs(
+            tool="mcp.books.missing",
+            arguments={},
+            catalogue_ticket=manager.catalog()[0].catalogue_ticket,
+        ),
         ToolContext(privacy_level="L1", user_id=None),
     )
     assert missing.ok is False
@@ -454,13 +472,25 @@ async def test_plan_runner_executes_mcp_step_with_l1_context_and_receipt() -> No
 
     from app.cognition.action_plan import ActionStepView, ActionVerificationStatus
     from app.cognition.action_runner import ToolActionRunner
+    from app.llm import ToolDefinition
     from app.tools import ToolExecutor, ToolRegistry, ToolResult
-    from app.tools.mcp_actions import McpToolCallTool
+    from app.tools.mcp_actions import McpToolCallArgs
 
-    class RecordingTool(McpToolCallTool):
+    class RecordingTool:
+        name, description = "mcp_tool_call", "Synthetic receipt recorder"
+        runs_local = False
+        max_privacy_level = "L1"
+        arguments_model: type[BaseModel] = McpToolCallArgs
+
         def __init__(self) -> None:
-            super().__init__(cast(Any, SimpleNamespace()))
             self.contexts: list[Any] = []
+
+        def definition(self) -> ToolDefinition:
+            return ToolDefinition(
+                name=self.name,
+                description=self.description,
+                parameters=self.arguments_model.model_json_schema(),
+            )
 
         async def execute(self, args: Any, context: Any) -> ToolResult:
             self.contexts.append(context)

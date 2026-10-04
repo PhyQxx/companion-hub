@@ -11,7 +11,7 @@ from app.privacy import EgressBlocked, EgressDestination, EgressGuard
 from app.privacy.service import PolicyService
 from app.schemas import PrivacyLevel
 
-from .contracts import ToolContext, ToolExecution, ToolResult
+from .contracts import ToolAdmissionCheck, ToolContext, ToolExecution, ToolResult
 from .ledger import ToolLedger
 from .registry import ToolRegistry
 
@@ -54,6 +54,12 @@ class ToolExecutor:
                 call_id=call.id,
                 result=self._failure(handler.name, "tool_arguments_invalid", started),
             )
+        if isinstance(handler, ToolAdmissionCheck):
+            reason = await handler.check_admission(arguments, context)
+            if reason is not None:
+                return ToolExecution(
+                    call_id=call.id, result=self._failure(handler.name, reason, started)
+                )
         budget = current_tool_budget()
         permit = None
         if budget is not None:

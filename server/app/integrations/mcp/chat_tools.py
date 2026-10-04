@@ -11,12 +11,14 @@
 from __future__ import annotations
 
 import re
+from copy import deepcopy
 from time import perf_counter
+from typing import Any
 
 from pydantic import BaseModel
 
 from app.config import HubConfig
-from app.integrations.mcp.manager import McpManager
+from app.integrations.mcp.manager import McpManager, McpManagerError
 from app.llm import ToolDefinition
 from app.schemas import PrivacyLevel
 from app.tools.contracts import ToolContext, ToolResult
@@ -54,16 +56,33 @@ class McpReadToolHandler:
             parameters=self.arguments_model.model_json_schema(),
         )
 
+    async def check_admission(self, arguments: BaseModel, context: ToolContext) -> str | None:
+        try:
+            self._manager.validate_catalogue_ticket(self.name, self._descriptor.catalogue_ticket)
+        except McpManagerError as error:
+            return error.reason_code
+        return None
+
     async def execute(self, arguments: BaseModel, context: ToolContext) -> ToolResult:
         del context
         started = perf_counter()
         try:
             result = await self._manager.call(
-                self._descriptor.internal_name, arguments.model_dump()
+                self._descriptor.internal_name,
+                arguments.model_dump(),
+                catalogue_ticket=self._descriptor.catalogue_ticket,
             )
         except Exception as error:
             reason = getattr(error, "reason_code", "mcp_connection_failed")
             return ToolResult(
+                admission_status="not_admitted"
+                if reason
+                in {
+                    "mcp_tool_source_changed",
+                    "mcp_tool_unavailable",
+                    "mcp_write_requires_action_plan",
+                }
+                else "unknown",
                 ok=False,
                 tool_name=self.name,
                 provider="mcp",
@@ -91,7 +110,7 @@ class McpChatToolProvider:
 
     def __init__(self, manager: McpManager) -> None:
         self._manager = manager
-        self._cache: dict[str, type[BaseModel] | None] = {}
+        self._cache: dict[str, tuple[dict[str, Any], type[BaseModel] | None]] = {}
 
     def select(
         self,
@@ -108,7 +127,10 @@ class McpChatToolProvider:
         if not query_tokens:
             return ()
         scored: list[tuple[float, McpToolDescriptor]] = []
-        for descriptor in self._manager.catalog():
+        catalogue = self._manager.catalog()
+        current_names = {tool.internal_name for tool in catalogue}
+        self._cache = {name: value for name, value in self._cache.items() if name in current_names}
+        for descriptor in catalogue:
             if not descriptor.read_only:
                 continue
             score = _relevance(query_tokens, descriptor)
@@ -124,16 +146,15 @@ class McpChatToolProvider:
         return tuple(handlers)
 
     def _model_for(self, descriptor: McpToolDescriptor) -> type[BaseModel] | None:
-        if descriptor.internal_name in self._cache:
-            return self._cache[descriptor.internal_name]
+        previous = self._cache.get(descriptor.internal_name)
+        if previous is not None and previous[0] == descriptor.input_schema:
+            return previous[1]
         model = build_flat_arguments_model(descriptor.input_schema)
-        self._cache[descriptor.internal_name] = model
+        self._cache[descriptor.internal_name] = (deepcopy(descriptor.input_schema), model)
         return model
 
 
-def _stable_description(
-    descriptor: McpToolDescriptor, model: type[BaseModel]
-) -> str:
+def _stable_description(descriptor: McpToolDescriptor, model: type[BaseModel]) -> str:
     """给模型的稳定描述：不含远端自由文本，只暴露功能定位与参数名。"""
     fields = ", ".join(sorted(model.model_json_schema().get("properties", {})))
     text = (

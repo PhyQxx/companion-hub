@@ -27,6 +27,7 @@ class McpToolDescriptor:
     read_only: bool
     destructive: bool
     idempotent: bool
+    catalogue_ticket: str | None = None
 
 
 @dataclass(frozen=True, slots=True)

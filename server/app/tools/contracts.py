@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any, Literal, Protocol
+from typing import Any, Literal, Protocol, runtime_checkable
 from uuid import UUID
 
 from pydantic import BaseModel, Field
@@ -56,3 +56,14 @@ class ToolHandler(Protocol):
     def definition(self) -> ToolDefinition: ...
 
     async def execute(self, arguments: BaseModel, context: ToolContext) -> ToolResult: ...
+
+
+@runtime_checkable
+class ToolAdmissionCheck(Protocol):
+    """Optional local check before quota/dispatch; no writes or SDK calls.
+
+    Return a static rejection code. Execution results still cannot override
+    the executor's admission evidence after dispatch has begun.
+    """
+
+    async def check_admission(self, arguments: BaseModel, context: ToolContext) -> str | None: ...

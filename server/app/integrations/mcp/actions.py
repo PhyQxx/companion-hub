@@ -53,6 +53,9 @@ def sync_mcp_actions(registry: ActionRegistry, manager: McpManager) -> McpAction
     for tool in manager.catalog():
         if tool.read_only:
             continue
+        if tool.catalogue_ticket is None:
+            skipped.append((tool.internal_name, "catalogue_source_missing"))
+            continue
         action_id = _normalize_action_id(tool.internal_name)
         if action_id is None:
             skipped.append((tool.internal_name, "action_id_unsafe"))
@@ -80,7 +83,10 @@ def sync_mcp_actions(registry: ActionRegistry, manager: McpManager) -> McpAction
                 reversible=False,
                 tool_name=MCP_TOOL_NAME,
                 arguments_schema=model.model_json_schema(),
-                bound_arguments={MCP_BOUND_ARGUMENT: tool.internal_name},
+                bound_arguments={
+                    MCP_BOUND_ARGUMENT: tool.internal_name,
+                    "catalogue_ticket": tool.catalogue_ticket,
+                },
                 timeout_seconds=_clamp_timeout(manager.server_config(tool.server_id)),
                 verification_policy=VerificationPolicy.RECEIPT,
                 verifier_id=MCP_VERIFIER_ID,

@@ -28,6 +28,7 @@ class McpToolCallArgs(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     tool: Annotated[str, Field(pattern=MCP_TOOL_NAME_PATTERN)]
+    catalogue_ticket: Annotated[str, Field(pattern=r"^[0-9a-f]{64}$")] | None = None
     arguments: dict[str, JsonValue] = Field(default_factory=dict, max_length=16)
 
 
@@ -51,6 +52,19 @@ class McpToolCallTool:
             parameters=McpToolCallArgs.model_json_schema(),
         )
 
+    async def check_admission(self, arguments: BaseModel, context: ToolContext) -> str | None:
+        args = cast(McpToolCallArgs, arguments)
+        if (
+            len(json.dumps(args.arguments, ensure_ascii=False, default=str).encode())
+            > MAX_MCP_ARGUMENT_BYTES
+        ):
+            return "mcp_arguments_too_large"
+        try:
+            self._manager.validate_catalogue_ticket(args.tool, args.catalogue_ticket, write=True)
+        except McpManagerError as error:
+            return error.reason_code
+        return None
+
     async def execute(self, arguments: BaseModel, context: ToolContext) -> ToolResult:
         del context
         args = cast(McpToolCallArgs, arguments)
@@ -58,10 +72,21 @@ class McpToolCallTool:
         encoded = json.dumps(args.arguments, ensure_ascii=False, default=str).encode()
         if len(encoded) > MAX_MCP_ARGUMENT_BYTES:
             return self._failure("mcp_arguments_too_large", started)
+        if args.catalogue_ticket is None:
+            return ToolResult(
+                admission_status="not_admitted",
+                ok=False,
+                tool_name=self.name,
+                provider="mcp",
+                latency_ms=(perf_counter() - started) * 1_000,
+                reason_code="mcp_tool_source_missing",
+            )
         try:
-            result = await self._manager.call_write(args.tool, args.arguments)
+            result = await self._manager.call_write(
+                args.tool, args.arguments, catalogue_ticket=args.catalogue_ticket
+            )
         except McpManagerError as error:
-            return self._failure(error.reason_code, started)
+            return self._failure(error.reason_code, started, not_admitted=True)
         return ToolResult(
             ok=result.ok,
             tool_name=self.name,
@@ -77,8 +102,11 @@ class McpToolCallTool:
             },
         )
 
-    def _failure(self, reason_code: str, started: float) -> ToolResult:
+    def _failure(
+        self, reason_code: str, started: float, *, not_admitted: bool = False
+    ) -> ToolResult:
         return ToolResult(
+            admission_status="not_admitted" if not_admitted else "unknown",
             ok=False,
             tool_name=self.name,
             provider="mcp",

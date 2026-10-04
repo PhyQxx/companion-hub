@@ -5,8 +5,10 @@ import contextlib
 import json
 import logging
 import os
+import secrets
 from collections.abc import AsyncIterator, Awaitable, Callable
 from copy import deepcopy
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from typing import Any, TypeVar
 
@@ -170,6 +172,7 @@ class McpManager:
         invoke: Callable[[], Awaitable[T]],
         *,
         epoch: int,
+        capability_guard: Callable[[], None] | None = None,
     ) -> T:
         owner = asyncio.current_task()
         assert owner is not None
@@ -179,6 +182,8 @@ class McpManager:
             # checks authority again after disconnect, before publishing.
             if owner not in self._closing:
                 self._check_source(server_id, source, epoch)
+                if capability_guard is not None:
+                    capability_guard()
 
         self._active.add(owner)
         try:
@@ -188,6 +193,8 @@ class McpManager:
                 # Failed connection acquisition may have spent time closing.
                 # Revalidate that terminal window too, without starting again.
                 self._check_source(server_id, source, epoch)
+                if capability_guard is not None:
+                    capability_guard()
                 raise
         finally:
             self._active.discard(owner)
@@ -275,6 +282,21 @@ class McpManager:
                     server_id, source, fetch, epoch=epoch
                 )
                 self._check_source(server_id, source, epoch)
+                previous_source = self._catalog_sources.get(server_id)
+                issued: list[McpToolDescriptor] = []
+                for descriptor in tools:
+                    previous = state.tools.get(descriptor.internal_name)
+                    ticket = (
+                        previous.catalogue_ticket
+                        if previous_source == source
+                        and previous is not None
+                        and replace(previous, catalogue_ticket=None) == descriptor
+                        else None
+                    )
+                    issued.append(
+                        replace(descriptor, catalogue_ticket=ticket or secrets.token_hex(32))
+                    )
+                tools = tuple(issued)
                 self._catalog_sources[server_id] = source
                 state.protocol_version, state.server_name, state.server_version = (
                     protocol,
@@ -358,16 +380,47 @@ class McpManager:
             for tool in state.tools.values()
         )
 
-    async def call(self, internal_name: str, arguments: dict[str, Any]) -> McpCallResult:
+    async def call(
+        self, internal_name: str, arguments: dict[str, Any], *, catalogue_ticket: str | None = None
+    ) -> McpCallResult:
         """只读调用路径：写工具在此被硬拦截，只能走 call_write（行动计划）。"""
         descriptor = self._descriptor(internal_name)
+        self._check_ticket(descriptor, catalogue_ticket)
         if not descriptor.read_only:
             raise McpManagerError("mcp_write_requires_action_plan")
         return await self._invoke(descriptor, arguments)
 
-    async def call_write(self, internal_name: str, arguments: dict[str, Any]) -> McpCallResult:
+    async def call_write(
+        self, internal_name: str, arguments: dict[str, Any], *, catalogue_ticket: str | None = None
+    ) -> McpCallResult:
         """写调用路径：仅供确认后的行动计划执行（MCP-D），聊天层不得触达。"""
-        return await self._invoke(self._descriptor(internal_name), arguments)
+        descriptor = self._descriptor(internal_name)
+        self._check_ticket(descriptor, catalogue_ticket)
+        return await self._invoke(descriptor, arguments)
+
+    @staticmethod
+    def _check_ticket(descriptor: McpToolDescriptor, ticket: str | None) -> None:
+        if ticket is not None and ticket != descriptor.catalogue_ticket:
+            raise McpManagerError("mcp_tool_source_changed")
+
+    def validate_catalogue_ticket(
+        self, internal_name: str, ticket: str | None, *, write: bool = False
+    ) -> None:
+        if ticket is None:
+            raise McpManagerError("mcp_tool_source_missing")
+        descriptor = self._descriptor(internal_name)
+        self._check_ticket(descriptor, ticket)
+        if not write and not descriptor.read_only:
+            raise McpManagerError("mcp_write_requires_action_plan")
+
+    def _check_tool_source(self, descriptor: McpToolDescriptor) -> None:
+        state = self._states.get(descriptor.server_id)
+        if (
+            state is None
+            or not state.available
+            or state.tools.get(descriptor.internal_name) != descriptor
+        ):
+            raise McpManagerError("mcp_tool_source_changed")
 
     def _descriptor(self, internal_name: str) -> McpToolDescriptor:
         descriptor = next(
@@ -391,13 +444,21 @@ class McpManager:
                 pinned = config.model_copy(update={"secret_value": source[2], "secret_ref": None})
                 async with self._client_scope(pinned) as client:
                     self._check_source(descriptor.server_id, source, epoch)
+                    self._check_tool_source(descriptor)
                     result = deepcopy(
                         await client.call_tool(descriptor.remote_name, deepcopy(arguments))
                     )
                 return result
 
-            payload = await self._connection_call(descriptor.server_id, source, invoke, epoch=epoch)
+            payload = await self._connection_call(
+                descriptor.server_id,
+                source,
+                invoke,
+                epoch=epoch,
+                capability_guard=lambda: self._check_tool_source(descriptor),
+            )
             self._check_source(descriptor.server_id, source, epoch)
+            self._check_tool_source(descriptor)
         except Exception as error:
             return McpCallResult(
                 ok=False,

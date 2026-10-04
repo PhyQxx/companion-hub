@@ -33,6 +33,13 @@ const VERIFICATION_LABELS: Record<string, string> = {
   inconclusive: "证据不足",
 };
 
+const REASON_LABELS: Record<string, string> = {
+  mcp_tool_source_changed: "外部工具的连接或参数已变化，请重新预览并确认计划。",
+  mcp_tool_source_missing: "计划缺少有效的工具信息，请重新预览并确认。",
+  mcp_tool_unavailable: "外部工具当前不可用，请刷新连接后重新预览计划。",
+  mcp_manager_stopped: "外部连接已停止，请恢复连接后重新预览计划。",
+};
+
 function label(map: Record<string, string>, key: string): string {
   return map[key] ?? key;
 }
@@ -92,7 +99,7 @@ const progressPercent = computed(() =>
     </ol>
 
     <small v-if="plan.cancel_reason" class="plan-reason">{{ plan.cancel_reason === 'user_left_home' ? '已离家：计划已取消或正在停止后续步骤。' : plan.cancel_reason }}</small>
-    <small v-if="plan.reason_code" class="plan-reason">原因：{{ plan.reason_code }}</small>
+    <small v-if="plan.reason_code" class="plan-reason">原因：{{ label(REASON_LABELS, plan.reason_code) }}</small>
   </section>
 </template>
 
