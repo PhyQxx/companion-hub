@@ -18,7 +18,6 @@ from app.integrations.mcp import (
     McpManagerError,
     McpRemoteClient,
     McpRemoteTool,
-    McpServerState,
     McpToolDescriptor,
 )
 
@@ -203,7 +202,7 @@ async def test_catalog_is_paginated_allowlisted_namespaced_and_read_only_by_defa
     assert descriptor.read_only is True
 
 
-async def test_remote_failure_keeps_stable_status_reason() -> None:
+async def test_remote_failure_keeps_stable_status_reason(caplog: pytest.LogCaptureFixture) -> None:
     manager = McpManager(
         cast(Any, make_store(make_config())),
         client_factory=FakeFactory(
@@ -216,6 +215,7 @@ async def test_remote_failure_keeps_stable_status_reason() -> None:
     assert state.available is False
     assert state.last_error == "mcp_connection_failed"
     assert state.consecutive_failures == 1
+    assert "secret host detail" not in caplog.text
 
 
 async def test_read_only_call_is_bounded_and_remote_error_is_structured() -> None:
@@ -399,36 +399,13 @@ async def test_mcp_tool_call_tool_routes_through_call_write_and_bounds_payload()
     from app.tools.mcp_actions import McpToolCallArgs, McpToolCallTool
 
     client = FakeClient(
-        {None: ([], None)},
+        {None: ([remote_tool("create", read_only=False)], None)},
         payload=McpCallPayload(False, {"created": True}, "created"),
     )
-    manager = McpManager(make_store(make_config()), client_factory=FakeFactory([client]))
-    # 目录中注入一个写工具（FakeFactory 固定 server books）
-    manager._states["books"] = cast(McpServerState, SimpleNamespace(
-        configured_enabled=True,
-        available=True,
-        tools={
-            "mcp.books.create": SimpleNamespace(
-                internal_name="mcp.books.create",
-                server_id="books",
-                remote_name="create",
-                title="Create",
-                description="",
-                input_schema={},
-                read_only=False,
-                destructive=False,
-                idempotent=False,
-            )
-        },
-        tool_count=1,
-        protocol_version="2026-07-28",
-        server_name="Books",
-        server_version="1",
-        last_refresh_at=None,
-        last_error=None,
-        refreshing=False,
-        consecutive_failures=0,
-    ))
+    manager = McpManager(
+        make_store(make_config(allow_write=True)), client_factory=FakeFactory([client])
+    )
+    await manager.refresh_server("books")
     tool = McpToolCallTool(manager)
 
     ok = await tool.execute(
@@ -458,35 +435,13 @@ async def test_mcp_tool_call_tool_routes_through_call_write_and_bounds_payload()
 
 async def test_manager_call_still_blocks_write_but_call_write_executes() -> None:
     client = FakeClient(
-        {None: ([], None)},
+        {None: ([remote_tool("create", read_only=False)], None)},
         payload=McpCallPayload(False, {"created": True}, "created"),
     )
-    manager = McpManager(make_store(make_config()), client_factory=FakeFactory([client]))
-    manager._states["books"] = cast(McpServerState, SimpleNamespace(
-        configured_enabled=True,
-        available=True,
-        tools={
-            "mcp.books.create": SimpleNamespace(
-                internal_name="mcp.books.create",
-                server_id="books",
-                remote_name="create",
-                title="Create",
-                description="",
-                input_schema={},
-                read_only=False,
-                destructive=False,
-                idempotent=False,
-            )
-        },
-        tool_count=1,
-        protocol_version="2026-07-28",
-        server_name="Books",
-        server_version="1",
-        last_refresh_at=None,
-        last_error=None,
-        refreshing=False,
-        consecutive_failures=0,
-    ))
+    manager = McpManager(
+        make_store(make_config(allow_write=True)), client_factory=FakeFactory([client])
+    )
+    await manager.refresh_server("books")
     with pytest.raises(McpManagerError, match="mcp_write_requires_action_plan"):
         await manager.call("mcp.books.create", {})
     result = await manager.call_write("mcp.books.create", {"title": "x"})

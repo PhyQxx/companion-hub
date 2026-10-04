@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from contextlib import AsyncExitStack
 from types import TracebackType
 from typing import Any, Self
@@ -33,6 +34,14 @@ class SdkMcpClient:
         self.protocol_version: str | None = None
         self.server_name: str | None = None
         self.server_version: str | None = None
+        self._close_observer: Callable[[], None] | None = None
+
+    def set_close_observer(self, observer: Callable[[], None] | None) -> None:
+        self._close_observer = observer
+
+    def _closing(self) -> None:
+        if self._close_observer is not None:
+            self._close_observer()
 
     async def __aenter__(self) -> Self:
         stack = AsyncExitStack()
@@ -66,6 +75,7 @@ class SdkMcpClient:
             self.server_version = info.version if info is not None else None
             return self
         except BaseException:
+            self._closing()
             await stack.aclose()
             raise
 
@@ -79,6 +89,7 @@ class SdkMcpClient:
         stack, self._stack = self._stack, None
         self._client = None
         if stack is not None:
+            self._closing()
             await stack.aclose()
 
     def _require_client(self) -> Client:

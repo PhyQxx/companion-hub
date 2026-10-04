@@ -4,19 +4,25 @@ import asyncio
 import contextlib
 import json
 import logging
+import os
+from collections.abc import AsyncIterator, Awaitable, Callable
+from copy import deepcopy
 from datetime import UTC, datetime, timedelta
-from typing import Any
+from typing import Any, TypeVar
 
 from app.config import ConfigStore, DatabaseConfigStore
 from app.config.models import McpServerConfig
+from app.harness.guarded_call import guarded_inline_call
+from app.harness.joined_read import join_on_cancel
 
-from .client import sdk_client_factory
-from .models import McpCallResult, McpRemoteTool, McpServerState, McpToolDescriptor
-from .ports import McpClientFactory
+from .client import SdkMcpClient, sdk_client_factory
+from .models import McpCallPayload, McpCallResult, McpRemoteTool, McpServerState, McpToolDescriptor
+from .ports import McpClientFactory, McpRemoteClient
 
 logger = logging.getLogger("app.integrations.mcp")
 
 MAX_CATALOG_PAGES = 100
+T = TypeVar("T")
 
 
 class McpManagerError(RuntimeError):
@@ -40,6 +46,11 @@ class McpManager:
         self._locks: dict[str, asyncio.Lock] = {}
         self._stop = asyncio.Event()
         self._task: asyncio.Task[None] | None = None
+        self._active: set[asyncio.Task[Any]] = set()
+        self._closing: set[asyncio.Task[Any]] = set()
+        self._epoch = 0
+        # Connection secrets remain private in memory, never in public states.
+        self._catalog_sources: dict[str, tuple[int | None, McpServerConfig, str | None]] = {}
         # 目录刷新成功后的回调（MCP-D 用它把写工具同步进动作注册表）
         self._catalog_listener: Any | None = None
 
@@ -61,7 +72,7 @@ class McpManager:
     @property
     def states(self) -> tuple[McpServerState, ...]:
         self._sync_configured_states()
-        return tuple(self._states[key] for key in sorted(self._states))
+        return tuple(deepcopy(self._states[key]) for key in sorted(self._states))
 
     @property
     def enabled(self) -> bool:
@@ -75,10 +86,20 @@ class McpManager:
 
     async def stop(self) -> None:
         self._stop.set()
+        self._epoch += 1
         task, self._task = self._task, None
-        if task is not None:
-            with contextlib.suppress(asyncio.CancelledError):
-                await task
+        pending = self._active | ({task} if task is not None else set())
+        pending.discard(asyncio.current_task())
+        for operation in pending:
+            if not operation.done() and operation not in self._closing:
+                operation.cancel()
+        self._sync_configured_states()
+        if pending:
+
+            async def finish() -> None:
+                await asyncio.gather(*pending, return_exceptions=True)
+
+            await join_on_cancel(finish(), name="mcp-stop-cleanup")
 
     async def _run(self) -> None:
         while not self._stop.is_set():
@@ -97,15 +118,99 @@ class McpManager:
     def _sync_configured_states(self) -> None:
         config = self._config_store.current.config.mcp
         configured = {item.server_id: item for item in config.servers}
+        changed = False
         for server_id, item in configured.items():
             state = self._states.setdefault(server_id, McpServerState(server_id=server_id))
             state.configured_enabled = config.enabled and item.enabled
-            if not state.configured_enabled:
+            accepted = self._catalog_sources.get(server_id)
+            stale = accepted is not None and accepted != self._connection_source(item)
+            if not state.configured_enabled or stale or self._stop.is_set():
+                changed = changed or bool(state.tools)
+                self._catalog_sources.pop(server_id, None)
                 state.available = False
                 state.tools.clear()
                 state.tool_count = 0
+                state.protocol_version = state.server_name = state.server_version = None
+                state.last_refresh_at = None
+                if stale:
+                    state.last_error = "mcp_source_changed"
         for server_id in set(self._states) - set(configured):
+            changed = changed or bool(self._states[server_id].tools)
             del self._states[server_id]
+            self._catalog_sources.pop(server_id, None)
+        if changed:
+            self._notify_catalog_changed()
+
+    def _connection_source(
+        self, config: McpServerConfig
+    ) -> tuple[int | None, McpServerConfig, str | None]:
+        secret = config.secret_value
+        if secret is None and config.secret_ref is not None:
+            secret = os.environ.get(config.secret_ref.removeprefix("env:"))
+        return getattr(self._config_store.current, "version", None), deepcopy(config), secret
+
+    def _check_source(
+        self, server_id: str, source: tuple[int | None, McpServerConfig, str | None], epoch: int
+    ) -> None:
+        if self._stop.is_set() or self._epoch != epoch:
+            raise McpManagerError("mcp_manager_stopped")
+        try:
+            current = self._server_config(server_id)
+        except McpManagerError:
+            raise McpManagerError("mcp_source_changed") from None
+        if not self.enabled or not current.enabled or source != self._connection_source(current):
+            raise McpManagerError("mcp_source_changed")
+        if source[1].secret_ref is not None and not source[2]:
+            raise McpManagerError("mcp_secret_unavailable")
+
+    async def _connection_call(
+        self,
+        server_id: str,
+        source: tuple[int | None, McpServerConfig, str | None],
+        invoke: Callable[[], Awaitable[T]],
+        *,
+        epoch: int,
+    ) -> T:
+        owner = asyncio.current_task()
+        assert owner is not None
+
+        async def check() -> None:
+            # Disconnect keeps the SDK context on its owning task. The caller
+            # checks authority again after disconnect, before publishing.
+            if owner not in self._closing:
+                self._check_source(server_id, source, epoch)
+
+        self._active.add(owner)
+        try:
+            try:
+                return await guarded_inline_call(invoke, check)
+            except Exception:
+                # Failed connection acquisition may have spent time closing.
+                # Revalidate that terminal window too, without starting again.
+                self._check_source(server_id, source, epoch)
+                raise
+        finally:
+            self._active.discard(owner)
+            self._sync_configured_states()
+
+    @contextlib.asynccontextmanager
+    async def _client_scope(self, config: McpServerConfig) -> AsyncIterator[McpRemoteClient]:
+        owner = asyncio.current_task()
+        assert owner is not None
+        remote: McpRemoteClient | None = None
+        try:
+            remote = self._client_factory(config)
+            if isinstance(remote, SdkMcpClient):
+                remote.set_close_observer(lambda: self._closing.add(owner))
+            async with remote as client:
+                try:
+                    yield client
+                finally:
+                    self._closing.add(owner)
+        finally:
+            self._closing.discard(owner)
+            if isinstance(remote, SdkMcpClient):
+                remote.set_close_observer(None)
 
     async def refresh_expired(self) -> None:
         self._sync_configured_states()
@@ -114,9 +219,8 @@ class McpManager:
             if not state.configured_enabled:
                 continue
             config = self._server_config(state.server_id)
-            if (
-                state.last_refresh_at is None
-                or now - state.last_refresh_at >= timedelta(seconds=config.catalog_ttl_seconds)
+            if state.last_refresh_at is None or now - state.last_refresh_at >= timedelta(
+                seconds=config.catalog_ttl_seconds
             ):
                 with contextlib.suppress(Exception):
                     await self.refresh_server(state.server_id)
@@ -134,23 +238,49 @@ class McpManager:
         if not state.configured_enabled:
             raise McpManagerError("mcp_server_disabled")
         lock = self._locks.setdefault(server_id, asyncio.Lock())
+        source = self._connection_source(config)
+        epoch = self._epoch
         async with lock:
+            # Waiting for another refresh cannot replace the accepted authority.
+            self._check_source(server_id, source, epoch)
             state.refreshing = True
             try:
-                remote_tools: list[McpRemoteTool] = []
-                cursor: str | None = None
-                async with self._client_factory(config) as client:
-                    for _ in range(MAX_CATALOG_PAGES):
-                        page, cursor = await client.list_tools(cursor)
-                        remote_tools.extend(page)
-                        if cursor is None:
-                            break
-                    else:
-                        raise McpManagerError("mcp_catalog_page_limit")
-                    tools = self._map_tools(config, remote_tools)
-                    state.protocol_version = client.protocol_version
-                    state.server_name = client.server_name
-                    state.server_version = client.server_version
+
+                async def fetch() -> tuple[
+                    tuple[McpToolDescriptor, ...], str | None, str | None, str | None
+                ]:
+                    remote_tools: list[McpRemoteTool] = []
+                    cursor: str | None = None
+                    pinned = config.model_copy(
+                        update={"secret_value": source[2], "secret_ref": None}
+                    )
+                    async with self._client_scope(pinned) as client:
+                        for _ in range(MAX_CATALOG_PAGES):
+                            self._check_source(server_id, source, epoch)
+                            page, cursor = await client.list_tools(cursor)
+                            remote_tools.extend(deepcopy(page))
+                            if cursor is None:
+                                break
+                        else:
+                            raise McpManagerError("mcp_catalog_page_limit")
+                        candidate = (
+                            self._map_tools(config, remote_tools),
+                            client.protocol_version,
+                            client.server_name,
+                            client.server_version,
+                        )
+                    return candidate
+
+                tools, protocol, name, version = await self._connection_call(
+                    server_id, source, fetch, epoch=epoch
+                )
+                self._check_source(server_id, source, epoch)
+                self._catalog_sources[server_id] = source
+                state.protocol_version, state.server_name, state.server_version = (
+                    protocol,
+                    name,
+                    version,
+                )
                 state.tools = {item.internal_name: item for item in tools}
                 state.tool_count = len(tools)
                 state.available = True
@@ -158,20 +288,36 @@ class McpManager:
                 state.last_error = None
                 state.consecutive_failures = 0
             except McpManagerError as error:
+                had_tools = bool(state.tools)
+                self._catalog_sources.pop(server_id, None)
                 state.available = False
+                state.tools.clear()
+                state.tool_count = 0
                 state.consecutive_failures += 1
                 state.last_error = error.reason_code
+                if had_tools:
+                    self._notify_catalog_changed()
                 raise
             except Exception as error:
+                had_tools = bool(state.tools)
+                self._catalog_sources.pop(server_id, None)
                 state.available = False
+                state.tools.clear()
+                state.tool_count = 0
                 state.consecutive_failures += 1
                 state.last_error = self._reason_for(error)
-                logger.warning("MCP catalog refresh failed server_id=%s", server_id, exc_info=True)
+                if had_tools:
+                    self._notify_catalog_changed()
+                logger.warning(
+                    "MCP catalog refresh failed server_id=%s error_type=%s",
+                    server_id,
+                    type(error).__name__,
+                )
             finally:
                 state.refreshing = False
         if state.available:
             self._notify_catalog_changed()
-        return state
+        return deepcopy(state)
 
     @staticmethod
     def _map_tools(
@@ -206,7 +352,7 @@ class McpManager:
 
     def catalog(self) -> tuple[McpToolDescriptor, ...]:
         return tuple(
-            tool
+            deepcopy(tool)
             for state in self.states
             if state.available
             for tool in state.tools.values()
@@ -235,9 +381,23 @@ class McpManager:
         self, descriptor: McpToolDescriptor, arguments: dict[str, Any]
     ) -> McpCallResult:
         config = self._server_config(descriptor.server_id)
+        source = self._catalog_sources.get(descriptor.server_id)
+        if source is None:
+            raise McpManagerError("mcp_tool_unavailable")
+        epoch = self._epoch
         try:
-            async with self._client_factory(config) as client:
-                payload = await client.call_tool(descriptor.remote_name, arguments)
+
+            async def invoke() -> McpCallPayload:
+                pinned = config.model_copy(update={"secret_value": source[2], "secret_ref": None})
+                async with self._client_scope(pinned) as client:
+                    self._check_source(descriptor.server_id, source, epoch)
+                    result = deepcopy(
+                        await client.call_tool(descriptor.remote_name, deepcopy(arguments))
+                    )
+                return result
+
+            payload = await self._connection_call(descriptor.server_id, source, invoke, epoch=epoch)
+            self._check_source(descriptor.server_id, source, epoch)
         except Exception as error:
             return McpCallResult(
                 ok=False,
@@ -275,6 +435,8 @@ class McpManager:
 
     @staticmethod
     def _reason_for(error: Exception) -> str:
+        if isinstance(error, McpManagerError):
+            return error.reason_code
         if isinstance(error, TimeoutError | asyncio.TimeoutError):
             return "mcp_timeout"
         return "mcp_connection_failed"
