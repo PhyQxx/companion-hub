@@ -107,8 +107,14 @@ async def test_children_share_quota_and_preserve_root_opt_out(
                     root
                 )
             reservations = list(await session.scalars(select(ModelReservationRecord)))
-            assert all(item.run_id == root for item in reservations)
-            assert len(reservations) == (2 if enabled else 0)
+            if enabled:
+                assert all(item.run_id == root for item in reservations)
+                assert len(reservations) == 2
+            else:
+                # Financial attempts belong to each actual child while the
+                # parent's disabled quota counters remain untouched.
+                assert {item.run_id for item in reservations} == {*children, pending.turn_id}
+                assert len(reservations) == 3
         assert len(provider.requests) == (2 if enabled else 3)
     finally:
         await service.drain_background_work()

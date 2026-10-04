@@ -8,6 +8,8 @@ from contextlib import asynccontextmanager, suppress
 from dataclasses import dataclass
 
 from app.harness.budget import BudgetDenied, current_budget
+from app.harness.joined_read import join_on_cancel
+from app.harness.model_accounting import current_model_accounting
 from app.harness.tokenizer import ContextTokenizerUnavailable
 from app.harness.window import ContextWindowExceeded, fit_window
 from app.observability import TraceRecorder
@@ -404,8 +406,9 @@ class LLMRouter:
         self, request: CompletionRequest, endpoint: str, manifest: dict[str, int | str]
     ) -> AsyncIterator[BudgetAttempt]:
         budget = current_budget()
+        accounting = current_model_accounting() if budget is None else None
         admission = BudgetAttempt()
-        if budget is None:
+        if budget is None and accounting is None:
             yield admission
             return
         tokens = sum(
@@ -418,16 +421,26 @@ class LLMRouter:
             )
         )
         try:
-            permit = await budget.reserve(
-                endpoint=endpoint,
-                tokens=tokens,
-                final=not request.tools or request.tool_choice == "none",
-                pricing=ModelPricing(
-                    input_rate=self._endpoints[endpoint].input_cost_per_million,
-                    output_rate=self._endpoints[endpoint].output_cost_per_million,
-                    currency=self._endpoints[endpoint].cost_currency,
-                ),
+            pricing = ModelPricing(
+                input_rate=self._endpoints[endpoint].input_cost_per_million,
+                output_rate=self._endpoints[endpoint].output_cost_per_million,
+                currency=self._endpoints[endpoint].cost_currency,
             )
+            if budget is not None:
+                permit = await budget.reserve(
+                    endpoint=endpoint,
+                    tokens=tokens,
+                    final=not request.tools or request.tool_choice == "none",
+                    pricing=pricing,
+                )
+            else:
+                assert accounting is not None
+                permit = await accounting.reserve(
+                    endpoint=endpoint,
+                    tokens=tokens,
+                    pricing=pricing,
+                    privacy_level=PrivacyLevel(request.privacy_level),
+                )
         except BudgetDenied:
             raise
         except Exception as error:
@@ -439,9 +452,14 @@ class LLMRouter:
             yield admission
         finally:
             try:
-                await budget.settle(
-                    permit.call_id, admission.result.usage if admission.result else None
-                )
+                usage = admission.result.usage if admission.result else None
+                if budget is not None:
+                    await budget.settle(permit.call_id, usage)
+                else:
+                    assert accounting is not None
+                    await join_on_cancel(
+                        accounting.settle(permit.call_id, usage), name="model-fee-settle"
+                    )
             except BudgetDenied:
                 raise
             except Exception as error:

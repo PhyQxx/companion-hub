@@ -39,6 +39,7 @@ from app.harness.context import ContextAssembler, ContextBlocks, ContextReferenc
 from app.harness.guarded_call import guarded_inline_call
 from app.harness.joined_read import joined_read
 from app.harness.loop import CompletionFrame, LoopOutcome, run_agent_loop
+from app.harness.model_accounting import model_accounting_scope
 from app.harness.run_trace import run_trace_scope
 from app.ids import uuid7
 from app.integrations.mcp.chat_tools import McpChatToolProvider, McpReadToolHandler
@@ -63,6 +64,7 @@ from app.runs.budget import RunModelBudget, recover_stale_reservations
 from app.runs.chat_parent import require_chat_parent, validate_parent
 from app.runs.completion import recover_expired_model_runs
 from app.runs.delivery import recover_expired_deliveries
+from app.runs.model_accounting import DisabledModelAccounting
 from app.runs.parent_budget import ParentBudgetScope
 from app.runs.resources import recover_tool_reservations
 from app.runs.speech_delivery import recover_expired_speech_deliveries
@@ -1540,8 +1542,16 @@ class ChatService:
             else:
                 await read_source()
 
+        budget = self._model_budget(pending)
         return BudgetedBackend(
-            self._router_builder(pending.config), self._model_budget(pending), validate=validate
+            self._router_builder(pending.config),
+            budget,
+            validate=validate,
+            accounting=DisabledModelAccounting(
+                self._database, run_id=pending.turn_id, user_id=pending.user_id
+            )
+            if budget is None
+            else None,
         )
 
     async def _run_agent_loop(
@@ -2655,6 +2665,17 @@ class ChatService:
             ),
             tool_budget_scope(None),
             run_trace_scope(trace),
+            model_accounting_scope(
+                DisabledModelAccounting(
+                    self._database,
+                    run_id=pending.turn_id,
+                    user_id=user_id,
+                    trace=trace,
+                    maintenance=True,
+                )
+                if trace is not None
+                else None
+            ),
         ):
             backend = self._router_builder(snapshot.config)
             if kind == "chat.memory":

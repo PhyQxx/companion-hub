@@ -34,6 +34,7 @@ import pytest
         "app.voice:TtsProviderChain",
         "app.llm.contracts",
         "app.harness.operations",
+        "app.harness.model_accounting",
         "app.llm.probe",
         "app.tools.amap_probe_ports",
         "app.home_assistant.models",

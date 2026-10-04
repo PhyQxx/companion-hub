@@ -15,7 +15,13 @@ from test_chat import _summary_service, create_user
 from app.chat import TurnCancelled
 from app.chat.context_sources import ContextSourceInvalidated
 from app.config import DatabaseConfigStore, HubConfig
-from app.db import AppUserRecord, MemoryRecord, ModelReservationRecord, TaskRunRecord
+from app.db import (
+    AppUserRecord,
+    MemoryRecord,
+    ModelCostRecord,
+    ModelReservationRecord,
+    TaskRunRecord,
+)
 from app.harness.budget import BudgetDenied
 from app.llm import CompletionRequest, CompletionResult, LLMRoute, ModelUsage
 from app.llm.router import LLMRouter
@@ -167,10 +173,12 @@ async def test_silent_chat_call_stops_on_persisted_revocation(
                 "cancelled" if change == "cancel" else "failed"
             )
             reservations = list(await session.scalars(select(ModelReservationRecord)))
-            if enabled:
-                assert len(reservations) == 1 and reservations[0].state == "unknown"
-            else:
-                assert reservations == []
+            assert len(reservations) == 1 and reservations[0].state == "unknown"
+            assert reservations[0].run_id == run_id
+            fee = await session.get_one(ModelCostRecord, reservations[0].call_id)
+            assert fee.state == "unknown" and fee.user_id == user.id
+            if not enabled:
+                assert saved.llm_attempts == saved.budget_tokens == 0
     finally:
         provider.release.set()
         if task is not None and not task.done():

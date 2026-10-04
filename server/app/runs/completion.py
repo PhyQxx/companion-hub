@@ -28,6 +28,7 @@ from app.harness.budget import (
     tool_budget_scope,
 )
 from app.harness.guarded_call import guarded_call
+from app.harness.model_accounting import model_accounting_scope
 from app.harness.run_trace import DisabledRunTrace, current_run_trace, run_trace_scope
 from app.ids import uuid7
 from app.llm.contracts import CompletionRequest, CompletionResult
@@ -35,6 +36,7 @@ from app.schemas import PrivacyLevel
 
 from .budget import RunModelBudget, utc
 from .budget_origins import require_budget_origins
+from .model_accounting import DisabledModelAccounting
 from .parent_budget import ParentBudgetScope, current_parent_budget
 from .store import append_run_event, transition_run
 from .trace_sources import check_trace_binding, extend_run_trace, require_run_trace, trace_source
@@ -275,17 +277,21 @@ async def complete_with_run(
         if snapshot.config.run_budget.enabled and trace is None
         else None
     )
+    call_trace = (
+        extend_run_trace(trace, row)
+        if trace
+        else DisabledRunTrace(id(database), user_id, (trace_source(row, maintenance=False),))
+        if not snapshot.config.run_budget.enabled
+        else None
+    )
     try:
         with (
             budget_scope(budget),
             tool_budget_scope(None),
-            run_trace_scope(
-                extend_run_trace(trace, row)
-                if trace
-                else DisabledRunTrace(
-                    id(database), user_id, (trace_source(row, maintenance=False),)
-                )
-                if not snapshot.config.run_budget.enabled
+            run_trace_scope(call_trace),
+            model_accounting_scope(
+                DisabledModelAccounting(database, run_id=run_id, user_id=user_id, trace=call_trace)
+                if call_trace is not None
                 else None
             ),
         ):
