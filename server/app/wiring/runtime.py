@@ -78,6 +78,7 @@ from app.mail import (
 from app.mail_awareness import MailAwarenessLoop
 from app.output import ProactiveDeliveryService
 from app.push import PushSubscriptionStore
+from app.runs.speech_delivery import SqlSpeechDelivery
 from app.runs.voice_sources import SqlVoiceSourceGuard
 from app.runtime import TurnCoordinator
 from app.safety import SafetyActivityScheduler, SafetyAlertService
@@ -501,11 +502,16 @@ def assemble_runtime(
         app.include_router(xiaoai_router)
     voice_manager = None
     if runtime_config is not None:
+        voice_source = ConfigVoiceSource(runtime_config)
+        voice_guard = SqlVoiceSourceGuard(runtime_database)
         voice_router, voice_manager = create_voice_websocket_router(
             runtime_chat_service,
             auth_service,
-            voice_source=ConfigVoiceSource(runtime_config),
-            source_guard=SqlVoiceSourceGuard(runtime_database),
+            voice_source=voice_source,
+            source_guard=voice_guard,
+            speech_delivery=SqlSpeechDelivery(
+                runtime_database, runtime_config, voice_guard, voice_source
+            ),
             turn_coordinator=turn_coordinator,
             avatar_control_publisher=device_command_gateway,
         )

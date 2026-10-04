@@ -63,6 +63,7 @@ from app.runs.chat_parent import require_chat_parent, validate_parent
 from app.runs.completion import recover_expired_model_runs
 from app.runs.delivery import recover_expired_deliveries
 from app.runs.resources import recover_tool_reservations
+from app.runs.speech_delivery import recover_expired_speech_deliveries
 from app.runs.store import RunStore, append_run_event, transition_run
 from app.schemas import PrivacyLevel
 from app.skills.drafts import SkillDraftAssistant
@@ -2151,6 +2152,7 @@ class ChatService:
             )
 
         await recover_tool_reservations(self._database)
+        await recover_expired_speech_deliveries(self._database)
         await recover_expired_model_runs(self._database)
         await recover_expired_deliveries(self._database)
         await recover_stale_reservations(self._database)

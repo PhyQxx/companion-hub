@@ -3,7 +3,7 @@
 import asyncio
 from collections.abc import AsyncGenerator, AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass
-from typing import Generic, TypeVar
+from typing import Generic, Literal, TypeVar
 from uuid import UUID
 
 from app.config.models import RunBudgetConfig
@@ -67,6 +67,10 @@ async def stream_with_run(
     source_guard: Callable[[], Awaitable[None]],
     cost_endpoint: str,
     budget_source: Callable[[], RunBudgetConfig] | None = None,
+    trace_parent_id: UUID | None = None,
+    missing_quote_reason: Literal[
+        "media_cost_estimate_unavailable", "voice_cost_estimate_unavailable"
+    ] = "media_cost_estimate_unavailable",
 ) -> AsyncGenerator[T, None]:
     """One provider dispatch, bounded handoff, terminal errors without replay.
 
@@ -100,6 +104,8 @@ async def stream_with_run(
                 cost_endpoint=cost_endpoint,
                 budget_source=budget_source,
                 cooperative=True,
+                trace_parent_id=trace_parent_id,
+                missing_quote_reason=missing_quote_reason,
             )
         except BaseException as error:
             if closing:

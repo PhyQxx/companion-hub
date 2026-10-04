@@ -8,13 +8,20 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import json
 import logging
+from collections.abc import Callable
 from typing import Protocol
+from weakref import WeakKeyDictionary
 
 from app.config import ConfigStore, DatabaseConfigStore, HubConfig
+from app.config.models import VoiceCostConfig, VoiceTtsProviderConfig
+from app.harness.budget import BudgetDenied
+from app.harness.unit_costs import UnitCostQuote, UnitPricing
 from app.llm.provider import EnvSecretProvider, SecretNotFound
 
 from .contracts import SpeechRecognizer, SpeechSynthesizer
+from .delivery_ports import VoiceProviderBinding
 from .failover import TtsProviderChain
 from .faster_whisper import DEFAULT_HOTWORDS as FASTER_WHISPER_DEFAULT_HOTWORDS
 from .faster_whisper import (
@@ -51,9 +58,23 @@ class StaticVoiceSource:
         self,
         recognizer: SpeechRecognizer | None,
         tts_chain: TtsProviderChain | None,
+        *,
+        pricing: tuple[tuple[object, VoiceProviderBinding], ...] = (),
     ) -> None:
         self._recognizer = recognizer
         self._tts_chain = tts_chain
+        self._pricing = pricing
+
+    def binding_for(self, provider: object) -> VoiceProviderBinding | None:
+        return next(
+            (binding for candidate, binding in self._pricing if candidate is provider), None
+        )
+
+    def validate_provider(self, provider: object) -> None:
+        if self._tts_chain is None or not any(
+            candidate is provider for candidate in self._tts_chain.providers
+        ):
+            raise BudgetDenied("voice_provider_configuration_changed")
 
     async def resolve(
         self,
@@ -69,6 +90,20 @@ class ConfigVoiceSource:
         self._cache_key: str | None = None
         self._cache: tuple[SpeechRecognizer | None, TtsProviderChain | None] = (None, None)
         self._cache_lock = asyncio.Lock()
+        self._pricing: WeakKeyDictionary[object, VoiceProviderBinding] = WeakKeyDictionary()
+
+    def binding_for(self, provider: object) -> VoiceProviderBinding | None:
+        return self._pricing.get(provider)
+
+    def validate_provider(self, provider: object) -> None:
+        binding = self.binding_for(provider)
+        config = self._config_store.current.config
+        if binding is None or not any(
+            entry.enabled
+            and _provider_fingerprints(config, entry)[1] == binding.authority_fingerprint
+            for entry in config.voice.tts
+        ):
+            raise BudgetDenied("voice_provider_configuration_changed")
 
     async def resolve(
         self,
@@ -84,14 +119,54 @@ class ConfigVoiceSource:
         async with self._cache_lock:
             if cache_key == self._cache_key:
                 return self._cache
-            self._cache = build_voice_providers(snapshot.config)
+
+            def register(provider: object, entry: VoiceCostConfig, kind: str) -> None:
+                quote = (
+                    UnitCostQuote(
+                        pricing=UnitPricing(
+                            unit="request",
+                            currency=entry.cost_currency,
+                            rate_per_unit=entry.request_cost_ceiling,
+                        ),
+                        maximum_quantity=1,
+                    )
+                    if entry.request_cost_ceiling is not None and entry.cost_currency is not None
+                    else None
+                )
+                assert isinstance(entry, VoiceTtsProviderConfig)
+                fingerprint, authority = _provider_fingerprints(snapshot.config, entry)
+                self._pricing[provider] = VoiceProviderBinding(
+                    f"voice.{kind}.{fingerprint}", quote, snapshot.version, authority
+                )
+
+            self._cache = build_voice_providers(snapshot.config, register=register)
             self._cache_key = cache_key
             return self._cache
 
 
-def _resolve_secret(
-    secret_value: str | None, secret_ref: str | None
-) -> str | None:
+def _provider_fingerprints(config: HubConfig, entry: VoiceTtsProviderConfig) -> tuple[str, str]:
+    """Keep credential authority in memory; public cost identifiers exclude it."""
+    public = entry.model_dump(mode="json", exclude={"secret_ref", "secret_value"})
+    authority = entry.model_dump(mode="json")
+    if entry.provider == "senseaudio":
+        shared = config.voice.senseaudio
+        if entry.base_url is None:
+            public["base_url"] = str(shared.base_url) if shared.base_url is not None else None
+            authority["base_url"] = public["base_url"]
+        if entry.secret_value is None:
+            # An unresolved entry reference also falls back to shared credentials.
+            authority["shared_secret_ref"] = shared.secret_ref
+            authority["shared_secret_value"] = shared.secret_value
+
+    def digest(payload: object) -> str:
+        return hashlib.sha256(
+            json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
+        ).hexdigest()
+
+    return digest(public)[:24], digest(authority)
+
+
+def _resolve_secret(secret_value: str | None, secret_ref: str | None) -> str | None:
     if secret_value is not None:
         return secret_value
     if secret_ref is not None:
@@ -105,6 +180,8 @@ def _resolve_secret(
 
 def build_voice_providers(
     config: HubConfig,
+    *,
+    register: Callable[[object, VoiceCostConfig, str], None] | None = None,
 ) -> tuple[SpeechRecognizer | None, TtsProviderChain | None]:
     """按 voice 配置节构建识别器与合成链；密钥缺失的条目跳过并告警。"""
     recognizer: SpeechRecognizer | None = None
@@ -116,9 +193,7 @@ def build_voice_providers(
                 device=asr.device,
                 compute_type=asr.compute_type,
                 language=asr.language,
-                initial_prompt=(
-                    asr.initial_prompt or FASTER_WHISPER_DEFAULT_INITIAL_PROMPT
-                ),
+                initial_prompt=(asr.initial_prompt or FASTER_WHISPER_DEFAULT_INITIAL_PROMPT),
                 hotwords=asr.hotwords or FASTER_WHISPER_DEFAULT_HOTWORDS,
             )
         elif asr.provider == "sherpa_streaming":
@@ -160,13 +235,9 @@ def build_voice_providers(
                 )
             )
         elif provider_config.provider == "mimo":
-            api_key = _resolve_secret(
-                provider_config.secret_value, provider_config.secret_ref
-            )
+            api_key = _resolve_secret(provider_config.secret_value, provider_config.secret_ref)
             if api_key is None or provider_config.base_url is None:
-                logger.warning(
-                    "voice tts provider skipped: mimo secret/base_url not resolved"
-                )
+                logger.warning("voice tts provider skipped: mimo secret/base_url not resolved")
                 continue
             providers.append(
                 MiMoTtsSynthesizer(
@@ -177,9 +248,9 @@ def build_voice_providers(
                 )
             )
         else:
-            providers.append(
-                EdgeTtsSynthesizer(provider_config.voice or EDGE_TTS_DEFAULT_VOICE)
-            )
+            providers.append(EdgeTtsSynthesizer(provider_config.voice or EDGE_TTS_DEFAULT_VOICE))
+        if register is not None:
+            register(providers[-1], provider_config, "tts")
 
     tts_chain = TtsProviderChain(providers) if providers else None
     return recognizer, tts_chain

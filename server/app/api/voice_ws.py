@@ -56,6 +56,7 @@ from app.voice import (
     markdown_to_speech_text,
 )
 from app.voice.contracts import LocalOnlySynthesizerError, StreamingRecognitionSessionFactory
+from app.voice.delivery_ports import SpeechDelivery, SpeechDeliveryContext
 from app.voice.failover import close_audio_stream
 
 from .auth import ChatSessionGuard
@@ -295,10 +296,12 @@ class VoiceWebSocketManager:
         turn_coordinator: TurnCoordinator | None = None,
         avatar_control_publisher: AvatarControlPublisher | None = None,
         vad_factory: Callable[[], VoiceActivityDetector] = create_default_vad,
+        speech_delivery: SpeechDelivery | None = None,
     ) -> None:
         self._service = service
         self._turns = turn_coordinator
         self._voice_source = voice_source
+        self._speech_delivery = speech_delivery
         self._source_guard = source_guard
         self._avatar_control = avatar_control_publisher
         self._vad_factory = vad_factory
@@ -448,6 +451,17 @@ class VoiceWebSocketManager:
             await emit(kind, payload)
 
         try:
+            if self._speech_delivery is not None:
+                async def deliver(context: SpeechDeliveryContext) -> bool:
+                    async def send(kind: str, payload: dict[str, JsonValue]) -> None:
+                        await context.validate()
+                        await emit(kind, payload)
+
+                    return await self._stream_device_speech_body(
+                        text, recipient.privacy_level, send, delivery=context
+                    )
+
+                return await self._speech_delivery.execute(recipient, deliver)
             return await guarded_inline_call(
                 lambda: self._stream_device_speech_body(
                     text, recipient.privacy_level, checked_emit
@@ -463,6 +477,8 @@ class VoiceWebSocketManager:
         text: str,
         privacy_level: PrivacyLevel,
         emit: Callable[[str, dict[str, JsonValue]], Awaitable[None]],
+        *,
+        delivery: SpeechDeliveryContext | None = None,
     ) -> bool:
         """通过设备签名帧投递一段 TTS；L2 仍由 provider chain 强制本地。
 
@@ -478,7 +494,15 @@ class VoiceWebSocketManager:
             await emit("pet.audio.failed", {"reason_code": "tts_empty_text"})
             return False
         try:
-            selection = await tts_chain.select(speech_text, privacy_level=privacy_level)
+            selection = await tts_chain.select(
+                speech_text,
+                privacy_level=privacy_level,
+                stream_factory=(
+                    (lambda provider: delivery.synthesize(provider, speech_text, privacy_level))
+                    if delivery is not None
+                    else None
+                ),
+            )
         except LocalOnlySynthesizerError:
             await emit("pet.audio.failed", {"reason_code": "local_tts_required"})
             return False
@@ -1836,6 +1860,7 @@ def create_voice_websocket_router(
     wake_word_factory: Callable[[], WakeWordDetector | None] = create_default_wake_word,
     avatar_control_publisher: AvatarControlPublisher | None = None,
     vad_factory: Callable[[], VoiceActivityDetector] = create_default_vad,
+    speech_delivery: SpeechDelivery | None = None,
 ) -> tuple[APIRouter, VoiceWebSocketManager]:
     router = APIRouter(tags=["voice-websocket"])
     manager = VoiceWebSocketManager(
@@ -1845,6 +1870,7 @@ def create_voice_websocket_router(
         turn_coordinator=turn_coordinator,
         avatar_control_publisher=avatar_control_publisher,
         vad_factory=vad_factory,
+        speech_delivery=speech_delivery,
     )
 
     @router.get("/api/v1/meta/voice/latency")

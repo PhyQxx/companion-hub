@@ -3,7 +3,7 @@
 import asyncio
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime, timedelta
-from typing import TypeVar, cast
+from typing import Literal, TypeVar, cast
 from uuid import UUID
 
 from sqlalchemy import select, update
@@ -42,6 +42,10 @@ async def operate_with_run(
     cost_endpoint: str,
     budget_source: Callable[[], RunBudgetConfig] | None = None,
     cooperative: bool = False,
+    trace_parent_id: UUID | None = None,
+    missing_quote_reason: Literal[
+        "media_cost_estimate_unavailable", "voice_cost_estimate_unavailable"
+    ] = "media_cost_estimate_unavailable",
 ) -> T:
     if privacy_level == PrivacyLevel.L3:
         raise BudgetDenied("ephemeral_operation_run_forbidden")
@@ -50,7 +54,9 @@ async def operate_with_run(
         not isinstance(parent, RunModelBudget) or parent.owner_id != user_id
     ):
         raise BudgetDenied("budget_owner_invalid")
-    parent_id = parent.run_id if isinstance(parent, RunModelBudget) else None
+    quota_parent_id = parent.run_id if isinstance(parent, RunModelBudget) else None
+    parent_id = trace_parent_id or quota_parent_id
+    parent_ids = tuple(dict.fromkeys(value for value in (quota_parent_id, parent_id) if value))
     config = RunBudgetConfig.model_validate(dict(policy.budget))
     quote = policy.unit_quote
     parent_config = parent.budget_config if isinstance(parent, RunModelBudget) else config
@@ -69,7 +75,7 @@ async def operate_with_run(
             for candidate in (config, current_config, parent_config)
         ):
             # Media cannot bypass a monetary cap before unit pricing exists.
-            raise BudgetDenied("media_cost_estimate_unavailable")
+            raise BudgetDenied(missing_quote_reason)
         for row in rows:
             if (
                 row.user_id != user_id
@@ -91,7 +97,7 @@ async def operate_with_run(
                     or row.budget.get("max_monthly_cost") is not None
                 )
             ):
-                raise BudgetDenied("media_cost_estimate_unavailable")
+                raise BudgetDenied(missing_quote_reason)
 
     async def check_fees(
         session: AsyncSession, rows: list[TaskRunRecord], *, accepting: bool
@@ -147,7 +153,7 @@ async def operate_with_run(
         if owner is None:
             raise BudgetDenied("budget_owner_invalid")
         rows = []
-        for target in (parent_id, identifier):
+        for target in (*parent_ids, identifier):
             if target is None:
                 continue
             row = await lock_run(session, target)
@@ -167,7 +173,7 @@ async def operate_with_run(
             if owner is None or owner.status != "active":
                 raise BudgetDenied("budget_owner_invalid")
             rows = []
-            for target in (parent_id, identifier):
+            for target in (*parent_ids, identifier):
                 if target is None:
                     continue
                 row = await session.get(TaskRunRecord, target)
@@ -227,7 +233,7 @@ async def operate_with_run(
         validate_rows(authority)
     budget = parent or (
         RunModelBudget(database, run_id=run_id, user_id=user_id, config=config)
-        if config.enabled
+        if config.enabled and trace_parent_id is None
         else None
     )
     started = False

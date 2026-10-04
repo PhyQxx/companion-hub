@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import logging
 import time
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass
 
 from app.harness.budget import BudgetDenied
@@ -69,13 +69,23 @@ class TtsProviderChain:
     def providers(self) -> tuple[SpeechSynthesizer, ...]:
         return tuple(self._providers)
 
-    async def select(self, text: str, *, privacy_level: PrivacyLevel) -> TtsSelection:
+    async def select(
+        self,
+        text: str,
+        *,
+        privacy_level: PrivacyLevel,
+        stream_factory: Callable[[SpeechSynthesizer], AsyncIterator[bytes]] | None = None,
+    ) -> TtsSelection:
         candidates = self._candidates(privacy_level)
         if not candidates:
             raise LocalOnlySynthesizerError(privacy_level)
         errors: list[str] = []
         for provider in candidates:
-            stream = provider.synthesize(text, privacy_level=privacy_level)
+            stream = (
+                stream_factory(provider)
+                if stream_factory is not None
+                else provider.synthesize(text, privacy_level=privacy_level)
+            )
             ownership = _StreamOwnership(stream)
             async with close_after_source(ownership.close):
                 try:

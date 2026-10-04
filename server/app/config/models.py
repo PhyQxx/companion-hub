@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 from contextlib import suppress
+from decimal import Decimal
 from ipaddress import ip_address
 from typing import Annotated, Any, Literal
 from urllib.parse import urlparse
@@ -25,6 +26,19 @@ class CapabilityModelRoutes(StrictModel):
     vision: TokenName | None = None
     image_generation: TokenName | None = None
     video_generation: TokenName | None = None
+
+
+class VoiceCostConfig(StrictModel):
+    cost_currency: Annotated[str, Field(pattern=r"^[A-Z]{3}$")] | None = None
+    request_cost_ceiling: (
+        Annotated[Decimal, Field(ge=0, le=1_000_000_000, max_digits=24, decimal_places=12)] | None
+    ) = None
+
+    @model_validator(mode="after")
+    def ceiling_requires_currency(self) -> VoiceCostConfig:
+        if self.request_cost_ceiling is not None and self.cost_currency is None:
+            raise ValueError("voice_cost_ceiling_requires_currency")
+        return self
 
 
 class VoiceAsrConfig(StrictModel):
@@ -59,7 +73,7 @@ class VoiceAsrConfig(StrictModel):
         return self
 
 
-class VoiceTtsProviderConfig(StrictModel):
+class VoiceTtsProviderConfig(VoiceCostConfig):
     """语音合成提供方：mimo（PCM 直出）为主、senseaudio 云端音色、edge_tts 免费兜底。
 
     senseaudio 条目的 base_url/密钥/model 可留空：留空时回退到

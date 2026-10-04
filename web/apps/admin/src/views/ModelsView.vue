@@ -277,6 +277,8 @@ interface HubVoiceTts {
   enabled: boolean;
   secret_ref?: string | null;
   secret_value?: string | null;
+  cost_currency?: string | null;
+  request_cost_ceiling?: string | number | null;
 }
 interface HubVoiceConfig {
   asr: HubVoiceAsr | null;
@@ -337,6 +339,8 @@ interface DraftVoiceTts {
   secret_mode: "value" | "ref" | "none";
   secret_value: string;
   secret_ref: string;
+  cost_currency: string;
+  request_cost_ceiling: string;
 }
 
 interface DraftVoice {
@@ -484,6 +488,8 @@ const defaultVoiceTts = (provider: "mimo" | "edge_tts" | "senseaudio" = "mimo"):
   base_url: provider === "mimo" ? "https://api.xiaomimimo.com/v1" : "",
   voice: provider === "mimo" ? "冰糖" : provider === "senseaudio" ? "male_0018_a" : "zh-CN-XiaoxiaoNeural",
   enabled: true,
+  cost_currency: "",
+  request_cost_ceiling: "",
   secret_mode: provider === "senseaudio" ? "none" : "value",
   secret_value: "",
   secret_ref: provider === "senseaudio" ? "env:SENSEAUDIO_API_KEY" : "env:MIMO_API_KEY",
@@ -716,6 +722,8 @@ function hubConfigToDraft(config: HubConfig | undefined | null): DraftState {
     const fresh = staleSenseaudio ? defaultVoiceTts("senseaudio") : null;
     return {
       provider: p.provider,
+      cost_currency: p.cost_currency ?? "",
+      request_cost_ceiling: p.request_cost_ceiling == null ? "" : String(p.request_cost_ceiling),
       model: fresh?.model ?? p.model ?? (p.provider === "mimo" ? "mimo-v2.5-tts" : "edge-tts"),
       base_url: p.base_url ?? "",
       voice: fresh?.voice ?? p.voice ?? (p.provider === "mimo" ? "冰糖" : "zh-CN-XiaoxiaoNeural"),
@@ -826,6 +834,8 @@ function draftToHubConfig(d: DraftState): HubConfig {
     base_url: p.provider !== "edge_tts" ? p.base_url || null : null,
     voice: p.voice,
     enabled: p.enabled,
+    cost_currency: p.cost_currency.trim().toUpperCase() || null,
+    request_cost_ceiling: p.request_cost_ceiling.trim() || null,
     ...(p.provider !== "edge_tts" ? assembleSecret(p) : { secret_ref: null, secret_value: null }),
   }));
   return {
@@ -1072,6 +1082,8 @@ function removeVoiceTts(index: number) {
 }
 
 function onTtsProviderChange(p: DraftVoiceTts) {
+  p.cost_currency = "";
+  p.request_cost_ceiling = "";
   const fresh = defaultVoiceTts(p.provider);
   p.model = fresh.model;
   p.base_url = fresh.base_url;
@@ -1474,6 +1486,11 @@ onActivated(() => {
               </label>
               <label class="field"><span>启用</span><el-switch v-model="p.enabled" /></label>
             </div>
+            <div class="form-grid three global-fields">
+              <label class="field"><span>费用币种</span><el-input v-model="p.cost_currency" placeholder="例如 CNY" /></label>
+              <label class="field"><span>单次合成费用上限</span><el-input v-model="p.request_cost_ceiling" placeholder="留空为未知，例如 0.01；免费需明确填 0" /></label>
+            </div>
+            <div class="config-note">每家提供方单独声明整次合成的费用上限。设备独立播报启用金额限额时，缺少上限会停止合成；实际费用仍需账单核对。</div>
             <div v-if="p.provider !== 'edge_tts'" class="form-grid three global-fields">
               <label class="field"><span>模型</span><el-input v-model="p.model" :placeholder="p.provider === 'senseaudio' ? 'sensenova-tts-2.0' : 'mimo-v2.5-tts'" /></label>
               <label class="field"><span>Base URL</span><el-input v-model="p.base_url" :placeholder="p.provider === 'senseaudio' ? '留空 = 使用「声音管理」的连接' : 'https://api.xiaomimimo.com/v1'" /></label>

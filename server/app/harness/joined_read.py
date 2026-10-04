@@ -8,10 +8,16 @@ T = TypeVar("T")
 
 
 async def joined_read(read: Awaitable[T]) -> T:
-    async def invoke() -> T:
-        return await read
+    return await join_on_cancel(read, name="joined-source-read")
 
-    task = asyncio.create_task(invoke(), name="joined-source-read")
+
+async def join_on_cancel(operation: Awaitable[T], *, name: str) -> T:
+    """Let owned cleanup finish; repeated caller cancellation does not forward."""
+
+    async def invoke() -> T:
+        return await operation
+
+    task = asyncio.create_task(invoke(), name=name)
     try:
         return await asyncio.shield(task)
     except asyncio.CancelledError:
