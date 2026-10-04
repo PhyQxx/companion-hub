@@ -50,6 +50,7 @@ import {
 } from "./voice";
 import ToolResultCard from "./ToolResultCard.vue";
 import PlanInbox from "./PlanInbox.vue";
+import GoogleCalendarConnection from "./GoogleCalendarConnection.vue";
 import RunHistory from "./RunHistory.vue";
 import MailAttachments from "./MailAttachments.vue";
 import MailDrafts from "./MailDrafts.vue";
@@ -1663,6 +1664,7 @@ async function installPwa() {
             <option v-for="option in THEME_OPTIONS" :key="option.value" :value="option.value">{{ option.label }}</option>
           </select>
         </label>
+        <GoogleCalendarConnection v-if="privacy === 'L1'" :key="token" :token="token" />
         <a class="debug-link" href="/chat/debug">调试台</a>
       </div>
     </aside>

@@ -144,7 +144,7 @@ async def test_unit_cost_upgrade_preserves_legacy_and_retains_all_quoted_evidenc
         await storage.close()
 
 
-def test_full_sqlite_chain_reaches_unit_cost_head(tmp_path: Path) -> None:
+def test_full_sqlite_chain_keeps_unit_costs_at_current_head(tmp_path: Path) -> None:
     path = tmp_path / "unit-migration.db"
     result = subprocess.run(
         [sys.executable, "-m", "alembic", "upgrade", "head"],
@@ -158,7 +158,7 @@ def test_full_sqlite_chain_reaches_unit_cost_head(tmp_path: Path) -> None:
     assert result.returncode == 0, result.stderr
     with sqlite3.connect(path) as connection:
         assert connection.execute("SELECT version_num FROM alembic_version").fetchone() == (
-            "0067_unit_costs",
+            "0068_calendar_oauth_state",
         )
         columns = {row[1] for row in connection.execute("PRAGMA table_info(model_cost)")}
         assert {"unit", "unit_rate", "unit_maximum_quantity", "unit_quantity"} <= columns

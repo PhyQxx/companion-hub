@@ -765,6 +765,7 @@ class GoogleCalendarConfig(StrictModel):
     /api/v1/calendar/google/authorize → callback 换取后落库，不入配置文档。
     """
 
+    code_exchange_cost: VoiceCostConfig | None = None
     sync_cost: VoiceCostConfig | None = None
     enabled: bool = False
     client_id: Annotated[str, Field(min_length=10, max_length=254)] | None = None

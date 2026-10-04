@@ -90,3 +90,62 @@ def test_apply_observability_follows_config_and_env_override(
     monkeypatch.setenv("ARIA_LOG_LEVEL", "ERROR")
     apply_observability(config)
     assert preserve_app_logger.level == logging.ERROR
+
+
+@pytest.mark.parametrize("encoded", [False, True])
+def test_oauth_callback_query_is_redacted_in_uvicorn_access_args(encoded: bool) -> None:
+    from app.observability.logging import OAuthQueryFilter
+
+    path = "/api/v1/calendar/google/%63allback" if encoded else "/api/v1/calendar/google/callback"
+    record = logging.LogRecord(
+        "uvicorn.access",
+        logging.INFO,
+        "",
+        0,
+        '%s - "%s %s HTTP/%s" %d',
+        ("127.0.0.1", "GET", path + "?code=synthetic-code&state=synthetic-state", "1.1", 200),
+        None,
+    )
+    assert OAuthQueryFilter().filter(record)
+    assert (
+        "synthetic-code" not in record.getMessage() and "synthetic-state" not in record.getMessage()
+    )
+    assert "[REDACTED]" in record.getMessage()
+
+
+def test_oauth_callback_query_is_redacted_in_httpx_url_object() -> None:
+    import httpx
+
+    from app.observability.logging import OAuthQueryFilter
+
+    record = logging.LogRecord(
+        "httpx",
+        logging.INFO,
+        "",
+        0,
+        "HTTP Request: %s %s %d",
+        (
+            "GET",
+            httpx.URL(
+                "https://hub.example.test/api/v1/calendar/google/callback?code=synthetic-code&state=synthetic-state"
+            ),
+            200,
+        ),
+        None,
+    )
+    assert OAuthQueryFilter().filter(record)
+    assert (
+        "synthetic-code" not in record.getMessage() and "synthetic-state" not in record.getMessage()
+    )
+    assert "[REDACTED]" in record.getMessage()
+
+
+def test_oauth_filter_preserves_ordinary_access_arguments() -> None:
+    from app.observability.logging import OAuthQueryFilter
+
+    args = ("127.0.0.1", "GET", "/health?ready=1", "1.1", 200)
+    record = logging.LogRecord(
+        "uvicorn.access", logging.INFO, "", 0, '%s - "%s %s HTTP/%s" %d', args, None
+    )
+    OAuthQueryFilter().filter(record)
+    assert record.args == args

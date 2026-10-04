@@ -847,6 +847,24 @@ export class ChatApi {
     return body as T;
   }
 
+  googleCalendarStatus(token: string) {
+    return this.request<{ configured: boolean; connected: boolean }>(
+      "/api/v1/calendar/google/status", { method: "GET" }, token,
+    );
+  }
+
+  authorizeGoogleCalendar(token: string) {
+    return this.request<{ authorize_url: string }>(
+      "/api/v1/calendar/google/authorize", { method: "GET" }, token,
+    );
+  }
+
+  disconnectGoogleCalendar(token: string) {
+    return this.request<{ removed: boolean }>(
+      "/api/v1/calendar/google/token", { method: "DELETE" }, token,
+    );
+  }
+
   listRuns(token: string, before?: string) {
     const query = before ? `?before_id=${encodeURIComponent(before)}` : "";
     return this.request<TaskRun[]>(`/api/v1/runs${query}`, { method: "GET" }, token);

@@ -21,17 +21,15 @@ from app.calendar import (
     CalendarService,
 )
 from app.calendar.google import (
-    GoogleCalendarClient,
     GoogleCalendarError,
     GoogleCalendarSyncService,
     GoogleTokenStore,
-    build_authorize_url,
-    sign_state,
-    verify_state,
 )
+from app.calendar.google_oauth import GoogleOAuthService, GoogleOAuthStateInvalid
 from app.harness.budget import BudgetDenied
 from app.schemas.common import StrictModel
 
+from .admin_config import runtime_admin_token
 from .auth import ChatSessionGuard
 
 
@@ -73,70 +71,58 @@ def create_calendar_router(
     router = APIRouter(prefix="/api/v1/calendar", tags=["calendar"])
 
     if google_sync is not None:
+        oauth = GoogleOAuthService(
+            google_sync._database,
+            google_sync._config_store,
+            lambda: runtime_admin_token(google_state_key),
+        )
+
+        def require_oauth_key() -> None:
+            if not runtime_admin_token(google_state_key):
+                raise HTTPException(
+                    status.HTTP_503_SERVICE_UNAVAILABLE, "google_oauth_key_unavailable"
+                )
+
+        @router.get("/google/status")
+        async def google_status(
+            principal: Annotated[ChatPrincipal, Depends(guard)],
+        ) -> dict[str, bool]:
+            return await oauth.status(principal.user_id)
 
         @router.get("/google/authorize")
         async def google_authorize(
             principal: Annotated[ChatPrincipal, Depends(guard)],
         ) -> dict[str, str]:
-            """生成 Google 授权 URL（新窗口打开；callback 由 Google 跳回）。"""
-            if not google_state_key:
+            require_oauth_key()
+            try:
+                url = await oauth.authorize(principal.user_id, principal.session_id)
+            except PermissionError as error:
                 raise HTTPException(
-                    status.HTTP_503_SERVICE_UNAVAILABLE,
-                    detail="需要先配置 ARIA_ADMIN_TOKEN 才能使用 Google 授权流",
-                )
-            config = google_sync._config_store.current.config.integrations.calendar.google
-            secret = config.secret_value or ""
-            import os
-
-            if config.secret_ref:
-                secret = os.environ.get(config.secret_ref.removeprefix("env:"), "") or secret
-            if config.client_id is None or not secret or config.redirect_uri is None:
-                raise HTTPException(
-                    status.HTTP_409_CONFLICT, detail="google_calendar_not_configured"
-                )
-            state = sign_state(google_state_key, principal.user_id)
-            url = build_authorize_url(
-                client_id=config.client_id,
-                redirect_uri=config.redirect_uri,
-                state=state,
-            )
+                    status.HTTP_409_CONFLICT, "calendar_sync_source_changed"
+                ) from error
             return {"authorize_url": url}
 
         @router.get("/google/callback")
         async def google_callback(
-            code: str = "",
-            state: str = "",
-            error: str = "",
+            code: Annotated[str, Query(max_length=8192)] = "",
+            state: Annotated[str, Query(max_length=512)] = "",
+            error: Annotated[str, Query(max_length=240)] = "",
         ) -> dict[str, str]:
-            """Google 授权回跳：校验 state、换 refresh token 并落库。"""
-            if error:
-                return {"status": "denied", "detail": error}
-            if not google_state_key:
-                raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, detail="state key 未配置")
-            user_id = await google_sync.default_user_id()
-            if user_id is None or not verify_state(google_state_key, state, user_id):
-                raise HTTPException(status.HTTP_400_BAD_REQUEST, detail="state 校验失败或已过期")
-            config = google_sync._config_store.current.config.integrations.calendar.google
-            import os
-
-            secret = config.secret_value or ""
-            if config.secret_ref:
-                secret = os.environ.get(config.secret_ref.removeprefix("env:"), "") or secret
-            if config.client_id is None or not secret or config.redirect_uri is None:
-                raise HTTPException(
-                    status.HTTP_409_CONFLICT, detail="google_calendar_not_configured"
-                )
+            require_oauth_key()
             try:
-                refresh_token, email = await GoogleCalendarClient.exchange_code(
-                    client_id=config.client_id,
-                    client_secret=secret,
-                    code=code,
-                    redirect_uri=config.redirect_uri,
-                )
+                return await oauth.callback(state=state, code=code, error=error)
+            except GoogleOAuthStateInvalid as exc:
+                raise HTTPException(
+                    status.HTTP_400_BAD_REQUEST, "google_oauth_state_invalid"
+                ) from exc
+            except BudgetDenied as exc:
+                raise HTTPException(status.HTTP_409_CONFLICT, exc.reason_code) from exc
+            except PermissionError as exc:
+                raise HTTPException(
+                    status.HTTP_409_CONFLICT, "calendar_sync_source_changed"
+                ) from exc
             except GoogleCalendarError as exc:
                 raise HTTPException(status.HTTP_502_BAD_GATEWAY, exc.reason_code) from exc
-            await GoogleTokenStore(google_sync._database).save(user_id, refresh_token, email)
-            return {"status": "ok", "account": email or ""}
 
         @router.post("/google/sync")
         async def sync_google(

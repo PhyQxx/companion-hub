@@ -8,6 +8,7 @@ from uuid import UUID
 
 from sqlalchemy import (
     JSON,
+    BigInteger,
     Boolean,
     CheckConstraint,
     DateTime,
@@ -95,6 +96,38 @@ class CalendarOAuthTokenRecord(Base):
     obtained_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
+
+
+class CalendarOAuthStateRecord(Base):
+    __module__ = "app.db.models"
+
+    """One current Google authorization per owner; never store the raw state or code."""
+
+    __tablename__ = "calendar_oauth_state"
+    __table_args__ = (
+        UniqueConstraint("user_id", name="uq_calendar_oauth_state_user"),
+        UniqueConstraint("state_hash", name="uq_calendar_oauth_state_hash"),
+        CheckConstraint("expires_at > created_at", name="ck_calendar_oauth_state_expiry"),
+        CheckConstraint(
+            "completed_at IS NULL OR consumed_at IS NOT NULL",
+            name="ck_calendar_oauth_state_completed",
+        ),
+    )
+
+    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True)
+    user_id: Mapped[UUID] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("app_user.id", ondelete="CASCADE"), nullable=False
+    )
+    session_id: Mapped[UUID] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("auth_session.id", ondelete="CASCADE"), nullable=False
+    )
+    state_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    config_version: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    config_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    consumed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
 class ContactRecord(Base):

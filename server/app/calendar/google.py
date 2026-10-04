@@ -4,15 +4,18 @@
 1. Admin/用户在 Google Cloud Console 建 OAuth 客户端（Desktop/Web 均可），
    把 client_id/secret 配进 `integrations.calendar.google`，redirect_uri
    填 Hub 的 `/api/v1/calendar/google/callback`；
-2. `GET /api/v1/calendar/google/authorize` 生成带签名的 state 并返回
+2. 用户携带真实聊天会话调用 `GET /api/v1/calendar/google/authorize`，生成
+   持久化单次 state 并返回
    授权 URL，用户在浏览器完成同意；
-3. callback 校验 state、用 code 换 refresh token 并落库
+3. callback 消费 state、复核发起会话与配置，通过 owned Run 用 code
+   换 refresh token，与费用和 Run 终态同事务落库
    （`calendar_oauth_token`，按用户+google 唯一）；
 4. `GoogleCalendarSyncService` 用刷新令牌拉取时间窗事件
    （`singleEvents=true` 由服务端展开周期），经共享镜像引擎 upsert。
 
-安全：刷新令牌只落库不进日志/配置文档；state 用运行管理令牌 HMAC 签名
-（10 分钟有效），callback 无需携带会话凭据也不可被伪造。
+安全：刷新令牌只落库不进日志/配置文档；随机 state 只存摘要，最多有效
+10 分钟且绑定发起会话，后续授权或断开会撤销旧请求。旧签名帮助函数仅
+保留兼容用途，API 回调不接受旧签名 state。
 """
 
 from __future__ import annotations
@@ -30,8 +33,9 @@ from uuid import UUID, uuid4
 from zoneinfo import ZoneInfo
 
 import httpx
-from sqlalchemy import delete, select
+from sqlalchemy import delete, select, update
 from sqlalchemy.engine import CursorResult
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.calendar.mirror import (
     CalendarMirrorService,
@@ -40,7 +44,7 @@ from app.calendar.mirror import (
 )
 from app.config import ConfigStore, DatabaseConfigStore
 from app.config.models import GoogleCalendarConfig
-from app.db import AppUserRecord, CalendarOAuthTokenRecord, Database
+from app.db import AppUserRecord, CalendarOAuthStateRecord, CalendarOAuthTokenRecord, Database
 from app.harness.joined_read import join_on_cancel
 from app.runs.calendar_sync import CalendarSyncBatch, owned_calendar_sync
 
@@ -158,19 +162,47 @@ class GoogleTokenStore:
 
     async def save(self, user_id: UUID, refresh_token: str, email: str | None) -> None:
         async with self._database.sessions.begin() as session:
-            existing = (
-                await session.scalars(
-                    select(CalendarOAuthTokenRecord).where(
-                        CalendarOAuthTokenRecord.user_id == user_id,
-                        CalendarOAuthTokenRecord.provider == SOURCE_GOOGLE,
-                    )
-                )
-            ).first()
-            if existing is not None:
-                existing.refresh_token = refresh_token
-                existing.account_email = email
-                existing.obtained_at = datetime.now(UTC)
-                return
+            await self.save_in_session(session, user_id, refresh_token, email)
+
+    async def save_in_session(
+        self,
+        session: AsyncSession,
+        user_id: UUID,
+        refresh_token: str,
+        email: str | None,
+        *,
+        authorization_id: UUID | None = None,
+    ) -> None:
+        owner = await session.scalar(
+            update(AppUserRecord)
+            .where(
+                AppUserRecord.id == user_id,
+                AppUserRecord.status == "active",
+            )
+            .values(id=AppUserRecord.id)
+            .returning(AppUserRecord.id)
+        )
+        if owner is None:
+            raise PermissionError("calendar_sync_owner_inactive")
+        invalidation = delete(CalendarOAuthStateRecord).where(
+            CalendarOAuthStateRecord.user_id == user_id
+        )
+        if authorization_id is not None:
+            invalidation = invalidation.where(CalendarOAuthStateRecord.id != authorization_id)
+        await session.execute(invalidation)
+        existing = await session.scalar(
+            select(CalendarOAuthTokenRecord)
+            .where(
+                CalendarOAuthTokenRecord.user_id == user_id,
+                CalendarOAuthTokenRecord.provider == SOURCE_GOOGLE,
+            )
+            .with_for_update()
+        )
+        if existing is not None:
+            existing.refresh_token = refresh_token
+            existing.account_email = email
+            existing.obtained_at = datetime.now(UTC)
+        else:
             session.add(
                 CalendarOAuthTokenRecord(
                     id=uuid4(),
@@ -194,8 +226,14 @@ class GoogleTokenStore:
             ).first()
 
     async def delete(self, user_id: UUID) -> bool:
-        result: Any
         async with self._database.sessions.begin() as session:
+            # Disconnect also revokes pending authorization when no token exists.
+            await session.execute(
+                update(AppUserRecord).where(AppUserRecord.id == user_id).values(id=AppUserRecord.id)
+            )
+            await session.execute(
+                delete(CalendarOAuthStateRecord).where(CalendarOAuthStateRecord.user_id == user_id)
+            )
             result = await session.execute(
                 delete(CalendarOAuthTokenRecord).where(
                     CalendarOAuthTokenRecord.user_id == user_id,
@@ -259,12 +297,19 @@ class GoogleCalendarClient:
         code: str,
         redirect_uri: str,
         client: httpx.AsyncClient | None = None,
+        request_runner: CalendarRequestRunner | None = None,
     ) -> tuple[str, str | None]:
-        """authorization code → (refresh_token, account_email)。"""
+        """Exchange once; the caller owns an injected HTTP client's cleanup."""
         owns = client is None
-        http = client or httpx.AsyncClient(timeout=15.0)
+        http = client or httpx.AsyncClient(
+            timeout=15.0,
+            transport=httpx.AsyncHTTPTransport(retries=0),
+            trust_env=False,
+            follow_redirects=False,
+        )
         try:
-            response = await http.post(
+            send = partial(
+                http.post,
                 GOOGLE_TOKEN_URL,
                 data={
                     "code": code,
@@ -273,19 +318,28 @@ class GoogleCalendarClient:
                     "redirect_uri": redirect_uri,
                     "grant_type": "authorization_code",
                 },
+                follow_redirects=False,
             )
+            response = (
+                await request_runner("POST", send) if request_runner is not None else await send()
+            )
+            if response.status_code != 200:
+                raise GoogleCalendarError("google_code_exchange_failed")
+            payload = response.json()
+            if not isinstance(payload, dict):
+                raise GoogleCalendarError("google_response_invalid")
+            refresh = payload.get("refresh_token")
+            if not isinstance(refresh, str) or not refresh or len(refresh) > 65536:
+                raise GoogleCalendarError("google_no_refresh_token")
+            id_token = payload.get("id_token")
+            return refresh, _email_from_id_token(id_token) if isinstance(id_token, str) else None
+        except httpx.HTTPError as error:
+            raise GoogleCalendarError("google_unreachable") from error
+        except (ValueError, TypeError) as error:
+            raise GoogleCalendarError("google_response_invalid") from error
         finally:
             if owns:
-                await http.aclose()
-        if response.status_code != 200:
-            raise GoogleCalendarError("google_code_exchange_failed", str(response.status_code))
-        payload = response.json()
-        refresh = payload.get("refresh_token")
-        if not refresh:
-            raise GoogleCalendarError("google_no_refresh_token")
-        return str(refresh), payload.get("id_token") and _email_from_id_token(
-            str(payload.get("id_token"))
-        )
+                await join_on_cancel(http.aclose(), name="google-oauth-http-close")
 
     async def _ensure_access(self) -> str:
         if self._access_token and datetime.now(UTC) < self._access_expires_at:
@@ -430,8 +484,8 @@ def _email_from_id_token(id_token: str) -> str | None:
         payload_part = id_token.split(".")[1]
         padded = payload_part + "=" * (-len(payload_part) % 4)
         payload = json.loads(base64.urlsafe_b64decode(padded))
-        email = payload.get("email")
-        return str(email) if email else None
+        email = payload.get("email") if isinstance(payload, dict) else None
+        return email if isinstance(email, str) and 0 < len(email) <= 254 else None
     except (IndexError, ValueError):
         return None
 

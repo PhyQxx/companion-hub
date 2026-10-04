@@ -29,6 +29,7 @@ from .base import (
 )
 from .calendar import (
     CalendarEventRecord,
+    CalendarOAuthStateRecord,
     CalendarOAuthTokenRecord,
     ContactRecord,
 )
@@ -142,6 +143,7 @@ __all__ = [
     "AvatarPackRecord",
     "Base",
     "CalendarEventRecord",
+    "CalendarOAuthStateRecord",
     "CalendarOAuthTokenRecord",
     "CognitiveDecisionRecord",
     "CognitiveFeedbackRecord",

@@ -425,7 +425,7 @@ def assemble_runtime(
                 calendar_create_tool,
                 caldav_sync=domain.caldav_sync_service,
                 google_sync=domain.google_calendar_sync_service,
-                google_state_key=os.getenv("ARIA_ADMIN_TOKEN") or None,
+                google_state_key=admin_token,
             )
         )
         app.state.calendar_service = domain.calendar_service

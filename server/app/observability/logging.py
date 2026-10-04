@@ -10,6 +10,7 @@ from collections import deque
 from collections.abc import Mapping
 from threading import Lock
 from typing import TYPE_CHECKING, Any
+from urllib.parse import unquote, urlsplit, urlunsplit
 from uuid import UUID
 
 from .redaction import redact_fields
@@ -20,6 +21,24 @@ if TYPE_CHECKING:
 _APP_LOGGER = "app"
 _LOG_FORMAT = "%(asctime)s %(levelname)s %(name)s %(message)s"
 _LOG_BROADCAST_FORMAT = "%(asctime)s [%(levelname)s] %(message)s"
+
+
+class OAuthQueryFilter(logging.Filter):
+    """Remove callback credentials from Uvicorn/httpx URL arguments before formatting."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        if isinstance(record.args, tuple):
+            safe: list[object] = []
+            for value in record.args:
+                try:
+                    parts = urlsplit(str(value))
+                    if unquote(parts.path) == "/api/v1/calendar/google/callback" and parts.query:
+                        value = urlunsplit(parts._replace(query="[REDACTED]", fragment=""))
+                except ValueError:
+                    pass
+                safe.append(value)
+            record.args = tuple(safe)
+        return True
 
 
 class LogBroadcastHandler(logging.Handler):
@@ -123,6 +142,10 @@ def configure_logging(level: str | int = "INFO") -> LogBroadcastHandler | None:
     大模型调用日志的原因。
     """
     global _BROADCAST_HANDLER
+    for name in ("uvicorn.access", "httpx", "httpx2"):
+        network = logging.getLogger(name)
+        if not any(isinstance(filter_, OAuthQueryFilter) for filter_ in network.filters):
+            network.addFilter(OAuthQueryFilter())
     logger = logging.getLogger(_APP_LOGGER)
     logger.setLevel(_resolve_level(level))
     if not logger.handlers:

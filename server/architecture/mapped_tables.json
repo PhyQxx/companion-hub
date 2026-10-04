@@ -11,6 +11,7 @@
   "avatar_instance",
   "avatar_pack",
   "calendar_event",
+  "calendar_oauth_state",
   "calendar_oauth_token",
   "cognitive_decision",
   "cognitive_feedback",

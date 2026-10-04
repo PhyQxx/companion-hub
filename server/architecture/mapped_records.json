@@ -11,6 +11,7 @@
   "AvatarInstanceRecord": "app.db.appearance",
   "AvatarPackRecord": "app.db.appearance",
   "CalendarEventRecord": "app.db.calendar",
+  "CalendarOAuthStateRecord": "app.db.calendar",
   "CalendarOAuthTokenRecord": "app.db.calendar",
   "CognitiveDecisionRecord": "app.db.cognition",
   "CognitiveFeedbackRecord": "app.db.cognition",

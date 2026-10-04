@@ -22,6 +22,7 @@ interface CalDavConfig {
 }
 
 interface GoogleCalendarConfig {
+  code_exchange_cost?: SyncCost | null;
   sync_cost?: SyncCost | null;
   enabled: boolean;
   client_id: string | null;
@@ -55,6 +56,7 @@ const googleSyncResult = ref<string>("");
 const caldavSyncResult = ref<string>("");
 const loading = ref(false);
 const saving = ref(false);
+const exchangePrice = ref({ currency: "", amount: "" });
 const syncPrices = ref({
   caldav: { currency: "", amount: "" },
   google: { currency: "", amount: "" },
@@ -101,6 +103,11 @@ async function load() {
     calendar.value = loaded
       ? { caldav: { ...defaultCalendar().caldav, ...loaded.caldav }, google: { ...defaultCalendar().google, ...loaded.google } }
       : defaultCalendar();
+    const exchange = calendar.value.google.code_exchange_cost;
+    exchangePrice.value = {
+      currency: exchange?.cost_currency ?? "",
+      amount: exchange?.request_cost_ceiling == null ? "" : String(exchange.request_cost_ceiling),
+    };
     for (const provider of ["caldav", "google"] as const) {
       const price = calendar.value[provider].sync_cost;
       syncPrices.value[provider] = {
@@ -129,6 +136,10 @@ async function save() {
         request_cost_ceiling: price.amount.trim(),
       };
     }
+    savedCalendar.google.code_exchange_cost = exchangePrice.value.amount.trim() === "" ? null : {
+      cost_currency: exchangePrice.value.currency.trim().toUpperCase() || null,
+      request_cost_ceiling: exchangePrice.value.amount.trim(),
+    };
     config.integrations.calendar = savedCalendar;
     current.value = await api.request<{ version: number; config: HubConfig }>("/api/v1/admin/config/current", {
       method: "PUT",
@@ -210,12 +221,15 @@ onMounted(load);
             <label><span>同步费用币种</span><el-input v-model="syncPrices.google.currency" placeholder="CNY / USD" /></label>
             <label><span>每次完整同步费用上限</span><el-input v-model="syncPrices.google.amount" placeholder="留空未知，0 表示明确免费" /></label>
             <p class="config-note wide">涵盖本次同步的令牌刷新、全部日历与分页；启用金额预算时需要填写，未知实际费用保留上限。</p>
+            <label><span>授权码交换费用币种</span><el-input v-model="exchangePrice.currency" placeholder="CNY / USD" /></label>
+            <label><span>每次授权码交换费用上限</span><el-input v-model="exchangePrice.amount" placeholder="留空未知，0 表示明确免费" /></label>
+            <p class="config-note wide">金额预算启用时需要声明授权码交换费用；交换失败后请重新发起授权。</p>
             <label class="actions">
               <el-button :loading="googleSyncing" @click="syncCalendar('google')">立即同步</el-button>
-              <el-button v-if="calendar.google.enabled && calendar.google.client_id" tag="a" target="_blank" :href="`/api/v1/calendar/google/authorize`">打开授权页</el-button>
+              <el-button v-if="calendar.google.enabled && calendar.google.client_id" tag="a" target="_blank" rel="noopener noreferrer" href="/chat/#google-calendar">到聊天页授权</el-button>
             </label>
           </div>
-          <p class="config-note">先保存配置，再点「打开授权页」完成 Google 同意；刷新令牌只落库，不显示在页面上。</p>
+          <p class="config-note">先保存配置，再到聊天页的「Google 日历」用当前聊天身份授权；刷新令牌只落库，不显示在页面上。重新授权会使旧授权页面失效。</p>
           <p v-if="googleSyncResult" class="config-note">{{ googleSyncResult }}</p>
         </div>
       </div>

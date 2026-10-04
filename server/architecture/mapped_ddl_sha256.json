@@ -47,6 +47,10 @@
     "postgresql": "4960ede4462422b1fa3722047b35acde4de0c0cd95c990b9984337b16fe460fc",
     "sqlite": "6105614f6785bad69c5451d79b948653d9330270f61a74e2d25cef6cd328942d"
   },
+  "calendar_oauth_state": {
+    "postgresql": "3f7c2d7c8a4a1366cb392ce576b7cf0097193b5230d9bea4eb949a85b402ed3d",
+    "sqlite": "eee97c0768ace286edf4841822b9ba6798086cd124712a5c1a963fa4ee7e7c18"
+  },
   "calendar_oauth_token": {
     "postgresql": "f4badf4b283b47c539cf4c84796845f88de1e8212ff00979a007fab9105e915f",
     "sqlite": "2fe923a7df2e1a3e1b29e464b57d5bf6171a14a994a71dc77ee51cc21c89c5e1"

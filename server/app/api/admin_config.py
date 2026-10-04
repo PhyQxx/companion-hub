@@ -60,6 +60,10 @@ def set_runtime_admin_token(token: str | None) -> None:
     _runtime_admin_token = token
 
 
+def runtime_admin_token(fallback: str | None = None) -> str | None:
+    return _runtime_admin_token if _runtime_admin_token is not None else fallback
+
+
 class AdminTokenGuard:
     def __init__(self, token: str | None) -> None:
         self._token = token
@@ -68,7 +72,7 @@ class AdminTokenGuard:
         self.validate(credentials)
 
     def validate(self, credentials: HTTPAuthorizationCredentials | None) -> None:
-        token = _runtime_admin_token if _runtime_admin_token is not None else self._token
+        token = runtime_admin_token(self._token)
         if not token:
             raise HTTPException(
                 status.HTTP_503_SERVICE_UNAVAILABLE,
