@@ -9,6 +9,7 @@ import json
 import logging
 import re
 from collections.abc import Awaitable, Callable
+from dataclasses import asdict
 from datetime import datetime
 from time import perf_counter
 from typing import Annotated, Literal
@@ -18,10 +19,10 @@ from urllib.request import Request, urlopen
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
-from pydantic import Field
+from pydantic import AnyHttpUrl, Field
 
 from app.config import DatabaseConfigStore, DatabaseConfigVersion, HubConfig
-from app.config.models import HomeAssistantConfig, VoiceAsrConfig
+from app.config.models import HomeAssistantConfig, VoiceAsrConfig, VoiceCostConfig
 from app.config.store import ConfigSnapshot, hash_config
 from app.db import Database
 from app.harness.budget import BudgetDenied
@@ -30,9 +31,11 @@ from app.home_assistant.inventory_ports import HomeAssistantInventory, HomeAssis
 from app.llm import EnvSecretProvider, LiteLLMProvider, ModelEndpoint, ModelKind
 from app.llm.provider import SecretNotFound
 from app.observability import apply_observability
+from app.runs.admin_amap import probe_admin_amap
 from app.runs.admin_home_assistant import read_admin_inventory
 from app.schemas.common import StrictModel
-from app.tools import AmapProvider, AmapProviderError, ToolLedger
+from app.tools import AmapProvider, ToolLedger
+from app.tools.amap_probe_ports import AmapProbeClient, AmapProbeFailed
 
 _BEARER = HTTPBearer(auto_error=False)
 AdminCredentials = Annotated[HTTPAuthorizationCredentials | None, Depends(_BEARER)]
@@ -140,13 +143,14 @@ class AmapConnectionTestStep(StrictModel):
 
 
 class AmapConnectionTestRequest(StrictModel):
-    base_url: str = "https://restapi.amap.com"
-    secret_ref: str | None = None
-    secret_value: str | None = None
-    timeout_ms: int = 3_500
-    max_retries: int = 1
-    max_concurrency: int = 2
-    requests_per_minute: int = 30
+    admin_probe_cost: VoiceCostConfig | None = None
+    base_url: AnyHttpUrl = AnyHttpUrl("https://restapi.amap.com")
+    secret_ref: Annotated[str, Field(pattern=r"^env:[A-Z][A-Z0-9_]{2,127}$")] | None = None
+    secret_value: Annotated[str, Field(max_length=1024)] | None = None
+    timeout_ms: Annotated[int, Field(ge=500, le=30_000)] = 3_500
+    max_retries: Annotated[int, Field(ge=0, le=2)] = 1
+    max_concurrency: Annotated[int, Field(ge=1, le=16)] = 2
+    requests_per_minute: Annotated[int, Field(ge=1, le=10_000)] = 30
 
 
 class AmapConnectionTestResult(StrictModel):
@@ -451,9 +455,15 @@ def create_admin_config_router(
             raise HomeAssistantError("ha_secret_unavailable")
 
         def identity(settings: HomeAssistantConfig) -> str:
+            try:
+                resolved = resolve(settings)
+            except SecretNotFound:
+                resolved = (
+                    None  # A dormant saved reference need not be configured to test new input.
+                )
             return hashlib.sha256(
                 json.dumps(
-                    [settings.model_dump(mode="json"), resolve(settings)],
+                    [settings.model_dump(mode="json"), resolved],
                     sort_keys=True,
                 ).encode()
             ).hexdigest()
@@ -731,146 +741,119 @@ def create_admin_config_router(
     @router.post("/tools/amap/test", response_model=AmapConnectionTestResult)
     async def test_amap_connection(
         body: AmapConnectionTestRequest,
+        credentials: AdminCredentials,
     ) -> AmapConnectionTestResult:
         """验证高德 Key 是否有效、配额是否正常、核心接口能否返回合法数据。"""
         started = perf_counter()
         steps: list[AmapConnectionTestStep] = []
 
-        # 1. 解析 Key
+        live = store.current.config.tools.amap
+        if body.secret_value == _SECRET_MASK:
+            if str(body.base_url).rstrip("/") != str(live.base_url).rstrip("/"):
+                raise HTTPException(409, detail="修改连接地址后，请重新填写 Key 再测试")
+            body = body.model_copy(update={"secret_value": live.secret_value})
+
+        def resolve(value: str | None, ref: str | None) -> str | None:
+            return value or (EnvSecretProvider().resolve(ref) if ref else None)
+
         key_started = perf_counter()
-        api_key: str | None = None
         try:
-            if body.secret_value is not None:
-                api_key = body.secret_value
-            elif body.secret_ref is not None:
-                api_key = EnvSecretProvider().resolve(body.secret_ref)
-            if not api_key:
-                steps.append(
-                    AmapConnectionTestStep(
-                        name="key_resolve",
-                        ok=False,
-                        latency_ms=(perf_counter() - key_started) * 1_000,
-                        message="未配置高德 Key（secret_value 或 secret_ref 为空）",
-                    )
-                )
-                return AmapConnectionTestResult(
-                    ok=False,
-                    steps=steps,
-                    latency_ms=(perf_counter() - started) * 1_000,
-                    message="Key 未配置",
-                )
-            steps.append(
-                AmapConnectionTestStep(
-                    name="key_resolve",
-                    ok=True,
-                    latency_ms=(perf_counter() - key_started) * 1_000,
-                    message="Key 已解析",
-                )
-            )
-        except Exception as error:
+            api_key = resolve(body.secret_value, body.secret_ref)
+        except SecretNotFound:
+            api_key = None
+        if not api_key:
             steps.append(
                 AmapConnectionTestStep(
                     name="key_resolve",
                     ok=False,
-                    latency_ms=(perf_counter() - key_started) * 1_000,
-                    message=str(error),
-                    error_type=type(error).__name__,
+                    latency_ms=(perf_counter() - key_started) * 1000,
+                    message="未配置可用的高德 Key",
+                    error_type="key_unavailable",
                 )
             )
             return AmapConnectionTestResult(
                 ok=False,
                 steps=steps,
-                latency_ms=(perf_counter() - started) * 1_000,
-                message=f"Key 解析失败: {error}",
+                latency_ms=(perf_counter() - started) * 1000,
+                message="Key 未配置",
+            )
+        steps.append(
+            AmapConnectionTestStep(
+                name="key_resolve",
+                ok=True,
+                latency_ms=(perf_counter() - key_started) * 1000,
+                message="Key 已解析",
+            )
+        )
+        if database is None:
+            raise HTTPException(409, detail="管理请求需要运行数据库及已初始化的聊天账户")
+
+        def identity(data: dict[str, object], value: str | None, ref: str | None) -> str:
+            try:
+                resolved = resolve(value, ref)
+            except SecretNotFound:
+                resolved = None
+            return hashlib.sha256(json.dumps([data, resolved], sort_keys=True).encode()).hexdigest()
+
+        def saved_identity() -> str:
+            current = store.current.config.tools.amap
+            return identity(
+                current.model_dump(mode="json"), current.secret_value, current.secret_ref
             )
 
-        provider = AmapProvider(
-            api_key,
-            base_url=str(body.base_url).rstrip("/"),
-            timeout_ms=body.timeout_ms,
-            max_retries=0,
-            max_concurrency=body.max_concurrency,
-            requests_per_minute=body.requests_per_minute,
-        )
-        try:
-            # 2. 地理编码测试
-            geo_started = perf_counter()
-            try:
-                geocode_result = await provider.geocode("济南市")
-                steps.append(
-                    AmapConnectionTestStep(
-                        name="geocode",
-                        ok=True,
-                        latency_ms=(perf_counter() - geo_started) * 1_000,
-                        message=f"地理编码正常，返回 adcode={geocode_result.get('adcode')}",
-                    )
-                )
-            except AmapProviderError as error:
-                steps.append(
-                    AmapConnectionTestStep(
-                        name="geocode",
-                        ok=False,
-                        latency_ms=(perf_counter() - geo_started) * 1_000,
-                        message=error.reason_code,
-                        error_type="AmapProviderError",
-                    )
-                )
-            except Exception as error:
-                steps.append(
-                    AmapConnectionTestStep(
-                        name="geocode",
-                        ok=False,
-                        latency_ms=(perf_counter() - geo_started) * 1_000,
-                        message=str(error),
-                        error_type=type(error).__name__,
-                    )
-                )
+        saved = saved_identity()
+        requested = identity(body.model_dump(mode="json"), body.secret_value, body.secret_ref)
 
-            # 3. 天气接口测试（使用济南 adcode 370100）
-            weather_started = perf_counter()
-            try:
-                weather_result = await provider.weather("370100", extensions="base")
-                lives = weather_result.get("lives")
-                if isinstance(lives, list) and lives:
-                    steps.append(
-                        AmapConnectionTestStep(
-                            name="weather",
-                            ok=True,
-                            latency_ms=(perf_counter() - weather_started) * 1_000,
-                            message=f"天气接口正常，返回城市={lives[0].get('city')}",
-                        )
-                    )
-                else:
-                    steps.append(
-                        AmapConnectionTestStep(
-                            name="weather",
-                            ok=False,
-                            latency_ms=(perf_counter() - weather_started) * 1_000,
-                            message="天气接口返回数据异常",
-                        )
-                    )
-            except AmapProviderError as error:
-                steps.append(
-                    AmapConnectionTestStep(
-                        name="weather",
-                        ok=False,
-                        latency_ms=(perf_counter() - weather_started) * 1_000,
-                        message=error.reason_code,
-                        error_type="AmapProviderError",
-                    )
-                )
-            except Exception as error:
-                steps.append(
-                    AmapConnectionTestStep(
-                        name="weather",
-                        ok=False,
-                        latency_ms=(perf_counter() - weather_started) * 1_000,
-                        message=str(error),
-                        error_type=type(error).__name__,
-                    )
-                )
-        finally:
-            await provider.close()
+        async def guard() -> None:
+            await token_guard(credentials)
+            if (
+                saved_identity() != saved
+                or identity(body.model_dump(mode="json"), body.secret_value, body.secret_ref)
+                != requested
+            ):
+                raise BudgetDenied("admin_connection_changed")
+
+        origin = urlsplit(str(body.base_url))
+        public = hashlib.sha256(
+            json.dumps(
+                [
+                    origin.scheme,
+                    origin.hostname,
+                    origin.port,
+                    body.admin_probe_cost.model_dump(mode="json")
+                    if body.admin_probe_cost
+                    else None,
+                ],
+                sort_keys=True,
+            ).encode()
+        ).hexdigest()
+
+        def client_factory() -> AmapProbeClient:
+            return AmapProvider(
+                api_key,
+                base_url=str(body.base_url).rstrip("/"),
+                timeout_ms=body.timeout_ms,
+                max_retries=0,
+                max_concurrency=body.max_concurrency,
+                requests_per_minute=body.requests_per_minute,
+            )
+
+        try:
+            result = await probe_admin_amap(
+                database,
+                store,
+                price=body.admin_probe_cost,
+                endpoint=f"admin.amap.connection:{public}",
+                client_factory=client_factory,
+                source_guard=guard,
+            )
+        except AmapProbeFailed as error:
+            result = error.steps
+        except BudgetDenied as error:
+            raise HTTPException(
+                409, detail=f"高德自检已停止（{error.reason_code}）；请核对账户、额度与完整请求报价"
+            ) from error
+        steps.extend(AmapConnectionTestStep(**asdict(step)) for step in result)
 
         all_ok = all(step.ok for step in steps)
         failed = [step.name for step in steps if not step.ok]

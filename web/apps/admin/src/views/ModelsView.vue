@@ -226,6 +226,7 @@ interface HubToolsConfig {
     precise_location_policy: "ask_each_time" | "allow_session";
   };
   amap: {
+    admin_probe_cost: { cost_currency: string | null; request_cost_ceiling: string | null };
     enabled: boolean;
     base_url: string;
     secret_ref?: string | null;
@@ -439,6 +440,7 @@ const defaultTools = (): HubToolsConfig => ({
     precise_location_policy: "ask_each_time",
   },
   amap: {
+    admin_probe_cost: { cost_currency: null, request_cost_ceiling: null },
     enabled: false,
     base_url: "https://restapi.amap.com",
     secret_ref: "env:AMAP_WEB_SERVICE_KEY",
@@ -578,6 +580,13 @@ async function checkLocalAsrEnvironment() {
   }
 }
 
+function cleanRequestPrice(price: HubToolsConfig["amap"]["admin_probe_cost"]) {
+  return {
+    cost_currency: price?.cost_currency?.trim().toUpperCase() || null,
+    request_cost_ceiling: price?.request_cost_ceiling?.trim() || null,
+  };
+}
+
 async function testAmapConnection() {
   const amap = draft.value.tools.amap;
   if (!amap.enabled) {
@@ -596,6 +605,7 @@ async function testAmapConnection() {
       {
         method: "POST",
         body: JSON.stringify({
+          admin_probe_cost: cleanRequestPrice(amap.admin_probe_cost),
           base_url: amap.base_url,
           secret_ref: amap.secret_ref,
           secret_value: amap.secret_value,
@@ -628,7 +638,7 @@ function normalizeTools(tools: HubToolsConfig | undefined | null): HubToolsConfi
     ...base,
     ...tools,
     query: { ...base.query, ...tools.query },
-    amap: { ...base.amap, ...tools.amap },
+    amap: { ...base.amap, ...tools.amap, admin_probe_cost: tools.amap?.admin_probe_cost ?? base.amap.admin_probe_cost },
     desktop_actions: { ...base.desktop_actions, ...tools.desktop_actions },
     browser_workflow: { ...base.browser_workflow, ...tools.browser_workflow },
     commute: { ...base.commute, ...tools.commute },
@@ -864,7 +874,7 @@ function draftToHubConfig(d: DraftState): HubConfig {
     voice: { asr: voiceAsr, tts: voiceTts },
     run_budget: { cost_currency: d.cost_limits.currency.trim().toUpperCase() || null,
       max_daily_cost: d.cost_limits.daily ?? null, max_monthly_cost: d.cost_limits.monthly ?? null },
-    tools: d.tools,
+    tools: { ...d.tools, amap: { ...d.tools.amap, admin_probe_cost: cleanRequestPrice(d.tools.amap.admin_probe_cost) } },
     observability: d.observability,
   };
 }
@@ -1297,6 +1307,11 @@ onActivated(() => {
             <label class="field"><span>全局并发</span><el-input-number v-model="draft.tools.amap.max_concurrency" :min="1" :max="16" /></label>
             <label class="field"><span>每分钟请求上限</span><el-input-number v-model="draft.tools.amap.requests_per_minute" :min="1" :max="10000" /></label>
           </div>
+          <div class="form-grid three global-fields">
+            <label class="field"><span>连接自检报价币种</span><el-input v-model="draft.tools.amap.admin_probe_cost.cost_currency" maxlength="3" placeholder="CNY" /></label>
+            <label class="field"><span>完整自检费用上限</span><el-input v-model="draft.tools.amap.admin_probe_cost.request_cost_ceiling" inputmode="decimal" placeholder="例如 0 或 0.002" /></label>
+          </div>
+          <div class="capability-hint">金额预算启用时需配置完整自检报价；包含地理编码、天气两次请求，免费请明确填 0。费用未知时保留完整上限，失败不会自动重试。</div>
           <div class="capability-hint">启用前还需在"模型列表"勾选至少一个文本模型的"支持 Function Calling"。精确位置不会写入长期记忆或日志。</div>
           <div class="form-actions" style="margin-top: 16px;">
             <el-button

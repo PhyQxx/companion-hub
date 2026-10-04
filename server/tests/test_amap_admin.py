@@ -7,6 +7,7 @@ import httpx
 import pytest
 from httpx import ASGITransport, AsyncClient
 
+from app.auth import AuthService
 from app.config import DatabaseConfigStore
 from app.db import Base, Database, create_database
 from app.main import create_app
@@ -206,6 +207,9 @@ class TestAmapAdminApi:
         bootstrap: Path,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
+        await AuthService(database).setup(
+            display_name="Synthetic owner", password="synthetic secure test password"
+        )
         store = DatabaseConfigStore(database, bootstrap)
         app = create_app(
             database,
@@ -249,6 +253,9 @@ class TestAmapAdminApi:
         bootstrap: Path,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
+        await AuthService(database).setup(
+            display_name="Synthetic owner", password="synthetic secure test password"
+        )
         store = DatabaseConfigStore(database, bootstrap)
         app = create_app(
             database,

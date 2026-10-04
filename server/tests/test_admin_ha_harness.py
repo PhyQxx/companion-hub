@@ -567,3 +567,28 @@ async def test_ha_terminal_fee_wait_rechecks_admin_token(
             root = (await sql.scalars(select(TaskRunRecord))).one()
             fee = (await sql.scalars(select(ModelCostRecord))).one()
         assert root.status == "failed" and fee.state == "unknown" and fee.charged_micros == 2000
+
+
+@pytest.mark.parametrize("backend", ["sqlite", "postgresql"])
+async def test_unsaved_ha_connection_can_use_explicit_key_when_saved_env_is_missing(
+    backend: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("ARIA_SYNTHETIC_MISSING_HA_KEY", raising=False)
+    async with fixture(backend, tmp_path, monkeypatch, priced=True) as (http, store, _):
+        request_config = store.current.config.integrations.home_assistant.model_dump(mode="json")
+        data = store.current.config.model_dump(mode="python")
+        data["integrations"]["home_assistant"].update(
+            enabled=False,
+            secret_value=None,
+            secret_ref="env:ARIA_SYNTHETIC_MISSING_HA_KEY",
+        )
+        draft = await store.create_draft(HubConfig.model_validate(data), actor="synthetic")
+        await store.publish(draft.version, actor="synthetic")
+        response = await http.post(
+            "/api/v1/admin/config/integrations/home-assistant/test",
+            json={"config": request_config},
+        )
+        assert response.status_code == 200 and response.json()["ok"]
+        assert Client.instances[0].closed and Client.instances[0].key == "synthetic-private-key"

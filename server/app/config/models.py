@@ -151,6 +151,7 @@ class QueryToolConfig(StrictModel):
 
 
 class AmapToolConfig(StrictModel):
+    admin_probe_cost: VoiceCostConfig | None = None
     enabled: bool = False
     base_url: AnyHttpUrl = AnyHttpUrl("https://restapi.amap.com")
     secret_ref: Annotated[str, Field(pattern=r"^env:[A-Z][A-Z0-9_]{2,127}$")] | None = None
