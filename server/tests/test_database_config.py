@@ -8,6 +8,7 @@ import pytest
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy import func, select
 
+from app.auth import AuthService
 from app.config import DatabaseConfigStore, HubConfig
 from app.db import Base, ConfigPointerRecord, ConfigVersionRecord, Database, create_database
 from app.home_assistant import HomeAssistantState
@@ -271,6 +272,9 @@ async def test_admin_home_assistant_connection_returns_entity_inventory(
     bootstrap: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    await AuthService(database).setup(
+        display_name="Synthetic owner", password="synthetic secure test password"
+    )
     async def fake_fetch_states(_: object) -> tuple[HomeAssistantState, ...]:
         now = datetime.now(UTC)
         return (

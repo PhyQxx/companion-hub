@@ -50,7 +50,31 @@ interface HaEntityPolicy {
   allowed_attributes: string[];
 }
 
+type AdminHaOperation = "connection" | "inventory";
+interface RequestPrice {
+  cost_currency: string | null;
+  request_cost_ceiling: string | null;
+}
+const adminOperations = [
+  { key: "connection", label: "连接测试" },
+  { key: "inventory", label: "设备清单刷新" },
+] as const;
+const requestPrices = ref<Record<AdminHaOperation, { currency: string; ceiling: string }>>({
+  connection: { currency: "", ceiling: "" },
+  inventory: { currency: "", ceiling: "" },
+});
+function readPrices(config: HaConfig) {
+  for (const { key } of adminOperations) {
+    const price = config.admin_operation_costs?.[key];
+    requestPrices.value[key] = {
+      currency: price?.cost_currency ?? "",
+      ceiling: price?.request_cost_ceiling ?? "",
+    };
+  }
+}
+
 interface HaConfig {
+  admin_operation_costs?: Partial<Record<AdminHaOperation, RequestPrice>>;
   enabled: boolean;
   instance_id: string;
   base_url: string | null;
@@ -269,6 +293,7 @@ async function load() {
   try {
     current.value = await api.request<CurrentConfig>("/api/v1/admin/config/current");
     ha.value = normalizeConfig(clonePlain(current.value.config.integrations.home_assistant));
+    readPrices(ha.value);
     if (ha.value?.enabled && ha.value.base_url && allEntities.value.length === 0) {
       await fetchAllEntities(true);
     }
@@ -343,6 +368,16 @@ function submittableHaConfig(): HaConfig | null {
   if (!ha.value) return null;
   const { secret_mode, ...rest } = ha.value;
   const cleaned = rest as HaConfig;
+  cleaned.admin_operation_costs = {};
+  for (const { key } of adminOperations) {
+    const price = requestPrices.value[key];
+    if (price.currency.trim() || price.ceiling.trim()) {
+      cleaned.admin_operation_costs[key] = {
+        cost_currency: price.currency.trim().toUpperCase() || null,
+        request_cost_ceiling: price.ceiling.trim() || null,
+      };
+    }
+  }
   if (secret_mode === "value" && cleaned.secret_value) cleaned.secret_ref = null;
   else if (secret_mode === "ref" && cleaned.secret_ref) cleaned.secret_value = null;
   else {
@@ -373,6 +408,7 @@ async function save() {
       body: JSON.stringify(config),
     });
     ha.value = normalizeConfig(clonePlain(current.value.config.integrations.home_assistant));
+    readPrices(ha.value);
     emit("status", `HA 设备授权已保存，配置版本 ${current.value.version}`);
     ElMessage.success("保存成功，已即时生效");
   } catch (error) {
@@ -559,6 +595,11 @@ onMounted(load);
         </div>
         <div v-if="testResult" class="connection-note" :class="testResult.ok ? 'ok' : 'bad'">
           {{ testResult.message }}<span v-if="testResult.ok"> · {{ Math.round(testResult.latency_ms) }} ms · 发现 {{ testResult.entities.length }} 个实体</span>
+        </div>
+        <p class="muted">金额预算启用时，请为每种管理请求设置完整费用上限。连接测试含一次状态读取；清单刷新最多含状态、区域、设备三次请求。免费请求请明确填 0；费用未知时保留占用，刷新使用已保存的报价。</p>
+        <div v-for="operation in adminOperations" :key="operation.key" class="form-grid three">
+          <label><span>{{ operation.label }} · 币种</span><el-input v-model="requestPrices[operation.key].currency" maxlength="3" placeholder="CNY" /></label>
+          <label><span>完整请求费用上限</span><el-input v-model="requestPrices[operation.key].ceiling" inputmode="decimal" placeholder="例如 0 或 0.002" /></label>
         </div>
         <div class="form-grid three">
           <label><span>实例标识</span><el-input v-model="ha.instance_id" placeholder="home-main" /></label>

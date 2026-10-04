@@ -47,7 +47,9 @@ async def operate_with_run(
     cooperative: bool = False,
     trace_parent_id: UUID | None = None,
     missing_quote_reason: Literal[
-        "media_cost_estimate_unavailable", "voice_cost_estimate_unavailable"
+        "media_cost_estimate_unavailable",
+        "voice_cost_estimate_unavailable",
+        "admin_cost_estimate_unavailable",
     ] = "media_cost_estimate_unavailable",
 ) -> T:
     """Own the call, accounting and terminal writes.

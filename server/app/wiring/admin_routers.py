@@ -90,6 +90,7 @@ def register_admin_routers(
         create_admin_config_router(
             config,
             admin_token=runtime_admin_token,
+            database=database,
             on_publish=reconfigure_integrations,
             on_proactive_test=ha_proactive_test,
         )

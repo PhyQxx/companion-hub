@@ -1,7 +1,8 @@
 """Owned admin SDK requests against the account created by authenticated setup."""
 
 from collections.abc import Awaitable, Callable
-from typing import TypeVar
+from typing import Literal, TypeVar
+from uuid import UUID
 
 from sqlalchemy import select
 
@@ -20,15 +21,18 @@ from .operation import operate_with_run
 T = TypeVar("T")
 
 
-async def admin_sdk_request(
+async def owned_admin_sdk_request(
     database: Database,
     store: DatabaseConfigStore,
     *,
-    operation: SenseAudioOperation,
+    entry: str,
     price: VoiceCostConfig | None,
     endpoint: str,
-    invoke: Callable[[], Awaitable[T]],
+    invoke: Callable[[UUID, Callable[[], Awaitable[None]]], Awaitable[T]],
     source_guard: Callable[[], Awaitable[None]],
+    missing_quote_reason: Literal[
+        "voice_cost_estimate_unavailable", "admin_cost_estimate_unavailable"
+    ] = "admin_cost_estimate_unavailable",
 ) -> T:
     await source_guard()
     async with database.sessions() as session:
@@ -56,31 +60,7 @@ async def admin_sdk_request(
     )
 
     async def request(mark_started: Callable[[], Awaitable[None]]) -> T:
-        tool = current_tool_budget()
-        permit = (
-            await tool.reserve_tool(tool_name=f"admin.senseaudio.{operation}", user_id=owner)
-            if tool
-            else None
-        )
-        started = succeeded = False
-
-        async def settle() -> None:
-            if tool is not None and permit is not None:
-                await join_on_cancel(
-                    tool.settle_tool(
-                        permit.call_id,
-                        reported_ok=True if succeeded else None if started else False,
-                    ),
-                    name="admin-sdk-tool-settle",
-                )
-
-        async with close_after_source(settle):
-            await mark_started()
-            await source_guard()
-            started = True
-            result = await invoke()
-            succeeded = True
-            return result
+        return await invoke(owner, mark_started)
 
     return await operate_with_run(
         database,
@@ -89,7 +69,7 @@ async def admin_sdk_request(
         ),
         user_id=owner,
         privacy_level=PrivacyLevel.L1,
-        entry=f"admin.senseaudio.{operation}",
+        entry=entry,
         invoke=request,
         evidence=lambda _: {"source_actor": "admin", "response_received": "true"},
         source_guard=source_guard,
@@ -99,5 +79,70 @@ async def admin_sdk_request(
         cost_endpoint=endpoint,
         budget_source=lambda: store.current.config.run_budget,
         cooperative=True,
+        missing_quote_reason=missing_quote_reason,
+    )
+
+
+async def admin_tool_request(
+    *,
+    owner: UUID,
+    tool_name: str,
+    invoke: Callable[[], Awaitable[T]],
+    source_guard: Callable[[], Awaitable[None]],
+    before_start: Callable[[], Awaitable[None]] | None = None,
+) -> T:
+    """Count each SDK request; settle before the containing workflow advances."""
+    await source_guard()
+    tool = current_tool_budget()
+    permit = await tool.reserve_tool(tool_name=tool_name, user_id=owner) if tool else None
+    started = succeeded = False
+
+    async def settle() -> None:
+        if tool is not None and permit is not None:
+            await join_on_cancel(
+                tool.settle_tool(
+                    permit.call_id,
+                    reported_ok=True if succeeded else None if started else False,
+                ),
+                name="admin-sdk-tool-settle",
+            )
+
+    async with close_after_source(settle):
+        if before_start is not None:
+            await before_start()
+        await source_guard()
+        started = True
+        result = await invoke()
+        succeeded = True
+        return result
+
+
+async def admin_sdk_request(
+    database: Database,
+    store: DatabaseConfigStore,
+    *,
+    operation: SenseAudioOperation,
+    price: VoiceCostConfig | None,
+    endpoint: str,
+    invoke: Callable[[], Awaitable[T]],
+    source_guard: Callable[[], Awaitable[None]],
+) -> T:
+    async def request(owner: UUID, mark_started: Callable[[], Awaitable[None]]) -> T:
+        return await admin_tool_request(
+            owner=owner,
+            tool_name=f"admin.senseaudio.{operation}",
+            invoke=invoke,
+            source_guard=source_guard,
+            before_start=mark_started,
+        )
+
+    return await owned_admin_sdk_request(
+        database,
+        store,
+        entry=f"admin.senseaudio.{operation}",
+        price=price,
+        endpoint=endpoint,
+        invoke=request,
+        source_guard=source_guard,
         missing_quote_reason="voice_cost_estimate_unavailable",
     )

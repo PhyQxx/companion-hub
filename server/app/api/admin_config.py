@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import hmac
 import importlib.metadata
 import importlib.util
@@ -10,7 +11,7 @@ import re
 from collections.abc import Awaitable, Callable
 from datetime import datetime
 from time import perf_counter
-from typing import Annotated
+from typing import Annotated, Literal
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlsplit, urlunsplit
 from urllib.request import Request, urlopen
@@ -22,9 +23,14 @@ from pydantic import Field
 from app.config import DatabaseConfigStore, DatabaseConfigVersion, HubConfig
 from app.config.models import HomeAssistantConfig, VoiceAsrConfig
 from app.config.store import ConfigSnapshot, hash_config
+from app.db import Database
+from app.harness.budget import BudgetDenied
 from app.home_assistant import HomeAssistantClient, HomeAssistantError
+from app.home_assistant.inventory_ports import HomeAssistantInventory, HomeAssistantInventoryClient
 from app.llm import EnvSecretProvider, LiteLLMProvider, ModelEndpoint, ModelKind
+from app.llm.provider import SecretNotFound
 from app.observability import apply_observability
+from app.runs.admin_home_assistant import read_admin_inventory
 from app.schemas.common import StrictModel
 from app.tools import AmapProvider, AmapProviderError, ToolLedger
 
@@ -409,15 +415,103 @@ def create_admin_config_router(
     store: DatabaseConfigStore,
     *,
     admin_token: str | None,
+    database: Database | None = None,
     on_publish: Callable[[], Awaitable[None]] | None = None,
     on_proactive_test: Callable[[], Awaitable[bool]] | None = None,
     on_calendar_sync: Callable[[str], Awaitable[dict[str, object]]] | None = None,
 ) -> APIRouter:
+    token_guard = AdminTokenGuard(admin_token)
     router = APIRouter(
         prefix="/api/v1/admin/config",
         tags=["admin-config"],
-        dependencies=[Depends(AdminTokenGuard(admin_token))],
+        dependencies=[Depends(token_guard)],
     )
+
+    async def ha_request(
+        config: HomeAssistantConfig,
+        credentials: AdminCredentials,
+        operation: Literal["connection", "inventory"],
+    ) -> HomeAssistantInventory:
+        if database is None:
+            raise HTTPException(409, detail="管理请求需要运行数据库及已初始化的聊天账户")
+        live = store.current.config.integrations.home_assistant
+        config = config.model_copy(deep=True)
+        if config.secret_value == _SECRET_MASK:
+            if config.base_url != live.base_url:
+                raise HTTPException(409, detail="修改连接地址后，请重新填写令牌再测试")
+            config = config.model_copy(update={"secret_value": live.secret_value})
+
+        def resolve(settings: HomeAssistantConfig) -> str | None:
+            return settings.secret_value or (
+                EnvSecretProvider().resolve(settings.secret_ref) if settings.secret_ref else None
+            )
+
+        token = resolve(config)
+        if not token:
+            raise HomeAssistantError("ha_secret_unavailable")
+
+        def identity(settings: HomeAssistantConfig) -> str:
+            return hashlib.sha256(
+                json.dumps(
+                    [settings.model_dump(mode="json"), resolve(settings)],
+                    sort_keys=True,
+                ).encode()
+            ).hexdigest()
+
+        live_identity, request_identity = identity(live), identity(config)
+        price = config.admin_operation_costs.get(operation)
+        origin = urlsplit(str(config.base_url))
+        public_identity = hashlib.sha256(
+            json.dumps(
+                [
+                    origin.scheme,
+                    origin.hostname,
+                    origin.port,
+                    operation,
+                    price.model_dump(mode="json") if price else None,
+                ],
+                sort_keys=True,
+            ).encode()
+        ).hexdigest()
+
+        async def guard() -> None:
+            await token_guard(credentials)
+            try:
+                changed = (
+                    identity(store.current.config.integrations.home_assistant) != live_identity
+                    or identity(config) != request_identity
+                )
+            except SecretNotFound as error:
+                raise BudgetDenied("admin_connection_changed") from error
+            if changed:
+                raise BudgetDenied("admin_connection_changed")
+
+        def client_factory() -> HomeAssistantInventoryClient:
+            return HomeAssistantClient(
+                str(config.base_url).rstrip("/"),
+                token,
+                verify_tls=config.verify_tls,
+                connect_timeout_ms=config.connect_timeout_ms,
+                request_timeout_ms=config.request_timeout_ms,
+            )
+
+        try:
+            return await read_admin_inventory(
+                database,
+                store,
+                operation=operation,
+                price=price,
+                endpoint=f"admin.home_assistant.{operation}:{public_identity}",
+                client_factory=client_factory,
+                source_guard=guard,
+            )
+        except BudgetDenied as error:
+            explanation = {
+                "admin_account_setup_required": "请先完成聊天账户初始化，以归属任务和费用",
+                "admin_cost_estimate_unavailable": "金额预算需要完整管理请求费用上限，请先配置报价",
+                "admin_connection_changed": "执行期间连接或报价已变更，请重新核对",
+            }.get(error.reason_code, "管理请求已停止")
+            raise HTTPException(409, detail=f"{explanation}（{error.reason_code}）") from error
 
     @router.get("/current", response_model=CurrentConfigView)
     async def current() -> CurrentConfigView:
@@ -793,6 +887,7 @@ def create_admin_config_router(
     )
     async def test_home_assistant_connection(
         body: HomeAssistantConnectionTestRequest,
+        credentials: AdminCredentials,
     ) -> HomeAssistantConnectionTestResult:
         """Validate HA credentials and return a safe entity inventory for allowlisting."""
         config = body.config
@@ -805,22 +900,10 @@ def create_admin_config_router(
                 error_type="ha_config_invalid",
             )
         try:
-            token = config.secret_value
-            if token is None and config.secret_ref is not None:
-                token = EnvSecretProvider().resolve(config.secret_ref)
-            if not token:
-                raise HomeAssistantError("ha_secret_unavailable")
-            client = HomeAssistantClient(
-                str(config.base_url).rstrip("/"),
-                token,
-                verify_tls=config.verify_tls,
-                connect_timeout_ms=config.connect_timeout_ms,
-                request_timeout_ms=config.request_timeout_ms,
-            )
-            try:
-                states = await client.fetch_states()
-            finally:
-                await client.close()
+            inventory = await ha_request(config, credentials, "connection")
+            states = inventory.states
+        except HTTPException:
+            raise
         except Exception as error:
             reason = (
                 error.reason_code if isinstance(error, HomeAssistantError) else type(error).__name__
@@ -861,7 +944,9 @@ def create_admin_config_router(
         "/integrations/home-assistant/entities",
         response_model=HomeAssistantEntitiesResult,
     )
-    async def list_home_assistant_entities() -> HomeAssistantEntitiesResult:
+    async def list_home_assistant_entities(
+        credentials: AdminCredentials,
+    ) -> HomeAssistantEntitiesResult:
         """拉取当前配置下 Home Assistant 的所有实体，包含区域信息。"""
         config = store.current.config.integrations.home_assistant
         started = perf_counter()
@@ -873,37 +958,10 @@ def create_admin_config_router(
                 error_type="ha_config_invalid",
             )
         try:
-            token = config.secret_value
-            if token is None and config.secret_ref is not None:
-                token = EnvSecretProvider().resolve(config.secret_ref)
-            if not token:
-                raise HomeAssistantError("ha_secret_unavailable")
-            client = HomeAssistantClient(
-                str(config.base_url).rstrip("/"),
-                token,
-                verify_tls=config.verify_tls,
-                connect_timeout_ms=config.connect_timeout_ms,
-                request_timeout_ms=config.request_timeout_ms,
-            )
-            try:
-                states = await client.fetch_states()
-                try:
-                    areas = await client.fetch_entity_areas()
-                except HomeAssistantError as area_error:
-                    logger.warning(
-                        "home assistant entity areas fetch failed: %s", area_error.reason_code
-                    )
-                    areas = {}
-                try:
-                    devices = await client.fetch_entity_devices()
-                except HomeAssistantError as device_error:
-                    logger.warning(
-                        "home assistant entity devices fetch failed: %s",
-                        device_error.reason_code,
-                    )
-                    devices = {}
-            finally:
-                await client.close()
+            inventory = await ha_request(config, credentials, "inventory")
+            states, areas, devices = inventory.states, inventory.areas, inventory.devices
+        except HTTPException:
+            raise
         except Exception as error:
             reason = (
                 error.reason_code if isinstance(error, HomeAssistantError) else type(error).__name__

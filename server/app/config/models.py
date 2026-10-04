@@ -532,6 +532,9 @@ class HomeAssistantEntityConfig(StrictModel):
 
 
 class HomeAssistantConfig(StrictModel):
+    admin_operation_costs: dict[Literal["connection", "inventory"], VoiceCostConfig] = Field(
+        default_factory=dict
+    )
     enabled: bool = False
     instance_id: Annotated[str, Field(min_length=1, max_length=80)] = "home-main"
     base_url: AnyHttpUrl | None = None
