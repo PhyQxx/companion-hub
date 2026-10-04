@@ -11,11 +11,33 @@ from mcp.client.streamable_http import streamable_http_client
 from mcp.types import TextContent
 
 from app.config.models import McpServerConfig
+from app.harness.budget import BudgetDenied
 from app.llm.provider import EnvSecretProvider
 
 from .models import McpCallPayload, McpRemoteTool
 from .ports import McpClientFactory as McpClientFactory
 from .ports import McpRemoteClient as McpRemoteClient
+from .ports import McpRequestRunner, current_request_runner
+
+
+class AdmittedMcpTransport(httpx2.AsyncBaseTransport):
+    """Count actual HTTP sends, including SDK negotiation and termination."""
+
+    def __init__(
+        self, transport: httpx2.AsyncBaseTransport, runner: McpRequestRunner | None
+    ) -> None:
+        self._transport = transport
+        self._runner = runner
+
+    async def handle_async_request(self, request: httpx2.Request) -> httpx2.Response:
+        if self._runner is None:
+            raise BudgetDenied("mcp_operation_scope_missing")
+        return await self._runner(
+            request.method, lambda: self._transport.handle_async_request(request)
+        )
+
+    async def aclose(self) -> None:
+        await self._transport.aclose()
 
 
 class SdkMcpClient:
@@ -58,7 +80,15 @@ class SdkMcpClient:
                 connect=self._config.connect_timeout_seconds,
             )
             http_client = await stack.enter_async_context(
-                httpx2.AsyncClient(headers=headers, timeout=timeout)
+                httpx2.AsyncClient(
+                    headers=headers,
+                    timeout=timeout,
+                    transport=AdmittedMcpTransport(
+                        httpx2.AsyncHTTPTransport(retries=0), current_request_runner()
+                    ),
+                    trust_env=False,
+                    follow_redirects=False,
+                )
             )
             transport = streamable_http_client(str(self._config.endpoint), http_client=http_client)
             client = await stack.enter_async_context(

@@ -64,13 +64,13 @@ class McpReadToolHandler:
         return None
 
     async def execute(self, arguments: BaseModel, context: ToolContext) -> ToolResult:
-        del context
         started = perf_counter()
         try:
             result = await self._manager.call(
                 self._descriptor.internal_name,
                 arguments.model_dump(),
                 catalogue_ticket=self._descriptor.catalogue_ticket,
+                user_id=context.user_id,
             )
         except Exception as error:
             reason = getattr(error, "reason_code", "mcp_connection_failed")

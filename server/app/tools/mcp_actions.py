@@ -66,7 +66,6 @@ class McpToolCallTool:
         return None
 
     async def execute(self, arguments: BaseModel, context: ToolContext) -> ToolResult:
-        del context
         args = cast(McpToolCallArgs, arguments)
         started = perf_counter()
         encoded = json.dumps(args.arguments, ensure_ascii=False, default=str).encode()
@@ -83,7 +82,10 @@ class McpToolCallTool:
             )
         try:
             result = await self._manager.call_write(
-                args.tool, args.arguments, catalogue_ticket=args.catalogue_ticket
+                args.tool,
+                args.arguments,
+                catalogue_ticket=args.catalogue_ticket,
+                user_id=context.user_id,
             )
         except McpManagerError as error:
             return self._failure(error.reason_code, started, not_admitted=True)

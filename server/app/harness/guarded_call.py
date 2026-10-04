@@ -44,13 +44,18 @@ async def guarded_call(
 
 
 async def guarded_inline_call(
-    invoke: Callable[[], Awaitable[T]], validate: Callable[[], Awaitable[None]]
+    invoke: Callable[[], Awaitable[T]],
+    validate: Callable[[], Awaitable[None]],
+    *,
+    defer_watch: Callable[[], bool] | None = None,
 ) -> T:
     """Keep cooperative application transactions on their owning caller task.
 
     Unlike a detached provider call, application cancellation must finish its
     own transaction cleanup before the caller reports completion. Only the
-    read-only authority watcher runs in a child task.
+    read-only authority watcher runs in a child task. An explicit shutdown
+    marker can defer watcher cancellation during SDK cleanup; validation still
+    runs after invoke returns, and the containing operation keeps its deadline.
     """
     await validate()
     owner = asyncio.current_task()
@@ -64,6 +69,8 @@ async def guarded_inline_call(
         try:
             while True:
                 await asyncio.sleep(0.25)
+                if defer_watch is not None and defer_watch():
+                    continue
                 await validate()
         except Exception as error:
             # An external cancellation already in progress keeps its meaning.

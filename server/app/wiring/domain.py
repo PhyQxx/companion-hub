@@ -93,6 +93,7 @@ from app.perception.pipeline import EventObserver
 from app.persona import PersonaStore
 from app.pnkx import PnkxLifeClient
 from app.runs.capability_sources import SqlCapabilityExecution
+from app.runs.mcp_operation import OwnedMcpOperation
 from app.safety import ActivityTracker
 from app.skills.audit import SkillAuditScheduler
 from app.skills.connections import SkillConnectionStore, SkillHttpClient
@@ -247,7 +248,18 @@ def assemble_domain(
     if dispatcher_enabled is None:
         dispatcher_enabled = os.getenv("ARIA_RUN_DISPATCHER", "false").lower() == "true"
     worker = None
-    mcp_manager = McpManager(runtime_config) if runtime_config is not None else None
+    mcp_manager = (
+        McpManager(
+            runtime_config,
+            operation_runner=(
+                OwnedMcpOperation(runtime_database, runtime_config)
+                if runtime_database is not None
+                else None
+            ),
+        )
+        if runtime_config is not None
+        else None
+    )
     skills_module = build_skills(runtime_database, runtime_config)
     skill_store = skills_module.store
     skill_connections = skills_module.connections

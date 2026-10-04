@@ -4,10 +4,11 @@ from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException, status
 
+from app.harness.budget import BudgetDenied
 from app.integrations.mcp import McpManager, McpManagerError
 from app.schemas.common import StrictModel
 
-from .admin_config import AdminTokenGuard
+from .admin_config import AdminCredentials, AdminTokenGuard
 
 
 class McpServerStatusItem(StrictModel):
@@ -46,13 +47,12 @@ class McpToolListResponse(StrictModel):
     total: int
 
 
-def create_admin_mcp_router(
-    manager: McpManager | None, *, admin_token: str | None
-) -> APIRouter:
+def create_admin_mcp_router(manager: McpManager | None, *, admin_token: str | None) -> APIRouter:
+    guard = AdminTokenGuard(admin_token)
     router = APIRouter(
         prefix="/api/v1/admin/mcp",
         tags=["admin-mcp"],
-        dependencies=[Depends(AdminTokenGuard(admin_token))],
+        dependencies=[Depends(guard)],
     )
 
     @router.get("/servers", response_model=McpServerListResponse)
@@ -99,14 +99,21 @@ def create_admin_mcp_router(
         return McpToolListResponse(items=items, total=len(items))
 
     @router.post("/servers/{server_id}/refresh", response_model=McpServerStatusItem)
-    async def refresh(server_id: str) -> McpServerStatusItem:
+    async def refresh(server_id: str, credentials: AdminCredentials) -> McpServerStatusItem:
         if manager is None:
             raise HTTPException(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
                 detail="mcp_manager_unavailable",
             )
         try:
-            item = await manager.refresh_server(server_id)
+
+            async def check() -> None:
+                try:
+                    await guard(credentials)
+                except HTTPException:
+                    raise BudgetDenied("mcp_admin_credential_changed") from None
+
+            item = await manager.refresh_server(server_id, source_guard=check)
         except McpManagerError as error:
             code = (
                 status.HTTP_404_NOT_FOUND

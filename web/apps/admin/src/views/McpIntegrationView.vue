@@ -33,6 +33,11 @@ interface ToolItem {
   idempotent: boolean;
 }
 
+interface WorkflowCost {
+  cost_currency: string | null;
+  request_cost_ceiling: string | null;
+}
+
 interface ServerConfig {
   server_id: string;
   enabled: boolean;
@@ -46,6 +51,8 @@ interface ServerConfig {
   call_timeout_seconds: number;
   catalog_ttl_seconds: number;
   max_result_bytes: number;
+  catalog_refresh_cost: WorkflowCost | null;
+  tool_call_cost: WorkflowCost | null;
 }
 
 interface McpConfigShape {
@@ -76,6 +83,10 @@ const form = reactive({
   call_timeout_seconds: 15,
   catalog_ttl_seconds: 300,
   max_result_bytes: 32000,
+  refresh_cost_currency: "CNY",
+  refresh_cost_ceiling: "",
+  tool_cost_currency: "CNY",
+  tool_cost_ceiling: "",
 });
 
 const availableCount = computed(() => servers.value.filter((item) => item.available).length);
@@ -154,6 +165,10 @@ function openCreate() {
     call_timeout_seconds: 15,
     catalog_ttl_seconds: 300,
     max_result_bytes: 32000,
+    refresh_cost_currency: "CNY",
+    refresh_cost_ceiling: "",
+    tool_cost_currency: "CNY",
+    tool_cost_ceiling: "",
   });
   editing.value = true;
 }
@@ -173,6 +188,10 @@ function openEdit(server: ServerConfig) {
     call_timeout_seconds: server.call_timeout_seconds,
     catalog_ttl_seconds: server.catalog_ttl_seconds,
     max_result_bytes: server.max_result_bytes,
+    refresh_cost_currency: server.catalog_refresh_cost?.cost_currency ?? "CNY",
+    refresh_cost_ceiling: server.catalog_refresh_cost?.request_cost_ceiling ?? "",
+    tool_cost_currency: server.tool_call_cost?.cost_currency ?? "CNY",
+    tool_cost_ceiling: server.tool_call_cost?.request_cost_ceiling ?? "",
   });
   editing.value = true;
 }
@@ -203,6 +222,24 @@ async function saveServer() {
     form.allowed_tools.split(/[\n,]/).map((item) => item.trim()).filter(Boolean),
   )];
 
+  const workflowCost = (currency: string, amount: string): WorkflowCost | null => {
+    const ceiling = amount.trim();
+    if (!ceiling) return null;
+    const unit = currency.trim().toUpperCase();
+    if (!/^[A-Z]{3}$/.test(unit) || !/^\d{1,10}(\.\d{1,12})?$/.test(ceiling) || Number(ceiling) > 1_000_000_000) {
+      throw new Error("费用上限须为非负金额，币种须为三位大写代码");
+    }
+    return { cost_currency: unit, request_cost_ceiling: ceiling };
+  };
+  let refreshCost: WorkflowCost | null;
+  let toolCost: WorkflowCost | null;
+  try {
+    refreshCost = workflowCost(form.refresh_cost_currency, form.refresh_cost_ceiling);
+    toolCost = workflowCost(form.tool_cost_currency, form.tool_cost_ceiling);
+  } catch (error) {
+    ElMessage.warning(error instanceof Error ? error.message : "费用格式无效");
+    return;
+  }
   saving.value = true;
   try {
     const current = await api.request<{ config: { mcp: McpConfigShape } }>(
@@ -222,6 +259,8 @@ async function saveServer() {
       call_timeout_seconds: Math.max(1, Math.min(300, Number(form.call_timeout_seconds) || 15)),
       catalog_ttl_seconds: Math.max(30, Math.min(86_400, Number(form.catalog_ttl_seconds) || 300)),
       max_result_bytes: Math.max(1_024, Math.min(1_000_000, Number(form.max_result_bytes) || 32_000)),
+      catalog_refresh_cost: refreshCost,
+      tool_call_cost: toolCost,
     };
     const existing = config.mcp.servers.find((item) => item.server_id === serverId);
     if (editingId.value && existing) {
@@ -458,6 +497,14 @@ onActivated(() => void load());
         <label>连接超时（秒）<el-input-number v-model="form.connect_timeout_seconds" :min="1" :max="60" size="small" /></label>
         <label>调用超时（秒）<el-input-number v-model="form.call_timeout_seconds" :min="1" :max="300" size="small" /></label>
         <label>目录缓存（秒）<el-input-number v-model="form.catalog_ttl_seconds" :min="30" :max="86400" size="small" /></label>
+        <label>目录刷新费用上限<small>一次完整刷新含连接、分页与关闭；留空表示未报价，0 表示明确免费。</small>
+          <el-input v-model="form.refresh_cost_ceiling" placeholder="例如 0.002" />
+        </label>
+        <label>刷新费用币种<el-input v-model="form.refresh_cost_currency" maxlength="3" placeholder="CNY" /></label>
+        <label>工具调用费用上限<small>一次完整调用含连接与关闭；金额受限时必须填写。</small>
+          <el-input v-model="form.tool_cost_ceiling" placeholder="例如 0.003" />
+        </label>
+        <label>调用费用币种<el-input v-model="form.tool_cost_currency" maxlength="3" placeholder="CNY" /></label>
         <label>结果上限（字节）<el-input-number v-model="form.max_result_bytes" :min="1024" :max="1000000" :step="1000" size="small" /></label>
       </div>
       <template #footer>

@@ -53,6 +53,7 @@ async def operate_with_run(
     cost_endpoint: str,
     budget_source: Callable[[], RunBudgetConfig] | None = None,
     cooperative: bool = False,
+    defer_watch: Callable[[], bool] | None = None,
     trace_parent_id: UUID | None = None,
     missing_quote_reason: Literal[
         "media_cost_estimate_unavailable",
@@ -428,8 +429,12 @@ async def operate_with_run(
         ):
             await check(run_id)
             async with asyncio.timeout(max(0, (deadline - datetime.now(UTC)).total_seconds())):
-                guard = guarded_inline_call if cooperative else guarded_call
-                result = await guard(lambda: invoke(mark_started), lambda: check(run_id))
+                if cooperative:
+                    result = await guarded_inline_call(
+                        lambda: invoke(mark_started), lambda: check(run_id), defer_watch=defer_watch
+                    )
+                else:
+                    result = await guarded_call(lambda: invoke(mark_started), lambda: check(run_id))
             async with database.sessions.begin() as session:
                 authority = await lock_authority(session, run_id)
                 row = authority[-1]

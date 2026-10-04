@@ -10,16 +10,18 @@ from collections.abc import AsyncIterator, Awaitable, Callable
 from copy import deepcopy
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
-from typing import Any, TypeVar
+from typing import Any, Literal, TypeVar
+from uuid import UUID
 
 from app.config import ConfigStore, DatabaseConfigStore
 from app.config.models import McpServerConfig
+from app.harness.budget import BudgetDenied
 from app.harness.guarded_call import guarded_inline_call
 from app.harness.joined_read import join_on_cancel
 
 from .client import SdkMcpClient, sdk_client_factory
 from .models import McpCallPayload, McpCallResult, McpRemoteTool, McpServerState, McpToolDescriptor
-from .ports import McpClientFactory, McpRemoteClient
+from .ports import McpClientFactory, McpOperationRunner, McpRemoteClient
 
 logger = logging.getLogger("app.integrations.mcp")
 
@@ -40,9 +42,11 @@ class McpManager:
         *,
         client_factory: McpClientFactory = sdk_client_factory,
         clock: Any = None,
+        operation_runner: McpOperationRunner | None = None,
     ) -> None:
         self._config_store = config_store
         self._client_factory = client_factory
+        self._operation_runner = operation_runner
         self._clock = clock or (lambda: datetime.now(UTC))
         self._states: dict[str, McpServerState] = {}
         self._locks: dict[str, asyncio.Lock] = {}
@@ -238,7 +242,34 @@ class McpManager:
             if state.configured_enabled:
                 await self.refresh_server(state.server_id)
 
-    async def refresh_server(self, server_id: str) -> McpServerState:
+    async def _owned_operation(
+        self,
+        config: McpServerConfig,
+        operation: Literal["refresh", "read", "write"],
+        invoke: Callable[[], Awaitable[T]],
+        source_guard: Callable[[], Awaitable[None]],
+        *,
+        user_id: UUID | None = None,
+    ) -> T:
+        if self._operation_runner is not None:
+            owner = asyncio.current_task()
+            return await self._operation_runner(
+                config,
+                operation,
+                invoke,
+                source_guard,
+                lambda: owner in self._closing,
+                user_id=user_id,
+            )
+        if self._client_factory is sdk_client_factory:
+            raise BudgetDenied("mcp_operation_owner_missing")
+        # Pure injected clients remain usable for catalogue/contract tests;
+        # an actual SDK transport independently requires a request scope.
+        return await invoke()
+
+    async def refresh_server(
+        self, server_id: str, *, source_guard: Callable[[], Awaitable[None]] | None = None
+    ) -> McpServerState:
         self._sync_configured_states()
         config = self._server_config(server_id)
         state = self._states[server_id]
@@ -278,8 +309,18 @@ class McpManager:
                         )
                     return candidate
 
-                tools, protocol, name, version = await self._connection_call(
-                    server_id, source, fetch, epoch=epoch
+                async def check() -> None:
+                    self._check_source(server_id, source, epoch)
+                    if source_guard is not None:
+                        await source_guard()
+
+                async def connected() -> tuple[
+                    tuple[McpToolDescriptor, ...], str | None, str | None, str | None
+                ]:
+                    return await self._connection_call(server_id, source, fetch, epoch=epoch)
+
+                tools, protocol, name, version = await self._owned_operation(
+                    config, "refresh", connected, check
                 )
                 self._check_source(server_id, source, epoch)
                 previous_source = self._catalog_sources.get(server_id)
@@ -330,6 +371,8 @@ class McpManager:
                 state.last_error = self._reason_for(error)
                 if had_tools:
                     self._notify_catalog_changed()
+                if self._budget_reason(error) is not None:
+                    raise McpManagerError(state.last_error) from None
                 logger.warning(
                     "MCP catalog refresh failed server_id=%s error_type=%s",
                     server_id,
@@ -381,22 +424,32 @@ class McpManager:
         )
 
     async def call(
-        self, internal_name: str, arguments: dict[str, Any], *, catalogue_ticket: str | None = None
+        self,
+        internal_name: str,
+        arguments: dict[str, Any],
+        *,
+        catalogue_ticket: str | None = None,
+        user_id: UUID | None = None,
     ) -> McpCallResult:
         """只读调用路径：写工具在此被硬拦截，只能走 call_write（行动计划）。"""
         descriptor = self._descriptor(internal_name)
         self._check_ticket(descriptor, catalogue_ticket)
         if not descriptor.read_only:
             raise McpManagerError("mcp_write_requires_action_plan")
-        return await self._invoke(descriptor, arguments)
+        return await self._invoke(descriptor, arguments, user_id=user_id)
 
     async def call_write(
-        self, internal_name: str, arguments: dict[str, Any], *, catalogue_ticket: str | None = None
+        self,
+        internal_name: str,
+        arguments: dict[str, Any],
+        *,
+        catalogue_ticket: str | None = None,
+        user_id: UUID | None = None,
     ) -> McpCallResult:
         """写调用路径：仅供确认后的行动计划执行（MCP-D），聊天层不得触达。"""
         descriptor = self._descriptor(internal_name)
         self._check_ticket(descriptor, catalogue_ticket)
-        return await self._invoke(descriptor, arguments)
+        return await self._invoke(descriptor, arguments, user_id=user_id)
 
     @staticmethod
     def _check_ticket(descriptor: McpToolDescriptor, ticket: str | None) -> None:
@@ -431,7 +484,11 @@ class McpManager:
         return descriptor
 
     async def _invoke(
-        self, descriptor: McpToolDescriptor, arguments: dict[str, Any]
+        self,
+        descriptor: McpToolDescriptor,
+        arguments: dict[str, Any],
+        *,
+        user_id: UUID | None = None,
     ) -> McpCallResult:
         config = self._server_config(descriptor.server_id)
         source = self._catalog_sources.get(descriptor.server_id)
@@ -450,12 +507,25 @@ class McpManager:
                     )
                 return result
 
-            payload = await self._connection_call(
-                descriptor.server_id,
-                source,
-                invoke,
-                epoch=epoch,
-                capability_guard=lambda: self._check_tool_source(descriptor),
+            async def check() -> None:
+                self._check_source(descriptor.server_id, source, epoch)
+                self._check_tool_source(descriptor)
+
+            async def connected() -> McpCallPayload:
+                return await self._connection_call(
+                    descriptor.server_id,
+                    source,
+                    invoke,
+                    epoch=epoch,
+                    capability_guard=lambda: self._check_tool_source(descriptor),
+                )
+
+            payload = await self._owned_operation(
+                config,
+                "read" if descriptor.read_only else "write",
+                connected,
+                check,
+                user_id=user_id,
             )
             self._check_source(descriptor.server_id, source, epoch)
             self._check_tool_source(descriptor)
@@ -495,7 +565,21 @@ class McpManager:
         return clipped_data, clipped_text
 
     @staticmethod
+    def _budget_reason(error: BaseException) -> str | None:
+        if isinstance(error, BudgetDenied):
+            return error.reason_code
+        if isinstance(error, BaseExceptionGroup):
+            for nested in error.exceptions:
+                reason = McpManager._budget_reason(nested)
+                if reason is not None:
+                    return reason
+        return None
+
+    @staticmethod
     def _reason_for(error: Exception) -> str:
+        budget_reason = McpManager._budget_reason(error)
+        if budget_reason is not None:
+            return budget_reason
         if isinstance(error, McpManagerError):
             return error.reason_code
         if isinstance(error, TimeoutError | asyncio.TimeoutError):

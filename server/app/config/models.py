@@ -234,6 +234,9 @@ class McpServerConfig(StrictModel):
     call_timeout_seconds: Annotated[float, Field(ge=1, le=300)] = 15.0
     catalog_ttl_seconds: Annotated[int, Field(ge=30, le=86_400)] = 300
     max_result_bytes: Annotated[int, Field(ge=1_024, le=1_000_000)] = 32_000
+    # Whole connection workflow, including negotiation, streams and shutdown.
+    catalog_refresh_cost: VoiceCostConfig | None = None
+    tool_call_cost: VoiceCostConfig | None = None
 
     @model_validator(mode="after")
     def validate_server(self) -> McpServerConfig:

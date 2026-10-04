@@ -263,7 +263,7 @@ async def test_native_failed_connect_joins_cleanup_on_owning_task(
     monkeypatch.setattr(httpx2, "AsyncClient", lambda **kwargs: object())
     monkeypatch.setattr(sdk, "streamable_http_client", lambda *args, **kwargs: object())
     monkeypatch.setattr(sdk, "Client", lambda *args, **kwargs: object())
-    manager = McpManager(store)
+    manager = McpManager(store, client_factory=lambda config: sdk.SdkMcpClient(config))
     pending = asyncio.create_task(manager.refresh_server("books"))
     try:
         await asyncio.wait_for(closing.wait(), 2)
