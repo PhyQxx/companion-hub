@@ -59,6 +59,7 @@ def register_admin_routers(
     app: FastAPI,
     *,
     config: DatabaseConfigStore,
+    database: Database | None,
     admin_token: str | None,
     home_assistant_manager: HomeAssistantManager | None,
     xiaoai_materializer: XiaoAiConfigMaterializer | None,
@@ -76,9 +77,7 @@ def register_admin_routers(
     memory_store: MemoryStore | None,
 ) -> str | None:
     """装配 Admin 前置路由；返回解析后的 runtime_admin_token 供后续段复用。"""
-    runtime_admin_token = (
-        admin_token if admin_token is not None else os.getenv("ARIA_ADMIN_TOKEN")
-    )
+    runtime_admin_token = admin_token if admin_token is not None else os.getenv("ARIA_ADMIN_TOKEN")
     set_runtime_admin_token(runtime_admin_token)
 
     async def reconfigure_integrations() -> None:
@@ -99,6 +98,7 @@ def register_admin_routers(
         create_admin_senseaudio_router(
             config,
             admin_token=runtime_admin_token,
+            database=database,
         )
     )
     app.include_router(

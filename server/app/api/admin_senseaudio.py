@@ -7,25 +7,34 @@
 from __future__ import annotations
 
 import base64
+import hashlib
+import json
 import logging
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from time import perf_counter
-from typing import Annotated, Any, Literal
+from typing import Annotated, Any, Literal, TypeVar
+from urllib.parse import urlsplit
 
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
 from pydantic import BaseModel, Field, ValidationError
 
-from app.api.admin_config import AdminTokenGuard
+from app.api.admin_config import AdminCredentials, AdminTokenGuard
 from app.config import DatabaseConfigStore
-from app.config.models import SenseAudioConfig
+from app.config.models import SenseAudioConfig, SenseAudioOperation, VoiceCostConfig
+from app.db import Database
+from app.harness.budget import BudgetDenied
+from app.harness.joined_read import join_on_cancel
+from app.harness.source_cleanup import close_after_source
 from app.integrations.senseaudio import (
     DEFAULT_TTS_MODEL,
     NO_VOICE_ACCESS_MESSAGE,
     SenseAudioClient,
     SenseAudioError,
+    SenseAudioSynthesis,
     VoiceType,
 )
 from app.llm.provider import EnvSecretProvider, SecretNotFound
+from app.runs.admin_operation import admin_sdk_request
 
 logger = logging.getLogger(__name__)
 
@@ -36,6 +45,8 @@ MAX_PREVIEW_BYTES = 2 * 1024 * 1024
 MAX_CLONE_FILE_BYTES = 50 * 1024 * 1024
 CLONE_FILE_EXTENSIONS = {".mp3", ".aac", ".wav"}
 
+T = TypeVar("T")
+
 SenseAudioClientFactory = Callable[[str, SenseAudioConfig], SenseAudioClient]
 
 
@@ -45,6 +56,7 @@ class SenseAudioStatusView(BaseModel):
     key_source: Literal["inline", "env", "none"]
     base_url: str
     tts_model: str
+    admin_operation_costs: dict[SenseAudioOperation, VoiceCostConfig] = Field(default_factory=dict)
     latency_probe_ok: bool | None = None
 
 
@@ -54,6 +66,7 @@ class SenseAudioConnectionRequest(BaseModel):
     secret_value: str | None = Field(default=None, max_length=1024)
     secret_ref: str | None = Field(default=None, max_length=200)
     tts_model: str = Field(default=DEFAULT_TTS_MODEL, min_length=1, max_length=100)
+    admin_operation_costs: dict[SenseAudioOperation, VoiceCostConfig] | None = None
 
 
 class SenseAudioVoiceView(BaseModel):
@@ -137,17 +150,24 @@ def _build_default_client(api_key: str, config: SenseAudioConfig) -> SenseAudioC
     )
 
 
+def _validate_preview(result: SenseAudioSynthesis) -> None:
+    if len(result.audio) > MAX_PREVIEW_BYTES:
+        raise HTTPException(413, detail="合成音频超过预览大小上限")
+
+
 def create_admin_senseaudio_router(
     store: DatabaseConfigStore,
     *,
     admin_token: str | None,
+    database: Database | None = None,
     client_factory: SenseAudioClientFactory = _build_default_client,
 ) -> APIRouter:
 
+    token_guard = AdminTokenGuard(admin_token)
     router = APIRouter(
         prefix="/api/v1/admin/senseaudio",
         tags=["admin-senseaudio"],
-        dependencies=[Depends(AdminTokenGuard(admin_token))],
+        dependencies=[Depends(token_guard)],
     )
 
     def _settings() -> SenseAudioConfig:
@@ -159,27 +179,94 @@ def create_admin_senseaudio_router(
         return SenseAudioStatusView(
             enabled=config.enabled,
             key_configured=key is not None,
-            key_source=(
-                "none" if key is None else ("env" if config.secret_ref else "inline")
-            ),
+            key_source=("none" if key is None else ("env" if config.secret_ref else "inline")),
             base_url=str(config.base_url),
             tts_model=config.tts_model,
+            admin_operation_costs=config.admin_operation_costs,
         )
 
-    def _client() -> SenseAudioClient:
-        config = _settings()
+    async def _request(
+        operation: SenseAudioOperation,
+        credentials: AdminCredentials,
+        call: Callable[[SenseAudioClient], Awaitable[T]],
+        *,
+        model: str | None = None,
+        validate: Callable[[T], None] | None = None,
+    ) -> T:
+        config = _settings().model_copy(deep=True)
         if not config.enabled:
-            raise HTTPException(
-                status.HTTP_409_CONFLICT,
-                detail="SenseAudio 未启用，请先在声音管理中开启并保存连接",
-            )
+            raise HTTPException(409, detail="SenseAudio 未启用，请先在声音管理中开启并保存连接")
         key = resolve_api_key(config)
         if not key:
-            raise HTTPException(
-                status.HTTP_409_CONFLICT,
-                detail="SenseAudio API Key 未配置",
+            raise HTTPException(409, detail="SenseAudio API Key 未配置")
+        if database is None:
+            raise HTTPException(409, detail="声音管理需要运行数据库及已完成初始化的聊天账户")
+        price = config.admin_operation_costs.get(operation)
+        if price and model and model != config.tts_model:
+            raise HTTPException(409, detail="请求费用上限仅适用于已保存的 TTS 模型")
+
+        # Full SDK identity stays in memory; public ledger identifiers exclude
+        # credentials, URL userinfo/path/query and all submitted user content.
+        def private_identity(settings: SenseAudioConfig) -> str:
+            return hashlib.sha256(
+                json.dumps(
+                    [settings.model_dump(mode="json"), resolve_api_key(settings)],
+                    sort_keys=True,
+                ).encode()
+            ).hexdigest()
+
+        identity = private_identity(config)
+        origin = urlsplit(str(config.base_url))
+        public_identity = hashlib.sha256(
+            json.dumps(
+                [
+                    origin.scheme,
+                    origin.hostname,
+                    origin.port,
+                    operation,
+                    config.tts_model,
+                    price.model_dump(mode="json") if price else None,
+                ],
+                sort_keys=True,
+            ).encode()
+        ).hexdigest()
+
+        async def check_source() -> None:
+            await token_guard(credentials)
+            if private_identity(_settings()) != identity:
+                raise BudgetDenied("admin_connection_changed")
+
+        async def invoke() -> T:
+            await check_source()
+            client = client_factory(key, config)
+
+            async def close() -> None:
+                await join_on_cancel(client.aclose(), name="admin-sdk-close")
+
+            async with close_after_source(close):
+                result = await call(client)
+                if validate:
+                    validate(result)
+                return result
+
+        try:
+            return await admin_sdk_request(
+                database,
+                store,
+                operation=operation,
+                price=price,
+                endpoint=f"admin.senseaudio.{operation}:{public_identity}",
+                invoke=invoke,
+                source_guard=check_source,
             )
-        return client_factory(key, config)
+        except BudgetDenied as error:
+            explanation = {
+                "admin_account_setup_required": "请先完成聊天账户初始化，以归属任务和费用",
+                "voice_cost_estimate_unavailable": "金额预算需要完整请求费用上限，请先保存报价",
+                "admin_connection_changed": "执行期间连接或报价已变更，请核对后重新发起",
+                "cost_pricing_unavailable": "请求报价与金额预算的币种不一致，请核对配置",
+            }.get(error.reason_code, "声音管理调用已停止")
+            raise HTTPException(409, detail=f"{explanation}（{error.reason_code}）") from error
 
     @router.get("/status", response_model=SenseAudioStatusView)
     async def status_view() -> SenseAudioStatusView:
@@ -198,6 +285,9 @@ def create_admin_senseaudio_router(
                 secret_value=secret_value or None,
                 tts_model=body.tts_model,
                 enabled=body.enabled,
+                admin_operation_costs=body.admin_operation_costs
+                if body.admin_operation_costs is not None
+                else current.admin_operation_costs,
             )
         except ValidationError as error:
             raise HTTPException(
@@ -219,14 +309,15 @@ def create_admin_senseaudio_router(
         return _status_view()
 
     @router.get("/voices", response_model=SenseAudioVoiceCatalog)
-    async def voices(voice_type: VoiceType = "all") -> SenseAudioVoiceCatalog:
-        client = _client()
+    async def voices(
+        credentials: AdminCredentials, voice_type: VoiceType = "all"
+    ) -> SenseAudioVoiceCatalog:
         try:
-            items = await client.list_voices(voice_type)
+            items = await _request(
+                "voices", credentials, lambda client: client.list_voices(voice_type)
+            )
         except SenseAudioError as error:
             raise HTTPException(status.HTTP_502_BAD_GATEWAY, detail=str(error)) from error
-        finally:
-            await client.aclose()
         return SenseAudioVoiceCatalog(
             voices=[
                 SenseAudioVoiceView(
@@ -242,19 +333,26 @@ def create_admin_senseaudio_router(
         )
 
     @router.post("/preview", response_model=SenseAudioPreviewResult)
-    async def preview(body: SenseAudioPreviewRequest) -> SenseAudioPreviewResult:
-        client = _client()
+    async def preview(
+        body: SenseAudioPreviewRequest, credentials: AdminCredentials
+    ) -> SenseAudioPreviewResult:
         started = perf_counter()
         try:
-            result = await client.synthesize(
-                body.text,
-                body.voice_id,
+            result = await _request(
+                "preview",
+                credentials,
+                lambda client: client.synthesize(
+                    body.text,
+                    body.voice_id,
+                    model=body.model,
+                    speed=body.speed,
+                    vol=body.vol,
+                    pitch=body.pitch,
+                    audio_format=body.audio_format,
+                    sample_rate=body.sample_rate,
+                ),
                 model=body.model,
-                speed=body.speed,
-                vol=body.vol,
-                pitch=body.pitch,
-                audio_format=body.audio_format,
-                sample_rate=body.sample_rate,
+                validate=_validate_preview,
             )
         except SenseAudioError as error:
             if NO_VOICE_ACCESS_MESSAGE in str(error):
@@ -267,13 +365,6 @@ def create_admin_senseaudio_router(
                     ),
                 ) from error
             raise HTTPException(status.HTTP_502_BAD_GATEWAY, detail=str(error)) from error
-        finally:
-            await client.aclose()
-        if len(result.audio) > MAX_PREVIEW_BYTES:
-            raise HTTPException(
-                413,
-                detail="合成音频超过预览大小上限",
-            )
         logger.info(
             "senseaudio preview voice=%s chars=%s bytes=%d latency_ms=%.0f",
             body.voice_id,
@@ -292,19 +383,21 @@ def create_admin_senseaudio_router(
 
     @router.get("/asr/records", response_model=SenseAudioAsrRecords)
     async def asr_records(
+        credentials: AdminCredentials,
         page: int = 1,
         page_size: int = 20,
         session_id: str | None = None,
     ) -> SenseAudioAsrRecords:
-        client = _client()
         try:
-            payload = await client.asr_records(
-                page=page, page_size=page_size, session_id=session_id
+            payload = await _request(
+                "asr_records",
+                credentials,
+                lambda client: client.asr_records(
+                    page=page, page_size=page_size, session_id=session_id
+                ),
             )
         except SenseAudioError as error:
             raise HTTPException(status.HTTP_502_BAD_GATEWAY, detail=str(error)) from error
-        finally:
-            await client.aclose()
         return SenseAudioAsrRecords(
             total=payload["total"],
             page=max(page, 1),
@@ -315,6 +408,7 @@ def create_admin_senseaudio_router(
     @router.post("/clone/upload", response_model=SenseAudioCloneFileView)
     async def clone_upload(
         file: Annotated[UploadFile, File()],
+        credentials: AdminCredentials,
     ) -> SenseAudioCloneFileView:
         """上传克隆参考音频（3-30 秒清晰人声；MP3/AAC/WAV；50MB 以内）。"""
         filename = file.filename or "reference.wav"
@@ -335,13 +429,14 @@ def create_admin_senseaudio_router(
                 status.HTTP_422_UNPROCESSABLE_ENTITY,
                 detail="参考音频为空文件",
             )
-        client = _client()
         try:
-            result = await client.upload_clone_file(data, filename=filename)
+            result = await _request(
+                "clone_upload",
+                credentials,
+                lambda client: client.upload_clone_file(data, filename=filename),
+            )
         except SenseAudioError as error:
             raise HTTPException(status.HTTP_502_BAD_GATEWAY, detail=str(error)) from error
-        finally:
-            await client.aclose()
         logger.info(
             "senseaudio clone upload filename=%s bytes=%d file_id=%s",
             result.filename,
@@ -356,25 +451,29 @@ def create_admin_senseaudio_router(
         )
 
     @router.post("/clone", response_model=SenseAudioCloneResultView)
-    async def clone_voice(body: SenseAudioCloneRequest) -> SenseAudioCloneResultView:
+    async def clone_voice(
+        body: SenseAudioCloneRequest, credentials: AdminCredentials
+    ) -> SenseAudioCloneResultView:
         """发起音色克隆；label 即生成后的 voice_id。
 
-        注意：克隆/文生音色共享套餐生成额度（Free 每期 2 次），超出按次计费。
+        请求费用上限按一次完整克隆请求配置；实际账单仍由上游确认。
         """
-        client = _client()
         started = perf_counter()
         try:
-            result = await client.clone_voice(
-                file_id=body.file_id,
-                label=body.label,
-                description=body.description,
-                text=body.text,
+            result = await _request(
+                "clone",
+                credentials,
+                lambda client: client.clone_voice(
+                    file_id=body.file_id,
+                    label=body.label,
+                    description=body.description,
+                    text=body.text,
+                    model=body.model,
+                ),
                 model=body.model,
             )
         except SenseAudioError as error:
             raise HTTPException(status.HTTP_502_BAD_GATEWAY, detail=str(error)) from error
-        finally:
-            await client.aclose()
         logger.info(
             "senseaudio clone label=%s latency_ms=%.0f demo=%s",
             result.label,

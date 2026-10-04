@@ -14,6 +14,7 @@ from typing import ClassVar
 import pytest
 from httpx import ASGITransport, AsyncClient
 
+from app.auth import AuthService
 from app.config import DatabaseConfigStore
 from app.db import Base, Database, create_database
 from app.integrations.senseaudio import (
@@ -147,9 +148,7 @@ class FakeSenseAudioClient:
             ],
         }
 
-    async def upload_clone_file(
-        self, data: bytes, *, filename: str
-    ) -> SenseAudioCloneFile:
+    async def upload_clone_file(self, data: bytes, *, filename: str) -> SenseAudioCloneFile:
         if FakeSenseAudioClient.fail_with:
             raise SenseAudioError(FakeSenseAudioClient.fail_with)
         return SenseAudioCloneFile(
@@ -183,16 +182,15 @@ class FakeSenseAudioClient:
 def fake_client(monkeypatch: pytest.MonkeyPatch) -> type[FakeSenseAudioClient]:
     FakeSenseAudioClient.instances = []
     FakeSenseAudioClient.fail_with = None
-    monkeypatch.setattr(
-        "app.api.admin_senseaudio.SenseAudioClient", FakeSenseAudioClient
-    )
+    monkeypatch.setattr("app.api.admin_senseaudio.SenseAudioClient", FakeSenseAudioClient)
     return FakeSenseAudioClient
 
 
 @pytest.fixture
-async def client(
-    database: Database, bootstrap: Path
-) -> AsyncIterator[AsyncClient]:
+async def client(database: Database, bootstrap: Path) -> AsyncIterator[AsyncClient]:
+    await AuthService(database).setup(
+        display_name="Admin test owner", password="synthetic admin test password"
+    )
     store = DatabaseConfigStore(database, bootstrap)
     app = create_app(
         database,
@@ -201,9 +199,12 @@ async def client(
         admin_token="test-admin-token",
     )
     headers = {"Authorization": "Bearer test-admin-token"}
-    async with app.router.lifespan_context(app), AsyncClient(
-        transport=ASGITransport(app=app), base_url="http://test", headers=headers
-    ) as http:
+    async with (
+        app.router.lifespan_context(app),
+        AsyncClient(
+            transport=ASGITransport(app=app), base_url="http://test", headers=headers
+        ) as http,
+    ):
         yield http
 
 
@@ -292,9 +293,7 @@ async def test_voices_preview_and_records(client: AsyncClient) -> None:
     assert preview["usage_characters"] == 2
     assert preview["audio_format"] == "mp3"
 
-    records = (
-        await client.get("/api/v1/admin/senseaudio/asr/records?page=1&page_size=10")
-    ).json()
+    records = (await client.get("/api/v1/admin/senseaudio/asr/records?page=1&page_size=10")).json()
     assert records["total"] == 1
     assert records["records"][0]["session_id"] == "sess-1"
     assert records["records"][0]["text"] == "今天天气怎么样"

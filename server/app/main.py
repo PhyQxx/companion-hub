@@ -189,6 +189,7 @@ def create_app(
         runtime_admin_token = register_admin_routers(
             app,
             config=runtime_config,
+            database=runtime_database,
             admin_token=admin_token,
             home_assistant_manager=home_assistant_manager,
             xiaoai_materializer=xiaoai_materializer,

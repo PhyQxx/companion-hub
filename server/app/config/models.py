@@ -99,6 +99,9 @@ class VoiceTtsProviderConfig(VoiceCostConfig):
         return self
 
 
+SenseAudioOperation = Literal["voices", "preview", "asr_records", "clone_upload", "clone"]
+
+
 class SenseAudioConfig(StrictModel):
     """SenseAudio 开放平台连接：音色目录、试听合成与识别历史（admin 声音管理）。
 
@@ -110,6 +113,7 @@ class SenseAudioConfig(StrictModel):
     secret_value: Annotated[str, Field(max_length=1024)] | None = None
     tts_model: Annotated[str, Field(min_length=1, max_length=100)] = "sensenova-tts-2.0"
     enabled: bool = False
+    admin_operation_costs: dict[SenseAudioOperation, VoiceCostConfig] = Field(default_factory=dict)
 
 
 class VoiceConfig(StrictModel):

@@ -39,6 +39,7 @@ async def operate_with_run(
     invoke: Callable[[Callable[[], Awaitable[None]]], Awaitable[T]],
     evidence: Callable[[T], dict[str, str]],
     source_guard: Callable[[], Awaitable[None]],
+    source_commit_guard: Callable[[], Awaitable[None]] | None = None,
     cost_endpoint: str,
     budget_source: Callable[[], RunBudgetConfig] | None = None,
     cooperative: bool = False,
@@ -47,6 +48,12 @@ async def operate_with_run(
         "media_cost_estimate_unavailable", "voice_cost_estimate_unavailable"
     ] = "media_cost_estimate_unavailable",
 ) -> T:
+    """Own the call, accounting and terminal writes.
+
+    An optional source_commit_guard rechecks revocable in-memory authority after
+    SQL lock/fee waits. It must not acquire SQL or other external resources while
+    the owner/run locks are held; ordinary source_guard runs outside those locks.
+    """
     if privacy_level == PrivacyLevel.L3:
         raise BudgetDenied("ephemeral_operation_run_forbidden")
     parent = current_budget()
@@ -259,6 +266,8 @@ async def operate_with_run(
         validate_rows(authority)
         await check_fees(session, authority, accepting=False)
         validate_rows(authority)
+        if source_commit_guard is not None:
+            await source_commit_guard()
     budget = parent or (
         RunModelBudget(database, run_id=run_id, user_id=user_id, config=config)
         if config.enabled and trace_parent_id is None
@@ -340,6 +349,8 @@ async def operate_with_run(
             validate_rows(authority)
             await check_fees(session, authority, accepting=False)
             validate_rows(authority)
+            if source_commit_guard is not None:
+                await source_commit_guard()
         started = True
         if quote is not None:
             try:
@@ -399,6 +410,8 @@ async def operate_with_run(
                 validate_rows(authority[:-1])
                 if row.deadline and utc(row.deadline) <= datetime.now(UTC):
                     raise BudgetDenied("run_deadline_exceeded")
+                if source_commit_guard is not None:
+                    await source_commit_guard()
             return result
     except BaseException as error:
         async with database.sessions.begin() as session:

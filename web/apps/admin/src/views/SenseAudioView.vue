@@ -11,12 +11,24 @@ const props = withDefaults(defineProps<{ mode?: string }>(), { mode: "sound" });
 
 const SECRET_MASK = "__ARIA_SECRET_CONFIGURED__DO_NOT_EDIT__";
 
+type Operation = "voices" | "preview" | "asr_records" | "clone_upload" | "clone";
+interface RequestCost { cost_currency: string | null; request_cost_ceiling: string | number | null; }
+const operations: { key: Operation; label: string }[] = [
+  { key: "voices", label: "音色目录 / 测试连接" },
+  { key: "preview", label: "试听合成" },
+  { key: "asr_records", label: "识别历史" },
+  { key: "clone_upload", label: "参考音频上传" },
+  { key: "clone", label: "音色克隆" },
+];
+const requestCosts = ref<Record<Operation, { currency: string; ceiling: string }>>(Object.fromEntries(operations.map(({ key }) => [key, { currency: "", ceiling: "" }])) as Record<Operation, { currency: string; ceiling: string }>);
+
 interface StatusResponse {
   enabled: boolean;
   key_configured: boolean;
   key_source: "inline" | "env" | "none";
   base_url: string;
   tts_model: string;
+  admin_operation_costs: Partial<Record<Operation, RequestCost>>;
 }
 
 interface VoiceItem {
@@ -109,6 +121,10 @@ async function loadStatus() {
     form.value.enabled = status.value.enabled;
     form.value.base_url = status.value.base_url;
     form.value.tts_model = status.value.tts_model;
+    for (const { key } of operations) {
+      const price = status.value.admin_operation_costs[key];
+      requestCosts.value[key] = { currency: price?.cost_currency ?? "", ceiling: price?.request_cost_ceiling == null ? "" : String(price.request_cost_ceiling) };
+    }
   } catch (error) {
     emit("status", error instanceof Error ? error.message : "SenseAudio 状态加载失败", true);
   }
@@ -118,6 +134,13 @@ async function saveConnection() {
   saving.value = true;
   try {
     const secret = form.value.secret_value.trim();
+    const costs: Partial<Record<Operation, RequestCost>> = {};
+    for (const { key } of operations) {
+      const { currency, ceiling } = requestCosts.value[key];
+      if (currency.trim() || ceiling.trim()) {
+        costs[key] = { cost_currency: currency.trim().toUpperCase() || null, request_cost_ceiling: ceiling.trim() || null };
+      }
+    }
     status.value = await api.request<StatusResponse>("/api/v1/admin/senseaudio/connection", {
       method: "PUT",
       body: JSON.stringify({
@@ -126,6 +149,7 @@ async function saveConnection() {
         secret_value: secret || (status.value?.key_source === "inline" ? SECRET_MASK : null),
         secret_ref: form.value.secret_ref.trim() || null,
         tts_model: form.value.tts_model,
+        admin_operation_costs: costs,
       }),
     });
     form.value.secret_value = "";
@@ -346,6 +370,12 @@ onBeforeUnmount(() => {
             <el-option label="senseaudio-tts-1.5-260319" value="senseaudio-tts-1.5-260319" />
           </el-select>
         </label>
+      </div>
+      <h3>每次请求的费用上限</h3>
+      <p>开启每日或每月金额预算后，每项调用都需要明确报价。上限须覆盖一次完整请求（包括所选音色、文本或文件），免费请求请明确填写 0。试听及克隆报价适用于已保存的 TTS 模型；实际账单未确认前保留预留费用。</p>
+      <div v-for="operation in operations" :key="operation.key" class="form-grid">
+        <label><span>{{ operation.label }} · 币种</span><el-input v-model="requestCosts[operation.key].currency" placeholder="CNY / USD" maxlength="3" /></label>
+        <label><span>整次请求最高费用</span><el-input v-model="requestCosts[operation.key].ceiling" placeholder="例如 0.02；空白表示未报价" inputmode="decimal" /></label>
       </div>
       <p class="key-state">
         当前状态：{{ status?.enabled ? "已启用" : "未启用" }} ·
