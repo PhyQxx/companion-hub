@@ -30,6 +30,7 @@ from app.harness.time import utc as utc
 from app.ids import uuid7
 from app.llm.contracts import ModelPricing, ModelUsage
 
+from .budget_origins import BudgetOrigin, require_budget_origins
 from .costs import assert_cost_window, recover_cost_reservations, reserve_cost, settle_cost
 
 
@@ -48,7 +49,9 @@ class RunModelBudget:
         phase: Literal["interactive", "maintenance"] = "interactive",
         allow_active_parent: bool = False,
         delivery_deadline: datetime | None = None,
+        origins: tuple[BudgetOrigin, ...] = (),
     ) -> None:
+        self._origins = origins
         self._database = database
         self._run_id = run_id
         self._user_id = user_id
@@ -60,11 +63,16 @@ class RunModelBudget:
         )
 
     @property
+    def origins(self) -> tuple[BudgetOrigin, ...]:
+        return self._origins
+
+    @property
     def tool_budget(self) -> RunToolBudget:
         from .resources import RunToolBudget
 
         return RunToolBudget(
             self._database,
+            origins=self._origins,
             run_id=self._run_id,
             user_id=self._user_id,
             config=self._config,
@@ -126,6 +134,9 @@ class RunModelBudget:
                 if owned_run is None:
                     raise BudgetDenied("budget_run_not_found")
                 raise BudgetDenied("budget_owner_invalid")
+            await require_budget_origins(
+                session, self._origins, run_id=self._run_id, user_id=self._user_id, lock=True
+            )
             statuses = {"accepted", "running"} if self._phase == "interactive" else {"succeeded"}
             if self._phase == "maintenance" and self._allow_active_parent:
                 statuses = {"accepted", "running", "succeeded"}
@@ -244,6 +255,9 @@ class RunModelBudget:
                 )
             )
             await session.flush()
+            await require_budget_origins(
+                session, self._origins, run_id=self._run_id, user_id=self._user_id
+            )
             checked_at = datetime.now(UTC)
             if utc(deadline) <= checked_at:
                 raise BudgetDenied("run_deadline_exceeded")

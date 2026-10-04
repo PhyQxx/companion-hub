@@ -7,6 +7,7 @@ from typing import Literal
 from uuid import UUID
 
 from sqlalchemy import or_, select, update
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import ConfigStore, DatabaseConfigStore
 from app.config.models import RunBudgetConfig
@@ -30,6 +31,7 @@ from app.voice.contracts import SpeechSynthesizer
 from app.voice.delivery_ports import SpeechDeliveryContext, VoicePricingSource
 
 from .budget import RunModelBudget
+from .budget_origins import require_budget_origins
 from .costs import assert_cost_window, check_cost_allowance
 from .parent_budget import ParentBudgetScope, current_parent_budget
 from .store import append_run_event, transition_run
@@ -195,6 +197,17 @@ class _Delivery:
             if not completed_parent and row.deadline is not None and utc(row.deadline) <= now:
                 raise BudgetDenied("run_deadline_exceeded")
 
+    async def check_origins(self, session: AsyncSession, *, lock: bool = False) -> None:
+        if self.parent is not None:
+            await require_budget_origins(
+                session,
+                self.parent.origins,
+                run_id=self.parent.run_id,
+                user_id=self.source.user_id,
+                privacy_level=self.source.privacy_level,
+                lock=lock,
+            )
+
     async def create(self) -> None:
         async with self.port.database.sessions.begin() as session:
             await assert_current_claim(session)
@@ -206,6 +219,7 @@ class _Delivery:
             )
             if owner is None:
                 raise BudgetDenied("budget_owner_invalid")
+            await self.check_origins(session, lock=True)
             parents = []
             if self.parent is not None:
                 row = await session.scalar(
@@ -289,6 +303,7 @@ class _Delivery:
             await append_run_event(session, root, "run.accepted")
             await transition_run(session, self.run_id, "running")
             await session.flush()
+            await self.check_origins(session)
             self.check_rows(parents)
 
     async def validate(self) -> None:
@@ -342,6 +357,7 @@ class _Delivery:
                             snapshot=snapshot,
                             now=datetime.now(UTC),
                         )
+                await self.check_origins(session)
                 self.check_rows(rows)
 
         await joined_read(read())
@@ -390,9 +406,13 @@ class _Delivery:
             if row is None or row.status not in {"accepted", "running"}:
                 return
             if status == "succeeded":
+                await self.check_origins(session)
                 self.check_rows([row])
             row.contract = {**row.contract, "delivery_result": reason}
             await transition_run(session, self.run_id, status)
+            if status == "succeeded":
+                await session.flush()
+                await self.check_origins(session)
 
     async def synthesize(
         self, provider: SpeechSynthesizer, text: str, privacy_level: PrivacyLevel

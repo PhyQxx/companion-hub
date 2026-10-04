@@ -6,11 +6,19 @@ from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Literal
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, ValidationError
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    SerializerFunctionWrapHandler,
+    ValidationError,
+    model_serializer,
+)
 
 from app.config.models import RunBudgetConfig
 from app.harness.budget import BudgetDenied, current_budget, current_tool_budget
 from app.harness.time import utc
+
+from .budget_origins import BudgetOrigin
 
 if TYPE_CHECKING:
     from app.db import Database
@@ -27,14 +35,23 @@ class ParentBudgetScope(BaseModel):
     phase: Literal["interactive", "maintenance"]
     allow_active_parent: bool
     delivery_deadline: datetime
+    origins: tuple[BudgetOrigin, ...] = ()
     quota_conversation_id: UUID | None = None
     source_actor: Literal["browser", "satellite", "avatar.chat", "voice.satellite"] | None = None
     source_id: UUID | None = None
     conversation_id: UUID | None = None
 
+    @model_serializer(mode="wrap")
+    def serialize(self, handler: SerializerFunctionWrapHandler) -> dict[str, object]:
+        values: dict[str, object] = handler(self)
+        if not self.origins:
+            values.pop("origins", None)
+        return values
+
     @classmethod
     def capture(cls, budget: RunModelBudget) -> ParentBudgetScope:
         return cls(
+            origins=budget.origins,
             run_id=budget.run_id,
             user_id=budget.owner_id,
             # The port's enabled flag is not its authority: reserve() fences
@@ -97,6 +114,7 @@ class ParentBudgetScope(BaseModel):
         phase = "maintenance" if maintenance else self.phase
         return RunModelBudget(
             database,
+            origins=self.origins,
             run_id=self.run_id,
             user_id=self.user_id,
             config=RunBudgetConfig.model_validate(values),
@@ -128,6 +146,7 @@ def current_parent_budget(database: Database, user_id: UUID) -> RunModelBudget |
         assert isinstance(tool, RunToolBudget)
         model = RunModelBudget(
             database,
+            origins=tool.origins,
             run_id=tool.run_id,
             user_id=user_id,
             config=tool.budget_config.model_copy(deep=True),
@@ -143,6 +162,7 @@ def current_parent_budget(database: Database, user_id: UUID) -> RunModelBudget |
             raise BudgetDenied("budget_parent_scope_invalid")
         scope = scope.model_copy(
             update={
+                "origins": tuple(dict.fromkeys((*model.origins, *tool.origins))),
                 "delivery_deadline": min(utc(model.delivery_deadline), utc(tool.delivery_deadline)),
                 "allow_active_parent": model.allow_active_parent and tool.allow_active_model_parent,
             }

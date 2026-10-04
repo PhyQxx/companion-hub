@@ -12,8 +12,10 @@ from app.db import AppUserRecord, Database, TaskRunEventRecord, TaskRunRecord
 from app.db.claims import assert_current_claim
 from app.harness.budget import BudgetDenied, ToolPermit
 from app.ids import uuid7
+from app.schemas import PrivacyLevel
 
-from .budget import utc
+from .budget import RunModelBudget, utc
+from .budget_origins import BudgetOrigin, require_budget_origins
 from .store import append_run_event
 
 
@@ -33,7 +35,9 @@ class RunToolBudget:
         maintenance: bool = False,
         deadline: datetime | None = None,
         allow_active_model_parent: bool | None = None,
+        origins: tuple[BudgetOrigin, ...] = (),
     ) -> None:
+        self._origins = origins
         self._database, self._run_id, self._user_id = database, run_id, user_id
         self._config, self._maintenance = config, maintenance
         # Tool maintenance may execute on an active root, while a model-origin
@@ -44,6 +48,10 @@ class RunToolBudget:
         self._deadline = deadline or datetime.now(UTC) + timedelta(
             seconds=config.maintenance_deadline_seconds
         )
+
+    @property
+    def origins(self) -> tuple[BudgetOrigin, ...]:
+        return self._origins
 
     @property
     def run_id(self) -> UUID:
@@ -104,6 +112,9 @@ class RunToolBudget:
                 if owned_run is None:
                     raise BudgetDenied("budget_run_not_found")
                 raise BudgetDenied("budget_owner_invalid")
+            await require_budget_origins(
+                session, self._origins, run_id=self._run_id, user_id=self._user_id, lock=True
+            )
             row = await self._lock_run(session)
             if row is None:
                 raise BudgetDenied("budget_run_not_found")
@@ -154,6 +165,9 @@ class RunToolBudget:
             # Event allocation and its final ORM flush can wait on storage.
             # Reject expired acceptance here so counters/events roll back.
             await session.flush()
+            await require_budget_origins(
+                session, self._origins, run_id=self._run_id, user_id=self._user_id
+            )
             if utc(deadline) <= datetime.now(UTC):
                 raise BudgetDenied("run_deadline_exceeded")
         remaining = (utc(deadline) - datetime.now(UTC)).total_seconds()
@@ -204,20 +218,79 @@ async def plan_tool_budget(
     deadline: datetime,
     current_config: RunBudgetConfig | None = None,
 ) -> RunToolBudget | None:
+    from .chat_parent import require_chat_parent
+    from .parent_budget import ParentBudgetScope
+
+    deadline = utc(deadline)
     async with database.sessions() as session:
         row = await session.get(TaskRunRecord, run_id)
         if row is None or row.user_id != user_id:
             raise BudgetDenied("budget_run_not_found")
-        if not row.budget or not row.budget.get("enabled"):
-            return None
-        config = RunBudgetConfig.model_validate(row.budget)
+        if row.status not in {"accepted", "running", "succeeded"} or row.contract.get(
+            "work_cancel_requested"
+        ):
+            raise BudgetDenied("budget_run_inactive")
+        if row.contract.get("budget_usage_overflow"):
+            raise BudgetDenied("budget_usage_overflow")
+        origins: tuple[BudgetOrigin, ...] = ()
+        raw_scope = row.contract.get("quota_scope")
+        if (
+            row.parent_run_id is not None
+            or "budget_parent_id" in row.contract
+            or "quota_scope" in row.contract
+        ):
+            if (
+                row.parent_run_id is None
+                or row.contract.get("budget_parent_id") != str(row.parent_run_id)
+                or row.conversation_id is None
+            ):
+                raise BudgetDenied("chat_parent_changed")
+            root = await require_chat_parent(
+                session,
+                row.parent_run_id,
+                user_id=user_id,
+                conversation_id=row.conversation_id,
+                privacy_level=PrivacyLevel(row.privacy_level),
+                child_id=row.id,
+                quota_scope=raw_scope,
+                allow_succeeded=True,
+            )
+            origins = (BudgetOrigin.capture(row),)
+        else:
+            root = row
+        if raw_scope is not None:
+            scope = ParentBudgetScope.read(raw_scope)
+            config = current_config or scope.config
+            budget = scope.restore(database, config, maintenance=True)
+            origins = tuple(dict.fromkeys((*scope.origins, *origins)))
+        else:
+            if not root.budget or not root.budget.get("enabled"):
+                return None
+            frozen = RunBudgetConfig.model_validate(root.budget)
+            config = current_config or frozen
+            original = RunModelBudget(
+                database,
+                run_id=root.id,
+                user_id=user_id,
+                config=frozen,
+                phase="maintenance",
+                allow_active_parent=True,
+                delivery_deadline=min(
+                    deadline,
+                    datetime.now(UTC) + timedelta(seconds=frozen.maintenance_deadline_seconds),
+                ),
+            )
+            budget = ParentBudgetScope.capture(original).restore(database, config)
+        await require_budget_origins(session, origins, run_id=budget.run_id, user_id=user_id)
     return RunToolBudget(
         database,
-        run_id=run_id,
+        run_id=budget.run_id,
         user_id=user_id,
-        config=current_config or config,
+        config=budget.budget_config,
         maintenance=True,
-        deadline=utc(deadline),
+        allow_active_model_parent=budget.allow_active_parent,
+        origins=origins,
+        deadline=min(deadline, utc(budget.delivery_deadline)),
     )
 
 

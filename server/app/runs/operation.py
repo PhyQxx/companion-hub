@@ -22,6 +22,7 @@ from app.ids import uuid7
 from app.schemas import PrivacyLevel
 
 from .budget import RunModelBudget
+from .budget_origins import require_budget_origins
 from .costs import assert_cost_window, check_cost_allowance
 from .parent_budget import current_parent_budget
 from .store import append_run_event, transition_run
@@ -160,6 +161,17 @@ async def operate_with_run(
             ),
         )
 
+    async def check_origins(session: AsyncSession, *, lock: bool = False) -> None:
+        if parent is not None:
+            await require_budget_origins(
+                session,
+                parent.origins,
+                run_id=parent.run_id,
+                user_id=user_id,
+                privacy_level=privacy_level,
+                lock=lock,
+            )
+
     async def lock_authority(
         session: AsyncSession, identifier: UUID | None = None
     ) -> list[TaskRunRecord]:
@@ -174,6 +186,7 @@ async def operate_with_run(
         )
         if owner is None:
             raise BudgetDenied("budget_owner_invalid")
+        await check_origins(session, lock=True)
         rows = []
         for target in (*parent_ids, identifier):
             if target is None:
@@ -185,6 +198,7 @@ async def operate_with_run(
         # A later lock wait can expire the previously locked parent's deadline.
         validate_rows(rows)
         await check_fees(session, rows, accepting=identifier is None)
+        await check_origins(session)
         validate_rows(rows)
         return rows
 
@@ -204,6 +218,7 @@ async def operate_with_run(
                 rows.append(row)
             validate_rows(rows)
             await check_fees(session, rows, accepting=False)
+            await check_origins(session)
             validate_rows(rows)
         await source_guard()
 
@@ -241,6 +256,15 @@ async def operate_with_run(
                     "criterion": "provider_response_returned",
                     "required_work": [],
                     "operation_state": "not_started",
+                    **(
+                        {
+                            "quota_origins": [
+                                origin.model_dump(mode="json") for origin in parent.origins
+                            ]
+                        }
+                        if parent is not None and parent.origins
+                        else {}
+                    ),
                 },
             )
         )
@@ -252,6 +276,7 @@ async def operate_with_run(
         await session.flush()
         validate_rows(authority)
         await check_fees(session, authority, accepting=False)
+        await check_origins(session)
         validate_rows(authority)
         if source_commit_guard is not None:
             await source_commit_guard()
@@ -335,6 +360,7 @@ async def operate_with_run(
             await session.flush()
             validate_rows(authority)
             await check_fees(session, authority, accepting=False)
+            await check_origins(session)
             validate_rows(authority)
             if source_commit_guard is not None:
                 await source_commit_guard()
@@ -394,6 +420,7 @@ async def operate_with_run(
                 # validation; its time limit and parent authority still apply.
                 validate_rows(authority[:-1])
                 await check_fees(session, authority, accepting=False)
+                await check_origins(session)
                 validate_rows(authority[:-1])
                 if row.deadline and utc(row.deadline) <= datetime.now(UTC):
                     raise BudgetDenied("run_deadline_exceeded")
