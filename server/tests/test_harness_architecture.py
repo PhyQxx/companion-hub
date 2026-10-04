@@ -514,3 +514,31 @@ def test_domain_mapping_definitions_only_depend_on_shared_base() -> None:
             node.name for node in ast.parse(source).body if isinstance(node, ast.ClassDef)
         }
         assert definitions == {name for name, owner in records.items() if owner == module}
+
+
+@pytest.mark.parametrize(
+    ("source", "dependency"),
+    [
+        ("app.home_assistant.models", "app.api.admin_config"),
+        ("app.home_assistant.inventory_ports", "httpx"),
+        ("app.integrations.mcp.models", "mcp.types"),
+        ("app.integrations.mcp.ports", "app.integrations.mcp.client"),
+        ("app.integrations.mcp.ports", "httpx2"),
+        ("app.llm.contracts", "app.db"),
+        ("app.llm.probe", "litellm"),
+        ("app.tools.amap_probe_ports", "app.tools.amap"),
+    ],
+)
+def test_connection_contracts_reject_type_checking_adapter_imports(
+    source: str,
+    dependency: str,
+    tmp_path: Path,
+) -> None:
+    # A type-only import must still be caught by the real file scanner.
+    root = tmp_path / "app"
+    path = root.joinpath(*source.split(".")[1:]).with_suffix(".py")
+    path.parent.mkdir(parents=True)
+    path.write_text(
+        f"from typing import TYPE_CHECKING\nif TYPE_CHECKING:\n    import {dependency}\n"
+    )
+    assert f"{source} -> {dependency}" in check_architecture.violations(root)

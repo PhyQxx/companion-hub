@@ -33,6 +33,18 @@ import pytest
         "app.harness.voice_sources",
         "app.voice:TtsProviderChain",
         "app.llm.contracts",
+        "app.harness.operations",
+        "app.llm.probe",
+        "app.tools.amap_probe_ports",
+        "app.home_assistant.models",
+        "app.home_assistant.inventory_ports",
+        "app.home_assistant",
+        "app.home_assistant:HomeAssistantState",
+        "app.integrations.mcp.models",
+        "app.integrations.mcp.ports",
+        "app.integrations.mcp",
+        "app.integrations.mcp:McpRemoteTool",
+        "app.integrations.mcp:McpRemoteClient",
         "app.memory",
         "app.timeline",
         "app.meetings",
@@ -94,7 +106,7 @@ import sys
 class Fence(importlib.abc.MetaPathFinder):
     def find_spec(self, fullname, path=None, target=None):
         if fullname.split('.')[0] in {'sqlalchemy', 'httpx', 'requests', 'openai', 'anthropic',
-                                     'asyncpg', 'aiosqlite', 'litellm'}:
+                                     'asyncpg', 'aiosqlite', 'litellm', 'httpx2', 'mcp'}:
             raise AssertionError('Pure import attempted adapter dependency: ' + fullname)
 
 sys.meta_path.insert(0, Fence())
@@ -131,6 +143,8 @@ if separator:
         "tools",
         "commute",
         "contacts",
+        "home_assistant",
+        "integrations.mcp",
     ],
 )
 def test_all_legacy_exports_preserve_object_identity_caching_and_discovery(name: str) -> None:

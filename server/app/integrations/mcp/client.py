@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from contextlib import AsyncExitStack
 from types import TracebackType
-from typing import Any, Protocol, Self
+from typing import Any, Self
 
 import httpx2
 from mcp import Client
@@ -13,31 +13,8 @@ from app.config.models import McpServerConfig
 from app.llm.provider import EnvSecretProvider
 
 from .models import McpCallPayload, McpRemoteTool
-
-
-class McpRemoteClient(Protocol):
-    protocol_version: str | None
-    server_name: str | None
-    server_version: str | None
-
-    async def __aenter__(self) -> Self: ...
-
-    async def __aexit__(
-        self,
-        exc_type: type[BaseException] | None,
-        exc: BaseException | None,
-        traceback: TracebackType | None,
-    ) -> None: ...
-
-    async def list_tools(
-        self, cursor: str | None = None
-    ) -> tuple[list[McpRemoteTool], str | None]: ...
-
-    async def call_tool(self, name: str, arguments: dict[str, Any]) -> McpCallPayload: ...
-
-
-class McpClientFactory(Protocol):
-    def __call__(self, config: McpServerConfig) -> McpRemoteClient: ...
+from .ports import McpClientFactory as McpClientFactory
+from .ports import McpRemoteClient as McpRemoteClient
 
 
 class SdkMcpClient:
@@ -74,9 +51,7 @@ class SdkMcpClient:
             http_client = await stack.enter_async_context(
                 httpx2.AsyncClient(headers=headers, timeout=timeout)
             )
-            transport = streamable_http_client(
-                str(self._config.endpoint), http_client=http_client
-            )
+            transport = streamable_http_client(str(self._config.endpoint), http_client=http_client)
             client = await stack.enter_async_context(
                 Client(
                     transport,
@@ -111,9 +86,7 @@ class SdkMcpClient:
             raise RuntimeError("MCP client is not connected")
         return self._client
 
-    async def list_tools(
-        self, cursor: str | None = None
-    ) -> tuple[list[McpRemoteTool], str | None]:
+    async def list_tools(self, cursor: str | None = None) -> tuple[list[McpRemoteTool], str | None]:
         result = await self._require_client().list_tools(cursor=cursor)
         tools = []
         for tool in result.tools:
@@ -143,9 +116,7 @@ class SdkMcpClient:
             arguments,
             read_timeout_seconds=self._config.call_timeout_seconds,
         )
-        text = "\n".join(
-            block.text for block in result.content if isinstance(block, TextContent)
-        )
+        text = "\n".join(block.text for block in result.content if isinstance(block, TextContent))
         return McpCallPayload(
             is_error=result.is_error,
             structured_content=result.structured_content,

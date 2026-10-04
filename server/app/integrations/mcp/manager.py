@@ -10,8 +10,9 @@ from typing import Any
 from app.config import ConfigStore, DatabaseConfigStore
 from app.config.models import McpServerConfig
 
-from .client import McpClientFactory, sdk_client_factory
+from .client import sdk_client_factory
 from .models import McpCallResult, McpRemoteTool, McpServerState, McpToolDescriptor
+from .ports import McpClientFactory
 
 logger = logging.getLogger("app.integrations.mcp")
 

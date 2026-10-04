@@ -94,6 +94,18 @@ PURE_COGNITIVE_FLOW = frozenset(
     }
 )
 
+PURE_CONNECTION_CONTRACTS = frozenset(
+    {
+        "app.home_assistant.models",
+        "app.home_assistant.inventory_ports",
+        "app.integrations.mcp.models",
+        "app.integrations.mcp.ports",
+        "app.llm.contracts",
+        "app.llm.probe",
+        "app.tools.amap_probe_ports",
+    }
+)
+
 
 def module_name(path: Path, root: Path) -> str:
     parts = list(path.relative_to(root).with_suffix("").parts)
@@ -119,7 +131,7 @@ def imports(source: str, module: str, *, package: bool = False) -> Iterable[str]
 
 
 def allowed(source: str, target: str) -> bool:
-    if source in PURE_COGNITIVE_FLOW and any(
+    if source in PURE_COGNITIVE_FLOW | PURE_CONNECTION_CONTRACTS and any(
         target == prefix or target.startswith(prefix + ".")
         for prefix in (
             "sqlalchemy",
@@ -127,15 +139,30 @@ def allowed(source: str, target: str) -> bool:
             "aiosqlite",
             "asyncpg",
             "httpx",
+            "httpx2",
             "requests",
             "aiohttp",
             "openai",
             "anthropic",
+            "litellm",
+            "mcp",
         )
     ):
         return False
     if not target.startswith("app."):
         return True
+    if source in PURE_CONNECTION_CONTRACTS:
+        return any(
+            target == prefix or target.startswith(prefix + ".")
+            for prefix in (
+                "app.home_assistant.models",
+                "app.integrations.mcp.models",
+                "app.llm.contracts",
+                "app.config.models",
+                "app.schemas",
+                "app.ids",
+            )
+        )
     if source in PURE_COGNITIVE_FLOW:
         return any(
             target == prefix or target.startswith(prefix + ".")
