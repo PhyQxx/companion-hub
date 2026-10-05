@@ -11,9 +11,10 @@ from datetime import UTC, datetime
 from uuid import UUID
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from sqlalchemy import delete, select
+from sqlalchemy import delete, select, update
+from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db import ContactRecord, Database
+from app.db import AppUserRecord, ContactRecord, Database
 from app.ids import uuid7
 
 from .models import ContactImportantDate, ContactPreference, ContactView
@@ -99,7 +100,6 @@ class ContactStore:
     ) -> ContactView:
         name, cleaned_aliases = normalize_names(display_name, aliases)
         zone = normalize_timezone(timezone)
-        await self._assert_names_free(user_id, name, cleaned_aliases)
         moment = now or datetime.now(UTC)
         record = ContactRecord(
             id=uuid7(),
@@ -115,6 +115,8 @@ class ContactStore:
             updated_at=moment,
         )
         async with self._database.sessions.begin() as session:
+            await self._lock_owner(session, user_id)
+            await self._assert_names_free(session, user_id, name, cleaned_aliases)
             session.add(record)
         return _to_view(record)
 
@@ -174,17 +176,28 @@ class ContactStore:
         notes: str | None = None,
         now: datetime | None = None,
     ) -> ContactView:
-        existing = await self.get_contact(user_id, contact_id)
-        new_name = display_name if display_name is not None else existing.display_name
-        new_aliases = aliases if aliases is not None else [str(item) for item in existing.aliases]
-        name, cleaned_aliases = normalize_names(new_name, new_aliases)
-        # timezone 传空字符串表示清除；None 表示不变
-        zone = existing.timezone if timezone is None else normalize_timezone(timezone)
-        await self._assert_names_free(user_id, name, cleaned_aliases, exclude_id=contact_id)
         moment = now or datetime.now(UTC)
         async with self._database.sessions.begin() as session:
-            managed = await session.get(ContactRecord, contact_id)
-            assert managed is not None
+            await self._lock_owner(session, user_id)
+            managed = await session.scalar(
+                update(ContactRecord)
+                .where(ContactRecord.id == contact_id, ContactRecord.user_id == user_id)
+                .values(updated_at=ContactRecord.updated_at)
+                .returning(ContactRecord)
+                .execution_options(synchronize_session=False, populate_existing=True)
+            )
+            if managed is None:
+                raise LookupError("contact not found")
+            name, cleaned_aliases = normalize_names(
+                display_name if display_name is not None else managed.display_name,
+                aliases if aliases is not None else list(managed.aliases),
+            )
+            # Derive omitted fields from the row after its write lock, not a
+            # preflight snapshot that may overwrite another accepted patch.
+            zone = managed.timezone if timezone is None else normalize_timezone(timezone)
+            await self._assert_names_free(
+                session, user_id, name, cleaned_aliases, exclude_id=contact_id
+            )
             managed.display_name = name
             managed.aliases = cleaned_aliases
             if relationship is not None:
@@ -197,7 +210,7 @@ class ContactStore:
             if notes is not None:
                 managed.notes = notes
             managed.updated_at = moment
-        return await self.get_contact_view(user_id, contact_id)
+        return _to_view(managed)
 
     async def delete_contact(self, user_id: UUID, contact_id: UUID) -> None:
         async with self._database.sessions.begin() as session:
@@ -231,8 +244,21 @@ class ContactStore:
         async with self._database.sessions() as session:
             return list((await session.execute(query)).scalars().all())
 
+    async def _lock_owner(self, session: AsyncSession, user_id: UUID) -> None:
+        # All name/alias writers serialize on the same owner before reading.
+        # This first write also avoids SQLite read-to-write transaction upgrades.
+        owner = await session.scalar(
+            update(AppUserRecord)
+            .where(AppUserRecord.id == user_id)
+            .values(id=AppUserRecord.id)
+            .returning(AppUserRecord.id)
+        )
+        if owner is None:
+            raise LookupError("contact owner not found")
+
     async def _assert_names_free(
         self,
+        session: AsyncSession,
         user_id: UUID,
         display_name: str,
         aliases: list[str],
@@ -241,7 +267,9 @@ class ContactStore:
     ) -> None:
         wanted: set[str] = {display_name.casefold()}
         wanted.update(alias.casefold() for alias in aliases)
-        for record in await self._user_records(user_id, limit=None):
+        for record in await session.scalars(
+            select(ContactRecord).where(ContactRecord.user_id == user_id)
+        ):
             if exclude_id is not None and record.id == exclude_id:
                 continue
             taken = {record.display_name.casefold()}
