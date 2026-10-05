@@ -10,6 +10,7 @@ from test_chat import _summary_service, create_user
 
 from app.db import (
     ActionPlanRecord,
+    ActionStepRecord,
     ConversationRecord,
     DeletionLedgerRecord,
     JobRecord,
@@ -184,6 +185,9 @@ async def test_old_backup_replay_purges_runtime_and_candidates(tmp_path: Path) -
             revoked_plan = await session.get(ActionPlanRecord, pending_plan.id)
             assert revoked_plan is not None and revoked_plan.status == "cancelled"
             assert revoked_plan.cancel_requested and revoked_plan.reason_code == "source_deleted"
+            assert revoked_plan.title is None
+            revoked_step = await session.get_one(ActionStepRecord, pending_plan.steps[0].id)
+            assert revoked_step.arguments == {} and revoked_step.tool_arguments == {}
             stored = await session.get(JobRecord, job.id)
             assert stored is not None and stored.status == "cancelled"
             assert stored.input == {"source_deleted": True}

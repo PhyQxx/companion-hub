@@ -193,6 +193,51 @@ async def purge_conversation(
             .order_by(ActionPlanRecord.id)
             .with_for_update()
         )
+        # Never-started requests are derived source content, not an execution
+        # audit. Keep parameters/results for actual or uncertain attempts.
+        await session.execute(
+            update(ActionStepRecord)
+            .where(
+                ActionStepRecord.plan_id.in_(source_plan_ids),
+                ActionStepRecord.started_at.is_(None),
+                (
+                    ActionStepRecord.result.is_(None)
+                    | (cast(ActionStepRecord.result, String) == "null")
+                ),
+                ActionStepRecord.status.in_(
+                    {"ready", "awaiting_confirmation", "cancelled", "skipped", "expired"}
+                ),
+            )
+            .values(arguments={}, tool_arguments={}, verification_result=None)
+        )
+        attempted = (
+            select(ActionStepRecord.id)
+            .where(
+                ActionStepRecord.plan_id == ActionPlanRecord.id,
+                (
+                    ActionStepRecord.started_at.is_not(None)
+                    | (
+                        ActionStepRecord.result.is_not(None)
+                        & (cast(ActionStepRecord.result, String) != "null")
+                    )
+                    | ActionStepRecord.status.in_(
+                        {"executing", "completed", "failed", "unknown_outcome"}
+                    )
+                ),
+            )
+            .exists()
+        )
+        await session.execute(
+            update(ActionPlanRecord)
+            .where(
+                ActionPlanRecord.id.in_(source_plan_ids),
+                ActionPlanRecord.status.in_(
+                    {"ready", "awaiting_confirmation", "cancelled", "expired"}
+                ),
+                ~attempted,
+            )
+            .values(title=None)
+        )
         # Revoke pending actions and cooperatively stop active execution.
         # Already completed external actions keep their execution audit.
         await session.execute(

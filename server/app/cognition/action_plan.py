@@ -774,8 +774,14 @@ class ActionPlanService:
         plan_id: UUID,
     ) -> ActionStepView | None:
         async with self._database.sessions.begin() as session:
+            # First-write plan fence preserves Plan -> Step order and avoids
+            # SQLite read upgrades while source deletion is holding the plan.
             plan = await session.scalar(
-                select(ActionPlanRecord).where(ActionPlanRecord.id == plan_id).with_for_update()
+                update(ActionPlanRecord)
+                .where(ActionPlanRecord.id == plan_id, ActionPlanRecord.user_id == user_id)
+                .values(updated_at=ActionPlanRecord.updated_at)
+                .returning(ActionPlanRecord)
+                .execution_options(synchronize_session=False, populate_existing=True)
             )
             if plan is None or plan.user_id != user_id:
                 raise LookupError("action plan not found")
