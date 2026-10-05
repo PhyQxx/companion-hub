@@ -9,7 +9,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from uuid import UUID
 
-from sqlalchemy import select, update
+from sqlalchemy import delete, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -143,11 +143,14 @@ class WorkflowStore:
         return [_to_view(record) for record in records]
 
     async def delete_workflow(self, user_id: UUID, workflow_id: UUID) -> None:
-        await self.get_workflow(user_id, workflow_id)
         async with self._database.sessions.begin() as session:
-            managed = await session.get(WorkflowRecord, workflow_id)
-            assert managed is not None
-            await session.delete(managed)
+            removed = await session.scalar(
+                delete(WorkflowRecord)
+                .where(WorkflowRecord.id == workflow_id, WorkflowRecord.user_id == user_id)
+                .returning(WorkflowRecord.id)
+            )
+            if removed is None:
+                raise LookupError("workflow not found")
 
     async def _user_records(self, user_id: UUID) -> list[WorkflowRecord]:
         query = (

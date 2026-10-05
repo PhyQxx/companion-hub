@@ -11,7 +11,7 @@ from datetime import UTC, datetime
 from uuid import UUID
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from sqlalchemy import select
+from sqlalchemy import delete, select
 
 from app.db import ContactRecord, Database
 from app.ids import uuid7
@@ -200,11 +200,14 @@ class ContactStore:
         return await self.get_contact_view(user_id, contact_id)
 
     async def delete_contact(self, user_id: UUID, contact_id: UUID) -> None:
-        await self.get_contact(user_id, contact_id)
         async with self._database.sessions.begin() as session:
-            managed = await session.get(ContactRecord, contact_id)
-            assert managed is not None
-            await session.delete(managed)
+            removed = await session.scalar(
+                delete(ContactRecord)
+                .where(ContactRecord.id == contact_id, ContactRecord.user_id == user_id)
+                .returning(ContactRecord.id)
+            )
+            if removed is None:
+                raise LookupError("contact not found")
 
     async def contacts_with_date(self, user_id: UUID, *, month: int, day: int) -> list[ContactView]:
         """重要日期落在指定月/日的联系人（简报事实采集用）。"""
