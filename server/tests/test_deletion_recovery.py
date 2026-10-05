@@ -73,12 +73,26 @@ async def test_old_backup_replay_purges_runtime_and_candidates(tmp_path: Path) -
     )
     now = datetime.now(UTC)
     plan_id = uuid7()
+    child_run_id = uuid7()
     async with database.sessions.begin() as session:
+        session.add(
+            TaskRunRecord(
+                id=child_run_id,
+                user_id=source_user.id,
+                parent_run_id=pending.turn_id,
+                status="running",
+                privacy_level="L2",
+                contract={},
+                created_at=now,
+                updated_at=now,
+            )
+        )
+        await session.flush()
         session.add(
             ActionPlanRecord(
                 id=plan_id,
                 user_id=source_user.id,
-                task_run_id=pending.turn_id,
+                task_run_id=child_run_id,
                 status="completed",
                 idempotency_key="restore",
                 request_hash="test",
@@ -105,7 +119,7 @@ async def test_old_backup_replay_purges_runtime_and_candidates(tmp_path: Path) -
         "deleg.test",
         {"user_id": str(source_user.id), "topic": "private"},
         owner=str(source_user.id),
-        source_turn_id=pending.turn_id,
+        source_turn_id=child_run_id,
     )
     await TimelineStore(database).index_message(
         message_id=pending.user_message.id,

@@ -23,6 +23,113 @@ from .models import (
 )
 
 
+async def _run_descendants(
+    session: AsyncSession, conversation_id: UUID, user_id: UUID
+) -> list[UUID]:
+    """Owned transitive closure, parents first; visited IDs also bound cycles."""
+    frontier = list(
+        await session.scalars(
+            select(TaskRunRecord.id)
+            .where(
+                TaskRunRecord.conversation_id == conversation_id,
+                TaskRunRecord.user_id == user_id,
+            )
+            .order_by(TaskRunRecord.id)
+        )
+    )
+    result: list[UUID] = []
+    visited: set[UUID] = set()
+    while frontier:
+        current = [identifier for identifier in frontier if identifier not in visited]
+        if not current:
+            break
+        result.extend(current)
+        visited.update(current)
+        frontier = list(
+            await session.scalars(
+                select(TaskRunRecord.id)
+                .where(
+                    TaskRunRecord.parent_run_id.in_(current),
+                    TaskRunRecord.user_id == user_id,
+                )
+                .order_by(TaskRunRecord.id)
+            )
+        )
+    # UUID order is not ancestry order (restored or supplied IDs may be older).
+    # Admission locks ancestors before children, so do the same for all seeds.
+    parents: dict[UUID, UUID | None] = {
+        identifier: parent
+        for identifier, parent in await session.execute(
+            select(TaskRunRecord.id, TaskRunRecord.parent_run_id).where(
+                TaskRunRecord.id.in_(result), TaskRunRecord.user_id == user_id
+            )
+        )
+    }
+    ordered: list[UUID] = []
+    emitted: set[UUID] = set()
+    for identifier in result:
+        path: list[UUID] = []
+        seen: set[UUID] = set()
+        target: UUID | None = identifier
+        while target in parents and target not in emitted and target not in seen:
+            assert target is not None
+            path.append(target)
+            seen.add(target)
+            target = parents[target]
+        for node in reversed(path):
+            ordered.append(node)
+            emitted.add(node)
+    return ordered
+
+
+class _SourceGraphChanged(Exception):
+    pass
+
+
+async def _lock_source_graph(
+    session: AsyncSession, conversation_id: UUID, user_id: UUID
+) -> list[UUID]:
+    # A child may commit while we wait for a parent. Never acquire its Job
+    # after holding Run locks: a worker could hold that Job and await its Run.
+    # Roll back this savepoint's locks and rediscover in the original order.
+    for _ in range(8):
+        try:
+            async with session.begin_nested():
+                run_ids = await _run_descendants(session, conversation_id, user_id)
+                jobs = (
+                    select(JobRecord.id)
+                    .where(JobRecord.task_run_id.in_(run_ids))
+                    .order_by(JobRecord.id)
+                )
+                plans = (
+                    select(ActionPlanRecord.id)
+                    .where(ActionPlanRecord.task_run_id.in_(run_ids))
+                    .order_by(ActionPlanRecord.id)
+                )
+                job_ids = list(await session.scalars(jobs.with_for_update()))
+                plan_ids = list(await session.scalars(plans.with_for_update()))
+                for identifier in run_ids:
+                    await session.scalar(
+                        select(TaskRunRecord.id)
+                        .where(
+                            TaskRunRecord.id == identifier,
+                            TaskRunRecord.user_id == user_id,
+                        )
+                        .with_for_update()
+                    )
+                if (
+                    set(await _run_descendants(session, conversation_id, user_id)) != set(run_ids)
+                    or list(await session.scalars(jobs)) != job_ids
+                    or list(await session.scalars(plans)) != plan_ids
+                ):
+                    raise _SourceGraphChanged
+            return run_ids
+        except _SourceGraphChanged:
+            continue
+    # Fail closed and roll back the caller's transaction under sustained churn.
+    raise RuntimeError("conversation_source_graph_changed")
+
+
 async def purge_conversation(
     session: AsyncSession,
     conversation_id: UUID,
@@ -31,7 +138,11 @@ async def purge_conversation(
 ) -> bool:
     """Caller owns the transaction; never enqueue work or call an external provider."""
     conversation = await session.scalar(
-        select(ConversationRecord).where(ConversationRecord.id == conversation_id).with_for_update()
+        update(ConversationRecord)
+        .where(ConversationRecord.id == conversation_id, ConversationRecord.user_id == user_id)
+        .values(id=ConversationRecord.id)
+        .returning(ConversationRecord)
+        .execution_options(synchronize_session=False, populate_existing=True)
     )
     if conversation is None or conversation.user_id != user_id:
         return False
@@ -48,23 +159,7 @@ async def purge_conversation(
             )
         )
     )
-    run_ids = list(
-        await session.scalars(
-            select(TaskRunRecord.id).where(
-                TaskRunRecord.conversation_id == conversation_id,
-            )
-        )
-    )
-    # Derived writes lock Conversation -> Job -> derived rows. Take
-    # the same order before purging candidates so cancellation and
-    # deletion cannot deadlock a worker committing its evidence.
-    if run_ids:
-        await session.scalars(
-            select(JobRecord)
-            .where(JobRecord.task_run_id.in_(run_ids))
-            .order_by(JobRecord.id)
-            .with_for_update()
-        )
+    run_ids = await _lock_source_graph(session, conversation_id, user_id)
     if turn_ids:
         await session.execute(
             delete(SkillDraftRecord).where(
@@ -171,7 +266,8 @@ async def purge_conversation(
         )
     await session.execute(
         delete(TaskRunRecord).where(
-            TaskRunRecord.conversation_id == conversation_id,
+            TaskRunRecord.id.in_(run_ids),
+            TaskRunRecord.user_id == user_id,
         )
     )
     await session.execute(
