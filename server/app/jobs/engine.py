@@ -51,6 +51,21 @@ def _live_step_claim(
     )
 
 
+async def _lock_step_job(session: AsyncSession, step_id: int) -> JobRecord | None:
+    # Locate the owning Job inside the first write rather than reading a Step
+    # before waiting for its Job lock. SQLite cannot upgrade that stale read
+    # transaction when deletion or cancellation commits in the meantime.
+    source = select(JobStepRecord.job_id).where(JobStepRecord.id == step_id).scalar_subquery()
+    row = await session.scalar(
+        update(JobRecord)
+        .where(JobRecord.id == source)
+        .values(progress=JobRecord.progress)
+        .returning(JobRecord)
+        .execution_options(synchronize_session=False, populate_existing=True)
+    )
+    return row if isinstance(row, JobRecord) else None
+
+
 # 合法状态转移 (source -> allowed targets)
 _TRANSITIONS: dict[JobStatus, set[JobStatus]] = {
     "queued": {"admitted", "cancelled"},
@@ -436,12 +451,7 @@ class JobEngine:
     ) -> bool:
         now = datetime.now(UTC)
         async with self._database.sessions.begin() as session:
-            job_id = await session.scalar(
-                select(JobStepRecord.job_id).where(JobStepRecord.id == step_id)
-            )
-            if job_id is None:
-                return False
-            job = await lock_job(session, job_id)
+            job = await _lock_step_job(session, step_id)
             if job is None or not _live_step_claim(
                 job, worker_id=worker_id, claim_version=claim_version
             ):
@@ -475,14 +485,9 @@ class JobEngine:
     ) -> None:
         now = datetime.now(UTC)
         async with self._database.sessions.begin() as session:
-            job_id = await session.scalar(
-                select(JobStepRecord.job_id).where(JobStepRecord.id == step_id)
-            )
-            if job_id is None:
-                raise LookupError("step not found")
-            job = await lock_job(session, job_id)
+            job = await _lock_step_job(session, step_id)
             if job is None:
-                raise LookupError("job not found")
+                raise LookupError("step not found")
             if not _live_step_claim(job, worker_id=worker_id, claim_version=claim_version):
                 return
             changed = await session.scalar(

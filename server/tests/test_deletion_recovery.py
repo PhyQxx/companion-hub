@@ -13,6 +13,7 @@ from app.db import (
     ConversationRecord,
     DeletionLedgerRecord,
     JobRecord,
+    JobStepRecord,
     MemoryRecord,
     SkillDraftRecord,
     TaskRunRecord,
@@ -121,6 +122,23 @@ async def test_old_backup_replay_purges_runtime_and_candidates(tmp_path: Path) -
         owner=str(source_user.id),
         source_turn_id=child_run_id,
     )
+    async with database.sessions.begin() as session:
+        stored_job = await session.get_one(JobRecord, job.id)
+        stored_job.current_step = "restored-private-step"
+        stored_job.error_code = "restored-private-error"
+        stored_job.error_detail_safe = {"private": "restored-private-content"}
+        session.add(
+            JobStepRecord(
+                job_id=job.id,
+                name="restored-private-step",
+                attempt=0,
+                status="completed",
+                checkpoint={"private": "restored-private-content"},
+                started_at=now,
+                completed_at=now,
+                progress=1,
+            )
+        )
     await TimelineStore(database).index_message(
         message_id=pending.user_message.id,
         user_id=source_user.id,
@@ -169,6 +187,12 @@ async def test_old_backup_replay_purges_runtime_and_candidates(tmp_path: Path) -
             stored = await session.get(JobRecord, job.id)
             assert stored is not None and stored.status == "cancelled"
             assert stored.input == {"source_deleted": True}
+            assert stored.current_step is None and stored.error_detail_safe is None
+            assert stored.error_code is None
+            step = await session.scalar(select(JobStepRecord).where(JobStepRecord.job_id == job.id))
+            assert step is not None and step.checkpoint is None
+            assert step.name.startswith("source_deleted:") and step.status == "completed"
+            assert step.progress == 1 and step.completed_at is not None
         again = await replay_deletions(restored, dry_run=False)
         assert again.conversations_deleted == 0 and again.memories_deleted == 0
     finally:

@@ -3,7 +3,7 @@
 from datetime import UTC, datetime
 from uuid import UUID
 
-from sqlalchemy import delete, select, update
+from sqlalchemy import String, cast, delete, literal, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from .models import (
@@ -13,6 +13,7 @@ from .models import (
     ConversationRecord,
     InteractionTurnRecord,
     JobRecord,
+    JobStepRecord,
     MessageRecord,
     ModelReservationRecord,
     SkillDraftRecord,
@@ -249,10 +250,28 @@ async def purge_conversation(
         await session.execute(
             delete(TaskRunEventRecord).where(TaskRunEventRecord.run_id.in_(run_ids))
         )
+        # The Job locks acquired above serialize all step lifecycle writes.
+        # Keep content-free status/timing/progress audit, but not caller-defined
+        # labels, checkpoints or error details after the source is forgotten.
+        source_jobs = select(JobRecord.id).where(JobRecord.task_run_id.in_(run_ids))
+        await session.execute(
+            update(JobStepRecord)
+            .where(JobStepRecord.job_id.in_(source_jobs))
+            .values(
+                name=literal("source_deleted:") + cast(JobStepRecord.id, String),
+                checkpoint=None,
+            )
+        )
         await session.execute(
             update(JobRecord)
             .where(JobRecord.task_run_id.in_(run_ids))
-            .values(task_run_id=None, input={"source_deleted": True})
+            .values(
+                task_run_id=None,
+                input={"source_deleted": True},
+                current_step=None,
+                error_code=None,
+                error_detail_safe=None,
+            )
         )
         await session.execute(
             update(ActionPlanRecord)
