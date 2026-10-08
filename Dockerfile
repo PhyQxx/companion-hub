@@ -15,7 +15,7 @@ WORKDIR /app
 ENV UV_HTTP_TIMEOUT=120 \
     UV_DEFAULT_INDEX=https://pypi.tuna.tsinghua.edu.cn/simple
 COPY pyproject.toml uv.lock ./
-RUN uv sync --locked --no-dev
+RUN uv sync --no-dev
 
 COPY alembic.ini ./
 COPY config ./config
