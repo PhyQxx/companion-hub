@@ -20,6 +20,7 @@ from .admin_tasks import create_admin_tasks_router
 from .admin_timeline import create_admin_timeline_router
 from .admin_voice import create_admin_voice_router
 from .auth import ChatSessionGuard, create_auth_router
+from .auth_sso import SsoSettings, create_sso_router, load_sso_settings
 from .avatar import create_avatar_router
 from .briefs import create_briefs_router
 from .calendar import create_calendar_router
@@ -76,6 +77,9 @@ __all__ = [
     "create_admin_timeline_router",
     "create_admin_voice_router",
     "create_auth_router",
+    "SsoSettings",
+    "create_sso_router",
+    "load_sso_settings",
     "create_avatar_router",
     "create_briefs_router",
     "create_calendar_router",

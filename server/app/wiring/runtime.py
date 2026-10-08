@@ -378,6 +378,12 @@ def assemble_runtime(
     app.state.auth_service = auth_service
     app.state.chat_service = runtime_chat_service
     app.include_router(create_auth_router(auth_service, admin_token=admin_token))
+    # pnkx 统一登录（可选）：四个 ARIA_SSO_* 环境变量齐备才启用
+    sso_settings = load_sso_settings()
+    if sso_settings.enabled:
+        app.include_router(
+            create_sso_router(auth_service, sso_settings, base_url=os.getenv("ARIA_SSO_BASE_URL", "").rstrip("/"))
+        )
     app.include_router(create_chat_router(runtime_chat_service, auth_service))
     app.include_router(create_runs_router(runtime_chat_service, auth_service))
     for device_tool in device_tools:

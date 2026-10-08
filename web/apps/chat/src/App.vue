@@ -90,6 +90,7 @@ const LOCATION_TTL_MS = 15 * 60 * 1000;
 const token = ref<string>("");
 const displayName = ref<string>("");
 const setupRequired = ref(false);
+const ssoEnabled = ref(false);
 const password = ref("");
 const adminToken = ref("");
 const authBusy = ref(false);
@@ -1011,6 +1012,10 @@ function rememberSession(session: AuthSession) {
   authStorage.setItem(TOKEN_KEY, session.access_token);
 }
 
+async function loginWithPnkx() {
+  window.location.href = "/api/v1/auth/sso/login";
+}
+
 async function submitAuth() {
   if (!password.value) return;
   authBusy.value = true;
@@ -1535,10 +1540,19 @@ onMounted(async () => {
   const saved = authStorage.getItem(TOKEN_KEY);
   if (!saved) {
     void loadRuntimeMeta();
+    if (location.hash.startsWith("#sso-error=")) {
+      setStatus(decodeURIComponent(location.hash.slice("#sso-error=".length)), true);
+    }
     try {
       setupRequired.value = (await api.authStatus()).setup_required;
     } catch {
       setStatus("无法连接 Aria 服务", true);
+    }
+    try {
+      const res = await fetch("/api/v1/auth/sso/status");
+      if (res.ok) ssoEnabled.value = (await res.json()).enabled === true;
+    } catch {
+      /* SSO 不可用时隐藏入口 */
     }
     return;
   }
@@ -1601,6 +1615,9 @@ async function installPwa() {
       <input v-else v-model="password" type="password" placeholder="聊天密码" autocomplete="current-password" />
       <button class="primary" type="submit" :disabled="authBusy">
         {{ setupRequired ? "创建并登录" : "登录" }}
+      </button>
+      <button v-if="ssoEnabled && !setupRequired" class="ghost" type="button" @click="loginWithPnkx">
+        使用 pnkx 账号登录
       </button>
       <button v-if="installPrompt && !isStandalone" class="ghost" type="button" @click="installPwa">安装到手机</button>
       <p v-else-if="isIos && !isStandalone" class="install-hint">iPhone：点 Safari“分享”→“添加到主屏幕”</p>

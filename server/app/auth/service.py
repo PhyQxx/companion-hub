@@ -159,6 +159,26 @@ class AuthService:
             session.add(record)
         return auth_session
 
+    async def login_sso(self, *, user_id: UUID) -> AuthSession:
+        """pnkx 统一登录：为已验证归属的本地用户直接建立会话（单用户家庭中枢，
+        归属校验（sub 白名单）由调用方在 OIDC 回调中完成）。"""
+        async with self._database.sessions() as session:
+            user = (
+                await session.execute(
+                    select(AppUserRecord).where(
+                        AppUserRecord.id == user_id,
+                        AppUserRecord.status == "active",
+                    )
+                )
+            ).scalar_one_or_none()
+        if user is None:
+            raise InvalidCredentials("sso user not found or inactive")
+        now = datetime.now(UTC)
+        record, auth_session = self._new_session(user, now)
+        async with self._database.sessions.begin() as session:
+            session.add(record)
+        return auth_session
+
     async def authenticate(self, access_token: str) -> ChatPrincipal:
         access_hash = _hash_token(access_token)
         now = datetime.now(UTC)
