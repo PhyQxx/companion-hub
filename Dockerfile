@@ -11,6 +11,9 @@ ENV PYTHONUNBUFFERED=1 \
     UV_LINK_MODE=copy
 
 WORKDIR /app
+# 国内网络下 pypi 官方源大包（rpds-py 等）易超时：放宽 HTTP 超时并走清华镜像
+ENV UV_HTTP_TIMEOUT=120 \
+    UV_DEFAULT_INDEX=https://pypi.tuna.tsinghua.edu.cn/simple
 COPY pyproject.toml uv.lock ./
 RUN uv sync --locked --no-dev
 
