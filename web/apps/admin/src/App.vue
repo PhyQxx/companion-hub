@@ -61,7 +61,19 @@ async function connect(token: string) {
   }
 }
 
-if (api.token) void connect(api.token);
+// 跳转后端发起 pnkx OIDC 授权码流程（回调按发起来源落回本页）
+function loginWithPnkx() {
+  window.location.href = "/api/v1/auth/sso/login";
+}
+
+if (api.token) {
+  void connect(api.token);
+} else {
+  // SSO 登录后回调页会把 pnkx 换来的会话令牌写在 localStorage（ariaChatToken），
+  // 管理后台与聊天同源，可直接采纳为主人令牌（有效会话即主人，见 AdminTokenGuard）
+  const ssoToken = localStorage.getItem("ariaChatToken");
+  if (ssoToken) void connect(ssoToken);
+}
 </script>
 
 <template>
@@ -71,6 +83,7 @@ if (api.token) void connect(api.token);
       <p class="hint">输入 ARIA_ADMIN_TOKEN 连接管理 API，仅保存在当前浏览器会话中。</p>
       <el-input v-model="tokenInput" type="password" show-password placeholder="ARIA_ADMIN_TOKEN" autocomplete="current-password" @keyup.enter="connect(tokenInput)" />
       <el-button type="primary" @click="connect(tokenInput)">连接</el-button>
+      <el-button type="default" @click="loginWithPnkx">使用 pnkx 账号登录</el-button>
       <p v-if="statusText" class="status" :class="{ error: statusError }">{{ statusText }}</p>
     </el-card>
   </div>

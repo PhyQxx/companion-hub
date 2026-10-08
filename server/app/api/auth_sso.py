@@ -18,7 +18,7 @@ from dataclasses import dataclass
 from typing import Annotated
 
 import httpx
-from fastapi import APIRouter, HTTPException, Query, Response
+from fastapi import APIRouter, Request, HTTPException, Query, Response
 from starlette.responses import HTMLResponse
 
 from app.auth.service import AuthService
@@ -79,8 +79,15 @@ def create_sso_router(
     async def sso_status() -> dict[str, bool]:
         return {"enabled": settings.enabled}
 
+    def _origin(request: Request) -> str:
+        """回调地址与登录后落地页按发起请求的来源站点推导，
+        使 chat / admin 等同域多入口都能各自完成 SSO 回跳。"""
+        host = request.headers.get("x-forwarded-host") or request.headers.get("host", "")
+        proto = request.headers.get("x-forwarded-proto") or request.url.scheme
+        return f"{proto}://{host}" if host else base_url
+
     @router.get("/login")
-    async def sso_login(response: Response) -> None:
+    async def sso_login(request: Request, response: Response) -> None:
         if not settings.enabled:
             raise HTTPException(status_code=404, detail="SSO 未启用")
         now = time.monotonic()
@@ -90,7 +97,7 @@ def create_sso_router(
         authorize_url = (
             f"{settings.issuer}/oauth2/authorize"
             f"?response_type=code&client_id={settings.client_id}"
-            f"&redirect_uri={base_url}/api/v1/auth/sso/callback"
+            f"&redirect_uri={_origin(request)}/api/v1/auth/sso/callback"
             f"&scope=openid%20profile&state={state}"
         )
         response.status_code = 302
@@ -98,6 +105,7 @@ def create_sso_router(
 
     @router.get("/callback")
     async def sso_callback(
+        request: Request,
         code: Annotated[str | None, Query()] = None,
         state: Annotated[str | None, Query()] = None,
         error: Annotated[str | None, Query()] = None,
@@ -160,7 +168,7 @@ def create_sso_router(
 <script>
 try {{ localStorage.setItem('{_TOKEN_KEY}', '{safe_token}');
      sessionStorage.setItem('{_TOKEN_KEY}', '{safe_token}'); }} catch (e) {{}}
-location.replace('{base_url or "/"}/');
+location.replace('{_origin(request) or "/"}/');
 </script></head>
 <body style="font-family:sans-serif;text-align:center;padding-top:20vh;color:#555">
 正在进入 Companion Hub……

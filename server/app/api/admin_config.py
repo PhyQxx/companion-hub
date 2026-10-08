@@ -19,6 +19,7 @@ from urllib.request import Request, urlopen
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import Request as FastAPIRequest
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import AnyHttpUrl, Field
 
@@ -68,8 +69,18 @@ class AdminTokenGuard:
     def __init__(self, token: str | None) -> None:
         self._token = token
 
-    async def __call__(self, credentials: AdminCredentials) -> None:
-        self.validate(credentials)
+    async def __call__(self, credentials: AdminCredentials, request: FastAPIRequest) -> None:
+        try:
+            self.validate(credentials)
+        except HTTPException as exc:
+            # 单用户中枢：有效的聊天/SSO 会话即主人，允许其访问管理 API
+            auth_service = getattr(request.app.state, "auth_service", None)
+            if auth_service is None or credentials is None:
+                raise
+            try:
+                await auth_service.authenticate(credentials.credentials)
+            except Exception as session_error:
+                raise exc from session_error
 
     def validate(self, credentials: HTTPAuthorizationCredentials | None) -> None:
         token = runtime_admin_token(self._token)
