@@ -1,0 +1,396 @@
+schema_version: 1
+
+models:
+  sensenova_dialogue:
+    provider: openai_compatible
+    model: deepseek-v4-flash
+    supports_json_mode: false
+    base_url: https://token.sensenova.cn/v1
+    # 密钥支持两种方式（同时存在时优先使用 secret_value）：
+    # 1. secret_value: 直接填写 API Key，适合后台管理
+    # 2. secret_ref: env:XXX   引用环境变量，适合容器化部署
+    # secret_value: sk-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+    secret_ref: env:SENSENOVA_API_KEY
+    runs_local: false
+    max_privacy_level: L1
+    timeout_ms: 12000
+    max_retries: 1
+    max_context_tokens: 131072
+    input_cost_per_million: 0
+    output_cost_per_million: 0
+
+  sensenova_utility:
+    provider: openai_compatible
+    model: sensenova-6.8-flash-lite
+    supports_json_mode: false
+    base_url: https://token.sensenova.cn/v1
+    secret_ref: env:SENSENOVA_API_KEY
+    runs_local: false
+    max_privacy_level: L1
+    timeout_ms: 6000
+    max_retries: 1
+    max_context_tokens: 131072
+    input_cost_per_million: 0
+    output_cost_per_million: 0
+
+  sensenova_reasoning_fallback:
+    provider: openai_compatible
+    model: glm-5.2
+    supports_json_mode: false
+    base_url: https://token.sensenova.cn/v1
+    secret_ref: env:SENSENOVA_API_KEY
+    runs_local: false
+    max_privacy_level: L1
+    timeout_ms: 20000
+    max_retries: 0
+    max_context_tokens: 131072
+    input_cost_per_million: 0
+    output_cost_per_million: 0
+
+  local_private:
+    provider: openai_compatible
+    model: qwen3.6-35b-a3b-uncensored
+    supports_json_mode: false
+    # 2026-08-24 已用 LM Studio OpenAI-compatible tools 请求实测返回 tool_calls。
+    supports_tool_calling: true
+    # Qwen3.6 思考输出与正文共享预算，实测推理约 1400+ token；
+    # 叠加开销后请求侧 512 的正文预算才能拿到可见 message.content。
+    reasoning_overhead_tokens: 2048
+    # LM Studio 原生管理 API 在 /api/v1/*；聊天仍走 OpenAI-compatible /v1。
+    base_url: http://127.0.0.1:1234/v1
+    runs_local: true
+    max_privacy_level: L2
+    # 思考型本地模型完整生成（推理 1400+ token + 正文）实测超过 30s，
+    # 需要放宽到契约上限，否则 L2 回合在出正文前就被掐断。
+    timeout_ms: 120000
+    max_retries: 0
+    max_context_tokens: 32768
+    input_cost_per_million: 0
+    output_cost_per_million: 0
+
+  zhipu_text_free:
+    kind: text
+    provider: openai_compatible
+    model: glm-4.7-flash
+    supports_json_mode: true
+    thinking_mode: disabled
+    base_url: https://open.bigmodel.cn/api/paas/v4
+    secret_ref: env:ZAI_API_KEY
+    runs_local: false
+    max_privacy_level: L1
+    timeout_ms: 30000
+    max_retries: 1
+    max_context_tokens: 204800
+
+  zhipu_vision_free:
+    kind: vision
+    provider: zhipu_native
+    model: glm-4v-flash
+    base_url: https://open.bigmodel.cn/api/paas/v4
+    secret_ref: env:ZAI_API_KEY
+    runs_local: false
+    max_privacy_level: L1
+    timeout_ms: 60000
+    max_retries: 1
+    max_tokens: 1024
+    max_context_tokens: 131072
+
+  zhipu_image_free:
+    kind: image_generation
+    provider: zhipu_native
+    model: cogview-3-flash
+    base_url: https://open.bigmodel.cn/api/paas/v4
+    secret_ref: env:ZAI_API_KEY
+    runs_local: false
+    max_privacy_level: L1
+    timeout_ms: 60000
+    max_retries: 0
+
+  zhipu_video_free:
+    kind: video_generation
+    provider: zhipu_native
+    model: cogvideox-flash
+    base_url: https://open.bigmodel.cn/api/paas/v4
+    secret_ref: env:ZAI_API_KEY
+    runs_local: false
+    max_privacy_level: L1
+    timeout_ms: 120000
+    max_retries: 0
+
+routes:
+  dialogue:
+    primary: sensenova_dialogue
+    # 日常 L0/L1 对话优先保持全云链路；本地模型仅保留给 private/L2，
+    # 避免本地模型未启动时把一次云端限流放大成额外的连接失败与等待。
+    fallbacks: [sensenova_utility, zhipu_text_free, sensenova_reasoning_fallback]
+    # timeout_ms 约束非流式调用总时长，以及流式「首个 chunk 到达前」的等待；
+    # 出字后改由 stream_idle_timeout_ms 看护相邻 chunk 间隔，不再限制总时长
+    # （语音回复已播出的部分无法收回，模型持续出字时掐断只会毁掉整个回合）。
+    timeout_ms: 12000
+    stream_idle_timeout_ms: 8000
+  # 可选：语音回合优先走首 token 更快的模型；省略时自动继承 dialogue。
+  # voice:
+  #   primary: <支持工具调用的低延迟模型端点>
+  #   fallbacks: [sensenova_dialogue]
+  #   timeout_ms: 5000
+  #   stream_idle_timeout_ms: 5000
+  utility:
+    primary: sensenova_utility
+    fallbacks: [sensenova_dialogue, zhipu_text_free]
+    timeout_ms: 6000
+  private:
+    primary: local_private
+    fallbacks: []
+    # 本地思考模型首轮工具选择与工具结果回注均可能超过 30 秒。
+    timeout_ms: 120000
+
+# 语义记忆嵌入默认关闭（docs/09 §2 SEMB）。关闭时记忆检索用内置哈希嵌入
+# （词法级）。启用时走 OpenAI 兼容 /embeddings，启动先做连通性探测，失败
+# 自动回落哈希不阻断启动。嵌入服务会收到记忆原文，务必指向本地
+# （LM Studio `text-embedding-*`、Ollama）或私有网络内的服务。
+# embeddings:
+#   enabled: true
+#   base_url: http://127.0.0.1:1234/v1
+#   model: text-embedding-bge-m3
+#   dimension: 1024
+#   # secret_ref: env:EMBEDDING_API_KEY   # 本地服务通常无需密钥
+#   timeout_ms: 5000
+
+# 地图/天气工具默认关闭。启用前先设置 AMAP_WEB_SERVICE_KEY，并将至少一个
+# dialogue 模型端点的 supports_tool_calling 设为 true 后通过真实能力探测。
+tools:
+  enabled: false
+  # 每回合最多执行的工具轮数（1-4）：1 保持单轮语义；>1 允许模型在
+  # 只读/预览类工具上链式调用（查日程→查路线之类），最后一轮强制收束为纯文本。
+  max_tool_rounds: 1
+  query:
+    enabled: true
+    weather_enabled: true
+    nearby_enabled: true
+    route_enabled: true
+    default_city: 济南市
+    precise_location_policy: ask_each_time
+  amap:
+    enabled: false
+    base_url: https://restapi.amap.com
+    secret_ref: env:AMAP_WEB_SERVICE_KEY
+    timeout_ms: 3500
+    max_retries: 1
+    max_concurrency: 2
+    requests_per_minute: 30
+
+# Home Assistant 连接、令牌、实体、历史和动作白名单统一在管理后台配置；
+# 此处只保留首次启动的未启用默认值。
+integrations:
+  home_assistant:
+    enabled: false
+    # full / compact / on_demand；默认按需检索，避免全量设备清单常驻模型上下文。
+    device_context_mode: on_demand
+    instance_id: home-main
+    base_url: https://ha.pnkx.top:8
+    verify_tls: true
+    allow_insecure_local_http: false
+    connect_timeout_ms: 5000
+    request_timeout_ms: 8000
+    reconnect_min_seconds: 1
+    reconnect_max_seconds: 30
+    state_cache_ttl_seconds: 300
+    entities: []
+  # 小爱音箱网关（非官方个人接入）。账号、音箱、中枢用户与网关密钥全部在
+  # Admin「HA 实体授权 → 小爱音箱网关」填写并保存，Hub 会把运行配置写入
+  # xiaoai-state 共享卷；此文件只需保持 enabled: false。
+  # 部署：docker compose --profile xiaoai up -d --build
+  xiaoai:
+    enabled: false
+    # trigger_prefix: 请阿莉娅
+    # xiaomi_user_id: "123456"
+    # xiaomi_password_secret_ref: env:ARIA_XIAOAI_PASSWORD
+    # speaker_name: 小爱音箱 Pro
+    # owner_user_id: <Hub 登录用户 UUID>
+    # gateway_token_secret_ref: env:ARIA_XIAOAI_GATEWAY_TOKEN
+  # Web Push（手机 PWA 移动通知）。密钥对生成：
+  #   cd server && ../.venv/bin/python scripts/generate_vapid_keys.py
+  # 私钥是 base64url 的 P-256 d 值（不是 PEM）；公私钥配齐后才把 enabled 设为 true。
+  push:
+    enabled: false
+    vapid_subject: mailto:admin@example.com
+    # vapid_public_key: <base64url 未压缩 P-256 公钥点，约 87 字符>
+    # 私钥走 secret_value（后台填写）或环境变量引用二选一：
+    # vapid_private_key_secret_ref: env:ARIA_VAPID_PRIVATE_KEY
+  # MAIL-01 邮件助手（QQ 邮箱默认值）。授权码（非登录密码）只走
+  # secret_value（后台填写）或环境变量：ARIA_MAIL_ADDRESS / ARIA_MAIL_SECRET。
+  # 联调验证：cd server && ARIA_MAIL_ADDRESS=... ARIA_MAIL_SECRET=... \
+  #   ../.venv/bin/python scripts/mail_livecheck.py
+  mail:
+    enabled: false
+    smtp_host: smtp.qq.com
+    smtp_port: 465
+    smtp_use_ssl: true
+    imap_host: imap.qq.com
+    imap_port: 993
+    # address: you@example.com
+    # display_name: Aria
+    # secret_ref: env:ARIA_MAIL_SECRET
+
+# 屏幕感知默认关闭。启用后 Hub 周期截取已授权桌面端的屏幕（原图即焚），
+# 只持久化视觉模型产出的摘要；notable 时经认知决策主动开启话题。
+screen_awareness:
+  enabled: false
+  interval_seconds: 60
+  displays: [1]
+  analysis_prompt: 概括这块屏幕当前展示的主要内容，并判断是否值得主动向用户提起或记住。
+  memory_enabled: true
+  proactive_enabled: true
+  unchanged_skip_threshold: 6
+
+# 浏览器观察默认关闭。启用后 Hub 周期读取已配对浏览器的当前标签页，
+# 只持久化摘要、origin 和截断标题；页面原文在分析后即销毁。
+browser_awareness:
+  enabled: false
+  interval_seconds: 60
+  analysis_prompt: 概括用户当前浏览的网页内容，并判断是否值得主动向用户提起或记住。
+  memory_enabled: true
+  proactive_enabled: true
+  max_text_chars: 8000
+  blocked_hosts: []
+
+# 邮件感知默认关闭（docs/09 §3 MAILW）。需 integrations.mail 已配置 IMAP。
+# 周期拉取未读（BODY.PEEK 不改旗标），摘要经 utility 路由分析后即焚；
+# 账单/到期/邀约/行程变更类经认知决策（DND/打扰预算）后才主动提起，
+# 营销与验证码静默。首个周期只建立 UID 基线，重启不重报历史未读。
+mail_awareness:
+  enabled: false
+  interval_seconds: 900
+  max_messages_per_tick: 5
+  analysis_prompt: 概括这封未读邮件的内容，并判断是否值得主动向用户提起或记住。
+  memory_enabled: true
+  proactive_enabled: true
+
+# 家庭守护（SAFE-01/02，docs/44）。S1：开启后 HA 告警按 severity 分级富化，
+# critical 规则（漏水/烟雾等）全通道广播；升级链参数供 S2 告警状态机使用。
+safety:
+  enabled: false
+  escalation_enabled: true
+  confirm_window_seconds: 300
+  push_retry_minutes: 3
+  inactivity_hours: 12.0
+  inactivity_active_range: "09:00-22:00"
+
+# 外部 MCP Server 默认不连接。一期只允许 Streamable HTTP；工具先进入
+# Hub 本地目录，不会因发现成功就全量注入聊天提示词。
+mcp:
+  enabled: false
+  max_tools_per_turn: 8
+  servers:
+    # MCP-C1 首选试点：Context7 公开技术文档检索。启用前同时打开顶层和 Server 开关，
+    # 并在运行环境设置 ARIA_MCP_CONTEXT7_API_KEY。
+    - server_id: context7
+      enabled: false
+      transport: streamable_http
+      endpoint: https://mcp.context7.com/mcp
+      secret_ref: env:ARIA_MCP_CONTEXT7_API_KEY
+      allowed_tools: [resolve-library-id, query-docs]
+      allow_write_tools: false
+      connect_timeout_seconds: 5
+      call_timeout_seconds: 15
+      catalog_ttl_seconds: 300
+      max_result_bytes: 32000
+  # 其他 Server 模板：
+  # - server_id: readonly-example
+  #   enabled: false
+  #   transport: streamable_http
+  #   endpoint: https://example.com/mcp
+  #   secret_ref: env:ARIA_MCP_EXAMPLE_TOKEN
+  #   allowed_tools: [search, get_item]
+  #   allow_write_tools: false
+  #   connect_timeout_seconds: 5
+  #   call_timeout_seconds: 15
+  #   catalog_ttl_seconds: 300
+  #   max_result_bytes: 32000
+
+# 主动输出通道。Desktop 通知还需要设备端声明并获授 notification.show；
+# Voice 仅投递到当前在线且空闲的语音会话；Web Push 需 integrations.push 启用
+# 且用户在聊天端开启通知。所有通知类通道（desktop/web_push）禁止 L2 内容。
+proactive_output:
+  enabled: true
+  delivery_mode: all_enabled
+  web_chat:
+    enabled: true
+    priority: 100
+    max_privacy_level: L1
+    critical_only: false
+  desktop_notification:
+    enabled: false
+    priority: 80
+    max_privacy_level: L1
+    critical_only: false
+  web_push:
+    enabled: false
+    priority: 70
+    max_privacy_level: L1
+    critical_only: false
+  voice:
+    enabled: false
+    priority: 60
+    max_privacy_level: L1
+    critical_only: false
+
+capability_models:
+  vision: zhipu_vision_free
+  image_generation: zhipu_image_free
+  video_generation: zhipu_video_free
+
+# P6 语音管线（后台「模型与路由 → 语音」可视化管理，保存即生效）。
+# asr 为空表示语音识别未启用；tts 按顺序做故障转移
+# （MiMo 为主、SenseAudio 云端音色可选、edge-tts 兜底）。
+# MiMo 密钥建议直接在管理后台填 secret_value，无需写进本文件。
+voice:
+  # 首句没有强标点时，累计到该长度就提前送 TTS；用于缩短首音频等待。
+  first_tts_chunk_chars: 24
+  asr: null
+  # asr:
+  #   provider: mimo
+  #   model: mimo-v2.5-asr
+  #   base_url: https://api.xiaomimimo.com/v1
+  #   secret_value: <在管理后台填写 MiMo API Key>
+  #   language: auto
+  # L2 本地语音可改用 faster-whisper；无需 URL/Key，首次识别时延迟加载模型。
+  # 当前作为可选本地运行依赖，不随 Hub 基础依赖自动安装。
+  # asr:
+  #   provider: faster_whisper
+  #   model: small
+  #   base_url: null
+  #   language: zh
+  #   device: cpu
+  #   compute_type: int8
+  #   # 可选：给本地模型提供上下文和术语偏置，避免用全局替换误伤普通句子。
+  #   initial_prompt: 这是一段与智能伴侣小艾（Aria）的普通话对话。
+  #   hotwords: 小艾 Aria 只回答
+  #   runs_local: true
+  # SenseAudio 共享连接（后台「模型与路由 → 声音管理」配置音色库/试听/克隆）。
+  # senseaudio TTS 条目留空 base_url/密钥时回退到这里；L2 私密内容禁止出站。
+  # senseaudio:
+  #   enabled: true
+  #   base_url: https://api.senseaudio.cn
+  #   secret_value: <在管理后台填写 SenseAudio API Key>
+  #   tts_model: sensenova-tts-2.0
+  tts:
+    - provider: edge_tts
+      voice: zh-CN-XiaoxiaoNeural
+    # - provider: senseaudio
+    #   model: sensenova-tts-2.0
+    #   # 音色 ID 见「声音管理」音色库；male_0018_a 属 Free 套餐可合成音色。
+    #   voice: male_0018_a
+
+# 金额限额默认不设置；启用时端点必须提供同币种的完整输入/输出单价。
+# 仅覆盖已启用运行预算、经 Router 登记的模型调用；按准入的 UTC 日/月计入。
+run_budget:
+  enabled: true
+  cost_currency: null
+  max_daily_cost: null
+  max_monthly_cost: null
+
+observability:
+  log_level: INFO
+  trace_sample_rate: 1.0
+  retain_days: 14
