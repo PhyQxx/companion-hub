@@ -29,7 +29,7 @@ from sqlalchemy import select
 _TOKEN_KEY = "ariaChatToken"
 _STATE_TTL_SECONDS = 300
 # 单实例部署，state 保存在进程内存即可（重启丢未完成跳转，用户重试即可）
-_pending_states: dict[str, float] = {}
+_pending_states: dict[str, tuple[float, str]] = {}
 
 
 @dataclass(frozen=True, slots=True)
@@ -63,7 +63,7 @@ def load_sso_settings() -> SsoSettings:
 
 
 def _prune_states(now: float) -> None:
-    for state in [k for k, ts in _pending_states.items() if now - ts > _STATE_TTL_SECONDS]:
+    for state in [k for k, entry in _pending_states.items() if now - entry[0] > _STATE_TTL_SECONDS]:
         _pending_states.pop(state, None)
 
 
@@ -93,11 +93,12 @@ def create_sso_router(
         now = time.monotonic()
         _prune_states(now)
         state = secrets.token_urlsafe(24)
-        _pending_states[state] = now
+        bound_redirect_uri = f"{_origin(request)}/api/v1/auth/sso/callback"
+        _pending_states[state] = (now, bound_redirect_uri)
         authorize_url = (
             f"{settings.issuer}/oauth2/authorize"
             f"?response_type=code&client_id={settings.client_id}"
-            f"&redirect_uri={_origin(request)}/api/v1/auth/sso/callback"
+            f"&redirect_uri={bound_redirect_uri}"
             f"&scope=openid%20profile&state={state}"
         )
         response.status_code = 302
@@ -117,11 +118,10 @@ def create_sso_router(
             return _landing_failure(fail_target, f"pnkx 授权失败：{error}")
         now = time.monotonic()
         _prune_states(now)
-        issued = _pending_states.pop(state, None) if state else None
-        if not code or issued is None or now - issued > _STATE_TTL_SECONDS:
+        entry = _pending_states.pop(state, None) if state else None
+        if not code or entry is None or now - entry[0] > _STATE_TTL_SECONDS:
             return _landing_failure(fail_target, "SSO 状态校验失败，请重新登录")
-
-        redirect_uri = f"{base_url}/api/v1/auth/sso/callback"
+        redirect_uri = entry[1]
         try:
             async with httpx.AsyncClient(timeout=10.0) as client:
                 token_resp = await client.post(
