@@ -112,7 +112,7 @@ def create_sso_router(
     ) -> HTMLResponse:
         if not settings.enabled:
             raise HTTPException(status_code=404, detail="SSO 未启用")
-        fail_target = f"{base_url}/#sso-error="
+        fail_target = f"{_origin(request) or base_url}/#sso-error="
         if error:
             return _landing_failure(fail_target, f"pnkx 授权失败：{error}")
         now = time.monotonic()
@@ -133,7 +133,10 @@ def create_sso_router(
                     },
                     auth=(settings.client_id, settings.client_secret),
                 )
-                token_resp.raise_for_status()
+                if token_resp.status_code >= 400:
+                    raise RuntimeError(
+                        f"pnkx 返回 {token_resp.status_code}: {token_resp.text[:200]} (redirect_uri={redirect_uri})"
+                    )
                 access_token = token_resp.json().get("access_token")
                 if not access_token:
                     raise RuntimeError("empty access token")
