@@ -113,7 +113,7 @@ def create_sso_router(
     ) -> HTMLResponse:
         if not settings.enabled:
             raise HTTPException(status_code=404, detail="SSO 未启用")
-        fail_target = f"{_origin(request) or base_url}/#sso-error="
+        fail_target = f"{_origin(request)}/chat/#sso-error="
         if error:
             return _landing_failure(fail_target, f"pnkx 授权失败：{error}")
         now = time.monotonic()
@@ -182,7 +182,7 @@ def create_sso_router(
 <script>
 try {{ localStorage.setItem('{_TOKEN_KEY}', '{safe_token}');
      sessionStorage.setItem('{_TOKEN_KEY}', '{safe_token}'); }} catch (e) {{}}
-location.replace('{_origin(request) or "/"}/');
+location.replace('{_origin(request)}/chat/');
 </script></head>
 <body style="font-family:sans-serif;text-align:center;padding-top:20vh;color:#555">
 正在进入 Companion Hub……
