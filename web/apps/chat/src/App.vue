@@ -1637,6 +1637,7 @@ async function installPwa() {
       <header class="conversation-heading">
         <strong>{{ showArchivedConversations ? '已归档' : '会话' }}</strong>
         <small>{{ visibleConversations.length }} 个</small>
+        <a class="admin-entry" href="/admin/" target="_blank" rel="noopener" title="打开 Aria 管理后台">管理</a>
       </header>
       <div class="conversation-tabs">
         <button type="button" :class="{ active: !showArchivedConversations }" @click="selectConversationGroup(false)">会话</button>
@@ -1924,6 +1925,8 @@ async function installPwa() {
 .shell { display:grid; grid-template-columns:250px minmax(0,1fr) clamp(320px,22vw,380px); grid-template-areas:"conversations chat avatar"; height:100%; background:var(--bg); }
 aside { display:flex; flex-direction:column; gap:12px; min-width:0; padding:14px; min-height:0; background:var(--panel); }
 aside header strong { font-size:16px; }
+.admin-entry { font-size:11px; color:#9cbdad; border:1px solid #2b5142; border-radius:6px; padding:2px 8px; text-decoration:none; }
+.admin-entry:hover { color:#fff; background:#2b5142; }
 .conversation-sidebar { grid-area:conversations; border-right:1px solid var(--line); }
 .conversation-heading { display:flex; align-items:center; justify-content:space-between; min-height:34px; }
 .conversation-heading small { color:var(--muted); font-size:11px; }
