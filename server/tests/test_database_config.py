@@ -187,7 +187,7 @@ async def test_admin_api_requires_token_and_manages_drafts(
     assert 'href="#"' not in persona_page.text
     assert chat_page.status_code == 200
     assert chat_slash_page.status_code == 200
-    # /chat serves the Vue build when web/apps/chat/dist exists and falls
+    # /chat serves the Vue build when web/apps/dist exists and falls
     # back to the vanilla debug page in source-only checkouts.
     assert (
         '<div id="app"></div>' in chat_page.text or "文字聊天调试台" in chat_page.text

@@ -8,39 +8,11 @@ importers:
 
   .: {}
 
-  apps/admin:
+  apps:
     dependencies:
       '@aria/shared':
         specifier: workspace:*
-        version: link:../../packages/shared
-      element-plus:
-        specifier: ^2.14.0
-        version: 2.14.4(vue@3.5.41(typescript@5.9.3))
-      vue:
-        specifier: ^3.5.0
-        version: 3.5.41(typescript@5.9.3)
-      vue-router:
-        specifier: ^4.4.0
-        version: 4.6.4(vue@3.5.41(typescript@5.9.3))
-    devDependencies:
-      '@vitejs/plugin-vue':
-        specifier: ^5.2.0
-        version: 5.2.4(vite@6.4.3)(vue@3.5.41(typescript@5.9.3))
-      typescript:
-        specifier: ^5.6.0
-        version: 5.9.3
-      vite:
-        specifier: ^6.0.0
-        version: 6.4.3
-      vue-tsc:
-        specifier: ^2.1.0
-        version: 2.2.12(typescript@5.9.3)
-
-  apps/chat:
-    dependencies:
-      '@aria/shared':
-        specifier: workspace:*
-        version: link:../../packages/shared
+        version: link:../packages/shared
       '@phosphor-icons/vue':
         specifier: 2.2.1
         version: 2.2.1(vue@3.5.41(typescript@5.9.3))
@@ -610,7 +582,7 @@ packages:
     resolution: {integrity: sha512-1+HBaOx0zi/dQWht8rNv9MYf9qqpqL/kxI0hXImU6Y547zM6Sni8BQibt7ifgMcYtQg41ao3Ivd6cnSM86inpg==}
 
   memoize-one@6.0.0:
-    resolution: {integrity: sha1-slkbhx7YKUiu5HJ9xqvO7qyMEEU=}
+    resolution: {integrity: sha512-rkpe71W0N0c0Xz6QD0eJETuWAJGnJ9afsl1srmwPrI+yBCkge5EycXXbYRyvL29zZVUWQCY7InPRCv3GDXuZNw==}
 
   minimatch@9.0.9:
     resolution: {integrity: sha512-OBwBN9AL4dqmETlpS2zasx+vTeWclWzkblfZk7KTA5j3jeOONz/tRCnZomUyvNg83wL5Zv9Ss6HMJXAgL8R2Yg==}
@@ -628,7 +600,7 @@ packages:
     resolution: {integrity: sha512-Wj7+EJQ8mSuXr2iWfnujrimU35R2W4FAErEyTmJoJ7ucwTn2hOUSsRehMb5RSYkxXGTM7Y9QpvPmp++w5ftoJw==}
 
   path-browserify@1.0.1:
-    resolution: {integrity: sha1-2YRUqcN1PVeQhg8W9ohnueRr4f0=}
+    resolution: {integrity: sha512-b7uo2UCUOYZcnF/3ID0lulOJi/bafxa1xPe7ZPsammBSpjSWQkjNxlt635YGS2MiR9GjvuXCtz2emr3jbsz98g==}
 
   picocolors@1.1.1:
     resolution: {integrity: sha512-xceH2snhtb5M9liqDsmEw56le376mTZkEX/jEb/RxNFyegNul7eNslCXP9FDj/Lcu0X8KEyMceP2ntpaHrDEVA==}

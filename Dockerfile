@@ -17,8 +17,7 @@ RUN uv sync --locked --no-dev
 COPY alembic.ini ./
 COPY config ./config
 COPY server ./server
-COPY --from=web-build /web/apps/chat/dist ./web/apps/chat/dist
-COPY --from=web-build /web/apps/admin/dist ./web/apps/admin/dist
+COPY --from=web-build /web/apps/dist ./web/apps/dist
 COPY deploy/hub-entrypoint.sh /usr/local/bin/hub-entrypoint
 RUN chmod +x /usr/local/bin/hub-entrypoint
 

@@ -40,7 +40,7 @@ def register_frontend(
 ) -> None:
     admin_root = Path(__file__).parent.parent / "admin"
     app.mount("/admin/legacy", StaticFiles(directory=admin_root), name="admin-legacy")
-    admin_dist = Path(__file__).resolve().parents[3] / "web" / "apps" / "admin" / "dist"
+    admin_dist = Path(__file__).resolve().parents[3] / "web" / "apps" / "dist"
     admin_spa_ready = (admin_dist / "index.html").is_file()
     if admin_spa_ready:
         app.mount(
@@ -58,7 +58,7 @@ def register_frontend(
         StaticFiles(directory=pet_ui_root, html=True),
         name="desktop-pet",
     )
-    chat_dist = Path(__file__).resolve().parents[3] / "web" / "apps" / "chat" / "dist"
+    chat_dist = Path(__file__).resolve().parents[3] / "web" / "apps" / "dist"
     chat_spa_ready = (chat_dist / "index.html").is_file()
     chat_dist_assets = chat_dist / "assets"
     if chat_dist_assets.is_dir():
