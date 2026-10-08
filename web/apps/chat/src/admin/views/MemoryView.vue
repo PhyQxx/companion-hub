@@ -281,7 +281,7 @@ async function remove(id: number) {
     const result = await ElMessageBox.prompt(`硬删除记忆 #${id} 及其整个版本链，不可撤销并记入台账。`, "删除记忆", {
       type: "error",
       inputPlaceholder: "请输入删除原因",
-      inputValidator: (value) => value.trim().length >= 2 || "请填写删除原因",
+      inputValidator: (value: any) => value.trim().length >= 2 || "请填写删除原因",
       confirmButtonText: "确认删除",
       cancelButtonText: "取消",
     });
@@ -460,7 +460,7 @@ onMounted(load);
       </div>
     </div>
 
-    <el-dialog :model-value="!!detail" width="680px" :title="detail ? `记忆 #${detail.id}` : '记忆详情'" @update:model-value="value => { if (!value) detail = null }">
+    <el-dialog :model-value="!!detail" width="680px" :title="detail ? `记忆 #${detail.id}` : '记忆详情'" @update:model-value="(value: any) => { if (!value) detail = null }">
       <template v-if="detail">
         <h3>记忆 #{{ detail.id }}（{{ typeLabels[detail.type] ?? detail.type }} · {{ detail.privacy_level }}）</h3>
         <dl class="detail-grid">
@@ -488,7 +488,7 @@ onMounted(load);
       <template #footer><el-button @click="detail = null">关闭</el-button></template>
     </el-dialog>
 
-    <el-dialog :model-value="!!editing" width="620px" title="纠错编辑" @update:model-value="value => { if (!value) editing = null }">
+    <el-dialog :model-value="!!editing" width="620px" title="纠错编辑" @update:model-value="(value: any) => { if (!value) editing = null }">
       <template v-if="editing">
         <h3>纠错编辑 #{{ editing.id }}</h3>
         <p class="hint">保存后生成替代版本，原版本转入 superseded 并保留溯源。</p>

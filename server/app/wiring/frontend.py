@@ -11,7 +11,7 @@ import os
 from pathlib import Path
 
 from fastapi import FastAPI
-from fastapi.responses import FileResponse
+from fastapi.responses import RedirectResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from app import __version__
@@ -103,8 +103,10 @@ def register_frontend(
 
         @app.get("/admin", include_in_schema=False)
         @app.get("/admin/{rest:path}", include_in_schema=False)
-        async def admin_spa(rest: str = "") -> FileResponse:
-            return FileResponse(admin_dist / "index.html")
+        async def admin_redirect(rest: str = "") -> RedirectResponse:
+            # 管理后台已并入主应用（/chat/admin），旧入口 307 保留深链
+            target = "/chat/admin" + (f"/{rest}" if rest else "")
+            return RedirectResponse(target, status_code=307)
 
     else:
 
@@ -159,6 +161,13 @@ def register_frontend(
     @app.get("/chat/debug", include_in_schema=False)
     async def chat_debug() -> FileResponse:
         return FileResponse(chat_root / "index.html")
+
+    if chat_spa_ready:
+
+        @app.get("/chat/{rest:path}", include_in_schema=False)
+        async def chat_spa(rest: str) -> FileResponse:
+            # 合并后的 SPA 回退：/chat/admin 等子路由均由前端路由接管
+            return FileResponse(chat_dist / "index.html")
 
     @app.get("/healthz", tags=["system"])
     async def health() -> dict[str, object]:

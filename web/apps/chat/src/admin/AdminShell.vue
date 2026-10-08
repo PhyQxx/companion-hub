@@ -4,25 +4,25 @@ import { useRoute, useRouter } from "vue-router";
 import { AdminApi } from "@aria/shared";
 import { adminGroups, findAdminModule } from "./admin-navigation";
 
-// 管理后台外壳：令牌鉴权（sessionStorage）+ 侧栏导航 + 路由视图。
+// 管理后台外壳（并入主应用）：SSO 会话鉴权 + 侧栏导航 + 路由视图。
 // 子视图通过 inject("adminApi") 拿到已鉴权的客户端实例。
-const TOKEN_KEY = "ariaAdminToken";
+// 会话令牌来自 pnkx SSO 登录（回调页写入 localStorage.ariaChatToken），
+// AdminTokenGuard 对有效会话直接放行（单用户中枢：会话即主人）。
 const api = new AdminApi();
-api.token = sessionStorage.getItem(TOKEN_KEY) ?? "";
+api.token = localStorage.getItem("ariaChatToken") ?? "";
 const connected = ref(false);
 const statusText = ref("");
 const statusError = ref(false);
-const tokenInput = ref("");
 
 provide("adminApi", api);
 
 const route = useRoute();
 const router = useRouter();
 const normalizedPath = computed(() => {
-  const path = route.path.replace(/\/$/, "") || "/";
-  return path === "/timeline" ? "/memory" : path;
+  const path = route.path.replace(/\/$/, "");
+  return path === "/admin/timeline" ? "/admin/memory" : path;
 });
-const activeModule = computed(() => findAdminModule(normalizedPath.value));
+const activeModule = computed(() => findAdminModule(normalizedPath.value) ?? findAdminModule("/admin"));
 const heading = computed(() => activeModule.value.label);
 const activeTab = computed(() => String(route.query.tab ?? activeModule.value.tabs[0].key));
 
@@ -47,12 +47,9 @@ function setStatus(text: string, error = false) {
   statusError.value = error;
 }
 
-/** 用管理令牌换取一次探测请求，验证通过后进入工作区 */
-async function connect(token: string) {
-  api.token = token;
+async function connect() {
   try {
     await api.request("/api/v1/admin/config/current");
-    sessionStorage.setItem(TOKEN_KEY, token);
     connected.value = true;
     setStatus("已连接");
   } catch (error) {
@@ -61,29 +58,21 @@ async function connect(token: string) {
   }
 }
 
-// 跳转后端发起 pnkx OIDC 授权码流程（回调按发起来源落回本页）
+// 会话缺失/失效：走 pnkx SSO 重新建立（回调落回本应用根，令牌自动采纳）
 function loginWithPnkx() {
   window.location.href = "/api/v1/auth/sso/login";
 }
 
-if (api.token) {
-  void connect(api.token);
-} else {
-  // SSO 登录后回调页会把 pnkx 换来的会话令牌写在 localStorage（ariaChatToken），
-  // 管理后台与聊天同源，可直接采纳为主人令牌（有效会话即主人，见 AdminTokenGuard）
-  const ssoToken = localStorage.getItem("ariaChatToken");
-  if (ssoToken) void connect(ssoToken);
-}
+if (api.token) void connect();
+else setStatus("尚未登录，请使用 pnkx 账号登录", true);
 </script>
 
 <template>
   <div v-if="!connected" class="auth">
     <el-card class="card" shadow="never">
       <h1>Aria 管理后台</h1>
-      <p class="hint">输入 ARIA_ADMIN_TOKEN 连接管理 API，仅保存在当前浏览器会话中。</p>
-      <el-input v-model="tokenInput" type="password" show-password placeholder="ARIA_ADMIN_TOKEN" autocomplete="current-password" @keyup.enter="connect(tokenInput)" />
-      <el-button type="primary" @click="connect(tokenInput)">连接</el-button>
-      <el-button type="default" @click="loginWithPnkx">使用 pnkx 账号登录</el-button>
+      <p class="hint">使用 pnkx 账号登录后即可管理本中枢。</p>
+      <el-button type="primary" @click="loginWithPnkx">使用 pnkx 账号登录</el-button>
       <p v-if="statusText" class="status" :class="{ error: statusError }">{{ statusText }}</p>
     </el-card>
   </div>

@@ -157,8 +157,19 @@ def create_sso_router(
                 )
             ).scalars().first()
         if user is None:
-            return _landing_failure(fail_target, "本地账号尚未初始化，请先用密码完成首次设置")
-
+            # 首次部署 + 白名单命中：由 SSO 直接完成初始化（免设聊天密码，
+            # 本地密码登录由此停用，符合"统一走 pnkx 账号"的定位）
+            display_name = str(userinfo.get("name") or "主人")
+            await service.setup(
+                display_name=display_name,
+                password=secrets.token_urlsafe(32),
+            )
+        async with service._database.sessions() as session:  # noqa: SLF001
+            user = (
+                await session.execute(
+                    select(AppUserRecord).where(AppUserRecord.status == "active")
+                )
+            ).scalars().first()
         auth_session = await service.login_sso(user_id=user.id)
         token = auth_session.access_token
         safe_token = html.escape(token, quote=True)

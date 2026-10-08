@@ -16,7 +16,7 @@ export interface AdminModule {
 export const adminModules: AdminModule[] = [
   {
     key: "overview",
-    path: "/",
+    path: "/admin",
     label: "总览",
     group: "概览",
     tabs: [
@@ -28,7 +28,7 @@ export const adminModules: AdminModule[] = [
   },
   {
     key: "persona",
-    path: "/personas",
+    path: "/admin/personas",
     label: "人格与形象",
     group: "伴侣核心",
     tabs: [
@@ -43,7 +43,7 @@ export const adminModules: AdminModule[] = [
   },
   {
     key: "memory",
-    path: "/memory",
+    path: "/admin/memory",
     label: "记忆与历史",
     group: "伴侣核心",
     tabs: [
@@ -55,7 +55,7 @@ export const adminModules: AdminModule[] = [
   },
   {
     key: "tasks",
-    path: "/tasks",
+    path: "/admin/tasks",
     label: "个人管家",
     group: "伴侣核心",
     tabs: [
@@ -68,7 +68,7 @@ export const adminModules: AdminModule[] = [
   },
   {
     key: "models",
-    path: "/models",
+    path: "/admin/models",
     label: "模型与路由",
     group: "能力接入",
     tabs: [
@@ -82,7 +82,7 @@ export const adminModules: AdminModule[] = [
   },
   {
     key: "skills",
-    path: "/skills",
+    path: "/admin/skills",
     label: "技能中心",
     group: "能力接入",
     tabs: [
@@ -95,7 +95,7 @@ export const adminModules: AdminModule[] = [
   },
   {
     key: "integrations",
-    path: "/integrations",
+    path: "/admin/integrations",
     label: "集成与连接",
     group: "能力接入",
     tabs: [
@@ -106,7 +106,7 @@ export const adminModules: AdminModule[] = [
   },
   {
     key: "devices",
-    path: "/devices",
+    path: "/admin/devices",
     label: "设备终端",
     group: "能力接入",
     tabs: [
@@ -117,7 +117,7 @@ export const adminModules: AdminModule[] = [
   },
   {
     key: "perception",
-    path: "/perception",
+    path: "/admin/perception",
     label: "感知与守护",
     group: "能力接入",
     tabs: [
@@ -130,7 +130,7 @@ export const adminModules: AdminModule[] = [
   },
   {
     key: "logs",
-    path: "/logs",
+    path: "/admin/logs",
     label: "观测与审计",
     group: "运维治理",
     tabs: [
@@ -144,7 +144,7 @@ export const adminModules: AdminModule[] = [
   },
   {
     key: "system",
-    path: "/settings",
+    path: "/admin/settings",
     label: "系统与维护",
     group: "运维治理",
     tabs: [

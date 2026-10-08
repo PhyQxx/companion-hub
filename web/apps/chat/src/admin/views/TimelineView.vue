@@ -286,7 +286,7 @@ onMounted(async () => {
       </div>
     </div>
 
-    <el-dialog :model-value="!!selected" width="760px" :title="selected ? `Timeline #${selected.id}` : 'Timeline 详情'" @update:model-value="value => { if (!value) selected = null }">
+    <el-dialog :model-value="!!selected" width="760px" :title="selected ? `Timeline #${selected.id}` : 'Timeline 详情'" @update:model-value="(value: any) => { if (!value) selected = null }">
       <template v-if="selected">
         <dl class="detail-grid">
           <dt>发生时间</dt><dd>{{ fmt(selected.occurred_at) }}<template v-if="selected.ended_at"> ～ {{ fmt(selected.ended_at) }}</template></dd>

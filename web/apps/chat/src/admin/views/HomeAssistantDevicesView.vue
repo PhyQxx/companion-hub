@@ -628,7 +628,7 @@ onMounted(load);
             <el-option v-for="domain in domainOptions" :key="domain" :label="domain" :value="domain" />
           </el-select>
         </div>
-        <el-table :data="pagedEntities" row-key="entity_id" max-height="480" @selection-change="rows => selected = rows.map((row: EntityDetail) => row.entity_id)">
+        <el-table :data="pagedEntities" row-key="entity_id" max-height="480" @selection-change="(rows: any) => selected = rows.map((row: EntityDetail) => row.entity_id)">
           <el-table-column type="selection" width="48" reserve-selection />
           <el-table-column label="名称" min-width="180">
             <template #default="{ row }">

@@ -1582,7 +1582,7 @@ onActivated(() => {
               <h2>模型列表</h2>
               <el-button type="primary" size="small" @click="addModel">＋ 添加模型</el-button>
             </div>
-            <el-menu class="model-list" :default-active="String(activeModelTab)" @select="key => selectModel(Number(key))">
+            <el-menu class="model-list" :default-active="String(activeModelTab)" @select="(key: any) => selectModel(Number(key))">
               <el-menu-item
                 v-for="(m, i) in draft.models"
                 :key="i"

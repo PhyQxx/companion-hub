@@ -12,7 +12,9 @@
     "@aria/shared": "workspace:*",
     "@phosphor-icons/vue": "2.2.1",
     "markdown-it": "^14.1.0",
-    "vue": "^3.5.0"
+    "vue": "^3.5.0",
+    "element-plus": "^2.14.0",
+    "vue-router": "^4.4.0"
   },
   "devDependencies": {
     "@types/markdown-it": "^14.1.2",
