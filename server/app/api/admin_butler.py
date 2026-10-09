@@ -4,7 +4,9 @@
 场景启停这类无设备副作用的动作——运行、计划确认、会议授权与摘要
 确认仍必须走聊天端确认流，Admin 不提供替代入口。
 
-单用户部署（ID-01 暂缓）：user_id 缺省取第一个活跃用户。
+多用户：个人数据路由（任意活跃会话可访问）；会话访问强制 scope 到
+本人，业主会话可显式指定 user_id 检视其他用户，admin token 机器访问
+缺省取第一个活跃用户。
 """
 
 from __future__ import annotations
@@ -13,7 +15,7 @@ from datetime import date, datetime
 from typing import Annotated, Any
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from sqlalchemy import select
 
 from app.db import AppUserRecord, Database
@@ -29,7 +31,7 @@ from app.workflows.drafts import PlanDistiller, WorkflowDraftStore, replay_pendi
 from app.workflows.models import WorkflowStep, WorkflowView
 from app.workflows.service import WorkflowService
 
-from .admin_config import AdminTokenGuard
+from .admin_config import AdminTokenGuard, admin_access
 
 
 class AdminButlerSummary(StrictModel):
@@ -88,15 +90,17 @@ def create_admin_butler_router(
     drafts: WorkflowDraftStore | None = None,
     distiller: PlanDistiller | None = None,
 ) -> APIRouter:
+    guard = AdminTokenGuard(admin_token, min_role="member")
     router = APIRouter(
         prefix="/api/v1/admin/butler",
         tags=["admin-butler"],
-        dependencies=[Depends(AdminTokenGuard(admin_token))],
+        dependencies=[Depends(guard)],
     )
 
-    async def resolve_user(user_id: UUID | None) -> UUID:
-        if user_id is not None:
-            return user_id
+    async def resolve_user(request: Request, user_id: UUID | None = None) -> UUID:
+        scoped = admin_access(request).scoped_user_id(user_id)
+        if scoped is not None:
+            return scoped
         async with database.sessions() as session:
             first = await session.scalar(
                 select(AppUserRecord.id)
@@ -109,8 +113,10 @@ def create_admin_butler_router(
         return first
 
     @router.get("/summary", response_model=AdminButlerSummary)
-    async def summary(user_id: UUID | None = None) -> AdminButlerSummary:
-        owner = await resolve_user(user_id)
+    async def summary(
+        request: Request, user_id: UUID | None = None
+    ) -> AdminButlerSummary:
+        owner = await resolve_user(request, user_id)
         workflow_items = await workflows.list_workflows(owner, limit=100)
         scene_items = await scenes.list_scenes(owner)
         meeting_items = await meetings.list(owner, limit=100)
@@ -130,41 +136,44 @@ def create_admin_butler_router(
 
     @router.get("/workflows", response_model=list[WorkflowView])
     async def list_workflows(
+        request: Request,
         user_id: UUID | None = None,
         limit: Annotated[int, Query(ge=1, le=100)] = 50,
     ) -> list[WorkflowView]:
-        return await workflows.list_workflows(await resolve_user(user_id), limit=limit)
+        return await workflows.list_workflows(await resolve_user(request, user_id), limit=limit)
 
     @router.delete("/workflows/{workflow_id}", status_code=status.HTTP_204_NO_CONTENT)
-    async def delete_workflow(workflow_id: UUID, user_id: UUID | None = None) -> None:
+    async def delete_workflow(
+        workflow_id: UUID, request: Request, user_id: UUID | None = None
+    ) -> None:
         try:
-            await workflows.delete_workflow(await resolve_user(user_id), workflow_id)
+            await workflows.delete_workflow(await resolve_user(request, user_id), workflow_id)
         except LookupError as error:
             raise HTTPException(status.HTTP_404_NOT_FOUND, detail=str(error)) from error
 
     @router.get("/workflow-drafts", response_model=list[WorkflowDraftAdminView])
     async def list_workflow_drafts(
+        request: Request,
         user_id: UUID | None = None,
         draft_status: Annotated[str | None, Query(alias="status")] = "pending",
         limit: Annotated[int, Query(ge=1, le=100)] = 50,
     ) -> list[WorkflowDraftAdminView]:
         if drafts is None:
             raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, detail="drafts_disabled")
-        records = await drafts.list_drafts(
-            await resolve_user(user_id), status=draft_status, limit=limit
-        )
+        owner = await resolve_user(request, user_id)
+        records = await drafts.list_drafts(owner, status=draft_status, limit=limit)
         return [_draft_view(record) for record in records]
 
     @router.post("/workflow-drafts/{draft_id}/approve", response_model=WorkflowDraftAdminView)
     async def approve_workflow_draft(
-        draft_id: UUID, user_id: UUID | None = None
+        draft_id: UUID, request: Request, user_id: UUID | None = None
     ) -> WorkflowDraftAdminView:
         """审批通过：回放通过（或无可回放步骤）才允许创建正式流程。"""
         if drafts is None:
             raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, detail="drafts_disabled")
         try:
             record = await drafts.approve(
-                draft_id, user_id=await resolve_user(user_id), workflows=workflows
+                draft_id, user_id=await resolve_user(request, user_id), workflows=workflows
             )
         except LookupError as error:
             raise HTTPException(404, str(error)) from error
@@ -176,6 +185,7 @@ def create_admin_butler_router(
     async def evaluate_workflow_draft(
         draft_id: UUID,
         body: WorkflowFixtureRequest,
+        request: Request,
         user_id: UUID | None = None,
     ) -> WorkflowDraftAdminView:
         if drafts is None:
@@ -183,7 +193,7 @@ def create_admin_butler_router(
         try:
             record = await drafts.evaluate_draft(
                 draft_id,
-                user_id=await resolve_user(user_id),
+                user_id=await resolve_user(request, user_id),
                 registry=workflows.registry,
                 corpus=body,
             )
@@ -195,15 +205,14 @@ def create_admin_butler_router(
 
     @router.post("/workflow-drafts/{draft_id}/dismiss", response_model=WorkflowDraftAdminView)
     async def dismiss_workflow_draft(
-        draft_id: UUID, user_id: UUID | None = None
+        draft_id: UUID, request: Request, user_id: UUID | None = None
     ) -> WorkflowDraftAdminView:
         if drafts is None:
             raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, detail="drafts_disabled")
         record = await drafts.get(draft_id)
         if record is None or record.status != "pending":
             raise HTTPException(status.HTTP_404_NOT_FOUND, detail="draft not found")
-        owner = await resolve_user(user_id)
-        if record.user_id != owner:
+        if record.user_id != await resolve_user(request, user_id):
             raise HTTPException(status.HTTP_404_NOT_FOUND, detail="draft not found")
         reviewed = await drafts.mark_reviewed(draft_id, status="dismissed")
         assert reviewed is not None
@@ -211,61 +220,73 @@ def create_admin_butler_router(
 
     @router.post("/workflow-drafts/{draft_id}/replay", response_model=WorkflowDraftAdminView)
     async def replay_workflow_draft(
-        draft_id: UUID, user_id: UUID | None = None
+        draft_id: UUID, request: Request, user_id: UUID | None = None
     ) -> WorkflowDraftAdminView:
         """手动重跑样例回放；结果写回草稿作为审批依据。"""
         if drafts is None or distiller is None:
             raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, detail="drafts_disabled")
-        owner = await resolve_user(user_id)
-        record = await replay_pending_draft(distiller, drafts, draft_id, user_id=owner)
+        record = await replay_pending_draft(
+            distiller, drafts, draft_id, user_id=await resolve_user(request, user_id)
+        )
         if record is None:
             raise HTTPException(status.HTTP_404_NOT_FOUND, detail="draft not found")
         return _draft_view(record)
 
     @router.get("/scenes", response_model=list[HomeSceneView])
-    async def list_scenes(user_id: UUID | None = None) -> list[HomeSceneView]:
-        return await scenes.list_scenes(await resolve_user(user_id))
+    async def list_scenes(request: Request, user_id: UUID | None = None) -> list[HomeSceneView]:
+        return await scenes.list_scenes(await resolve_user(request, user_id))
 
     @router.post("/scenes/{scene_id}/enable", response_model=HomeSceneView)
-    async def enable_scene(scene_id: UUID, user_id: UUID | None = None) -> HomeSceneView:
+    async def enable_scene(
+        scene_id: UUID, request: Request, user_id: UUID | None = None
+    ) -> HomeSceneView:
         try:
-            return await scenes.set_enabled(await resolve_user(user_id), scene_id, enabled=True)
+            owner = await resolve_user(request, user_id)
+            return await scenes.set_enabled(owner, scene_id, enabled=True)
         except LookupError as error:
             raise HTTPException(status.HTTP_404_NOT_FOUND, detail=str(error)) from error
 
     @router.post("/scenes/{scene_id}/disable", response_model=HomeSceneView)
-    async def disable_scene(scene_id: UUID, user_id: UUID | None = None) -> HomeSceneView:
+    async def disable_scene(
+        scene_id: UUID, request: Request, user_id: UUID | None = None
+    ) -> HomeSceneView:
         try:
-            return await scenes.set_enabled(await resolve_user(user_id), scene_id, enabled=False)
+            owner = await resolve_user(request, user_id)
+            return await scenes.set_enabled(owner, scene_id, enabled=False)
         except LookupError as error:
             raise HTTPException(status.HTTP_404_NOT_FOUND, detail=str(error)) from error
 
     @router.delete("/scenes/{scene_id}", status_code=status.HTTP_204_NO_CONTENT)
-    async def delete_scene(scene_id: UUID, user_id: UUID | None = None) -> None:
+    async def delete_scene(
+        scene_id: UUID, request: Request, user_id: UUID | None = None
+    ) -> None:
         try:
-            await scenes.delete_scene(await resolve_user(user_id), scene_id)
+            await scenes.delete_scene(await resolve_user(request, user_id), scene_id)
         except LookupError as error:
             raise HTTPException(status.HTTP_404_NOT_FOUND, detail=str(error)) from error
 
     @router.get("/meetings", response_model=list[MeetingView])
     async def list_meetings(
+        request: Request,
         user_id: UUID | None = None,
         limit: Annotated[int, Query(ge=1, le=100)] = 50,
     ) -> list[MeetingView]:
-        return await meetings.list(await resolve_user(user_id), limit=limit)
+        return await meetings.list(await resolve_user(request, user_id), limit=limit)
 
     @router.get("/briefs", response_model=list[BriefView])
     async def list_briefs(
+        request: Request,
         user_id: UUID | None = None,
         limit: Annotated[int, Query(ge=1, le=30)] = 14,
     ) -> list[BriefView]:
-        return await briefs.recent_briefs(await resolve_user(user_id), limit=limit)
+        return await briefs.recent_briefs(await resolve_user(request, user_id), limit=limit)
 
     @router.get("/reviews", response_model=list[ReviewView])
     async def list_reviews(
+        request: Request,
         user_id: UUID | None = None,
         limit: Annotated[int, Query(ge=1, le=30)] = 14,
     ) -> list[ReviewView]:
-        return await reviews.recent_reviews(await resolve_user(user_id), limit=limit)
+        return await reviews.recent_reviews(await resolve_user(request, user_id), limit=limit)
 
     return router

@@ -11,7 +11,7 @@ from app.screen_awareness import ScreenAwarenessLoop
 from app.timeline.models import TimelineSourceType
 from app.timeline.store import TimelineStore
 
-from .admin_config import AdminTokenGuard
+from .admin_config import AdminTokenGuard, admin_access
 
 
 class ScreenAwarenessDisplayState(StrictModel):
@@ -61,10 +61,11 @@ def _loop_from(request: Request) -> ScreenAwarenessLoop | None:
 def create_admin_screen_awareness_router(
     timeline: TimelineStore | None, *, admin_token: str | None
 ) -> APIRouter:
+    guard = AdminTokenGuard(admin_token, min_role="member")
     router = APIRouter(
         prefix="/api/v1/admin/screen-awareness",
         tags=["admin-screen-awareness"],
-        dependencies=[Depends(AdminTokenGuard(admin_token))],
+        dependencies=[Depends(guard)],
     )
 
     @router.get("/status", response_model=ScreenAwarenessStatus)
@@ -111,29 +112,36 @@ def create_admin_screen_awareness_router(
 
     @router.get("/observations", response_model=ScreenObservationsResponse)
     async def observations(
+        request: Request,
         limit: Annotated[int, Query(ge=1, le=200)] = 20,
         offset: Annotated[int, Query(ge=0)] = 0,
     ) -> ScreenObservationsResponse:
         if timeline is None:
             return ScreenObservationsResponse(items=[], total=0, limit=limit, offset=offset)
-        async with timeline.database.sessions() as session:
-            from sqlalchemy import select
+        # 会话访问按本人时间线查询（观测源绑定的屏幕通常只有业主有事件，
+        # 成员据此得到空列表而非他人数据）；admin token 机器访问取首用户。
+        principal = admin_access(request).principal
+        if principal is not None:
+            owner: UUID | None = principal.user_id
+        else:
+            async with timeline.database.sessions() as session:
+                from sqlalchemy import select
 
-            from app.db import AppUserRecord
+                from app.db import AppUserRecord
 
-            owner = await session.scalar(
-                select(AppUserRecord.id).order_by(AppUserRecord.created_at)
-            )
+                owner = await session.scalar(
+                    select(AppUserRecord.id).order_by(AppUserRecord.created_at)
+                )
         if owner is None:
             return ScreenObservationsResponse(items=[], total=0, limit=limit, offset=offset)
         total = await timeline.count_events(
-            user_id=UUID(str(owner)),
+            user_id=owner,
             source_types=(TimelineSourceType.DEVICE,),
             event_types=("screen.observed",),
             privacy_levels=(PrivacyLevel.L0, PrivacyLevel.L1),
         )
         result = await timeline.search(
-            user_id=UUID(str(owner)),
+            user_id=owner,
             source_types=(TimelineSourceType.DEVICE,),
             event_types=("screen.observed",),
             privacy_levels=(PrivacyLevel.L0, PrivacyLevel.L1),

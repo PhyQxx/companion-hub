@@ -27,7 +27,8 @@ from uuid import UUID
 
 from sqlalchemy import select, update
 
-from app.db import AppUserRecord, Database, TaskItemRecord
+from app.context.owners import default_owner_id
+from app.db import Database, TaskItemRecord
 from app.ids import uuid7
 
 from .pnkx_client import PnkxTodo, PnkxTodoClient
@@ -69,15 +70,8 @@ class TodoSyncService:
         self._clock = clock or (lambda: datetime.now(UTC))
 
     async def default_user_id(self) -> UUID | None:
-        """pnkx 账号与 Aria 主用户对应；单用户部署取首个活跃用户。"""
-        async with self._database.sessions() as session:
-            value = await session.scalar(
-                select(AppUserRecord.id)
-                .where(AppUserRecord.status == "active")
-                .order_by(AppUserRecord.created_at)
-                .limit(1)
-            )
-        return value
+        """pnkx 待办镜像为业主级集成；多用户下归属业主账户。"""
+        return await default_owner_id(self._database)
 
     async def sync_once(self) -> SyncStats:
         stats = SyncStats()

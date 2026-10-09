@@ -1086,7 +1086,7 @@ async def test_admin_delete_and_ledger_api(
         app.router.lifespan_context(app),
         AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client,
     ):
-        page = await client.get("/admin/memory")
+        page = await client.get("/admin/memory", follow_redirects=True)
         unauthorized = await client.get("/api/v1/admin/deletion-ledger")
         deleted = await client.delete(
             f"/api/v1/admin/memories/{first.id}",

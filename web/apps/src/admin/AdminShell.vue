@@ -2,19 +2,30 @@
 import { computed, provide, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { AdminApi } from "@aria/shared";
-import { adminGroups, findAdminModule } from "./admin-navigation";
+import {
+  adminModules,
+  defaultModulePath,
+  findModuleForRole,
+  groupsForRole,
+  isOwner,
+  tabsFor,
+} from "./admin-navigation";
 
 // 管理后台外壳（并入主应用）：SSO 会话鉴权 + 侧栏导航 + 路由视图。
 // 子视图通过 inject("adminApi") 拿到已鉴权的客户端实例。
-// 会话令牌来自 pnkx SSO 登录（回调页写入 localStorage.ariaChatToken），
-// AdminTokenGuard 对有效会话直接放行（单用户中枢：会话即主人）。
+// 会话令牌来自 pnkx SSO 登录（回调页写入 localStorage.ariaChatToken）。
+// 多用户：/auth/me 返回 role——业主见全局配置；成员只见个人数据模块
+// （后端 Admin 分级鉴权为准，导航仅收敛入口与拦截越权深链）。
 const api = new AdminApi();
 api.token = localStorage.getItem("ariaChatToken") ?? "";
 const connected = ref(false);
 const statusText = ref("");
 const statusError = ref(false);
+const role = ref<string>("");
+const displayName = ref<string>("");
 
 provide("adminApi", api);
+provide("adminRole", role);
 
 const route = useRoute();
 const router = useRouter();
@@ -22,16 +33,31 @@ const normalizedPath = computed(() => {
   const path = route.path.replace(/\/$/, "");
   return path === "/admin/timeline" ? "/admin/memory" : path;
 });
-const activeModule = computed(() => findAdminModule(normalizedPath.value) ?? findAdminModule("/admin"));
-const heading = computed(() => activeModule.value.label);
-const activeTab = computed(() => String(route.query.tab ?? activeModule.value.tabs[0].key));
+const activeModule = computed(() => findModuleForRole(normalizedPath.value, role.value));
+// 成员打开仅业主模块的深链：显示无权限提示而不是静默跳转
+const deniedModule = computed(() => {
+  if (!connected.value || isOwner(role.value)) return null;
+  return adminModules.find((item) => item.path === normalizedPath.value && item.requiresOwner) ?? null;
+});
+const heading = computed(() => activeModule.value?.label ?? "管理后台");
+const visibleTabs = computed(() => (activeModule.value ? tabsFor(activeModule.value, role.value) : []));
+const activeTab = computed(() => String(route.query.tab ?? visibleTabs.value[0]?.key ?? ""));
 
 function ensureActiveTab() {
-  const valid = activeModule.value.tabs.some((tab) => tab.key === route.query.tab);
-  if (!valid) void router.replace({ path: activeModule.value.path, query: { ...route.query, tab: activeModule.value.tabs[0].key } });
+  // 成员落在 /admin（overview 仅业主）：跳到首个可见模块
+  if (connected.value && !isOwner(role.value) && normalizedPath.value === "/admin") {
+    void router.replace({ path: defaultModulePath(role.value), query: route.query });
+    return;
+  }
+  if (!activeModule.value || deniedModule.value) return;
+  const valid = visibleTabs.value.some((tab) => tab.key === route.query.tab);
+  if (!valid) {
+    const first = visibleTabs.value[0];
+    if (first) void router.replace({ path: activeModule.value.path, query: { ...route.query, tab: first.key } });
+  }
 }
 
-watch(() => [normalizedPath.value, route.query.tab], ensureActiveTab, { flush: "post" });
+watch(() => [normalizedPath.value, route.query.tab, role.value], ensureActiveTab, { flush: "post" });
 void router.isReady().then(ensureActiveTab);
 
 function openModule(path: string, tab: string) {
@@ -39,6 +65,7 @@ function openModule(path: string, tab: string) {
 }
 
 function openTab(tab: string) {
+  if (!activeModule.value) return;
   void router.replace({ path: activeModule.value.path, query: { ...route.query, tab } });
 }
 
@@ -47,11 +74,21 @@ function setStatus(text: string, error = false) {
   statusError.value = error;
 }
 
+interface MeResponse {
+  user: { display_name: string; role: string };
+}
+
 async function connect() {
   try {
-    await api.request("/api/v1/admin/config/current");
+    const me = await api.request<MeResponse>("/api/v1/auth/me");
+    role.value = me.user.role;
+    displayName.value = me.user.display_name;
     connected.value = true;
-    setStatus("已连接");
+    setStatus(
+      isOwner(role.value)
+        ? `已连接 · ${displayName.value}（业主）`
+        : `已连接 · ${displayName.value}（成员）`,
+    );
   } catch (error) {
     connected.value = false;
     setStatus(error instanceof Error ? error.message : "连接失败", true);
@@ -62,6 +99,12 @@ async function connect() {
 function loginWithPnkx() {
   window.location.href = "/api/v1/auth/sso/login";
 }
+
+function backToMyModules() {
+  void router.push({ path: defaultModulePath(role.value) });
+}
+
+const navGroups = computed(() => groupsForRole(role.value));
 
 if (api.token) void connect();
 else setStatus("尚未登录，请使用 pnkx 账号登录", true);
@@ -81,41 +124,50 @@ else setStatus("尚未登录，请使用 pnkx 账号登录", true);
     <aside>
       <div class="brand"><span class="brand-mark">A</span><span>Aria Hub</span></div>
       <nav class="side-menu" aria-label="管理后台导航">
-        <section v-for="group in adminGroups" :key="group.group" class="nav-group">
+        <section v-for="group in navGroups" :key="group.group" class="nav-group">
           <p>{{ group.group }}</p>
           <button
             v-for="item in group.items"
             :key="item.key"
             type="button"
-            :class="{ active: item.path === activeModule.path }"
-            @click="openModule(item.path, item.tabs[0].key)"
+            :class="{ active: item.path === normalizedPath }"
+            @click="openModule(item.path, tabsFor(item, role)[0]?.key ?? '')"
           >{{ item.label }}</button>
         </section>
       </nav>
-      <div class="privacy-note"><span class="dot"></span>管理 API 已连接</div>
+      <div class="privacy-note"><span class="dot"></span>{{ statusText }}</div>
     </aside>
     <main>
       <header class="topbar">
         <h1>{{ heading }}</h1>
         <span class="status" :class="{ error: statusError }">{{ statusText }}</span>
       </header>
-      <div class="module-navigation">
-        <div v-if="activeModule.tabs.length > 1" class="module-tabs" role="tablist" :aria-label="`${heading}子功能`">
-          <button
-            v-for="tab in activeModule.tabs"
-            :key="tab.key"
-            type="button"
-            role="tab"
-            :aria-selected="activeTab === tab.key"
-            :class="{ active: activeTab === tab.key }"
-            @click="openTab(tab.key)"
-          >{{ tab.label }}</button>
+      <div v-if="deniedModule" class="route-content denied">
+        <el-card class="card" shadow="never">
+          <h2>需要业主权限</h2>
+          <p class="hint">「{{ deniedModule.label }}」属于中枢全局配置，仅业主可访问。你已登录为成员（{{ displayName }}）。</p>
+          <el-button type="primary" @click="backToMyModules">返回我的工作区</el-button>
+        </el-card>
+      </div>
+      <template v-else-if="activeModule">
+        <div class="module-navigation">
+          <div v-if="visibleTabs.length > 1" class="module-tabs" role="tablist" :aria-label="`${heading}子功能`">
+            <button
+              v-for="tab in visibleTabs"
+              :key="tab.key"
+              type="button"
+              role="tab"
+              :aria-selected="activeTab === tab.key"
+              :class="{ active: activeTab === tab.key }"
+              @click="openTab(tab.key)"
+            >{{ tab.label }}</button>
+          </div>
+          <div id="module-tab-actions" class="module-tab-actions" />
         </div>
-        <div id="module-tab-actions" class="module-tab-actions" />
-      </div>
-      <div class="route-content" :class="{ 'route-content--fixed': activeModule.key === 'models' }">
-        <router-view @status="setStatus" />
-      </div>
+        <div class="route-content" :class="{ 'route-content--fixed': activeModule.key === 'models' }">
+          <router-view @status="setStatus" />
+        </div>
+      </template>
     </main>
   </div>
 </template>
@@ -156,6 +208,11 @@ main { display: flex; flex-direction: column; min-height: 0; }
 .module-tab-actions { min-width:0; margin-left:auto; flex-shrink:0; }
 .module-tab-actions:empty { display:none; }
 .route-content { flex:1; min-height:0; overflow:auto; }
+.route-content.denied { display:grid; place-items:center; padding:24px; }
+.route-content.denied .card { width:min(420px,90vw); border-radius:14px; }
+.route-content.denied .card :deep(.el-card__body) { display:grid; gap:12px; padding:26px; }
+.route-content.denied h2 { margin:0; font-size:17px; }
+.route-content.denied .hint { color:#68748a; font-size:13px; margin:0; line-height:1.6; }
 .route-content--fixed { overflow:hidden; }
 .route-content--fixed > :deep(*) { height:100%; min-height:0; }
 .module-tabs, .side-menu { scrollbar-width: none; }

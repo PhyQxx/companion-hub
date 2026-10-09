@@ -1,12 +1,15 @@
-"""pnkx 统一登录（OIDC）接入。
+"""pnkx 统一登录（OIDC）接入，多用户白名单开户。
 
-单用户家庭中枢：仅允许 ARIA_SSO_ALLOWED_SUB 指定的 pnkx 用户（OIDC sub，
-即 pnkx userId）登录，映射到本地唯一 chat 用户。启用条件（环境变量）：
-  ARIA_SSO_ISSUER / ARIA_SSO_CLIENT_ID / ARIA_SSO_CLIENT_SECRET / ARIA_SSO_ALLOWED_SUB
-四项齐备才启用；本地密码登录始终保留，作为离线降级通道。
+允许 ARIA_SSO_ALLOWED_SUBS（逗号/空白分隔的 pnkx userId 列表，兼容旧单值
+ARIA_SSO_ALLOWED_SUB）内的账号登录；OIDC sub 固定映射到 app_user.sso_sub，
+名单内首次登录自动开户（ARIA_SSO_OWNER_SUB 或名单首个为业主，其余为成员），
+存量未绑定业主由业主 sub 首次登录回填。启用条件（环境变量）：
+  ARIA_SSO_ISSUER / ARIA_SSO_CLIENT_ID / ARIA_SSO_CLIENT_SECRET / 名单非空
+四项齐备才启用；本地密码登录始终保留，作为业主离线降级通道。
 
 流程：/api/v1/auth/sso/login → 302 pnkx 授权页 → 回调换令牌取 userinfo →
-校验 sub 白名单 → 建立本地会话 → 返回落地页（写 localStorage 后回首页）。
+校验 sub 白名单 → 映射/开户本地用户并建立会话 → 返回落地页（写 localStorage
+后回首页）。
 """
 
 from __future__ import annotations
@@ -18,13 +21,10 @@ from dataclasses import dataclass
 from typing import Annotated
 
 import httpx
-from fastapi import APIRouter, Request, HTTPException, Query, Response
+from fastapi import APIRouter, HTTPException, Query, Request, Response
 from starlette.responses import HTMLResponse
 
 from app.auth.service import AuthService
-from app.db import AppUserRecord
-
-from sqlalchemy import select
 
 _TOKEN_KEY = "ariaChatToken"
 _STATE_TTL_SECONDS = 300
@@ -37,28 +37,31 @@ class SsoSettings:
     issuer: str
     client_id: str
     client_secret: str
-    allowed_sub: str
+    allowed_subs: tuple[str, ...]
+    owner_sub: str
 
     @property
     def enabled(self) -> bool:
-        return all(
-            (
-                self.issuer,
-                self.client_id,
-                self.client_secret,
-                self.allowed_sub,
-            )
+        return bool(
+            self.issuer
+            and self.client_id
+            and self.client_secret
+            and self.allowed_subs
         )
 
 
 def load_sso_settings() -> SsoSettings:
     import os
 
+    raw_subs = os.getenv("ARIA_SSO_ALLOWED_SUBS", "") or os.getenv("ARIA_SSO_ALLOWED_SUB", "")
+    allowed_subs = tuple(sub for sub in raw_subs.replace(",", " ").split() if sub)
+    owner_sub = os.getenv("ARIA_SSO_OWNER_SUB", "") or (allowed_subs[0] if allowed_subs else "")
     return SsoSettings(
         issuer=os.getenv("ARIA_SSO_ISSUER", "").rstrip("/"),
         client_id=os.getenv("ARIA_SSO_CLIENT_ID", ""),
         client_secret=os.getenv("ARIA_SSO_CLIENT_SECRET", ""),
-        allowed_sub=os.getenv("ARIA_SSO_ALLOWED_SUB", ""),
+        allowed_subs=allowed_subs,
+        owner_sub=owner_sub,
     )
 
 
@@ -134,8 +137,10 @@ def create_sso_router(
                     auth=(settings.client_id, settings.client_secret),
                 )
                 if token_resp.status_code >= 400:
+                    body = token_resp.text[:200]
                     raise RuntimeError(
-                        f"pnkx 返回 {token_resp.status_code}: {token_resp.text[:200]} (redirect_uri={redirect_uri})"
+                        f"pnkx 返回 {token_resp.status_code}: {body}"
+                        f" (redirect_uri={redirect_uri})"
                     )
                 access_token = token_resp.json().get("access_token")
                 if not access_token:
@@ -146,34 +151,21 @@ def create_sso_router(
                 )
                 userinfo_resp.raise_for_status()
                 userinfo = userinfo_resp.json()
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             return _landing_failure(fail_target, f"SSO 令牌交换失败：{exc}")
 
         sub = str(userinfo.get("sub") or "")
-        if not sub or sub != settings.allowed_sub:
+        if not sub or sub not in settings.allowed_subs:
             return _landing_failure(fail_target, "该 pnkx 账号无权登录本系统")
 
-        async with service._database.sessions() as session:  # noqa: SLF001
-            user = (
-                await session.execute(
-                    select(AppUserRecord).where(AppUserRecord.status == "active")
-                )
-            ).scalars().first()
-        if user is None:
-            # 首次部署 + 白名单命中：由 SSO 直接完成初始化（免设聊天密码，
-            # 本地密码登录由此停用，符合"统一走 pnkx 账号"的定位）
-            display_name = str(userinfo.get("name") or "主人")
-            await service.setup(
-                display_name=display_name,
-                password=secrets.token_urlsafe(32),
+        try:
+            auth_session = await service.login_sso_provisioned(
+                sub=sub,
+                display_name=str(userinfo.get("name") or ""),
+                owner_sub=settings.owner_sub,
             )
-        async with service._database.sessions() as session:  # noqa: SLF001
-            user = (
-                await session.execute(
-                    select(AppUserRecord).where(AppUserRecord.status == "active")
-                )
-            ).scalars().first()
-        auth_session = await service.login_sso(user_id=user.id)
+        except Exception:
+            return _landing_failure(fail_target, "该账号已被停用或无法建立会话")
         token = auth_session.access_token
         safe_token = html.escape(token, quote=True)
         return HTMLResponse(
@@ -192,11 +184,13 @@ location.replace('{_origin(request)}/chat/');
     def _landing_failure(target: str, message: str) -> HTMLResponse:
         from urllib.parse import quote
 
+        safe_message = html.escape(message)
         return HTMLResponse(
             f"""<!DOCTYPE html>
 <html lang="zh-CN"><head><meta charset="UTF-8"><title>登录失败</title>
 <script>location.replace('{target}{quote(message)}');</script></head>
-<body style="font-family:sans-serif;text-align:center;padding-top:20vh;color:#a33">{html.escape(message)}</body></html>"""
+<body style="font-family:sans-serif;text-align:center;padding-top:20vh;color:#a33">
+{safe_message}</body></html>"""
         )
 
     return router

@@ -18,6 +18,7 @@ from uuid import UUID
 from sqlalchemy import select
 
 from app.cognition import CognitiveCycle, CognitiveDecision, DecisionKind, SemanticEvent
+from app.context.owners import default_owner_id
 from app.db import AppUserRecord, Database, DeviceClientRecord
 from app.ids import uuid7
 from app.output import ProactiveDeliveryResult
@@ -193,14 +194,8 @@ class SafetyActivityScheduler:
         return max(candidates) if candidates else None
 
     async def _active_user_id(self) -> UUID | None:
-        async with self._database.sessions() as session:
-            value = await session.scalar(
-                select(AppUserRecord.id)
-                .where(AppUserRecord.status == "active")
-                .order_by(AppUserRecord.created_at)
-                .limit(1)
-            )
-        return value if isinstance(value, UUID) else None
+        # 多用户：安全巡检定向业主（单用户部署与首个活跃用户一致）
+        return await default_owner_id(self._database)
 
     async def _user_timezone(self) -> Any:
         from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -208,7 +203,10 @@ class SafetyActivityScheduler:
         async with self._database.sessions() as session:
             name = await session.scalar(
                 select(AppUserRecord.timezone)
-                .where(AppUserRecord.status == "active")
+                .where(
+                    AppUserRecord.status == "active",
+                    AppUserRecord.role == "owner",
+                )
                 .order_by(AppUserRecord.created_at)
                 .limit(1)
             )

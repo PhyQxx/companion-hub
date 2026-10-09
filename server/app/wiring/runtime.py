@@ -35,13 +35,13 @@ from app.api import (
     create_push_router,
     create_reviews_router,
     create_safety_router,
+    create_sso_router,
     create_tasks_router,
     create_theme_router,
     create_todo_router,
     create_voice_websocket_router,
     create_workflows_router,
     create_xiaoai_websocket_router,
-    create_sso_router,
     load_sso_settings,
 )
 from app.api.mail import create_mail_router
@@ -380,11 +380,12 @@ def assemble_runtime(
     app.state.auth_service = auth_service
     app.state.chat_service = runtime_chat_service
     app.include_router(create_auth_router(auth_service, admin_token=admin_token))
-    # pnkx 统一登录（可选）：四个 ARIA_SSO_* 环境变量齐备才启用
+    # pnkx 统一登录（可选）：issuer/client/secret 与账号名单齐备才启用
     sso_settings = load_sso_settings()
     if sso_settings.enabled:
+        sso_base_url = os.getenv("ARIA_SSO_BASE_URL", "").rstrip("/")
         app.include_router(
-            create_sso_router(auth_service, sso_settings, base_url=os.getenv("ARIA_SSO_BASE_URL", "").rstrip("/"))
+            create_sso_router(auth_service, sso_settings, base_url=sso_base_url)
         )
     app.include_router(create_chat_router(runtime_chat_service, auth_service))
     app.include_router(create_runs_router(runtime_chat_service, auth_service))

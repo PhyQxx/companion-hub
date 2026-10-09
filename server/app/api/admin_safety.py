@@ -4,7 +4,7 @@ from datetime import UTC, datetime
 from typing import Annotated
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from pydantic import Field
 from sqlalchemy import func, select
 
@@ -12,7 +12,7 @@ from app.db import AppUserRecord, Database, SafetyAlertRecord
 from app.safety import SafetyAlertService
 from app.schemas.common import StrictModel
 
-from .admin_config import AdminTokenGuard
+from .admin_config import AdminTokenGuard, admin_access
 
 _EMAIL_PATTERN = r"^[^@\s]+@[^@\s]+\.[^@\s]+$"
 _EMPTY_UUID = UUID("00000000-0000-0000-0000-000000000000")
@@ -90,7 +90,7 @@ def _alert_item(record: SafetyAlertRecord) -> SafetyAlertItem:
 
 
 async def _owner_id(database: Database) -> UUID:
-    """单用户部署：告警与授权按首用户聚合；无用户时用空 UUID（不命中任何行）。"""
+    """admin token 机器访问的缺省聚合用户（首用户）；无用户时空 UUID 不命中行。"""
     async with database.sessions() as session:
         owner = await session.scalar(
             select(AppUserRecord.id).order_by(AppUserRecord.created_at)
@@ -101,18 +101,26 @@ async def _owner_id(database: Database) -> UUID:
 def create_admin_safety_router(
     service: SafetyAlertService, *, admin_token: str | None
 ) -> APIRouter:
+    guard = AdminTokenGuard(admin_token, min_role="member")
     router = APIRouter(
         prefix="/api/v1/admin/safety",
         tags=["admin-safety"],
-        dependencies=[Depends(AdminTokenGuard(admin_token))],
+        dependencies=[Depends(guard)],
     )
     # 路由与同一装配的服务共享数据库句柄
     database: Database = service._database
 
+    async def resolved_owner(request: Request) -> UUID:
+        """会话访问聚合本人；admin token 机器访问缺省取首用户。"""
+        principal = admin_access(request).principal
+        if principal is not None:
+            return principal.user_id
+        return await _owner_id(database)
+
     @router.get("/status", response_model=SafetyStatusResponse)
-    async def safety_status() -> SafetyStatusResponse:
+    async def safety_status(request: Request) -> SafetyStatusResponse:
         config = service._config_store.current.config.safety
-        owner = await _owner_id(database)
+        owner = await resolved_owner(request)
         async with database.sessions() as session:
             active_alerts = await session.scalar(
                 select(func.count())
@@ -132,10 +140,12 @@ def create_admin_safety_router(
 
     @router.get("/alerts", response_model=SafetyAlertListResponse)
     async def list_alerts(
+        request: Request,
         status_filter: Annotated[str | None, Query(alias="status")] = None,
         limit: Annotated[int, Query(ge=1, le=200)] = 20,
         offset: Annotated[int, Query(ge=0)] = 0,
     ) -> SafetyAlertListResponse:
+        access = admin_access(request)
         query = select(SafetyAlertRecord)
         count_query = select(func.count()).select_from(SafetyAlertRecord)
         if status_filter is not None:
@@ -143,6 +153,12 @@ def create_admin_safety_router(
                 raise HTTPException(422, "invalid status filter")
             query = query.where(SafetyAlertRecord.status == status_filter)
             count_query = count_query.where(SafetyAlertRecord.status == status_filter)
+        # 成员会话只见本人告警；业主与 admin token 机器访问保持全量运维视角。
+        if access.principal is not None and access.principal.role != "owner":
+            query = query.where(SafetyAlertRecord.user_id == access.principal.user_id)
+            count_query = count_query.where(
+                SafetyAlertRecord.user_id == access.principal.user_id
+            )
         async with database.sessions() as session:
             total = int(await session.scalar(count_query) or 0)
             records: list[SafetyAlertRecord] = list(
@@ -160,16 +176,24 @@ def create_admin_safety_router(
         )
 
     @router.post("/alerts/{alert_id}/ack", response_model=SafetyAlertItem)
-    async def ack_alert(alert_id: UUID) -> SafetyAlertItem:
+    async def ack_alert(alert_id: UUID, request: Request) -> SafetyAlertItem:
+        record = await service._store.get(alert_id)
+        if record is None:
+            raise HTTPException(404, "alert not found")
+        principal = admin_access(request).principal
+        if (
+            principal is not None
+            and principal.role != "owner"
+            and record.user_id != principal.user_id
+        ):
+            raise HTTPException(404, "alert not found")
         if not await service.acknowledge(alert_id, source="admin"):
             raise HTTPException(409, "alert not ackable")
-        record = await service._store.get(alert_id)
-        assert record is not None
         return _alert_item(record)
 
     @router.get("/authorizations", response_model=AuthorizationListResponse)
-    async def list_authorizations() -> AuthorizationListResponse:
-        owner = await _owner_id(database)
+    async def list_authorizations(request: Request) -> AuthorizationListResponse:
+        owner = await resolved_owner(request)
         records = await service.authorizations.list_for_user(owner)
         return AuthorizationListResponse(
             items=[
@@ -190,9 +214,13 @@ def create_admin_safety_router(
     @router.post(
         "/authorizations", response_model=AuthorizationItem, status_code=status.HTTP_201_CREATED
     )
-    async def create_authorization(body: AuthorizationCreate) -> AuthorizationItem:
+    async def create_authorization(
+        body: AuthorizationCreate, request: Request
+    ) -> AuthorizationItem:
+        user_id = admin_access(request).scoped_user_id(body.user_id)
+        assert user_id is not None
         record = await service.authorizations.create(
-            user_id=body.user_id,
+            user_id=user_id,
             contact_name=body.contact_name,
             destination=body.destination,
         )

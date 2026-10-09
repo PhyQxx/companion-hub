@@ -40,7 +40,11 @@ def create_admin_security_router(
 
     @router.post("/chat-password")
     async def reset_chat_password(body: ResetChatPasswordRequest) -> dict[str, str]:
-        """重置聊天密码并撤销所有活跃会话。"""
+        """重置业主本地密码（离线降级通道）并撤销所有活跃会话。
+
+        多用户下本地密码凭据仅业主持有（setup_slot=1 单槽）；成员账号
+        由 pnkx SSO 管理，不经此接口。
+        """
         if auth_service is None:
             raise HTTPException(
                 status.HTTP_503_SERVICE_UNAVAILABLE,

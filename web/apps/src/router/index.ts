@@ -26,6 +26,7 @@ const router = createRouter({
         { path: "perception", component: ModuleWorkspaceView, props: { module: "perception" } },
         { path: "logs", component: ModuleWorkspaceView, props: { module: "logs" } },
         { path: "settings", component: ModuleWorkspaceView, props: { module: "system" } },
+        { path: "users", component: ModuleWorkspaceView, props: { module: "users" } },
         { path: "jobs", redirect: { path: "/admin/settings", query: { tab: "jobs" } } },
         { path: "screen-awareness", redirect: { path: "/admin/perception", query: { tab: "screen" } } },
         { path: "avatars", redirect: { path: "/admin/personas", query: { tab: "gallery" } } },

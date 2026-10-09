@@ -29,7 +29,6 @@ from zoneinfo import ZoneInfo
 import httpx
 from dateutil.rrule import rrulestr
 from icalendar import Calendar
-from sqlalchemy import select
 
 from app.calendar.mirror import (
     CalendarMirrorService,
@@ -38,7 +37,8 @@ from app.calendar.mirror import (
 )
 from app.config import ConfigStore, DatabaseConfigStore
 from app.config.models import CalDavConfig
-from app.db import AppUserRecord, Database
+from app.context.owners import default_owner_id
+from app.db import Database
 from app.harness.joined_read import join_on_cancel
 from app.runs.calendar_sync import CalendarSyncBatch, owned_calendar_sync
 
@@ -489,14 +489,8 @@ class CalDavSyncService:
         return bool(config.enabled and resolve_caldav_secret(config) is not None)
 
     async def default_user_id(self) -> UUID | None:
-        async with self._database.sessions() as session:
-            value = await session.scalar(
-                select(AppUserRecord.id)
-                .where(AppUserRecord.status == "active")
-                .order_by(AppUserRecord.created_at)
-                .limit(1)
-            )
-        return UUID(str(value)) if value is not None else None
+        # 多用户：集成连接为业主级，镜像数据归业主账户
+        return await default_owner_id(self._database)
 
     async def sync_once(
         self,

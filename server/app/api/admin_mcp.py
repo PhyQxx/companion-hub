@@ -109,7 +109,7 @@ def create_admin_mcp_router(manager: McpManager | None, *, admin_token: str | No
 
             async def check() -> None:
                 try:
-                    await guard(credentials)
+                    await guard.revalidate(credentials)
                 except HTTPException:
                     raise BudgetDenied("mcp_admin_credential_changed") from None
 

@@ -13,7 +13,7 @@ from app.schemas.common import PrivacyLevel, StrictModel
 from app.timeline.models import TimelineSourceType
 from app.timeline.store import TimelineStore
 
-from .admin_config import AdminTokenGuard
+from .admin_config import AdminTokenGuard, admin_access
 
 
 class BrowserAwarenessStatus(StrictModel):
@@ -62,10 +62,11 @@ def _loop_from(request: Request) -> BrowserAwarenessLoop | None:
 def create_admin_browser_awareness_router(
     timeline: TimelineStore | None, *, admin_token: str | None
 ) -> APIRouter:
+    guard = AdminTokenGuard(admin_token, min_role="member")
     router = APIRouter(
         prefix="/api/v1/admin/browser-awareness",
         tags=["admin-browser-awareness"],
-        dependencies=[Depends(AdminTokenGuard(admin_token))],
+        dependencies=[Depends(guard)],
     )
 
     @router.get("/status", response_model=BrowserAwarenessStatus)
@@ -115,25 +116,32 @@ def create_admin_browser_awareness_router(
 
     @router.get("/observations", response_model=BrowserObservationsResponse)
     async def observations(
+        request: Request,
         limit: Annotated[int, Query(ge=1, le=200)] = 20,
         offset: Annotated[int, Query(ge=0)] = 0,
     ) -> BrowserObservationsResponse:
         if timeline is None:
             return BrowserObservationsResponse(items=[], total=0, limit=limit, offset=offset)
-        async with timeline.database.sessions() as session:
-            owner = await session.scalar(
-                select(AppUserRecord.id).order_by(AppUserRecord.created_at)
-            )
+        # 会话访问按本人时间线查询（浏览器观测源绑定业主，成员得到空列表）；
+        # admin token 机器访问取首用户。
+        principal = admin_access(request).principal
+        if principal is not None:
+            owner: UUID | None = principal.user_id
+        else:
+            async with timeline.database.sessions() as session:
+                owner = await session.scalar(
+                    select(AppUserRecord.id).order_by(AppUserRecord.created_at)
+                )
         if owner is None:
             return BrowserObservationsResponse(items=[], total=0, limit=limit, offset=offset)
         total = await timeline.count_events(
-            user_id=UUID(str(owner)),
+            user_id=owner,
             source_types=(TimelineSourceType.DEVICE,),
             event_types=("browser.observed",),
             privacy_levels=(PrivacyLevel.L0, PrivacyLevel.L1),
         )
         result = await timeline.search(
-            user_id=UUID(str(owner)),
+            user_id=owner,
             source_types=(TimelineSourceType.DEVICE,),
             event_types=("browser.observed",),
             privacy_levels=(PrivacyLevel.L0, PrivacyLevel.L1),

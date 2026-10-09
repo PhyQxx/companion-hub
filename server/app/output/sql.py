@@ -18,6 +18,8 @@ class SqlProactiveOutputRepository:
         self._database = database
 
     async def default_owner(self) -> UUID | None:
+        # 隐式主动输出来源绑定单一 owner（slot=1），停用即拒绝投递，
+        # 不静默改投他人；绑定落定在 observation_owner 内业主优先。
         return await observation_owner(self._database)
 
     async def owner_active(self, user_id: UUID) -> bool:

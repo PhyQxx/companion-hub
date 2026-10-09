@@ -9,7 +9,7 @@ import json
 import logging
 import re
 from collections.abc import Awaitable, Callable
-from dataclasses import asdict
+from dataclasses import asdict, dataclass
 from datetime import datetime
 from time import perf_counter
 from typing import Annotated, Literal
@@ -23,6 +23,7 @@ from fastapi import Request as FastAPIRequest
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import AnyHttpUrl, Field
 
+from app.auth.service import AuthService, ChatPrincipal
 from app.config import DatabaseConfigStore, DatabaseConfigVersion, HubConfig
 from app.config.models import HomeAssistantConfig, VoiceAsrConfig, VoiceCostConfig
 from app.config.store import ConfigSnapshot, hash_config
@@ -65,20 +66,98 @@ def runtime_admin_token(fallback: str | None = None) -> str | None:
     return _runtime_admin_token if _runtime_admin_token is not None else fallback
 
 
-class AdminTokenGuard:
-    def __init__(self, token: str | None) -> None:
-        self._token = token
+@dataclass(frozen=True, slots=True)
+class AdminAccess:
+    """Admin 请求访问上下文。
 
-    async def __call__(self, credentials: AdminCredentials, request: FastAPIRequest) -> None:
+    principal 为 None 表示 admin token 机器访问（user_id 语义由路由原样保留：
+    显式指定或维持既有缺省）；非 None 表示聊天/SSO 会话访问，个人数据路由
+    必须把查询 scope 到 principal 归属的用户。
+    """
+
+    principal: ChatPrincipal | None
+
+    def scoped_user_id(self, user_id: UUID | None) -> UUID | None:
+        """会话访问强制 scope 到本人（业主会话可显式指定他人做运维检视）；
+        admin token 机器访问保留显式 user_id，None 交给路由原有缺省逻辑。"""
+        if self.principal is None:
+            return user_id
+        if user_id is not None and self.principal.role == "owner":
+            return user_id
+        return self.principal.user_id
+
+
+def admin_access(request: FastAPIRequest) -> AdminAccess:
+    """读取 AdminTokenGuard 存入请求状态的访问上下文。
+
+    本文件的守卫都经 router 级 dependencies 先行运行，路由体内以此读取
+    访问方式（admin token 机器 / 会话 principal），避免在闭包参数注解里
+    引用工厂局部变量（postponed annotations 下不可解析）。
+    """
+    access = getattr(request.state, "admin_access", None)
+    if not isinstance(access, AdminAccess):
+        raise HTTPException(
+            status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="admin access context missing; guard dependency must run first",
+        )
+    return access
+
+
+class AdminTokenGuard:
+    """Admin API 鉴权：admin token（机器）或聊天/SSO 会话（人）二选一。
+
+    min_role="owner"（默认）为全局配置/系统运维路由，仅业主会话可用；
+    min_role="member" 为个人数据路由，任意活跃用户会话可用，但返回的
+    AdminAccess 携带 principal，路由必须据此 scope 数据归属。
+    """
+
+    def __init__(self, token: str | None, *, min_role: str = "owner") -> None:
+        self._token = token
+        self._min_role = min_role
+        # 首次请求时从 app.state 记住 auth_service，供长操作中途 revalidate
+        # 复核会话凭据（单进程组合根，服务实例全局唯一）。
+        self._auth_service: AuthService | None = None
+
+    async def __call__(
+        self, credentials: AdminCredentials, request: FastAPIRequest
+    ) -> AdminAccess:
+        access = await self._resolve(credentials, request)
+        # 存入请求状态：路由经 admin_access(request) 读取并 scope 数据归属
+        request.state.admin_access = access
+        return access
+
+    async def _resolve(
+        self, credentials: AdminCredentials, request: FastAPIRequest
+    ) -> AdminAccess:
         try:
             self.validate(credentials)
+            return AdminAccess(principal=None)
         except HTTPException as exc:
-            # 单用户中枢：有效的聊天/SSO 会话即主人，允许其访问管理 API
             auth_service = getattr(request.app.state, "auth_service", None)
             if auth_service is None or credentials is None:
                 raise
+            self._auth_service = auth_service
             try:
-                await auth_service.authenticate(credentials.credentials)
+                principal = await auth_service.authenticate(credentials.credentials)
+            except Exception as session_error:
+                raise exc from session_error
+            if self._min_role == "owner" and principal.role != "owner":
+                raise HTTPException(
+                    status.HTTP_403_FORBIDDEN, detail="owner role required"
+                ) from None
+            return AdminAccess(principal=principal)
+
+    async def revalidate(self, credentials: AdminCredentials) -> None:
+        """长操作中途的管理凭据复核（source_guard）：admin token 直接校验；
+        会话凭据按首次请求记住的 auth_service 复核，仍有效即通过。"""
+        try:
+            self.validate(credentials)
+            return
+        except HTTPException as exc:
+            if credentials is None or self._auth_service is None:
+                raise
+            try:
+                await self._auth_service.authenticate(credentials.credentials)
             except Exception as session_error:
                 raise exc from session_error
 
@@ -509,7 +588,7 @@ def create_admin_config_router(
         ).hexdigest()
 
         async def guard() -> None:
-            await token_guard(credentials)
+            await token_guard.revalidate(credentials)
             try:
                 changed = (
                     identity(store.current.config.integrations.home_assistant) != live_identity
@@ -634,7 +713,7 @@ def create_admin_config_router(
         accepted_identity = identity()
 
         async def guard() -> None:
-            await token_guard(credentials)
+            await token_guard.revalidate(credentials)
             if identity() != accepted_identity:
                 raise BudgetDenied("admin_model_config_changed")
 
@@ -890,7 +969,7 @@ def create_admin_config_router(
         requested = identity(body.model_dump(mode="json"), body.secret_value, body.secret_ref)
 
         async def guard() -> None:
-            await token_guard(credentials)
+            await token_guard.revalidate(credentials)
             if (
                 saved_identity() != saved
                 or identity(body.model_dump(mode="json"), body.secret_value, body.secret_ref)

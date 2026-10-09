@@ -48,6 +48,7 @@ class ChatPrincipal:
     user_id: UUID
     display_name: str
     expires_at: datetime
+    role: str = "member"
 
 
 @dataclass(frozen=True, slots=True)
@@ -78,6 +79,7 @@ class AuthService:
         return not count
 
     async def setup(self, *, display_name: str, password: str) -> AuthSession:
+        """初始化业主的本地密码凭据（多用户下的离线降级通道，仅业主持有）。"""
         secret_hash = await asyncio.to_thread(_hash_password, password)
         now = datetime.now(UTC)
         try:
@@ -90,6 +92,7 @@ class AuthService:
                 )
                 if existing is not None:
                     raise AuthSetupExists("chat identity is already configured")
+                # 只认领未绑定凭据的业主；SSO 开户的 member 不参与本地密码通道。
                 unclaimed = list(
                     await session.scalars(
                         select(AppUserRecord)
@@ -97,7 +100,10 @@ class AuthService:
                             AuthCredentialRecord,
                             AuthCredentialRecord.user_id == AppUserRecord.id,
                         )
-                        .where(AuthCredentialRecord.id.is_(None))
+                        .where(
+                            AuthCredentialRecord.id.is_(None),
+                            AppUserRecord.role == "owner",
+                        )
                         .order_by(AppUserRecord.created_at)
                         .limit(2)
                     )
@@ -112,6 +118,7 @@ class AuthService:
                         locale="zh-CN",
                         timezone="Asia/Shanghai",
                         status="active",
+                        role="owner",
                         created_at=now,
                     )
                     session.add(user)
@@ -160,8 +167,7 @@ class AuthService:
         return auth_session
 
     async def login_sso(self, *, user_id: UUID) -> AuthSession:
-        """pnkx 统一登录：为已验证归属的本地用户直接建立会话（单用户家庭中枢，
-        归属校验（sub 白名单）由调用方在 OIDC 回调中完成）。"""
+        """为已验证归属的本地用户直接建立会话（归属校验由调用方完成）。"""
         async with self._database.sessions() as session:
             user = (
                 await session.execute(
@@ -178,6 +184,68 @@ class AuthService:
         async with self._database.sessions.begin() as session:
             session.add(record)
         return auth_session
+
+    async def login_sso_provisioned(
+        self, *, sub: str, display_name: str, owner_sub: str
+    ) -> AuthSession:
+        """pnkx 统一登录（多用户）：按 sso_sub 映射本地用户并建立会话。
+
+        白名单校验由调用方完成。未绑定的 sub 首次登录自动开户：
+        owner_sub 回填到尚未绑定 pnkx 账号的存量业主（单用户部署的数据
+        归属迁移），其余 sub 以 member 开户。display_name 以 pnkx 为身份源
+        每次登录同步。停用用户拒绝登录。
+        """
+        if not sub:
+            raise InvalidCredentials("sso sub is required")
+        now = datetime.now(UTC)
+        for attempt in range(2):
+            try:
+                async with self._database.sessions.begin() as session:
+                    user = (
+                        await session.execute(
+                            select(AppUserRecord).where(AppUserRecord.sso_sub == sub)
+                        )
+                    ).scalar_one_or_none()
+                    if user is None and sub == owner_sub:
+                        user = (
+                            await session.execute(
+                                select(AppUserRecord)
+                                .where(
+                                    AppUserRecord.role == "owner",
+                                    AppUserRecord.sso_sub.is_(None),
+                                )
+                                .order_by(AppUserRecord.created_at)
+                                .limit(1)
+                                .with_for_update(skip_locked=True)
+                            )
+                        ).scalar_one_or_none()
+                        if user is not None:
+                            user.sso_sub = sub
+                    if user is None:
+                        user = AppUserRecord(
+                            id=uuid7(),
+                            display_name=display_name or "用户",
+                            locale="zh-CN",
+                            timezone="Asia/Shanghai",
+                            status="active",
+                            sso_sub=sub,
+                            role="owner" if sub == owner_sub else "member",
+                            created_at=now,
+                        )
+                        session.add(user)
+                    if user.status != "active":
+                        raise InvalidCredentials("sso user not found or inactive")
+                    if display_name:
+                        user.display_name = display_name
+                    record, auth_session = self._new_session(user, now)
+                    session.add(record)
+                return auth_session
+            except IntegrityError:
+                # 并发首登同一 sub 撞唯一索引：重试一次走已存在分支。
+                if attempt:
+                    raise
+                continue
+        raise InvalidCredentials("sso login conflict")
 
     async def authenticate(self, access_token: str) -> ChatPrincipal:
         access_hash = _hash_token(access_token)
@@ -211,6 +279,7 @@ class AuthService:
             user_id=user.id,
             display_name=user.display_name,
             expires_at=expires_at,
+            role=user.role,
         )
 
     async def logout(self, principal: ChatPrincipal) -> None:
@@ -265,6 +334,7 @@ class AuthService:
             user_id=user.id,
             display_name=user.display_name,
             expires_at=expires_at,
+            role=user.role,
         )
         return record, AuthSession(access_token=token, principal=principal)
 

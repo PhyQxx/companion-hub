@@ -92,19 +92,21 @@ class DeviceRegistry:
         now = datetime.now(UTC)
         async with self._database.sessions() as session:
             if owner_user_id is None:
-                users = list(
-                    await session.scalars(
-                        select(AppUserRecord)
-                        .where(AppUserRecord.status == "active")
-                        .order_by(AppUserRecord.created_at)
-                        .limit(2)
+                # 多用户：设备为家庭级资产，缺省配对给业主
+                owner = await session.scalar(
+                    select(AppUserRecord.id)
+                    .where(
+                        AppUserRecord.status == "active",
+                        AppUserRecord.role == "owner",
                     )
+                    .order_by(AppUserRecord.created_at)
+                    .limit(1)
                 )
-                if len(users) != 1:
+                if owner is None:
                     raise DeviceRegistryError(
-                        "owner_user_id is required unless exactly one active user exists"
+                        "owner_user_id is required when no active owner exists"
                     )
-                owner_user_id = users[0].id
+                owner_user_id = owner
             else:
                 user = await session.get(AppUserRecord, owner_user_id)
                 if user is None or user.status != "active":

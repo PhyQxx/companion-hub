@@ -138,8 +138,9 @@ async def test_admin_api_requires_token_and_manages_drafts(
             json=candidate,
         )
         versions = await client.get("/api/v1/admin/config/versions", headers=headers)
-        page = await client.get("/admin/models")
-        persona_page = await client.get("/admin/personas")
+        # /admin/* 已并入 /chat/admin：SPA 模式 307 到主应用，源码模式直出旧页
+        page = await client.get("/admin/models", follow_redirects=True)
+        persona_page = await client.get("/admin/personas", follow_redirects=True)
         chat_page = await client.get("/chat")
         chat_slash_page = await client.get("/chat/")
         chat_debug_page = await client.get("/chat/debug")
@@ -149,7 +150,7 @@ async def test_admin_api_requires_token_and_manages_drafts(
         chat_icon = await client.get("/chat/icons/aria-192.png")
         pet_page = await client.get("/desktop/pet/")
         module_pages = {
-            path: await client.get(path)
+            path: await client.get(path, follow_redirects=True)
             for path in (
                 "/admin",
                 "/admin/memory",

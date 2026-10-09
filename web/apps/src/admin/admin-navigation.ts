@@ -3,6 +3,8 @@ export interface AdminTab {
   label: string;
   description: string;
   state?: "ready" | "planned";
+  /** 仅业主可见（全局配置/系统运维类 Tab）；成员会话被后端 403 拒绝。 */
+  requiresOwner?: boolean;
 }
 
 export interface AdminModule {
@@ -11,6 +13,8 @@ export interface AdminModule {
   label: string;
   group: string;
   tabs: AdminTab[];
+  /** 仅业主可见（模型/人格/技能/集成/设备/系统等全局配置模块）。 */
+  requiresOwner?: boolean;
 }
 
 export const adminModules: AdminModule[] = [
@@ -19,6 +23,7 @@ export const adminModules: AdminModule[] = [
     path: "/admin",
     label: "总览",
     group: "概览",
+    requiresOwner: true,
     tabs: [
       { key: "runtime", label: "运行概览", description: "当前配置、设备、记忆与语音链路状态。", state: "ready" },
       { key: "health", label: "健康与告警", description: "服务健康、异常告警与恢复状态。" },
@@ -31,6 +36,7 @@ export const adminModules: AdminModule[] = [
     path: "/admin/personas",
     label: "人格与形象",
     group: "伴侣核心",
+    requiresOwner: true,
     tabs: [
       { key: "profile", label: "基本设定", description: "身份、称呼、关系和档案基线。", state: "ready" },
       { key: "style", label: "表达风格", description: "语言风格、提示词和声音配置。", state: "ready" },
@@ -50,7 +56,7 @@ export const adminModules: AdminModule[] = [
       { key: "library", label: "记忆库", description: "检索、纠正和管理长期记忆。", state: "ready" },
       { key: "quality", label: "质量与冲突", description: "记忆质量分析、错误引用与冲突裁决。" },
       { key: "timeline", label: "历史时间线", description: "按时间回看重要事件和来源证据。", state: "ready" },
-      { key: "deletion", label: "删除验证", description: "检查删除台账及跨存储清理状态。", state: "ready" },
+      { key: "deletion", label: "删除验证", description: "检查删除台账及跨存储清理状态。", state: "ready", requiresOwner: true },
     ],
   },
   {
@@ -71,6 +77,7 @@ export const adminModules: AdminModule[] = [
     path: "/admin/models",
     label: "模型与路由",
     group: "能力接入",
+    requiresOwner: true,
     tabs: [
       { key: "services", label: "模型服务", description: "模型端点、认证和运行参数。", state: "ready" },
       { key: "routing", label: "路由与能力", description: "对话、工具、私密路由和多模态能力槽位。", state: "ready" },
@@ -85,6 +92,7 @@ export const adminModules: AdminModule[] = [
     path: "/admin/skills",
     label: "技能中心",
     group: "能力接入",
+    requiresOwner: true,
     tabs: [
       { key: "library", label: "技能库", description: "导入、创建、查看和启停 Skill。", state: "ready" },
       { key: "create", label: "创建技能", description: "手动编写，或从 API/使用文档智能生成可审核草稿。", state: "ready" },
@@ -98,6 +106,7 @@ export const adminModules: AdminModule[] = [
     path: "/admin/integrations",
     label: "集成与连接",
     group: "能力接入",
+    requiresOwner: true,
     tabs: [
       { key: "mail", label: "邮件", description: "SMTP/IMAP 账号与授权码（MAIL-01）。", state: "ready" },
       { key: "calendar", label: "外部日历", description: "CalDAV / Google 只读镜像同步（CAL-01）。", state: "ready" },
@@ -109,6 +118,7 @@ export const adminModules: AdminModule[] = [
     path: "/admin/devices",
     label: "设备终端",
     group: "能力接入",
+    requiresOwner: true,
     tabs: [
       { key: "registry", label: "设备与配对", description: "设备状态、行级配对码、能力授权与撤销。", state: "ready" },
       { key: "commands", label: "命令记录", description: "设备命令、结果和脱敏台账。", state: "ready" },
@@ -121,11 +131,11 @@ export const adminModules: AdminModule[] = [
     label: "感知与守护",
     group: "能力接入",
     tabs: [
-      { key: "home_assistant", label: "HA 实体授权", description: "HA 实体发现、读写权限、历史和主动感知。", state: "ready" },
+      { key: "home_assistant", label: "HA 实体授权", description: "HA 实体发现、读写权限、历史和主动感知。", state: "ready", requiresOwner: true },
       { key: "screen", label: "屏幕感知", description: "周期截屏循环健康与观察记录检索。", state: "ready" },
       { key: "browser", label: "浏览感知", description: "浏览器标签页观察循环健康与观察记录。", state: "ready" },
       { key: "safety", label: "安全守护", description: "安全告警升级链、确认与紧急联系人预授权。", state: "ready" },
-      { key: "channels", label: "主动输出", description: "控制 Web、Desktop、语音与 Web Push 主动推送策略。", state: "ready" },
+      { key: "channels", label: "主动输出", description: "控制 Web、Desktop、语音与 Web Push 主动推送策略。", state: "ready", requiresOwner: true },
     ],
   },
   {
@@ -133,6 +143,7 @@ export const adminModules: AdminModule[] = [
     path: "/admin/logs",
     label: "观测与审计",
     group: "运维治理",
+    requiresOwner: true,
     tabs: [
       { key: "live", label: "实时日志", description: "实时查看后端运行日志流。", state: "ready" },
       { key: "traces", label: "Trace 与事件", description: "按调用链定位决策过程，检索脱敏后的结构化事件。" },
@@ -147,12 +158,23 @@ export const adminModules: AdminModule[] = [
     path: "/admin/settings",
     label: "系统与维护",
     group: "运维治理",
+    requiresOwner: true,
     tabs: [
       { key: "general", label: "基础与升级", description: "实例、语言、时区设置与版本、迁移、更新信息。" },
       { key: "identity", label: "身份与会话", description: "管理员认证、会话和访问边界。" },
       { key: "observability", label: "可观测性", description: "日志、Trace、保留期和告警策略。" },
       { key: "storage", label: "存储与备份", description: "配额、备份和恢复演练。" },
       { key: "jobs", label: "任务中心", description: "后台任务、租约和状态管理。", state: "ready" },
+    ],
+  },
+  {
+    key: "users",
+    path: "/admin/users",
+    label: "用户管理",
+    group: "运维治理",
+    requiresOwner: true,
+    tabs: [
+      { key: "list", label: "用户列表", description: "SSO 白名单开户的用户、角色与会话；停用/启用与改名。", state: "ready" },
     ],
   },
 ];
@@ -164,4 +186,39 @@ export const adminGroups = ["概览", "伴侣核心", "能力接入", "运维治
 
 export function findAdminModule(path: string): AdminModule {
   return adminModules.find((item) => item.path === path) ?? adminModules[0];
+}
+
+/** 多用户：成员只见个人数据模块（记忆/管家/感知的观察部分），
+ * 全局配置与系统运维模块仅业主可见；后端 Admin 分级鉴权为准，
+ * 这里只做导航收敛与深链拦截。 */
+export function isOwner(role: string | undefined | null): boolean {
+  return role === "owner";
+}
+
+export function moduleAccessible(module: AdminModule, role: string | undefined | null): boolean {
+  return isOwner(role) || !module.requiresOwner;
+}
+
+export function tabsFor(module: AdminModule, role: string | undefined | null): AdminTab[] {
+  return isOwner(role) ? module.tabs : module.tabs.filter((tab) => !tab.requiresOwner);
+}
+
+export function groupsForRole(role: string | undefined | null) {
+  return adminGroups
+    .map((group) => ({
+      group: group.group,
+      items: group.items.filter((item) => moduleAccessible(item, role)),
+    }))
+    .filter((group) => group.items.length > 0);
+}
+
+/** 成员默认落在首个可见模块（个人管家），业主保持总览。 */
+export function defaultModulePath(role: string | undefined | null): string {
+  if (isOwner(role)) return "/admin";
+  const first = adminModules.find((item) => moduleAccessible(item, role));
+  return first ? first.path : "/admin";
+}
+
+export function findModuleForRole(path: string, role: string | undefined | null): AdminModule | undefined {
+  return adminModules.find((item) => item.path === path && moduleAccessible(item, role));
 }

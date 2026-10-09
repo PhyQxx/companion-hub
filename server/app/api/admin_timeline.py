@@ -4,13 +4,13 @@ from datetime import datetime
 from typing import Annotated
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from pydantic import Field
 
 from app.schemas.common import PrivacyLevel, StrictModel
 from app.timeline import TimelineActor, TimelineEvent, TimelineSourceType, TimelineStore
 
-from .admin_config import AdminTokenGuard
+from .admin_config import AdminAccess, AdminTokenGuard, admin_access
 
 
 class TimelineView(StrictModel):
@@ -92,14 +92,32 @@ def _view(entry: TimelineEvent) -> TimelineView:
 def create_admin_timeline_router(
     store: TimelineStore, *, admin_token: str | None
 ) -> APIRouter:
+    guard = AdminTokenGuard(admin_token, min_role="member")
     router = APIRouter(
         prefix="/api/v1/admin/timeline",
         tags=["admin-timeline"],
-        dependencies=[Depends(AdminTokenGuard(admin_token))],
+        dependencies=[Depends(guard)],
     )
+
+    def scoped_user(request: Request, user_id: UUID | None = None) -> UUID:
+        scoped = admin_access(request).scoped_user_id(user_id)
+        if scoped is None:
+            raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, detail="user_id required")
+        return scoped
+
+    def require_ownership(access: AdminAccess, entry: TimelineEvent) -> None:
+        """成员会话只能触达本人时间线；业主与 admin token 机器访问不受限。"""
+        principal = access.principal
+        if (
+            principal is not None
+            and principal.role != "owner"
+            and entry.user_id != principal.user_id
+        ):
+            raise HTTPException(status.HTTP_404_NOT_FOUND, detail="event not found")
 
     @router.get("", response_model=list[TimelineView])
     async def list_timeline(
+        request: Request,
         user_id: UUID,
         query: str = "",
         start_at: datetime | None = None,
@@ -110,6 +128,7 @@ def create_admin_timeline_router(
         privacy_level: PrivacyLevel = PrivacyLevel.L1,
         limit: Annotated[int, Query(ge=1, le=100)] = 50,
     ) -> list[TimelineView]:
+        user_id = scoped_user(request, user_id)
         levels = (
             (PrivacyLevel.L0, PrivacyLevel.L1, PrivacyLevel.L2)
             if privacy_level is PrivacyLevel.L2
@@ -129,7 +148,11 @@ def create_admin_timeline_router(
         return [_view(item) for item in result.events]
 
     @router.post("/query", response_model=TimelineQueryResult)
-    async def query_timeline(payload: TimelineQueryRequest) -> TimelineQueryResult:
+    async def query_timeline(
+        payload: TimelineQueryRequest, request: Request
+    ) -> TimelineQueryResult:
+        user_id = scoped_user(request, payload.user_id)
+        payload = payload.model_copy(update={"user_id": user_id})
         levels = (
             (PrivacyLevel.L0, PrivacyLevel.L1, PrivacyLevel.L2)
             if payload.privacy_level == PrivacyLevel.L2
@@ -171,18 +194,21 @@ def create_admin_timeline_router(
         )
 
     @router.get("/{timeline_id}", response_model=TimelineView)
-    async def timeline_detail(timeline_id: int) -> TimelineView:
-        try:
-            return _view(await store.get(timeline_id))
-        except LookupError as error:
-            raise HTTPException(status.HTTP_404_NOT_FOUND, detail=str(error)) from error
-
-    @router.get("/{timeline_id}/source", response_model=TimelineSourceView)
-    async def timeline_source(timeline_id: int) -> TimelineSourceView:
+    async def timeline_detail(timeline_id: int, request: Request) -> TimelineView:
         try:
             entry = await store.get(timeline_id)
         except LookupError as error:
             raise HTTPException(status.HTTP_404_NOT_FOUND, detail=str(error)) from error
+        require_ownership(admin_access(request), entry)
+        return _view(entry)
+
+    @router.get("/{timeline_id}/source", response_model=TimelineSourceView)
+    async def timeline_source(timeline_id: int, request: Request) -> TimelineSourceView:
+        try:
+            entry = await store.get(timeline_id)
+        except LookupError as error:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, detail=str(error)) from error
+        require_ownership(admin_access(request), entry)
         evidence = await store.expand_sources(
             [entry],
             user_id=entry.user_id,

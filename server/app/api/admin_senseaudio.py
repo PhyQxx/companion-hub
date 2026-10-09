@@ -232,7 +232,7 @@ def create_admin_senseaudio_router(
         ).hexdigest()
 
         async def check_source() -> None:
-            await token_guard(credentials)
+            await token_guard.revalidate(credentials)
             if private_identity(_settings()) != identity:
                 raise BudgetDenied("admin_connection_changed")
 

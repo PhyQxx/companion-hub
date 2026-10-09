@@ -50,6 +50,7 @@ from ..api import (
     create_admin_tasks_router,
     create_admin_theme_router,
     create_admin_timeline_router,
+    create_admin_users_router,
     create_deletion_ledger_router,
     create_logs_stream_router,
 )
@@ -197,6 +198,13 @@ def register_admin_data_routers(
             database,
             admin_token=admin_token,
             version=__version__,
+        )
+    )
+    # 多用户管理（仅业主）：列表、停用/启用与改名；开户仍由 SSO 白名单自动完成
+    app.include_router(
+        create_admin_users_router(
+            database,
+            admin_token=admin_token,
         )
     )
     app.include_router(

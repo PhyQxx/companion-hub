@@ -11,7 +11,7 @@ import os
 from pathlib import Path
 
 from fastapi import FastAPI
-from fastapi.responses import RedirectResponse, FileResponse
+from fastapi.responses import FileResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
 from app import __version__

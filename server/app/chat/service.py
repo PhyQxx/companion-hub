@@ -12,7 +12,7 @@ from typing import Any, Literal, Protocol
 from uuid import UUID
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from sqlalchemy import func, select, update
+from sqlalchemy import case, func, select, update
 from sqlalchemy.exc import IntegrityError
 
 from app.cognition import (
@@ -718,9 +718,14 @@ class ChatService:
             )
             if target_user_id is not None:
                 query = query.where(ConversationRecord.user_id == target_user_id)
+            # 多用户：无显式目标的主动消息优先业主的最近会话；无业主
+            # 标识的库回落最早活跃用户（单用户行为），不随机跨用户投递
             row = (
                 await session.execute(
-                    query.order_by(ConversationRecord.last_active_at.desc())
+                    query.order_by(
+                        case((AppUserRecord.role == "owner", 0), else_=1),
+                        ConversationRecord.last_active_at.desc(),
+                    )
                     .limit(1)
                     .with_for_update()
                 )

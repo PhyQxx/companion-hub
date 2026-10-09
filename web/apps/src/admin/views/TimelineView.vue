@@ -91,6 +91,17 @@ const pretty = (value: unknown) => JSON.stringify(value, null, 2);
 async function resolveDefaultUser() {
   if (userId.value) return;
   try {
+    // 多用户：成员会话被后端强制 scope 到本人，这里直接用本人 ID 兜底；
+    // 业主保持从记忆库首行猜测 + 手工输入。
+    const me = await api.request<{ user: { id: string; role: string } }>("/api/v1/auth/me");
+    if (me.user.role !== "owner") {
+      userId.value = me.user.id;
+      return;
+    }
+  } catch {
+    // 会话信息不可用时退回旧行为
+  }
+  try {
     const rows = await api.request<{ items: Array<{ user_id: string }> }>(
       "/api/v1/admin/memories?status=active&limit=1",
     );

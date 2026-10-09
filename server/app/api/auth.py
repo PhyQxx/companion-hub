@@ -41,6 +41,7 @@ class LoginRequest(StrictModel):
 class UserResponse(StrictModel):
     id: UUID
     display_name: str
+    role: str = "member"
 
 
 class SessionResponse(StrictModel):
@@ -160,6 +161,7 @@ def _session_response(value: AuthSession) -> SessionResponse:
         user=UserResponse(
             id=value.principal.user_id,
             display_name=value.principal.display_name,
+            role=value.principal.role,
         ),
     )
 
@@ -168,5 +170,7 @@ def _me_response(value: ChatPrincipal) -> MeResponse:
     return MeResponse(
         session_id=value.session_id,
         expires_at=value.expires_at,
-        user=UserResponse(id=value.user_id, display_name=value.display_name),
+        user=UserResponse(
+            id=value.user_id, display_name=value.display_name, role=value.role
+        ),
     )

@@ -235,9 +235,20 @@
 - [x] RPT 每日自体检（2026-10-01）：`app/observability/selfcheck.py` `DailySelfCheckScheduler`——每日到点（`ARIA_SELF_CHECK_TIME`，默认 10:00，单进程连续运行期间每日至多一次，重启/多 worker 未做全局去重）确定性体检三项：UTILITY 模型路由最小补全探活（失败才报，不覆盖全部路由）、设备心跳（7 天内活跃设备静默超 24h 才报、注销与久离设备不噪音）、备份落盘（已产出备份但最新超过 26h 才报，未启用备份保持安静）；全部健康不说话，异常经主动通道投递给全部活跃用户。测试 `test_self_check.py` 7 项。
 - [x] PERE-01 Router 跨轮缓存（配置指纹 sha256，容量 4，发布自动失效）；PERE-02 流式取消检查改内存集合（cancel_turn 写入、回合收尾逐出）；PERE-03 组合根拆分完成（2026-10-01）：wiring/ 包六批承接前端静态/系统端点、Admin 前置路由、主动投递栈与感知循环、lifespan 启停序列、领域装配段（`domain.py` `DomainAssembly` 容器 + `assemble_domain`，顺带删除 deliver_task_reminder/deliver_goal_reminder 死代码）与运行时装配段（`runtime.py` `assemble_runtime` 返回 `RuntimeAssembly` + Admin 数据路由 `register_admin_data_routers`），main.py 2127→277 行，每批分段全量验证。
 
-### 0.0 核查后优先修复（2026-09-08）
+### 多用户支持（2026-10-09 启动，ID-01 解除暂缓）
 
-以下为文档与实际代码对照发现的开发缺口。FIX-01～03/01B、SAT-01～03、MEET-01 Hub 侧链路、QA-01、OPT-41、浏览观察 v1 全量、MCP C0/C1/C2/D、PWA Batch B/C 与 WEB-01 的开发缺口已关闭。代码闭环不等于真机验收：PWA B/C 已有 2026-09-11 验收记录；卫星设备、会议录音客户端、更新后的邮件确认与家庭场景等仍按下方及集中验收清单收口。当前是单用户使用，`ID-01` 多人身份于 2026-09-08 按用户决定暂缓。0.0 清单已全部关闭，剩余待办见当前功能主线与 0.2 之后的能力队列。
+用户要求「加入用户的概念，每个用户有自己的后台和聊天」。数据层（会话/消息/记忆/任务/日历/联系人等）此前已普遍带 `user_id` 归属，本线工作集中在身份映射、Admin 分级与后台任务缺省目标。设计与边界见 [07-安全与管理后台](./07-安全与管理后台.md) §2 与 [00-产品与架构](./00-产品与架构.md) §3.14。
+
+- [x] **MU-01 身份与登录多用户化（代码闭环）**：迁移 `0069_multiuser_identity`（`app_user` 加 `sso_sub` 唯一 + `role` check，存量活跃用户升 owner；SQLite/PG 双库升级/回退与绑定保留拒绝回退已验证，PG 用例在容器存活期间通过）。`ARIA_SSO_ALLOWED_SUBS`（逗号/空白分隔，兼容旧 `ARIA_SSO_ALLOWED_SUB`）+ `ARIA_SSO_OWNER_SUB`（缺省名单首个）；SSO 回调按 `sso_sub` 映射用户，移除「取第一个活跃用户」——名单内首登自动开户（member），业主 sub 回填绑定存量用户（owner），每次登录同步 display_name；停用用户拒绝登录（`login_sso_provisioned`，并发首登撞唯一索引重试一次）。`ChatPrincipal` 增加 `role`，`/auth/me`/登录响应带 role；`setup()` 本地密码通道收紧为只认领/创建业主。
+- [x] **MU-02 Admin 分级鉴权与个人数据 scoping（代码闭环）**：`AdminTokenGuard` 拆 `min_role`（默认 owner：全局配置/系统运维路由仅业主会话或 admin token；member：个人数据路由任意活跃会话），会话访问上下文 `AdminAccess` 存入 `request.state`（闭包注解在 postponed annotations 下不可解析，改 router 级依赖 + `admin_access(request)`）。butler/tasks/memory/timeline/safety/screen·browser awareness 七组数据路由：会话访问强制 scope 到本人（成员传他人 user_id 被覆盖，他人 by-ID 资源 404；业主可显式指定检视），admin token 机器访问保留原缺省。前端 `/auth/me` 驱动导航过滤（`requiresOwner` 模块/Tab 级标注）与成员越权深链提示。顺带修复 SSO 提交遗留的 5 处 `token_guard(credentials)` 缺参运行时错误（改为 `revalidate`）与 ruff/mypy 基线错误。
+- [x] **MU-03 后台任务缺省目标与用户管理（代码闭环）**：新增 `default_owner_id`（活跃业主优先，无业主标识回落最早活跃用户保持单用户行为）；HA 主动、安全巡检、日历 CalDAV/Google 镜像、pnkx 待办同步、设备配对缺省与无目标主动消息（`create_proactive_message` 业主会话优先排序）统一定向业主；隐式主动输出来源维持观测源单绑定契约（停用不接管）。新增 `/api/v1/admin/users`（仅业主）：列表（含活跃会话数）、停用（同事务撤销全部会话）/恢复、改名，最后一个活跃业主不可停用；Admin 新增「用户管理」视图。`reset_password` 明确为业主本地密码重置。
+- [ ] **MU-04 真实环境验收（待执行）**：真实 pnkx 多账号登录/建号/停用全链、成员后台数据隔离浏览器验收、业主全局配置回归；见 X-02 惯例，模拟测试不替代。
+
+**边界与遗留**：人格/模型/技能/主题等中枢配置与观测源（屏幕/浏览/邮件感知）、集成连接（CalDAV/Google/HA/邮件/pnkx 待办）仍为共享或业主级归属，不做按用户隔离（后续迭代）；每人独立人格、viewer/operator 细分角色、用户删除与角色变更（涉 B-02/B-03 血缘）、SLO/pnkx 登出联动不在本线。`docs/07` §2 的 viewer/operator/admin 三级为原设计目标，当前实现为 owner/member 两级 + admin token 机器通道。
+
+**验证证据与限制（2026-10-09）**：新增 `test_auth_sso_multiuser.py`（白名单解析/存量绑定/开户/复登改名/停用拒绝/state 重放/密码通道认领）、`test_admin_roles.py`（守卫两级/任务与记忆 scoping/成员 403/404）、`test_admin_users.py`、`test_multiuser_identity_migration.py`（双库；PG 侧在容器恢复后已分块补跑受影响族全部通过）；受影响回归族（calendar/todo/proactive/safety/device/chat/output/fence 等）SQLite+PG 分块通过；顺带修复 2 个 HEAD 预存失败（`test_memory.py::test_admin_delete_and_ledger_api`、`test_database_config.py::test_admin_api_requires_token_and_manages_drafts`——此前 SSO 前端合并遗留的 `/admin/*` 307 断言，测试改为跟随重定向到 `/chat/admin`，与本线逻辑无关）；`test_voice_turn_delivery` 的 `[False-sqlite]` 预存失败仍保留未动；ruff、严格 mypy（782 文件）、架构守卫、web typecheck 与 production build 通过。业务提交哈希待生成后回填。
+
+以下为文档与实际代码对照发现的开发缺口。FIX-01～03/01B、SAT-01～03、MEET-01 Hub 侧链路、QA-01、OPT-41、浏览观察 v1 全量、MCP C0/C1/C2/D、PWA Batch B/C 与 WEB-01 的开发缺口已关闭。代码闭环不等于真机验收：PWA B/C 已有 2026-09-11 验收记录；卫星设备、会议录音客户端、更新后的邮件确认与家庭场景等仍按下方及集中验收清单收口。`ID-01` 多人身份曾于 2026-09-08 按用户决定暂缓，2026-10-09 解除并落地账号级多用户（见「多用户支持」节）。0.0 清单已全部关闭，剩余待办见当前功能主线与 0.2 之后的能力队列。
 
 - [x] **FIX-01 邮件服务端确认闭环（2026-09-08）。** `mail_send` 仅创建服务端预览，模型传 `confirmed=true` 显式拒绝。鉴权 API `/api/v1/mail/drafts` 列表/确认/取消与 Chat 完整邮件卡片已接入；确认只接受预览 ID + 内容摘要，发送服务器保存的完整收件人/抄送/主题/正文。预览绑定用户、15 分钟有效，同回合修改撤销旧预览；并发发送先认领，成功重放回执，超时/取消进入 `unknown_outcome` 禁重试。2026-09-16 起生产装配注入 `DatabasePendingMutationStore`（迁移 0040 `pending_mutation`），预览在有效期内跨重启/跨 worker 存活，数据库条件更新保证原子认领；仅测试或无数据库环境使用内存兜底，重启失效。回归覆盖未确认/直接 true/篡改/跨用户/过期/取消/重复与并发发送/结果未知；隔离浏览器预览、确认、取消通过，未发送真实邮件。真实模型与邮箱端到端仍待验收。
 - [x] **FIX-01B 日历/流程保存确认一致性（2026-09-08）。** `calendar_create` 与 `workflow_save` 现在只创建服务端临时预览，模型传 `confirmed=true` 明确拒绝。Chat 展示日程完整时间/地点/参与人/提醒，以及流程各步参数/风险/确认策略/可撤销性；用户点击后由鉴权 API 携预览 ID + 内容摘要创建或保存。预览绑定用户和回合、15 分钟有效，同回合修改废弃旧预览；确认先认领，成功重放结果，取消/过期/摘要篡改/跨用户均拒绝。2026-09-16 起与邮件共用数据库持久化预览，未过期预览跨重启/跨 worker 存活；无数据库环境仍用内存兜底。底层用户管理 API 保持原契约。真实模型体验仍待验收。
@@ -320,7 +331,7 @@
 #### J7～J8 后续产品化
 
 - [ ] `IOS-01/AND-01`：PWA 稳定后评估 App Intents、快捷指令、锁屏/Live Activity、小组件和穿戴设备入口。
-- [ ] `ID-01` 多人身份（暂缓，2026-09-08 用户决定）：当前只有一位使用者，暂不引入家庭成员、声纹辅助、访客降级和多人记忆/播报隔离；出现第二位长期用户或共享设备的私密播报需求时再启动。
+- [ ] `ID-01` 多人身份（2026-10-09 解除暂缓，MU-01～03 已代码闭环见「多用户支持」节）：账号级多用户（SSO 白名单开户、owner/member 两级、每用户聊天与个人数据后台隔离）已落地；声纹辅助、访客降级、每人独立人格、共享设备私密播报隔离仍暂缓。
 - [x] `SAFE-01/SAFE-02` 家庭守护（2026-09-14 全量实现，待 HA 真机验收）：设计见 [07-安全与管理后台](./07-安全与管理后台.md) 的家庭守护 SAFE 章节。S1 规则分级（severity 三级 + 烟雾/门窗久开新种类 + critical 全通道广播 + 告警证据富化）；S2 告警状态机（`safety_alert` 表 + L1→L2 升级窗口 + 聊天「知道了」确认 + 重启恢复 + Timeline 三类事件）；S3 预授权联系人邮件升级（授权可撤销 + 发送前告知 + 双台账 + Admin「安全守护」页）；S4 久未活动检测（聊天/设备心跳多信号 + 生效时段门控 + 认知闸门）。全量 851 测试、mypy 266 文件零错误。
 
 ### A. 多终端设备底座

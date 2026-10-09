@@ -5,7 +5,7 @@ from datetime import datetime
 from typing import Annotated, Literal
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from pydantic import Field
 
 from app.memory import (
@@ -23,7 +23,7 @@ from app.memory import (
 )
 from app.schemas.common import PrivacyLevel, StrictModel
 
-from .admin_config import AdminTokenGuard
+from .admin_config import AdminTokenGuard, admin_access
 
 
 class MemoryView(StrictModel):
@@ -211,14 +211,38 @@ def _default_subject_key(subject: MemorySubjectKind) -> str:
 
 
 def create_admin_memory_router(store: MemoryStore, *, admin_token: str | None) -> APIRouter:
+    guard = AdminTokenGuard(admin_token, min_role="member")
     router = APIRouter(
         prefix="/api/v1/admin/memories",
         tags=["admin-memories"],
-        dependencies=[Depends(AdminTokenGuard(admin_token))],
+        dependencies=[Depends(guard)],
     )
 
+    def scoped_user_id(request: Request, user_id: UUID | None) -> UUID:
+        scoped = admin_access(request).scoped_user_id(user_id)
+        if scoped is None:
+            raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, detail="user_id required")
+        return scoped
+
+    async def require_ownership(memory_id: int, request: Request) -> None:
+        """成员会话只能触达本人记忆；业主与 admin token 机器访问不受限。"""
+        principal = admin_access(request).principal
+        if principal is None or principal.role == "owner":
+            return
+        try:
+            entry = await store.get(memory_id)
+        except LookupError as error:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, detail=str(error)) from error
+        if entry.user_id != principal.user_id:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, detail="memory not found")
+
     @router.post("/query", response_model=RetrievalQueryResult)
-    async def query_memories(payload: RetrievalQueryRequest) -> RetrievalQueryResult:
+    async def query_memories(
+        payload: RetrievalQueryRequest, request: Request
+    ) -> RetrievalQueryResult:
+        payload = payload.model_copy(
+            update={"user_id": scoped_user_id(request, payload.user_id)}
+        )
         result = await MemoryRetriever(store).retrieve(
             payload.query,
             user_id=payload.user_id,
@@ -247,6 +271,7 @@ def create_admin_memory_router(store: MemoryStore, *, admin_token: str | None) -
 
     @router.get("", response_model=MemoryListResponse)
     async def list_memories(
+        request: Request,
         user_id: UUID | None = None,
         subject: MemorySubjectKind | None = None,
         subject_key: str | None = None,
@@ -258,6 +283,7 @@ def create_admin_memory_router(store: MemoryStore, *, admin_token: str | None) -
         limit: Annotated[int, Query(ge=1, le=200)] = 50,
         offset: Annotated[int, Query(ge=0)] = 0,
     ) -> MemoryListResponse:
+        user_id = admin_access(request).scoped_user_id(user_id)
         total = await store.count_memories(
             user_id=user_id,
             subject_kind=subject,
@@ -288,9 +314,12 @@ def create_admin_memory_router(store: MemoryStore, *, admin_token: str | None) -
         )
 
     @router.post("", response_model=MemoryView, status_code=status.HTTP_201_CREATED)
-    async def create_memory(payload: ManualMemoryCreate) -> MemoryView:
+    async def create_memory(payload: ManualMemoryCreate, request: Request) -> MemoryView:
         if payload.privacy_level == PrivacyLevel.L3:
             raise HTTPException(422, "L3 cannot be stored")
+        payload = payload.model_copy(
+            update={"user_id": scoped_user_id(request, payload.user_id)}
+        )
         candidate = MemoryCandidate(
             subject_kind=payload.subject,
             subject_key=payload.subject_key or _default_subject_key(payload.subject),
@@ -316,7 +345,8 @@ def create_admin_memory_router(store: MemoryStore, *, admin_token: str | None) -
         return _view(entry)
 
     @router.get("/{memory_id}", response_model=MemoryDetailView)
-    async def memory_detail(memory_id: int) -> MemoryDetailView:
+    async def memory_detail(memory_id: int, request: Request) -> MemoryDetailView:
+        await require_ownership(memory_id, request)
         try:
             entry = await store.get(memory_id)
             sources = await store.get_sources(memory_id)
@@ -338,7 +368,10 @@ def create_admin_memory_router(store: MemoryStore, *, admin_token: str | None) -
         )
 
     @router.patch("/{memory_id}", response_model=MemoryView)
-    async def edit_memory(memory_id: int, payload: MemoryEditRequest) -> MemoryView:
+    async def edit_memory(
+        memory_id: int, payload: MemoryEditRequest, request: Request
+    ) -> MemoryView:
+        await require_ownership(memory_id, request)
         try:
             entry = await store.edit(
                 memory_id,
@@ -357,7 +390,8 @@ def create_admin_memory_router(store: MemoryStore, *, admin_token: str | None) -
         return _view(entry)
 
     @router.post("/{memory_id}/archive", response_model=MemoryView)
-    async def archive_memory(memory_id: int) -> MemoryView:
+    async def archive_memory(memory_id: int, request: Request) -> MemoryView:
+        await require_ownership(memory_id, request)
         try:
             entry = await store.set_status(memory_id, MemoryStatus.ARCHIVED)
         except LookupError as error:
@@ -367,7 +401,10 @@ def create_admin_memory_router(store: MemoryStore, *, admin_token: str | None) -
         return _view(entry)
 
     @router.post("/{memory_id}/resolve", response_model=MemoryView)
-    async def resolve_conflict(memory_id: int, payload: ConflictResolveRequest) -> MemoryView:
+    async def resolve_conflict(
+        memory_id: int, payload: ConflictResolveRequest, request: Request
+    ) -> MemoryView:
+        await require_ownership(memory_id, request)
         try:
             entry = await store.resolve_conflict(
                 memory_id, adopt=payload.action == "adopt", actor="admin"
@@ -380,8 +417,11 @@ def create_admin_memory_router(store: MemoryStore, *, admin_token: str | None) -
 
     @router.delete("/{memory_id}", response_model=DeletionReceiptView)
     async def hard_delete_memory(
-        memory_id: int, reason: Annotated[str | None, Query(max_length=400)] = None
+        memory_id: int,
+        request: Request,
+        reason: Annotated[str | None, Query(max_length=400)] = None,
     ) -> DeletionReceiptView:
+        await require_ownership(memory_id, request)
         try:
             receipt = await store.hard_delete(memory_id, actor="admin", reason=reason)
         except LookupError as error:

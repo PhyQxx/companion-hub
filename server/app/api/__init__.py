@@ -18,6 +18,7 @@ from .admin_senseaudio import create_admin_senseaudio_router
 from .admin_skills import create_admin_skills_router
 from .admin_tasks import create_admin_tasks_router
 from .admin_timeline import create_admin_timeline_router
+from .admin_users import create_admin_users_router
 from .admin_voice import create_admin_voice_router
 from .auth import ChatSessionGuard, create_auth_router
 from .auth_sso import SsoSettings, create_sso_router, load_sso_settings
@@ -54,6 +55,7 @@ __all__ = [
     "ChatWebSocketManager",
     "DeviceCommandGateway",
     "DeviceCredentialGuard",
+    "SsoSettings",
     "VoiceWebSocketManager",
     "XiaoAiWebSocketManager",
     "create_admin_avatar_router",
@@ -75,11 +77,9 @@ __all__ = [
     "create_admin_tasks_router",
     "create_admin_theme_router",
     "create_admin_timeline_router",
+    "create_admin_users_router",
     "create_admin_voice_router",
     "create_auth_router",
-    "SsoSettings",
-    "create_sso_router",
-    "load_sso_settings",
     "create_avatar_router",
     "create_briefs_router",
     "create_calendar_router",
@@ -98,12 +98,14 @@ __all__ = [
     "create_push_router",
     "create_reviews_router",
     "create_safety_router",
+    "create_sso_router",
     "create_tasks_router",
     "create_theme_router",
     "create_todo_router",
     "create_voice_websocket_router",
     "create_workflows_router",
     "create_xiaoai_websocket_router",
+    "load_sso_settings",
     "sign_device_frame",
     "verify_device_signature",
 ]

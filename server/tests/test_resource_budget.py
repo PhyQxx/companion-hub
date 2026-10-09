@@ -37,7 +37,9 @@ async def seed(database: Database) -> tuple[UUID, UUID, RunToolBudget]:
     config = RunBudgetConfig(max_tool_attempts=1)
     now = datetime.now(UTC)
     async with database.sessions.begin() as session:
-        session.add(AppUserRecord(id=owner, display_name="Fixture", status="active"))
+        session.add(
+            AppUserRecord(id=owner, display_name="Fixture", status="active", role="owner")
+        )
         session.add(
             TaskRunRecord(
                 id=run_id,

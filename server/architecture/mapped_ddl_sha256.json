@@ -12,8 +12,8 @@
     "sqlite": "1159e8a01071d0c519be670f3251bc51952f349ef26bf9fc77e989bbbb285ced"
   },
   "app_user": {
-    "postgresql": "ec9caee00a05fbd807aa7611fa9e470e84de12a36d1fdb6e41728e4f1c9a5a9d",
-    "sqlite": "1b425a4515cd475a6c75c088d9e829aa408c2a995085de4ce0d434f1f7f31bbb"
+    "postgresql": "6aac96fb7e380cab7cc02089acfa56e4c97d8adc18b6814f7065489b5153e8a5",
+    "sqlite": "da79c8448302c1e5d5d86ebdeadb383a646e77812a1c829ca2e81d4739a05ab8"
   },
   "asset": {
     "postgresql": "753620614ea5549bc58120c0f4463ab3ca6dd2529b375c835a3e3ad52daa0147",

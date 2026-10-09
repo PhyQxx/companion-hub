@@ -29,6 +29,10 @@ class AppUserRecord(Base):
     __module__ = "app.db.models"
 
     __tablename__ = "app_user"
+    __table_args__ = (
+        CheckConstraint("role IN ('owner','member')", name="ck_app_user_role"),
+        UniqueConstraint("sso_sub", name="uq_app_user_sso_sub"),
+    )
 
     id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True)
     display_name: Mapped[str] = mapped_column(String(160), nullable=False)
@@ -37,6 +41,10 @@ class AppUserRecord(Base):
         String(64), nullable=False, server_default="Asia/Shanghai"
     )
     status: Mapped[str] = mapped_column(String(16), nullable=False, server_default="active")
+    # pnkx OIDC sub（即 pnkx userId）；本地密码通道初始化的存量用户在业主
+    # 首次 SSO 登录时回填绑定，此后一个 pnkx 账号固定映射一个本地用户。
+    sso_sub: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    role: Mapped[str] = mapped_column(String(16), nullable=False, server_default="member")
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )

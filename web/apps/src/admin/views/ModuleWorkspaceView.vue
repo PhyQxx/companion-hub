@@ -36,6 +36,7 @@ import SystemView from "./SystemView.vue";
 import TasksView from "./TasksView.vue";
 import TimelineView from "./TimelineView.vue";
 import UsageView from "./UsageView.vue";
+import UsersView from "./UsersView.vue";
 
 const props = defineProps<{ module: string }>();
 const emit = defineEmits<{ status: [text: string, error?: boolean] }>();
@@ -83,6 +84,7 @@ const currentView = computed(() => {
   if (props.module === "logs") return LogsView;
   if (props.module === "system" && activeTab.value === "jobs") return JobsView;
   if (props.module === "system") return SystemView;
+  if (props.module === "users") return UsersView;
   return PlaceholderView;
 });
 </script>
