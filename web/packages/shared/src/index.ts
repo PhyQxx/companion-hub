@@ -898,8 +898,8 @@ export class ChatApi {
     return this.request<SystemHealth>("/healthz", { method: "GET" });
   }
 
-  runtimeMeta() {
-    return this.request<RuntimeMeta>("/api/v1/meta/runtime", { method: "GET" });
+  runtimeMeta(token?: string | null) {
+    return this.request<RuntimeMeta>("/api/v1/meta/runtime", { method: "GET" }, token ?? undefined);
   }
 
   setup(password: string, adminToken: string, displayName = "主人") {

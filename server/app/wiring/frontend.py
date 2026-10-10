@@ -10,7 +10,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
@@ -238,7 +238,20 @@ def register_frontend(
         }
 
     @app.get("/api/v1/meta/runtime", tags=["system"])
-    async def runtime_meta() -> dict[str, object]:
+    async def runtime_meta(request: Request) -> dict[str, object]:
+        # 人格名字/形象与定位策略是登录用户的视图；此路由装配早于
+        # AuthService（组合根顺序），按请求晚绑定校验会话。
+        auth_service = getattr(request.app.state, "auth_service", None)
+        authorization = request.headers.get("authorization", "")
+        token = authorization[7:] if authorization.lower().startswith("bearer ") else ""
+        if auth_service is None or not token:
+            raise HTTPException(status_code=401, detail="chat session required")
+        try:
+            await auth_service.authenticate(token)
+        except Exception as error:
+            raise HTTPException(
+                status_code=401, detail="invalid or expired chat session"
+            ) from error
         result: dict[str, object] = {}
         if config_store is not None:
             # 前端据此决定定位授权节奏(每次询问/会话内允许); 不含任何密钥。

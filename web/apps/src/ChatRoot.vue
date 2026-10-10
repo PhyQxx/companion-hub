@@ -931,7 +931,7 @@ function messageTimeOf(message: ChatMessage): string {
 
 async function loadRuntimeMeta() {
   try {
-    const runtime = await api.runtimeMeta();
+    const runtime = await api.runtimeMeta(token.value || null);
     personaMeta.value = runtime.persona
       ? { version: runtime.persona.version, name: runtime.persona.name }
       : null;
@@ -1584,7 +1584,7 @@ onMounted(async () => {
   }
   const saved = authStorage.getItem(TOKEN_KEY);
   if (!saved) {
-    void loadRuntimeMeta();
+    // 未登录不预载人格信息：伴侣名字等是登录后每个用户自己的视图
     if (location.hash.startsWith("#sso-error=")) {
       setStatus(decodeURIComponent(location.hash.slice("#sso-error=".length)), true);
     }
@@ -1640,7 +1640,7 @@ async function installPwa() {
 <template>
   <div v-if="!token" class="auth">
     <div class="card">
-      <h1>{{ personaMeta?.name ?? '助手' }}</h1>
+      <h1>Aria Hub</h1>
       <form class="login-form" @submit.prevent="loginWithPassword">
         <label>
           <span>账号</span>

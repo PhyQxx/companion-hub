@@ -1715,7 +1715,9 @@ async def test_runtime_meta_and_rest_chat_share_published_persona_version(
         headers = {"Authorization": f"Bearer {auth_session.access_token}"}
 
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
-            runtime = await client.get("/api/v1/meta/runtime")
+            # 人格/形象是登录用户的视图：未登录 401，不泄露名字
+            unauthenticated = await client.get("/api/v1/meta/runtime")
+            runtime = await client.get("/api/v1/meta/runtime", headers=headers)
             avatar_asset = await client.get("/api/v1/avatar-assets/warm-daily/neutral.png")
             conversation = await client.post(
                 "/api/v1/chat/conversations",
@@ -1729,6 +1731,7 @@ async def test_runtime_meta_and_rest_chat_share_published_persona_version(
             )
 
     assert runtime.status_code == 200
+    assert unauthenticated.status_code == 401
     assert runtime.json()["persona"] == {
         "version": published.version,
         "content_hash": published.content_hash,
