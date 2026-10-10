@@ -16,6 +16,7 @@ from app.auth import (
     ChatPrincipal,
     InvalidCredentials,
     InvalidSession,
+    InvalidUsername,
 )
 from app.schemas.common import StrictModel
 
@@ -35,13 +36,20 @@ class SetupRequest(StrictModel):
 
 
 class LoginRequest(StrictModel):
+    username: Annotated[str | None, Field(min_length=1, max_length=64)] = None
     password: Annotated[str, Field(min_length=1, max_length=256)]
+
+
+class PasswordChangeRequest(StrictModel):
+    new_password: Annotated[str, Field(min_length=8, max_length=256)]
+    current_password: Annotated[str | None, Field(min_length=1, max_length=256)] = None
 
 
 class UserResponse(StrictModel):
     id: UUID
     display_name: str
     role: str = "member"
+    username: str | None = None
 
 
 class SessionResponse(StrictModel):
@@ -134,14 +142,30 @@ def create_auth_router(service: AuthService, *, admin_token: str | None) -> APIR
         key = request.client.host if request.client is not None else "unknown"
         await throttle.check(key)
         try:
-            result = await service.login(password=body.password)
+            result = await service.login(password=body.password, username=body.username)
         except InvalidCredentials as error:
             await throttle.failure(key)
             raise HTTPException(
                 status.HTTP_401_UNAUTHORIZED, detail="invalid chat credential"
             ) from error
+        except InvalidUsername as error:
+            raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(error)) from error
         await throttle.success(key)
         return _session_response(result)
+
+    @router.post("/password", status_code=status.HTTP_204_NO_CONTENT)
+    async def change_password(
+        body: PasswordChangeRequest, principal: Annotated[ChatPrincipal, Depends(chat_guard)]
+    ) -> None:
+        """自助设置/修改本人密码（已有密码时须提供当前密码）。"""
+        try:
+            await service.set_password(
+                principal.user_id,
+                body.new_password,
+                current_password=body.current_password,
+            )
+        except InvalidCredentials as error:
+            raise HTTPException(status.HTTP_403_FORBIDDEN, detail=str(error)) from error
 
     @router.get("/me", response_model=MeResponse)
     async def me(principal: Annotated[ChatPrincipal, Depends(chat_guard)]) -> MeResponse:
@@ -162,6 +186,7 @@ def _session_response(value: AuthSession) -> SessionResponse:
             id=value.principal.user_id,
             display_name=value.principal.display_name,
             role=value.principal.role,
+            username=value.principal.username,
         ),
     )
 
@@ -171,6 +196,9 @@ def _me_response(value: ChatPrincipal) -> MeResponse:
         session_id=value.session_id,
         expires_at=value.expires_at,
         user=UserResponse(
-            id=value.user_id, display_name=value.display_name, role=value.role
+            id=value.user_id,
+            display_name=value.display_name,
+            role=value.role,
+            username=value.username,
         ),
     )

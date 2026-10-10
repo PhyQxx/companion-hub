@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, provide, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
-import { AdminApi } from "@aria/shared";
+import { AdminApi, ChatApi } from "@aria/shared";
 import {
   adminModules,
   defaultModulePath,
@@ -95,7 +95,31 @@ async function connect() {
   }
 }
 
-// 会话缺失/失效：走 pnkx SSO 重新建立（回调落回本应用根，令牌自动采纳）
+// 会话缺失/失效：账号密码登录，或跳 pnkx SSO 重新建立（回调落回本应用根）
+const chatApi = new ChatApi();
+const loginUsername = ref("");
+const loginPassword = ref("");
+const loginBusy = ref(false);
+const ssoEnabled = ref(false);
+
+async function loginWithPassword() {
+  if (!loginPassword.value || loginBusy.value) return;
+  loginBusy.value = true;
+  try {
+    const session = await chatApi.login(
+      loginPassword.value,
+      loginUsername.value.trim() || null,
+    );
+    api.token = session.access_token;
+    loginPassword.value = "";
+    await connect();
+  } catch (error) {
+    setStatus(error instanceof Error ? error.message : "登录失败", true);
+  } finally {
+    loginBusy.value = false;
+  }
+}
+
 function loginWithPnkx() {
   window.location.href = "/api/v1/auth/sso/login";
 }
@@ -107,15 +131,38 @@ function backToMyModules() {
 const navGroups = computed(() => groupsForRole(role.value));
 
 if (api.token) void connect();
-else setStatus("尚未登录，请使用 pnkx 账号登录", true);
+else {
+  setStatus("尚未登录", true);
+  void fetch("/api/v1/auth/sso/status")
+    .then((res) => (res.ok ? res.json() : { enabled: false }))
+    .then((data: { enabled?: boolean }) => {
+      ssoEnabled.value = data.enabled === true;
+    })
+    .catch(() => {
+      ssoEnabled.value = false;
+    });
+}
 </script>
 
 <template>
   <div v-if="!connected" class="auth">
     <el-card class="card" shadow="never">
       <h1>Aria 管理后台</h1>
-      <p class="hint">使用 pnkx 账号登录后即可管理本中枢。</p>
-      <el-button type="primary" @click="loginWithPnkx">使用 pnkx 账号登录</el-button>
+      <form class="login-form" @submit.prevent="loginWithPassword">
+        <el-input v-model="loginUsername" placeholder="用户名（未设置可留空）" autocomplete="username" />
+        <el-input
+          v-model="loginPassword"
+          type="password"
+          placeholder="密码"
+          autocomplete="current-password"
+          show-password
+        />
+        <el-button type="primary" native-type="submit" :disabled="loginBusy || !loginPassword" :loading="loginBusy">登录</el-button>
+      </form>
+      <template v-if="ssoEnabled">
+        <div class="login-divider"><span>或</span></div>
+        <el-button @click="loginWithPnkx">使用 pnkx 账号登录</el-button>
+      </template>
       <p v-if="statusText" class="status" :class="{ error: statusError }">{{ statusText }}</p>
     </el-card>
   </div>
@@ -179,6 +226,9 @@ else setStatus("尚未登录，请使用 pnkx 账号登录", true);
 .card h1 { margin: 0; font-size: 20px; }
 .hint, .status { color: var(--muted); font-size: 13px; margin: 0; }
 .status.error { color: var(--danger); }
+.login-form { display: grid; gap: 10px; }
+.login-divider { display: flex; align-items: center; gap: 10px; color: #8a94a6; font-size: 12px; }
+.login-divider::before, .login-divider::after { content: ""; flex: 1; height: 1px; background: #e3e8f2; }
 
 .shell { display: grid; grid-template-columns: 230px 1fr; height: 100%; }
 aside { display: flex; flex-direction: column; gap: 18px; border-right: 1px solid var(--line); padding: 16px; }

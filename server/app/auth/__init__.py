@@ -5,6 +5,8 @@ from .service import (
     ChatPrincipal,
     InvalidCredentials,
     InvalidSession,
+    InvalidUsername,
+    normalize_username,
 )
 
 __all__ = [
@@ -14,4 +16,6 @@ __all__ = [
     "ChatPrincipal",
     "InvalidCredentials",
     "InvalidSession",
+    "InvalidUsername",
+    "normalize_username",
 ]

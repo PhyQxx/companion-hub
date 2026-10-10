@@ -158,7 +158,7 @@ def test_full_sqlite_chain_keeps_unit_costs_at_current_head(tmp_path: Path) -> N
     assert result.returncode == 0, result.stderr
     with sqlite3.connect(path) as connection:
         assert connection.execute("SELECT version_num FROM alembic_version").fetchone() == (
-            "0069_multiuser_identity",
+            "0070_password_login",
         )
         columns = {row[1] for row in connection.execute("PRAGMA table_info(model_cost)")}
         assert {"unit", "unit_rate", "unit_maximum_quantity", "unit_quantity"} <= columns

@@ -1,4 +1,4 @@
-"""0069 多用户身份迁移：列/约束回建、存量活跃用户升业主、绑定保留拒绝回退。"""
+"""0070 用户名登录迁移：列回建、唯一约束与占用保留拒绝回退。"""
 
 from __future__ import annotations
 
@@ -17,88 +17,75 @@ from test_observation_binding_migration import revision
 from test_run_cancel_fence import prepared
 
 
-def test_multiuser_downgrade_refuses_offline(monkeypatch: pytest.MonkeyPatch) -> None:
-    module = revision("0069_multiuser_identity.py")
+def test_password_login_downgrade_refuses_offline(monkeypatch: pytest.MonkeyPatch) -> None:
+    module = revision("0070_password_login.py")
     monkeypatch.setattr(module.context, "is_offline_mode", lambda: True)
     with pytest.raises(RuntimeError, match="cannot be checked offline"):
         module.downgrade()
 
 
 @pytest.mark.parametrize("backend", ["sqlite", "postgresql"])
-@pytest.mark.parametrize("case", ["clean", "bound"])
-async def test_multiuser_identity_migration(
+@pytest.mark.parametrize("case", ["clean", "named"])
+async def test_password_login_migration(
     backend: str, case: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     storage = await prepared(backend, tmp_path)
-    module = revision("0069_multiuser_identity.py")
+    module = revision("0070_password_login.py")
     monkeypatch.setattr(module.context, "is_offline_mode", lambda: False)
 
     def migrate(connection: Connection) -> None:
         operations = Operations(MigrationContext.configure(connection))
         monkeypatch.setattr(module, "op", operations)
         schema = storage.schema
-        # 回到 0068 形态：去掉 0069 增加的列/约束/索引
+        # 回到 0069 形态：去掉 0070 增加的列/唯一约束
         module.downgrade()
         inspector = inspect(connection)
         columns = {column["name"] for column in inspector.get_columns("app_user", schema=schema)}
-        assert {"sso_sub", "role"} & columns == set()
+        assert "username" not in columns
 
-        # 存量单用户：本地密码业主 + 一名停用账户
-        legacy = uuid4()
-        disabled = uuid4()
+        owner = uuid4()
         created_at = "CURRENT_TIMESTAMP" if backend == "sqlite" else "now()"
         connection.execute(
             text(
-                "INSERT INTO app_user (id, display_name, locale, timezone, status, created_at)"
-                f" VALUES (:id, '存量业主', 'zh-CN', 'Asia/Shanghai', 'active', {created_at})"
+                "INSERT INTO app_user"
+                " (id, display_name, locale, timezone, status, role, created_at)"
+                f" VALUES (:id, '业主', 'zh-CN', 'Asia/Shanghai', 'active', 'owner', {created_at})"
             ),
-            {"id": legacy.hex if backend == "sqlite" else legacy},
+            {"id": owner.hex if backend == "sqlite" else owner},
         )
+        other = uuid4()
         connection.execute(
             text(
-                "INSERT INTO app_user (id, display_name, locale, timezone, status, created_at)"
-                f" VALUES (:id, '停用账户', 'zh-CN', 'Asia/Shanghai', 'disabled', {created_at})"
+                "INSERT INTO app_user"
+                " (id, display_name, locale, timezone, status, role, created_at)"
+                f" VALUES (:id, '成员', 'zh-CN', 'Asia/Shanghai', 'active', 'member', {created_at})"
             ),
-            {"id": disabled.hex if backend == "sqlite" else disabled},
+            {"id": other.hex if backend == "sqlite" else other},
         )
 
         module.upgrade()
         inspector = inspect(connection)
         columns = {column["name"] for column in inspector.get_columns("app_user", schema=schema)}
-        assert {"sso_sub", "role"} <= columns
-        roles = {
-            str(row[0]).replace("-", ""): row[1]
-            for row in connection.execute(text("SELECT id, role FROM app_user"))
-        }
-        assert roles[legacy.hex] == "owner", "存量活跃用户应升为业主"
-        assert roles[disabled.hex] == "member"
-        # role 约束生效
+        assert "username" in columns
+
         from sqlalchemy.exc import IntegrityError
 
         with pytest.raises(IntegrityError), connection.begin_nested():
-            connection.execute(
-                text("UPDATE app_user SET role = 'root' WHERE id = :id"),
-                {"id": legacy.hex if backend == "sqlite" else legacy},
-            )
-        # sso_sub 唯一约束生效（两条 NULL 不冲突，绑定值必须唯一）
-        with pytest.raises(IntegrityError), connection.begin_nested():
-            connection.execute(
-                text("UPDATE app_user SET sso_sub = 'dup-sub'"),
-            )
+            connection.execute(text("UPDATE app_user SET username = 'dup'"))
 
-        if case == "bound":
+        if case == "named":
             connection.execute(
-                text("UPDATE app_user SET sso_sub = 'owner-sub' WHERE role = 'owner'")
+                text("UPDATE app_user SET username = 'owner-account' WHERE role = 'owner'")
             )
             with pytest.raises(RuntimeError, match="bindings must be retained"):
                 module.downgrade()
-            assert "sso_sub" in {
+            assert "username" in {
                 column["name"]
                 for column in inspect(connection).get_columns("app_user", schema=schema)
             }
         else:
             module.downgrade()
-            assert "sso_sub" not in {
+            assert "username" not in {
                 column["name"]
                 for column in inspect(connection).get_columns("app_user", schema=schema)
             }
@@ -110,8 +97,8 @@ async def test_multiuser_identity_migration(
         await storage.close()
 
 
-def test_full_sqlite_chain_reaches_multiuser_head(tmp_path: Path) -> None:
-    path = tmp_path / "multiuser-migration.db"
+def test_full_sqlite_chain_reaches_password_login_head(tmp_path: Path) -> None:
+    path = tmp_path / "password-login-migration.db"
     result = subprocess.run(
         [sys.executable, "-m", "alembic", "upgrade", "head"],
         cwd=Path(__file__).resolve().parents[2],
@@ -127,4 +114,4 @@ def test_full_sqlite_chain_reaches_multiuser_head(tmp_path: Path) -> None:
             "0070_password_login",
         )
         columns = {row[1] for row in connection.execute("PRAGMA table_info(app_user)")}
-        assert {"sso_sub", "role"} <= columns
+        assert "username" in columns

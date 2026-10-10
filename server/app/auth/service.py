@@ -4,6 +4,7 @@ import asyncio
 import base64
 import hashlib
 import hmac
+import re
 import secrets
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -28,6 +29,8 @@ _SESSION_TTL = timedelta(hours=8)
 # 活跃滑动续期不断顺延 8 小时滚动窗口；硬顶限制单个令牌的绝对寿命，
 # 到顶后 expires_at 不再变化，到期必须重新登录，防止长期活跃令牌无限续期。
 _SESSION_MAX_LIFETIME = timedelta(days=7)
+# 本地账号名：字母/数字/下划线/点/横线（含中文），2~64 位，统一小写存储
+_USERNAME_PATTERN = re.compile(r"^[\w.-]{2,64}$", re.UNICODE)
 
 
 class AuthSetupExists(RuntimeError):
@@ -42,6 +45,18 @@ class InvalidSession(RuntimeError):
     pass
 
 
+class InvalidUsername(ValueError):
+    pass
+
+
+def normalize_username(raw: str) -> str:
+    """本地账号名统一去空白并小写后校验；不合法抛 InvalidUsername。"""
+    username = raw.strip().lower()
+    if not _USERNAME_PATTERN.match(username):
+        raise InvalidUsername("username must be 2-64 chars of letters/digits/_/./-")
+    return username
+
+
 @dataclass(frozen=True, slots=True)
 class ChatPrincipal:
     session_id: UUID
@@ -49,6 +64,7 @@ class ChatPrincipal:
     display_name: str
     expires_at: datetime
     role: str = "member"
+    username: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -139,19 +155,24 @@ class AuthService:
             raise AuthSetupExists("chat identity is already configured") from error
         return result[1]
 
-    async def login(self, *, password: str) -> AuthSession:
+    async def login(self, *, password: str, username: str | None = None) -> AuthSession:
+        """用户名+密码登录；username 缺省时保持旧「单密码」兼容语义
+        （对全部活跃密码凭据验证——单用户遗留部署）。"""
         async with self._database.sessions() as session:
-            rows = list(
-                await session.execute(
-                    select(AuthCredentialRecord, AppUserRecord)
-                    .join(AppUserRecord, AppUserRecord.id == AuthCredentialRecord.user_id)
-                    .where(
-                        AuthCredentialRecord.kind == "password",
-                        AuthCredentialRecord.revoked_at.is_(None),
-                        AppUserRecord.status == "active",
-                    )
+            query = (
+                select(AuthCredentialRecord, AppUserRecord)
+                .join(AppUserRecord, AppUserRecord.id == AuthCredentialRecord.user_id)
+                .where(
+                    AuthCredentialRecord.kind == "password",
+                    AuthCredentialRecord.revoked_at.is_(None),
+                    AppUserRecord.status == "active",
                 )
             )
+            if username is not None:
+                query = query.where(
+                    AppUserRecord.username == normalize_username(username)
+                )
+            rows = list(await session.execute(query))
         matched: tuple[AuthCredentialRecord, AppUserRecord] | None = None
         for credential, user in rows:
             if credential.secret_hash and await asyncio.to_thread(
@@ -280,6 +301,7 @@ class AuthService:
             display_name=user.display_name,
             expires_at=expires_at,
             role=user.role,
+            username=user.username,
         )
 
     async def logout(self, principal: ChatPrincipal) -> None:
@@ -335,8 +357,111 @@ class AuthService:
             display_name=user.display_name,
             expires_at=expires_at,
             role=user.role,
+            username=user.username,
         )
         return record, AuthSession(access_token=token, principal=principal)
+
+    async def set_password(
+        self,
+        user_id: UUID,
+        new_password: str,
+        *,
+        current_password: str | None = None,
+        require_current: bool = True,
+    ) -> None:
+        """设置/修改本人密码；已有密码时必须提供正确的当前密码
+        （require_current=False 仅供业主在用户管理中重置）。"""
+        secret_hash = await asyncio.to_thread(_hash_password, new_password)
+        now = datetime.now(UTC)
+        async with self._database.sessions.begin() as session:
+            user = await session.get(AppUserRecord, user_id)
+            if user is None or user.status != "active":
+                raise InvalidCredentials("user not found or inactive")
+            credential = await session.scalar(
+                select(AuthCredentialRecord)
+                .where(
+                    AuthCredentialRecord.user_id == user_id,
+                    AuthCredentialRecord.kind == "password",
+                    AuthCredentialRecord.revoked_at.is_(None),
+                )
+                .order_by(AuthCredentialRecord.created_at)
+                .limit(1)
+                .with_for_update()
+            )
+            if credential is not None and require_current:
+                if not current_password or not credential.secret_hash:
+                    raise InvalidCredentials("current password required")
+                verified = await asyncio.to_thread(
+                    _verify_password, current_password, credential.secret_hash
+                )
+                if not verified:
+                    raise InvalidCredentials("current password mismatch")
+            if credential is not None:
+                credential.secret_hash = secret_hash
+                credential.params_version = credential.params_version + 1
+            else:
+                session.add(
+                    AuthCredentialRecord(
+                        id=uuid7(),
+                        user_id=user_id,
+                        kind="password",
+                        secret_hash=secret_hash,
+                        setup_slot=None,
+                        params_version=1,
+                        created_at=now,
+                    )
+                )
+
+    async def set_username(self, user_id: UUID, raw_username: str) -> str:
+        """设置本地账号名（小写唯一）；被占用抛 InvalidCredentials。"""
+        username = normalize_username(raw_username)
+        try:
+            async with self._database.sessions.begin() as session:
+                user = await session.get(AppUserRecord, user_id, with_for_update=True)
+                if user is None:
+                    raise InvalidCredentials("user not found")
+                user.username = username
+        except IntegrityError as error:
+            raise InvalidCredentials("username already taken") from error
+        return username
+
+    async def create_local_user(
+        self, *, display_name: str, username: str, password: str
+    ) -> UUID:
+        """业主在用户管理中创建本地成员（用户名+密码，无 pnkx 绑定）。"""
+        normalized = normalize_username(username)
+        secret_hash = await asyncio.to_thread(_hash_password, password)
+        now = datetime.now(UTC)
+        user_id = uuid7()
+        try:
+            async with self._database.sessions.begin() as session:
+                session.add(
+                    AppUserRecord(
+                        id=user_id,
+                        display_name=display_name,
+                        locale="zh-CN",
+                        timezone="Asia/Shanghai",
+                        status="active",
+                        role="member",
+                        username=normalized,
+                        created_at=now,
+                    )
+                )
+                await session.flush()
+                session.add(
+                    AuthCredentialRecord(
+                        id=uuid7(),
+                        user_id=user_id,
+                        kind="password",
+                        secret_hash=secret_hash,
+                        setup_slot=None,
+                        params_version=1,
+                        created_at=now,
+                    )
+                )
+        except IntegrityError as error:
+            raise InvalidCredentials("username already taken") from error
+        return user_id
 
 
 def _hash_password(password: str) -> str:

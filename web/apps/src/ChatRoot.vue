@@ -89,6 +89,7 @@ const LOCATION_TTL_MS = 15 * 60 * 1000;
 
 const token = ref<string>("");
 const displayName = ref<string>("");
+const accountName = ref<string>("");
 const ssoEnabled = ref(false);
 const authBusy = ref(false);
 const statusText = ref("");
@@ -1006,11 +1007,76 @@ function emotionOf(message: ChatMessage): string | null {
 function rememberSession(session: AuthSession) {
   token.value = session.access_token;
   displayName.value = session.user.display_name;
+  accountName.value = session.user.username ?? "";
   authStorage.setItem(TOKEN_KEY, session.access_token);
 }
 
 async function loginWithPnkx() {
   window.location.href = "/api/v1/auth/sso/login";
+}
+
+const loginUsername = ref("");
+const loginPassword = ref("");
+const loginBusy = ref(false);
+
+async function loginWithPassword() {
+  if (!loginPassword.value || loginBusy.value) return;
+  loginBusy.value = true;
+  try {
+    const session = await api.login(
+      loginPassword.value,
+      loginUsername.value.trim() || null,
+    );
+    rememberSession(session);
+    loginPassword.value = "";
+    setStatus("");
+    await enterChat();
+    void refreshPushToggle();
+  } catch (error) {
+    setStatus(error instanceof Error ? error.message : "登录失败", true);
+  } finally {
+    loginBusy.value = false;
+  }
+}
+
+// 设置/修改本人密码：已有密码时须提供当前密码（首次设置可留空）
+const passwordPanelOpen = ref(false);
+const passwordBusy = ref(false);
+const passwordCurrent = ref("");
+const passwordNew = ref("");
+const passwordConfirm = ref("");
+
+function togglePasswordPanel() {
+  passwordPanelOpen.value = !passwordPanelOpen.value;
+  passwordCurrent.value = "";
+  passwordNew.value = "";
+  passwordConfirm.value = "";
+}
+
+async function submitPasswordChange() {
+  if (passwordBusy.value) return;
+  if (passwordNew.value.length < 8) {
+    setStatus("新密码至少 8 位", true);
+    return;
+  }
+  if (passwordNew.value !== passwordConfirm.value) {
+    setStatus("两次输入的新密码不一致", true);
+    return;
+  }
+  passwordBusy.value = true;
+  try {
+    await api.setPassword(
+      token.value,
+      passwordNew.value,
+      passwordCurrent.value || null,
+    );
+    togglePasswordPanel();
+    setStatus("密码已更新");
+  } catch (error) {
+    setStatus(error instanceof Error ? error.message : "密码更新失败", true);
+  } finally {
+    passwordBusy.value = false;
+  }
 }
 
 async function logout() {
@@ -1023,6 +1089,7 @@ async function logout() {
   }
   token.value = "";
   displayName.value = "";
+  accountName.value = "";
   authStorage.removeItem(TOKEN_KEY);
   conversations.value = [];
   archivedConversations.value = [];
@@ -1524,7 +1591,6 @@ onMounted(async () => {
     try {
       const res = await fetch("/api/v1/auth/sso/status");
       if (res.ok) ssoEnabled.value = (await res.json()).enabled === true;
-      if (!ssoEnabled.value) setStatus("SSO 未启用，请联系管理员配置 ARIA_SSO_*", true);
     } catch {
       setStatus("无法连接 Aria 服务", true);
     }
@@ -1534,6 +1600,7 @@ onMounted(async () => {
   try {
     const session = await api.me(token.value);
     displayName.value = session.user.display_name;
+    accountName.value = session.user.username ?? "";
   } catch {
     authStorage.removeItem(TOKEN_KEY);
     token.value = "";
@@ -1574,8 +1641,29 @@ async function installPwa() {
   <div v-if="!token" class="auth">
     <div class="card">
       <h1>{{ personaMeta?.name ?? '助手' }}</h1>
-      <p class="hint">使用 pnkx 账号登录后即可开始对话。</p>
-      <button class="primary" type="button" :disabled="authBusy" @click="loginWithPnkx">
+      <form class="login-form" @submit.prevent="loginWithPassword">
+        <label>
+          <span>账号</span>
+          <input
+            v-model="loginUsername"
+            type="text"
+            autocomplete="username"
+            placeholder="用户名（未设置可留空）"
+          >
+        </label>
+        <label>
+          <span>密码</span>
+          <input
+            v-model="loginPassword"
+            type="password"
+            autocomplete="current-password"
+            placeholder="密码"
+          >
+        </label>
+        <button class="primary" type="submit" :disabled="loginBusy || !loginPassword">登录</button>
+      </form>
+      <div v-if="ssoEnabled" class="login-divider"><span>或</span></div>
+      <button v-if="ssoEnabled" class="ghost" type="button" :disabled="authBusy" @click="loginWithPnkx">
         使用 pnkx 账号登录
       </button>
       <button v-if="installPrompt && !isStandalone" class="ghost" type="button" @click="installPwa">安装到手机</button>
@@ -1839,10 +1927,21 @@ async function installPwa() {
           <small v-if="personaMeta" class="persona-version">Persona v{{ personaMeta.version }}</small>
         </div>
         <div class="aside-meta">
-          <span>{{ displayName }}</span>
+          <span :title="accountName || undefined">{{ displayName }}</span>
+          <button class="ghost" type="button" @click="togglePasswordPanel">密码</button>
           <button v-if="installPrompt && !isStandalone" class="ghost" type="button" @click="installPwa">安装</button>
           <button class="ghost" type="button" @click="logout">退出</button>
         </div>
+        <form v-if="passwordPanelOpen" class="password-panel" @submit.prevent="submitPasswordChange">
+          <p class="password-hint">设置后可用「{{ accountName || '用户名' }} + 密码」直接登录{{ accountName ? '' : '（用户名由管理员在用户管理中设置）' }}</p>
+          <input v-model="passwordCurrent" type="password" autocomplete="current-password" placeholder="当前密码（首次设置留空）">
+          <input v-model="passwordNew" type="password" autocomplete="new-password" placeholder="新密码（至少 8 位）">
+          <input v-model="passwordConfirm" type="password" autocomplete="new-password" placeholder="再次输入新密码">
+          <div class="password-actions">
+            <button class="ghost" type="button" @click="togglePasswordPanel">取消</button>
+            <button class="primary" type="submit" :disabled="passwordBusy">保存</button>
+          </div>
+        </form>
       </header>
       <section v-if="avatarMeta" class="avatar-stage" :class="`avatar-${avatarMeta.engine}`">
         <Transition name="avatar-expression" mode="out-in">
@@ -1875,6 +1974,14 @@ async function installPwa() {
 <style scoped>
 .auth { display: grid; place-items: center; height: 100%; }
 .card { display: grid; gap: 12px; width: min(360px, 90vw); background: var(--panel); border: 1px solid var(--line); border-radius: 16px; padding: 28px; box-shadow: var(--shadow); }
+.login-form { display: grid; gap: 10px; }
+.login-form label { display: grid; gap: 4px; font-size: 12px; color: var(--muted); }
+.login-form input, .password-panel input { min-height: 38px; border: 1px solid var(--line); border-radius: 10px; padding: 0 12px; background: var(--panel2); color: var(--text); font: inherit; }
+.login-divider { display: flex; align-items: center; gap: 10px; color: var(--muted); font-size: 12px; }
+.login-divider::before, .login-divider::after { content: ""; flex: 1; height: 1px; background: var(--line); }
+.password-panel { display: grid; gap: 8px; margin: 0 0 10px; padding: 12px; border: 1px solid var(--line); border-radius: 12px; background: var(--panel2); }
+.password-hint { margin: 0; font-size: 12px; color: var(--muted); line-height: 1.5; }
+.password-actions { display: flex; justify-content: flex-end; gap: 8px; }
 .card h1 { margin: 0; font-size: 22px; }
 .hint { color: var(--muted); margin: 0; font-size: 13px; }
 .install-hint { margin:0; color:var(--muted); font-size:12px; line-height:1.5; text-align:center; }

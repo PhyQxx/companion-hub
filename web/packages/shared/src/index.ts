@@ -478,6 +478,8 @@ export interface SystemHealth {
 export interface SessionUser {
   id: string;
   display_name: string;
+  role?: string;
+  username?: string | null;
 }
 
 export interface AuthSession {
@@ -908,11 +910,26 @@ export class ChatApi {
     });
   }
 
-  login(password: string) {
+  login(password: string, username?: string | null) {
     return this.request<AuthSession>("/api/v1/auth/login", {
       method: "POST",
-      body: JSON.stringify({ password }),
+      body: JSON.stringify(username ? { username, password } : { password }),
     });
+  }
+
+  setPassword(token: string, newPassword: string, currentPassword?: string | null) {
+    return this.request<Record<string, never>>(
+      "/api/v1/auth/password",
+      {
+        method: "POST",
+        body: JSON.stringify(
+          currentPassword
+            ? { new_password: newPassword, current_password: currentPassword }
+            : { new_password: newPassword },
+        ),
+      },
+      token,
+    );
   }
 
   me(token: string) {

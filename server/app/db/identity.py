@@ -32,6 +32,7 @@ class AppUserRecord(Base):
     __table_args__ = (
         CheckConstraint("role IN ('owner','member')", name="ck_app_user_role"),
         UniqueConstraint("sso_sub", name="uq_app_user_sso_sub"),
+        UniqueConstraint("username", name="uq_app_user_username"),
     )
 
     id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True)
@@ -41,6 +42,9 @@ class AppUserRecord(Base):
         String(64), nullable=False, server_default="Asia/Shanghai"
     )
     status: Mapped[str] = mapped_column(String(16), nullable=False, server_default="active")
+    # 本地账号名（用户名+密码登录用；SSO-only 用户为空），保存前经
+    # normalize_username 统一小写。见 app.auth.service。
+    username: Mapped[str | None] = mapped_column(String(64), nullable=True)
     # pnkx OIDC sub（即 pnkx userId）；本地密码通道初始化的存量用户在业主
     # 首次 SSO 登录时回填绑定，此后一个 pnkx 账号固定映射一个本地用户。
     sso_sub: Mapped[str | None] = mapped_column(String(128), nullable=True)
