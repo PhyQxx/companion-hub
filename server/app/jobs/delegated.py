@@ -62,6 +62,14 @@ class DelegCancelled(RuntimeError):
     """Handler 协作式取消：worker 按取消收尾，结果不汇报。"""
 
 
+class DelegHandlerError(RuntimeError):
+    """Handler 语义化失败：reason_code 进入步骤错误码，且不自动重试。"""
+
+    def __init__(self, reason_code: str) -> None:
+        self.reason_code = reason_code
+        super().__init__(reason_code)
+
+
 @dataclass(frozen=True, slots=True)
 class DelegRunContext:
     """Handler 运行期上下文；is_cancel_requested 供长循环协作式退出。"""
@@ -195,6 +203,16 @@ class DelegatedJobWorker:
             logger.warning("delegated job %s (%s) failed", job.id, job.kind, exc_info=True)
             if await cancelled():
                 await self._engine.confirm_cancelled(job.id, worker_id, claim_version=job.attempts)
+                return
+            if isinstance(error, DelegHandlerError):
+                await self._engine.fail_step(
+                    step_id,
+                    error_code=error.reason_code,
+                    retryable=False,
+                    error_detail={"exception": type(error).__name__},
+                    worker_id=worker_id,
+                    claim_version=job.attempts,
+                )
                 return
             await self._engine.fail_step(
                 step_id,

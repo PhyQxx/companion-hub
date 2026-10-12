@@ -20,6 +20,7 @@ from app.cognition import ActionRegistry
 from app.config import DatabaseConfigStore
 from app.db import Database
 from app.home_assistant import HomeAssistantManager
+from app.integrations.hermes import HermesManager
 from app.integrations.mcp import McpManager
 from app.integrations.mcp.actions import sync_mcp_actions
 from app.memory.store import MemoryStore
@@ -40,6 +41,7 @@ from ..api import (
     create_admin_config_router,
     create_admin_dashboard_router,
     create_admin_export_router,
+    create_admin_hermes_router,
     create_admin_jobs_router,
     create_admin_mcp_router,
     create_admin_memory_router,
@@ -68,6 +70,7 @@ def register_admin_routers(
     xiaoai_materializer: XiaoAiConfigMaterializer | None,
     ha_proactive_test: Callable[[], Awaitable[bool]],
     mcp_manager: McpManager | None,
+    hermes_manager: HermesManager | None,
     skill_store: SkillStore | None,
     skill_generator: SkillDraftGenerator | None,
     skill_tool_provider: SkillToolProvider | None,
@@ -117,6 +120,12 @@ def register_admin_routers(
     app.include_router(
         create_admin_mcp_router(
             mcp_manager,
+            admin_token=runtime_admin_token,
+        )
+    )
+    app.include_router(
+        create_admin_hermes_router(
+            hermes_manager,
             admin_token=runtime_admin_token,
         )
     )

@@ -64,6 +64,8 @@ from app.focus import FocusScheduler, FocusService
 from app.harness.source_cleanup import close_after_source
 from app.home_assistant import HomeAssistantManager
 from app.home_scene import HomeSceneService, HomeSceneStore
+from app.integrations.hermes import HermesManager
+from app.integrations.hermes.handler import DELEG_KIND_HERMES, HermesTaskHandler
 from app.integrations.mcp import McpManager
 from app.jobs import (
     DELEG_KIND_RESEARCH,
@@ -114,6 +116,7 @@ from app.timeline import HistoryRecallService, TimelineStore
 from app.todo import PnkxTodoClient, TodoSyncService
 from app.todo.sync_scheduler import TodoSyncScheduler
 from app.tools import FetchWebpageTool, build_query_tool_runtime
+from app.tools.hermes import HermesDelegateTool
 from app.workflows import WorkflowService, WorkflowStore
 from app.workflows.drafts import PlanDistiller, WorkflowDraftStore
 from app.xiaoai_config import XiaoAiConfigMaterializer
@@ -141,6 +144,9 @@ class DomainAssembly:
     home_assistant_manager: HomeAssistantManager | None
     xiaoai_materializer: XiaoAiConfigMaterializer | None
     mcp_manager: McpManager | None
+    hermes_manager: HermesManager | None
+    hermes_task_handler: HermesTaskHandler | None
+    hermes_delegate_tool: HermesDelegateTool | None
     worker: DispatcherWorker | None
     mqtt_client: MqttDeviceClient | None
     activity_tracker: ActivityTracker
@@ -710,6 +716,21 @@ def assemble_domain(
             DELEG_KIND_RESEARCH,
             WebResearchHandler(web_fetch_tool, runtime_config, database=runtime_database),
         )
+    # HRM（docs/06 Hermes 集成）：受控 hermes 客户端 + deleg.hermes_task 委派；
+    # 审批通知在 ProactiveDeliveryService 装配后经 set_notify 注入。
+    hermes_manager = (
+        HermesManager(runtime_config) if runtime_config is not None else None
+    )
+    hermes_task_handler = (
+        HermesTaskHandler(hermes_manager) if hermes_manager is not None else None
+    )
+    if deleg_worker is not None and hermes_task_handler is not None:
+        deleg_worker.register(DELEG_KIND_HERMES, hermes_task_handler)
+    hermes_delegate_tool = (
+        HermesDelegateTool(hermes_manager, job_engine)
+        if hermes_manager is not None and job_engine is not None
+        else None
+    )
     delegate_task_tool = DelegateTaskTool(job_engine) if job_engine is not None else None
     # 对话内 propose_skill 工具 + 回合后草稿收割，共用生成器与草稿存储；
     # url 文档链接由服务端复用 web_fetch 抓取，避免模型转述正文
@@ -809,6 +830,9 @@ def assemble_domain(
         home_assistant_manager=home_assistant_manager,
         xiaoai_materializer=xiaoai_materializer,
         mcp_manager=mcp_manager,
+        hermes_manager=hermes_manager,
+        hermes_task_handler=hermes_task_handler,
+        hermes_delegate_tool=hermes_delegate_tool,
         worker=worker,
         mqtt_client=mqtt_client,
         activity_tracker=activity_tracker,

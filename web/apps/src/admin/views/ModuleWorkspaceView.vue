@@ -16,6 +16,7 @@ import HomeAssistantDevicesView from "./HomeAssistantDevicesView.vue";
 import IntegrationsCalendarView from "./IntegrationsCalendarView.vue";
 import IntegrationsMailView from "./IntegrationsMailView.vue";
 import IntegrationsXiaoaiView from "./IntegrationsXiaoaiView.vue";
+import IntegrationsHermesView from "./IntegrationsHermesView.vue";
 import JobsView from "./JobsView.vue";
 import LiveLogsView from "./LiveLogsView.vue";
 import MemoryQualityView from "./MemoryQualityView.vue";
@@ -54,6 +55,7 @@ const currentView = computed(() => {
   if (props.module === "models") return ModelsView;
   if (props.module === "integrations" && activeTab.value === "mail") return IntegrationsMailView;
   if (props.module === "integrations" && activeTab.value === "calendar") return IntegrationsCalendarView;
+  if (props.module === "integrations" && activeTab.value === "hermes") return IntegrationsHermesView;
   if (props.module === "integrations") return IntegrationsXiaoaiView;
   if (props.module === "persona" && activeTab.value === "gallery") return AvatarsView;
   if (props.module === "persona" && activeTab.value === "themes") return AppearanceView;

@@ -21,6 +21,7 @@ from app.tools.desktop_actions import (
     DesktopOpenUrlArgs,
     DesktopSetVolumeArgs,
 )
+from app.tools.hermes import HermesDelegateArgs, HermesStatusArgs
 
 
 class ActionRisk(StrEnum):
@@ -486,6 +487,43 @@ def build_builtin_action_registry() -> ActionRegistry:
                 max_privacy_level=PrivacyLevel.L1,
             ),
             DesktopNotifyArgs,
+        ),
+        (
+            ActionDefinition(
+                action_id="hermes.query",
+                label="查询 hermes 服务器代理状态",
+                description="查询 NAS 上 hermes 服务器代理的连接、版本与今日任务额度，纯读操作。",
+                risk=ActionRisk.A0_READ,
+                confirmation_policy=ConfirmationPolicy.NEVER,
+                reversible=False,
+                tool_name="hermes_status",
+                arguments_schema=HermesStatusArgs.model_json_schema(),
+                timeout_seconds=20,
+                verification_policy=VerificationPolicy.NONE,
+                max_privacy_level=PrivacyLevel.L1,
+            ),
+            HermesStatusArgs,
+        ),
+        (
+            ActionDefinition(
+                action_id="hermes.task",
+                label="委派 hermes 执行服务器任务",
+                description=(
+                    "把自然语言任务委派给 NAS 上的 hermes 服务器代理后台执行"
+                    "（终端/文件/浏览器等，受限用户权限）。确认预览即完整出站指令；"
+                    "任务完成或失败都会主动汇报。"
+                ),
+                risk=ActionRisk.A2_CONFIRM,
+                confirmation_policy=ConfirmationPolicy.ALWAYS,
+                reversible=False,
+                tool_name="hermes_delegate",
+                arguments_schema=HermesDelegateArgs.model_json_schema(),
+                timeout_seconds=30,
+                verification_policy=VerificationPolicy.RECEIPT,
+                verifier_id="hermes.run_receipt",
+                max_privacy_level=PrivacyLevel.L1,
+            ),
+            HermesDelegateArgs,
         ),
     ]
     for definition, arguments_model in registrations:

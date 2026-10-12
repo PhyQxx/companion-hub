@@ -110,6 +110,7 @@ export const adminModules: AdminModule[] = [
     tabs: [
       { key: "mail", label: "邮件", description: "SMTP/IMAP 账号与授权码（MAIL-01）。", state: "ready" },
       { key: "calendar", label: "外部日历", description: "CalDAV / Google 只读镜像同步（CAL-01）。", state: "ready" },
+      { key: "hermes", label: "Hermes 服务器代理", description: "NAS 上 hermes agent 的连接健康、额度与委派任务（HRM）。", state: "ready" },
       { key: "xiaoai", label: "小爱音箱", description: "小爱网关账号、音箱与密钥。", state: "ready" },
     ],
   },

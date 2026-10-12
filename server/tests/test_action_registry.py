@@ -43,6 +43,8 @@ def test_builtin_action_catalog_has_safe_home_actions() -> None:
         "browser.form.read",
         "browser.form.fill",
         "browser.form.submit",
+        "hermes.query",
+        "hermes.task",
     }
     assert definitions["home.light.turn_off"].risk == ActionRisk.A1_LOW
     assert (
@@ -56,10 +58,11 @@ def test_builtin_action_catalog_has_safe_home_actions() -> None:
         for action_id, item in definitions.items()
         if action_id.startswith("home.")
     )
+    # 带外部副作用的动作必须有回执验证；hermes.query 是 A0 纯读，无回执语义。
     assert all(
         item.verification_policy == "receipt"
         for action_id, item in definitions.items()
-        if not action_id.startswith("home.")
+        if not action_id.startswith("home.") and action_id != "hermes.query"
     )
 
 

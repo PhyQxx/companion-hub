@@ -31,6 +31,7 @@ from app.db import Database
 from app.devices import DeviceTargetResolver, MqttPresenceBridge
 from app.devices.mqtt_client import MqttDeviceClient
 from app.home_assistant import HomeAssistantManager, HomeAssistantProactiveEngine
+from app.integrations.hermes.handler import HermesTaskHandler
 from app.jobs import JobEngine, cancel_turn_delegations
 from app.jobs.delegated import DelegatedJobWorker
 from app.mail import MailClient
@@ -70,6 +71,7 @@ def register_proactive_stack(
     voice_manager: Any | None,
     push_subscription_store: PushSubscriptionStore | None,
     deleg_worker: DelegatedJobWorker | None,
+    hermes_task_handler: HermesTaskHandler | None,
     plan_completion_reporter: PlanCompletionReporter | None,
     activity_tracker: ActivityTracker,
     job_engine: JobEngine | None,
@@ -118,6 +120,23 @@ def register_proactive_stack(
     if deleg_worker is not None:
         # DELEG：任务完成经主动输出通道汇报（Web/桌面通知/推送/语音）
         deleg_worker.set_deliver(proactive_delivery.deliver)
+    if hermes_task_handler is not None:
+        # HRM：hermes run 挂起审批时经主动通道通知用户（v1 不代答审批）
+        async def _notify_hermes_approval(
+            run_id: str, user_id: UUID, instruction_preview: str
+        ) -> None:
+            await proactive_delivery.deliver(
+                f"【hermes 任务等待审批】{instruction_preview}\n"
+                f"该任务已暂停，请在 hermes 控制台处理（run {run_id}）；"
+                "超时会自动停止并汇报。",
+                entity_id=f"hermes-approval:{run_id}",
+                rule_id="hermes.approval",
+                trigger_kind="deleg.hermes_task",
+                privacy_level=PrivacyLevel.L1,
+                target_user_id=user_id,
+            )
+
+        hermes_task_handler.set_notify(_notify_hermes_approval)
     if plan_completion_reporter is not None:
         # BTL-03：计划执行完成主动汇报结果
         plan_completion_reporter.set_deliver(proactive_delivery.deliver)

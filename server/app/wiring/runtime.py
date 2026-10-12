@@ -102,6 +102,7 @@ from app.tools.desktop_actions import (
     DesktopOpenUrlTool,
     DesktopSetVolumeTool,
 )
+from app.tools.hermes import HermesStatusTool
 from app.tools.mcp_actions import McpToolCallTool
 from app.tools.screen import CapabilityScreenAnalyzer, CaptureScreenTool
 from app.tools.sensors import ReadSensorsTool
@@ -209,6 +210,14 @@ def assemble_runtime(
         device_tools.append(HomeGetStateTool(domain.home_assistant_manager))
         device_tools.append(HomeGetHistoryTool(domain.home_assistant_manager))
         device_tools.append(HomeControlTool(domain.home_assistant_manager))
+    if domain.hermes_manager is not None:
+        # HRM：状态工具经 _device_tool_ready 按 L1 挂载；hermes_delegate 仅走
+        # 行动计划（门控恒 False），两者都需进入执行注册表；manager 同时作为
+        # 能力提供方进入「现实能力边界」，让模型知道可提议 hermes.task。
+        capability_providers.append(domain.hermes_manager)
+        device_tools.append(HermesStatusTool(domain.hermes_manager))
+    if domain.hermes_delegate_tool is not None:
+        device_tools.append(domain.hermes_delegate_tool)
     device_tools.append(
         ReadSensorsTool(
             ha_provider=domain.home_assistant_manager,
@@ -578,6 +587,7 @@ def assemble_runtime(
             voice_manager=voice_manager,
             push_subscription_store=push_subscription_store,
             deleg_worker=domain.deleg_worker,
+            hermes_task_handler=domain.hermes_task_handler,
             plan_completion_reporter=domain.plan_completion_reporter,
             activity_tracker=domain.activity_tracker,
             job_engine=domain.job_engine,

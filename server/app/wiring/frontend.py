@@ -22,6 +22,7 @@ from app.bus import DispatcherWorker
 from app.config import ConfigStore, DatabaseConfigStore
 from app.db import Database
 from app.home_assistant import HomeAssistantManager
+from app.integrations.hermes import HermesManager
 from app.persona import PersonaStore
 
 
@@ -33,6 +34,7 @@ def register_frontend(
     persona_store: PersonaStore | None,
     avatar_store: AvatarStore | None,
     home_assistant_manager: HomeAssistantManager | None,
+    hermes_manager: HermesManager | None,
     avatar_upload_root: Path,
     adapters: AdapterRegistry,
     database: Database | None,
@@ -222,6 +224,16 @@ def register_frontend(
                 "reason_code": ha_health.reason_code,
             }
             if ha_health.status in {"degraded", "auth_failed"}:
+                result["status"] = "degraded"
+        if hermes_manager is not None:
+            hermes_health = hermes_manager.health
+            result["hermes"] = {
+                "status": hermes_health.status,
+                "version": hermes_health.version,
+                "reason_code": hermes_health.reason_code,
+                "checked_at": hermes_health.checked_at,
+            }
+            if hermes_health.status == "unreachable":
                 result["status"] = "degraded"
         return result
 

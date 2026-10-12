@@ -274,6 +274,62 @@ class McpConfig(StrictModel):
         return self
 
 
+def _is_local_http_host(host: str) -> bool:
+    """明文 HTTP 仅限本地名或私有/环回地址（与 HA 集成同一判定口径）。"""
+    name = host.casefold()
+    if name in {"localhost", "hermes"} or name.endswith(".local") or name.endswith(".localhost"):
+        return True
+    with suppress(ValueError):
+        return ip_address(name).is_private
+    return False
+
+
+class HermesConfig(StrictModel):
+    """HRM（docs/06 Hermes 外部 Agent 集成）：NAS 上 hermes api_server 的受控客户端。
+
+    默认关闭；启用必须同时提供转发地址与 Bearer key。执行身份是 NAS 上的
+    无特权用户，Hub 侧只放行 L1 出站，任务经行动计划确认后委派执行。
+    """
+
+    enabled: bool = False
+    base_url: AnyHttpUrl | None = None
+    secret_ref: Annotated[str, Field(pattern=r"^env:[A-Z][A-Z0-9_]{2,127}$")] | None = None
+    secret_value: Annotated[str, Field(min_length=1, max_length=4096)] | None = None
+    verify_tls: bool = True
+    allow_insecure_local_http: bool = False
+    connect_timeout_ms: Annotated[int, Field(ge=500, le=30_000)] = 5_000
+    request_timeout_ms: Annotated[int, Field(ge=500, le=120_000)] = 15_000
+    run_poll_interval_seconds: Annotated[float, Field(ge=1, le=30)] = 3.0
+    run_max_seconds: Annotated[int, Field(ge=60, le=3_600)] = 600
+    approval_wait_seconds: Annotated[int, Field(ge=0, le=3_600)] = 300
+    max_concurrent_runs: Annotated[int, Field(ge=1, le=4)] = 1
+    daily_run_limit: Annotated[int, Field(ge=0, le=500)] = 50
+    max_result_bytes: Annotated[int, Field(ge=1_024, le=1_000_000)] = 32_000
+    instruction_max_chars: Annotated[int, Field(ge=50, le=8_000)] = 2_000
+    health_probe_ttl_seconds: Annotated[int, Field(ge=10, le=86_400)] = 60
+    run_cost: VoiceCostConfig | None = None
+
+    @model_validator(mode="after")
+    def validate_connection(self) -> HermesConfig:
+        if self.enabled and (
+            self.base_url is None or (self.secret_ref is None and self.secret_value is None)
+        ):
+            raise ValueError("enabled hermes requires base_url and secret_ref or secret_value")
+        if self.base_url is not None:
+            endpoint = urlparse(str(self.base_url))
+            if endpoint.path not in {"", "/"}:
+                raise ValueError("hermes base_url cannot contain a path")
+            if endpoint.username is not None or endpoint.password is not None:
+                raise ValueError("hermes base_url cannot contain credentials")
+            if endpoint.scheme != "https" and not (
+                self.allow_insecure_local_http and _is_local_http_host(endpoint.hostname or "")
+            ):
+                raise ValueError("insecure hermes HTTP requires explicit opt-in on local hosts")
+        if self.approval_wait_seconds > self.run_max_seconds:
+            raise ValueError("hermes approval wait must not exceed run_max_seconds")
+        return self
+
+
 class DesktopActionsConfig(StrictModel):
     """PC-01 桌面白名单动作：只放行显式列出的应用与 URL。
 
@@ -944,6 +1000,7 @@ class HubConfig(StrictModel):
     mail_awareness: MailAwarenessConfig = Field(default_factory=MailAwarenessConfig)
     safety: SafetyConfig = Field(default_factory=SafetyConfig)
     mcp: McpConfig = Field(default_factory=McpConfig)
+    hermes: HermesConfig = Field(default_factory=HermesConfig)
 
     @model_validator(mode="before")
     @classmethod

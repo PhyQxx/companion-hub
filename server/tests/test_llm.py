@@ -898,14 +898,13 @@ def test_completion_request_accepts_full_production_tool_catalog() -> None:
     """
     from app.cognition.action_registry import build_builtin_action_registry
 
-    # 聊天挂载层的工具集 = 18 个（设备/助手/情境）；这里以注册目录构造即可
-    # 覆盖"目录增长不得越过 schema 上限"的约束。
+    # 聊天挂载层的工具集以注册目录构造，覆盖"目录增长不得越过 schema 上限"的约束。
     registry_tools = [
         {"name": item.action_id, "parameters": {}}
         for item in build_builtin_action_registry().definitions()
     ]
-    # 18 个是当前真实规模
-    assert len(registry_tools) == 18
+    # 20 个是当前真实规模（2026-10-12 HRM 新增 hermes.query/hermes.task）
+    assert len(registry_tools) == 20
     tools = [
         {"name": f"tool_{index}", "description": "测试工具", "parameters": {}}
         for index in range(32)

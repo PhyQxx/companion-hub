@@ -149,6 +149,7 @@ MULTI_CALL_SAFE_TOOLS = frozenset(
         "reminder_list",
         "inspect_webpage",
         "fetch_webpage",
+        "hermes_status",
         "propose_skill",
         "pnkx_read_life",
     }
@@ -242,9 +243,11 @@ def _device_tool_ready(
         "browser_form_submit",
         "mcp_tool_call",
         "skill_write",
+        "hermes_delegate",
     }:
-        # PC-01/WEB-01/MCP-D/技能 S3：桌面、浏览器、外部 MCP 与技能写动作只经
-        # Action Registry 计划—确认—执行链路触发，不作为聊天工具直接暴露给模型。
+        # PC-01/WEB-01/MCP-D/技能 S3/HRM：桌面、浏览器、外部 MCP、技能写与
+        # hermes 委派只经 Action Registry 计划—确认—执行链路触发，不作为
+        # 聊天工具直接暴露给模型。
         return False
     if name in {
         "reminder_create",
@@ -287,6 +290,11 @@ def _device_tool_ready(
         if privacy_level is PrivacyLevel.L2:
             return _local_tool_model_ready(config)
         return False
+    if name == "hermes_status":
+        # HRM：hermes 服务器代理状态查询；出站只读 L1，未启用或私密会话不挂载
+        if not config.hermes.enabled:
+            return False
+        return privacy_level is PrivacyLevel.L1 and _cloud_tool_model_ready(config, llm_route)
     if privacy_level is PrivacyLevel.L1:
         if name == "inspect_webpage":
             # 浏览器标签页读取在 L1 也开放；页面文本会进入本轮对话上下文，

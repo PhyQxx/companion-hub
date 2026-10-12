@@ -45,6 +45,9 @@ class ToolActionRunner:
         elif step.tool_name == "skill_write":
             # 技能 S3：外部 HTTP 服务不接收 L2 内容，动作定义已限 L1
             privacy_level = PrivacyLevel.L1
+        elif step.tool_name == "hermes_delegate":
+            # HRM：外部 hermes 服务不接收 L2 内容，动作定义已限 L1
+            privacy_level = PrivacyLevel.L1
         execution = await self._executor.execute(
             ToolCall(
                 id=f"action-step-{step.id}",
@@ -81,6 +84,18 @@ class ToolActionRunner:
                     key: value
                     for key, value in execution.result.data.items()
                     if key in {"skill_name", "operation", "status"}
+                }
+                return ActionRunResult(
+                    execution=execution.result,
+                    verification_status=ActionVerificationStatus.VERIFIED,
+                    verification_result=evidence,
+                )
+            if step.verifier_id == "hermes.run_receipt":
+                # HRM：Job 回执即证据（job_id/kind/status），hermes 正文不进验证记录
+                evidence = {
+                    key: value
+                    for key, value in execution.result.data.items()
+                    if key in {"job_id", "kind", "status"}
                 }
                 return ActionRunResult(
                     execution=execution.result,
