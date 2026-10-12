@@ -1,6 +1,6 @@
 # Aria 当前任务
 
-> 最后更新：2026-10-05
+> 最后更新：2026-10-12（HRM hermes 集成上线：业务提交 dffa455 已部署生产；执行队列未变）
 > 详细设计入口：[00-产品与架构.md](./00-产品与架构.md)
 > **进度查看入口：[整体架构与 Harness 改造进度](./架构改造进度.md)**（模块状态、剩余工作包、验收缺口和下一批队列）
 
@@ -21,6 +21,7 @@
 | P6 Batch D Live2D/桌宠 | 联动代码完成 | 透明窗口、拖拽、穿透、位置恢复、Hub 同源舞台及签名情绪/动作/口型同步已接通；M2 与真机性能仍是发布门槛 |
 | M4B 手机 PWA | A～C 已完成 | 可安装壳、移动聊天、恢复补拉、Web Push 与多端语音租约已实现；2026-09-11 真机验收通过（见当前功能主线）；VRM 等后续范围仍未交付 |
 | 个人管家闭环 J1～J8 | **J1～J6 Hub 代码闭环，待真实验收**，J7/J8 未启动 | ACT-01～03 完成、ACT-04 动作目录已扩到 18 个（含桌面/浏览器/剪贴板）；J2 四项（TASK/GOAL/BRIEF/REVIEW）代码闭环；J3 Hub 侧卫星协议、音频链路、仲裁与播报路由代码闭环，设备端唤醒/VAD 和硬件全链待验收；J4 四项（CAL/TODO/MAIL/CONTACT）代码闭环（TODO/MAIL 已真机联调）；J5 四项（PC-01/WEB-01/FLOW-01/PC-02 含 Chat 进度面板）代码闭环；J6 COMMUTE/FOCUS/HOME/MEET 均已实现，会议录音客户端 v1 已落地、真机全链待验收；**全部待验收项集中在 [00-产品与架构](./00-产品与架构.md) 的验收清单章节** |
+| Hermes 外部 Agent 集成 HRM-0～4 | **已上线（2026-10-12，业务提交 `dffa455`）**；HRM-4b 余两类任务待补验、4c 聊天端到端待交互验收 | 生产已启用：桥接/配置/Admin 页全通；状态查询类真实任务成功留证；文件/日志两类因 hermes 供应商 429 待补——见 [06-集成与认知：Hermes 外部 Agent 集成](./06-集成与认知.md#hermes-外部-agent-集成2026-10-12) |
 
 ## 2. 当前执行队列
 
@@ -32,6 +33,23 @@
 4. 保留 S4 效果对比评测、ZIP 附件保存与依赖报告等开发待办；M2 与桌宠真机性能作为并行发布门槛。
 
 执行顺序依据源码和既有真实验收记录；架构批次的本机回归另记如下。没有执行新的部署、运行库升级或真机验收。
+
+### Hermes 外部 Agent 集成（2026-10-12 立项；HRM-0～3 交付上线，HRM-4 部分验收）
+
+设计见 [06-集成与认知：Hermes 外部 Agent 集成](./06-集成与认知.md#hermes-外部-agent-集成2026-10-12)。业务提交 **`dffa455`**（feat(hermes): NAS hermes 服务器代理集成——HRM-0～3），已推送 GitHub 并于 2026-10-12 部署 NAS 生产。前置运维：NAS 双实例精简为 trim.hermes 0.20.2、飞书迁移验证 connected。
+
+- [x] HRM-0 NAS 侧通道（2026-10-12）：systemd `hermes-bridge.service`（socat，仅绑 compose 网桥 `10.250.0.1:18643` → loopback `18642`，enable+active）；**容器内实测** `/health` 与带 key `/v1/models` 均 200（hermes-agent 0.20.2）；宿主 loopback 消费无回归；未经 Lucky 暴露。key 沿用 hermes 单值 `API_SERVER_KEY`（不支持多 key，已在设计 §4 记录该限制）。
+- [x] HRM-1 配置与边界（2026-10-12）：`HermesConfig`（默认关闭零行为；enabled 必配 base_url+secret；HTTP 仅私有地址+显式放行；approval_wait≤run_max）挂 `HubConfig.hermes`；httpx 仅出现在 `integrations/hermes/client.py`；Admin `/api/v1/admin/hermes/status` + 前端「集成与连接 → Hermes 服务器代理」页（只读）；`/api/v1/health` 增加 hermes 段。配置校验/假 server 单测通过。
+- [x] HRM-2 执行通道（2026-10-12）：`hermes_status` 工具（L1 词法挂载，`_device_tool_ready` 门控 + MULTI_CALL_SAFE）；`hermes_delegate` 仅经动作计划（`hermes.task` A2 ALWAYS/`hermes.query` A0，验证器 `hermes.run_receipt`，runner 强制 L1）；`deleg.hermes_task` 委派 Worker（提交/轮询/审批守望→主动通知/取消映射 stop/审批超时停/完成主动汇报；提交后 unknown 不自动重试，`DelegHandlerError` 稳定错误码）。`/v1/runs` 契约实测回填：初始态 `started`、终态 `completed` 状态不含正文——结果经 `/api/sessions/{session_id}/messages` 取回，失败带 `error` 文本；假状态机全路径回归通过。
+- [x] HRM-3 台账与限流（2026-10-12）：并发/日限闸（按用户，进程内存计数——重启清零已声明为限制）；审批挂起经 ProactiveDeliveryService 通知（`set_notify` 注入）；run 级 `run_cost` 内容无关费用字段已入配置（预算接线随 D-02 盘点统一对账，未在本批单独回归）。能力提供方暴露 `hermes:task` 进「现实能力边界」。Admin 状态页含用量/最近任务。
+
+- [x] HRM-4a 部署与生产启用（2026-10-12）：NAS Jpom 工作区 ff 到 `dffa455` → docker build（镜像 sha256:057feac…）→ hub 重启。**部署修复**（教训记录）：工作区需补 `.env`/`.env.docker`（源：旧部署目录 `/vol1/1000/docker/companion-hub`，Jpom 环境注入不含 compose 插值变量）；新增未跟踪 `docker-compose.override.yml` 把 hub 端口发布改为 `8010:8000`（HEAD compose 默认 `8000:8000` 与 sillytavern 冲突；Jpom 工作区若被清空需重补以上三个文件）。部署后验证：容器 healthy、`/api/v1/admin/hermes/status` 401（新代码存在性标记）、公网 `aihub.pnkx.top:8/chat/` 200。生产 config 已启用：`hermes.enabled=true`、`base_url=http://10.250.0.1:18643`、`secret_value` 内联（容器无 `ARIA_HERMES_API_KEY` 环境变量；与 hermes 侧同 key，轮换需两侧同步）；Admin 状态返回 health ok（v0.20.2，探测 122ms）。
+- [x] HRM-4b 真实任务验收（部分）：**状态查询类成功**——`run_73852c43…` completed，输出为真实服务器数据（"磁盘 126G 已用 97G 可用 23G 82%；up 4 days 负载 2.06/1.39/1.36"），验证了 completed→会话消息取回的实现路径。文件查看、日志排查两类共 5 次执行均因 **hermes 自身模型供应商 429 限流**失败；失败如实传播 `error` 文本（`hermes_run_failed` 语义在真实环境验证）。限流窗口约数小时一次，**待配额恢复后补验剩余两类**。
+- [ ] HRM-4c 聊天端到端（待交互验收）：回合 → `propose_action(hermes.task)` → 确认卡片 → Job → Worker → 主动汇报，需业主登录会话人工触发；审批挂起通知同理。日常首次真实委派即视为完成。
+
+本批验证：`tests/test_hermes_integration.py` 28 通过（含能力可见性）；受影响回归（action_registry/action_plan/delegated_jobs/agent_loop/mcp_integration/chat_capabilities）全通过；mypy 791 文件 0 错误；ruff 全过；admin web 构建与契约 check 通过。全量 4,982 项收集：SQLite 全量 1 失败、PostgreSQL（隔离容器库）全量 4 失败，**全部为 `test_voice_turn_delivery.py` 既有失败**——干净树（stash）复现且 PG 下更多（6 项），与本批无关；能力提供方（capability provider）收尾增量后已对其目标面复跑通过。既有失败不据此计入本批验收。
+
+非目标（v1）：hermes 作为模型 Provider、消息桥 MCP 接入、聊天内审批应答、`trim.hermes` 提权——见设计 §2/§13。
 
 ### 整体架构与 Harness 改造（2026-10-01 启动）
 
