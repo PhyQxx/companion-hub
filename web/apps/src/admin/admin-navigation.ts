@@ -132,9 +132,9 @@ export const adminModules: AdminModule[] = [
     label: "感知与守护",
     group: "能力接入",
     tabs: [
-      { key: "home_assistant", label: "HA 实体授权", description: "HA 实体发现、读写权限、历史和主动感知。", state: "ready", requiresOwner: true },
       { key: "screen", label: "屏幕感知", description: "周期截屏循环健康与观察记录检索。", state: "ready" },
       { key: "browser", label: "浏览感知", description: "浏览器标签页观察循环健康与观察记录。", state: "ready" },
+      { key: "home_assistant", label: "HA 实体授权", description: "HA 实体发现、读写权限、历史和主动感知。", state: "ready", requiresOwner: true },
       { key: "safety", label: "安全守护", description: "安全告警升级链、确认与紧急联系人预授权。", state: "ready" },
       { key: "channels", label: "主动输出", description: "控制 Web、Desktop、语音与 Web Push 主动推送策略。", state: "ready", requiresOwner: true },
     ],
