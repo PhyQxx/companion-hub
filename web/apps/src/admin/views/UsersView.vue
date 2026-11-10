@@ -235,22 +235,22 @@ onMounted(load);
       </el-table-column>
       <el-table-column label="操作" width="300" fixed="right">
         <template #default="{ row }">
-          <el-button size="small" :disabled="busy === row.id" @click="rename(row)">改名</el-button>
-          <el-button size="small" :disabled="busy === row.id" @click="setUsername(row)">用户名</el-button>
-          <el-button size="small" :disabled="busy === row.id" @click="resetPassword(row)">重置密码</el-button>
+          <el-button size="small" :disabled="busy === row.id" @click="rename(row as UserItem)">改名</el-button>
+          <el-button size="small" :disabled="busy === row.id" @click="setUsername(row as UserItem)">用户名</el-button>
+          <el-button size="small" :disabled="busy === row.id" @click="resetPassword(row as UserItem)">重置密码</el-button>
           <el-button
             v-if="row.status === 'active'"
             size="small"
             type="danger"
             :disabled="busy === row.id"
-            @click="setStatus(row, 'disabled')"
+            @click="setStatus(row as UserItem, 'disabled')"
           >停用</el-button>
           <el-button
             v-else
             size="small"
             type="success"
             :disabled="busy === row.id"
-            @click="setStatus(row, 'active')"
+            @click="setStatus(row as UserItem, 'active')"
           >启用</el-button>
         </template>
       </el-table-column>

@@ -1,32 +1,29 @@
 import { createRouter, createWebHistory } from "vue-router";
-import ChatRoot from "../ChatRoot.vue";
-import AdminShell from "../admin/AdminShell.vue";
-import ModuleWorkspaceView from "../admin/views/ModuleWorkspaceView.vue";
 
 // 聊天与管理后台同属一个 SPA：/ 为聊天，/admin/** 为管理后台（懒加载）。
 // base 取 /chat/（生产由 FastAPI 同源服务，/admin 旧入口重定向到 /chat/admin）。
 const router = createRouter({
   history: createWebHistory("/chat/"),
   routes: [
-    { path: "/", name: "chat", component: ChatRoot },
+    { path: "/", name: "chat", component: () => import("../ChatRoot.vue") },
     {
       path: "/admin",
       name: "admin",
-      component: AdminShell,
+      component: () => import("../admin/AdminShell.vue"),
       children: [
-        { path: "", component: ModuleWorkspaceView, props: { module: "overview" } },
-        { path: "models", component: ModuleWorkspaceView, props: { module: "models" } },
-        { path: "integrations", component: ModuleWorkspaceView, props: { module: "integrations" } },
-        { path: "skills", component: ModuleWorkspaceView, props: { module: "skills" } },
-        { path: "personas", component: ModuleWorkspaceView, props: { module: "persona" } },
-        { path: "memory", component: ModuleWorkspaceView, props: { module: "memory" } },
-        { path: "tasks", component: ModuleWorkspaceView, props: { module: "tasks" } },
+        { path: "", component: () => import("../admin/views/ModuleWorkspaceView.vue"), props: { module: "overview" } },
+        { path: "models", component: () => import("../admin/views/ModuleWorkspaceView.vue"), props: { module: "models" } },
+        { path: "integrations", component: () => import("../admin/views/ModuleWorkspaceView.vue"), props: { module: "integrations" } },
+        { path: "skills", component: () => import("../admin/views/ModuleWorkspaceView.vue"), props: { module: "skills" } },
+        { path: "personas", component: () => import("../admin/views/ModuleWorkspaceView.vue"), props: { module: "persona" } },
+        { path: "memory", component: () => import("../admin/views/ModuleWorkspaceView.vue"), props: { module: "memory" } },
+        { path: "tasks", component: () => import("../admin/views/ModuleWorkspaceView.vue"), props: { module: "tasks" } },
         { path: "timeline", redirect: { path: "/admin/memory", query: { tab: "timeline" } } },
-        { path: "devices", component: ModuleWorkspaceView, props: { module: "devices" } },
-        { path: "perception", component: ModuleWorkspaceView, props: { module: "perception" } },
-        { path: "logs", component: ModuleWorkspaceView, props: { module: "logs" } },
-        { path: "settings", component: ModuleWorkspaceView, props: { module: "system" } },
-        { path: "users", component: ModuleWorkspaceView, props: { module: "users" } },
+        { path: "devices", component: () => import("../admin/views/ModuleWorkspaceView.vue"), props: { module: "devices" } },
+        { path: "perception", component: () => import("../admin/views/ModuleWorkspaceView.vue"), props: { module: "perception" } },
+        { path: "logs", component: () => import("../admin/views/ModuleWorkspaceView.vue"), props: { module: "logs" } },
+        { path: "settings", component: () => import("../admin/views/ModuleWorkspaceView.vue"), props: { module: "system" } },
+        { path: "users", component: () => import("../admin/views/ModuleWorkspaceView.vue"), props: { module: "users" } },
         { path: "jobs", redirect: { path: "/admin/settings", query: { tab: "jobs" } } },
         { path: "screen-awareness", redirect: { path: "/admin/perception", query: { tab: "screen" } } },
         { path: "avatars", redirect: { path: "/admin/personas", query: { tab: "gallery" } } },

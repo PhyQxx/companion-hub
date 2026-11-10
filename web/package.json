@@ -1,6 +1,7 @@
 {
   "name": "aria-web",
   "private": true,
+  "packageManager": "pnpm@10.17.1",
   "scripts": {
     "build": "pnpm -r build",
     "typecheck": "pnpm -r typecheck"
