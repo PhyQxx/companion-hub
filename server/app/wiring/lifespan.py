@@ -202,6 +202,15 @@ def _core_modules(deps: LifespanDeps) -> ModuleRegistry:
     add_service(
         "pnkx-client", deps.pnkx_life_client, start_method=None, stop_method="close", requires=()
     )
+    # SSO 回调共享连接池：无启动动作，仅随逆序关闭释放连接
+    async def stop_sso_http_client() -> None:
+        from app.api.auth_sso import close_sso_http_client
+
+        await close_sso_http_client()
+
+    specs.append(
+        ModuleSpec("sso-http-client", requires=(), critical=False, stop=stop_sso_http_client)
+    )
     add_service("home-assistant", deps.home_assistant_manager, requires=("memory",))
     add_service("mqtt", deps.mqtt_client, requires=("memory",))
     add_service("config-watcher", deps.config_watcher, critical=True)

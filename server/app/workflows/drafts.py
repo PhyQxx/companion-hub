@@ -627,6 +627,10 @@ class PlanDistiller:
             try:
                 candidate = [WorkflowStep.model_validate(item) for item in record.steps or []]
             except Exception:
+                # 存量畸形步骤不应阻断查重，但静默跳过会掩盖数据损坏
+                logger.warning(
+                    "流程模板步骤解析失败，查重时跳过 workflow=%s", record.id, exc_info=True
+                )
                 continue
             if steps_dedupe_key(candidate) == key:
                 return True

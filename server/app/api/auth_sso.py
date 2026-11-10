@@ -26,6 +26,23 @@ from starlette.responses import HTMLResponse
 
 from app.auth.service import AuthService
 
+# SSO 回调的令牌交换复用共享连接池；进程关闭时经 close_sso_http_client 释放
+_sso_http_client: httpx.AsyncClient | None = None
+
+
+def _shared_http_client() -> httpx.AsyncClient:
+    global _sso_http_client
+    if _sso_http_client is None:
+        _sso_http_client = httpx.AsyncClient(timeout=10.0)
+    return _sso_http_client
+
+
+async def close_sso_http_client() -> None:
+    global _sso_http_client
+    if _sso_http_client is not None:
+        await _sso_http_client.aclose()
+        _sso_http_client = None
+
 _TOKEN_KEY = "ariaChatToken"
 _STATE_TTL_SECONDS = 300
 # 单实例部署，state 保存在进程内存即可（重启丢未完成跳转，用户重试即可）
@@ -126,31 +143,31 @@ def create_sso_router(
             return _landing_failure(fail_target, "SSO 状态校验失败，请重新登录")
         redirect_uri = entry[1]
         try:
-            async with httpx.AsyncClient(timeout=10.0) as client:
-                token_resp = await client.post(
-                    f"{settings.issuer}/oauth2/token",
-                    data={
-                        "grant_type": "authorization_code",
-                        "code": code,
-                        "redirect_uri": redirect_uri,
-                    },
-                    auth=(settings.client_id, settings.client_secret),
+            client = _shared_http_client()
+            token_resp = await client.post(
+                f"{settings.issuer}/oauth2/token",
+                data={
+                    "grant_type": "authorization_code",
+                    "code": code,
+                    "redirect_uri": redirect_uri,
+                },
+                auth=(settings.client_id, settings.client_secret),
+            )
+            if token_resp.status_code >= 400:
+                body = token_resp.text[:200]
+                raise RuntimeError(
+                    f"pnkx 返回 {token_resp.status_code}: {body}"
+                    f" (redirect_uri={redirect_uri})"
                 )
-                if token_resp.status_code >= 400:
-                    body = token_resp.text[:200]
-                    raise RuntimeError(
-                        f"pnkx 返回 {token_resp.status_code}: {body}"
-                        f" (redirect_uri={redirect_uri})"
-                    )
-                access_token = token_resp.json().get("access_token")
-                if not access_token:
-                    raise RuntimeError("empty access token")
-                userinfo_resp = await client.get(
-                    f"{settings.issuer}/userinfo",
-                    headers={"Authorization": f"Bearer {access_token}"},
-                )
-                userinfo_resp.raise_for_status()
-                userinfo = userinfo_resp.json()
+            access_token = token_resp.json().get("access_token")
+            if not access_token:
+                raise RuntimeError("empty access token")
+            userinfo_resp = await client.get(
+                f"{settings.issuer}/userinfo",
+                headers={"Authorization": f"Bearer {access_token}"},
+            )
+            userinfo_resp.raise_for_status()
+            userinfo = userinfo_resp.json()
         except Exception as exc:
             return _landing_failure(fail_target, f"SSO 令牌交换失败：{exc}")
 

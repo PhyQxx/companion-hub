@@ -237,10 +237,62 @@ async def test_optional_failure_blocks_dependents_and_critical_failure_rolls_bac
     )
     with pytest.raises(RuntimeError, match="failure"):
         await registry.start_all()
+    # 分层并行启动：optional 与 critical 同层（都无 requires），同层全部尝试；
+    # critical 重抛失败后，下一层的 dependent 不再尝试，保持 registered 终态。
     assert registry.states["optional"] == "degraded"
-    assert registry.states["dependent"] == "blocked"
+    assert registry.states["critical"] == "degraded"
+    assert registry.states["dependent"] == "registered"
     assert registry.states["base"] == "stopped"
     assert stopped == ["cleanup", "cleanup", "cleanup"]
+
+
+async def test_optional_failure_blocks_dependents_across_waves() -> None:
+    stopped: list[str] = []
+
+    async def fail() -> None:
+        raise RuntimeError("failure")
+
+    async def cleanup() -> None:
+        stopped.append("cleanup")
+
+    async def ready() -> None:
+        return None
+
+    registry = ModuleRegistry(
+        [
+            ModuleSpec("base", start=ready),
+            ModuleSpec("optional", critical=False, start=fail, stop=cleanup),
+            ModuleSpec("dependent", critical=False, requires=("optional",)),
+            ModuleSpec("healthy", start=ready),
+        ]
+    )
+    # 非关键失败不中止启动；下一层依赖其结果的模块被标记 blocked。
+    await registry.start_all()
+    assert registry.states["optional"] == "degraded"
+    assert registry.states["dependent"] == "blocked"
+    assert registry.states["base"] == "ready"
+    assert registry.states["healthy"] == "ready"
+    assert registry.reason_codes["optional"] == "module_start_failed"
+    assert stopped == ["cleanup"]
+
+
+async def test_independent_modules_start_concurrently() -> None:
+    import time
+
+    delay = 0.1
+
+    async def slow() -> None:
+        await asyncio.sleep(delay)
+
+    registry = ModuleRegistry(
+        [ModuleSpec("a", start=slow), ModuleSpec("b", start=slow), ModuleSpec("c", start=slow)]
+    )
+    began = time.monotonic()
+    await registry.start_all()
+    elapsed = time.monotonic() - began
+    assert all(registry.states[name] == "ready" for name in ("a", "b", "c"))
+    # 串行需 ~0.3s；并行同层应显著短于串行和
+    assert elapsed < delay * 3 * 0.9
 
 
 async def test_shutdown_failure_still_releases_other_modules() -> None:

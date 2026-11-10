@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Awaitable, Callable, Iterable
 from contextlib import suppress
 from dataclasses import dataclass
@@ -91,14 +92,33 @@ class ModuleRegistry:
 
     async def start_all(self) -> None:
         try:
-            for name in self.order:
-                await self.start(name)
+            for level in self._levels():
+                # 同层模块互相无依赖：并行启动缩短冷启动。同层全部尝试完成后
+                # 统一裁决——start() 只重抛 critical/非 Exception 异常，任一出现
+                # 即中止后续层，已启动模块仍走 stop_all 逆序清理。
+                results = await asyncio.gather(
+                    *(self.start(name) for name in level), return_exceptions=True
+                )
+                for result in results:
+                    if isinstance(result, BaseException):
+                        raise result
         except BaseException:
             # Cleanup interruption must not replace the original startup
             # failure/cancellation after releasing the started dependencies.
             with suppress(BaseException):
                 await self.stop_all()
             raise
+
+    def _levels(self) -> tuple[tuple[str, ...], ...]:
+        level_of: dict[str, int] = {}
+        for name in self.order:
+            level_of[name] = max((level_of[d] for d in self._specs[name].requires), default=-1) + 1
+        grouped: list[list[str]] = []
+        for name, level in level_of.items():
+            while len(grouped) <= level:
+                grouped.append([])
+            grouped[level].append(name)
+        return tuple(tuple(members) for members in grouped)
 
     async def stop_all(self) -> None:
         errors: list[BaseException] = []

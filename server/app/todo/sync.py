@@ -19,10 +19,12 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
-from collections.abc import Callable
+from collections.abc import Callable, Coroutine
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
+from typing import Any
 from uuid import UUID
 
 from sqlalchemy import select, update
@@ -37,6 +39,8 @@ logger = logging.getLogger("app.todo.sync")
 
 SOURCE_PNKX = "pnkx"
 ARIA_CLIENT_PREFIX = "aria:"
+# 推送段的网络往返并发上限：字段/完成/新建推送互相独立，但pnkx侧有限流
+PUSH_CONCURRENCY = 5
 
 
 @dataclass(slots=True)
@@ -99,30 +103,24 @@ class TodoSyncService:
         #    - 延期：镜像 next_fire_at 非 NULL 即待推指令（调度器永不本地触发镜像）；
         #    - 优先级：pending_priority 非 NULL 即显式登记的本地指令，
         #      推的是登记值而非镜像列（拉取可能已覆盖列值）。
-        for ref, pending_local in local_by_ref.items():
-            remote = remote_by_ref.get(ref)
-            if remote is None or pending_local.status != "active":
-                continue
-            defer_at = _utc(pending_local.next_fire_at)
-            pending_priority = pending_local.pending_priority
-            if defer_at is None and pending_priority is None:
-                continue
-            try:
-                await self._client.update(
-                    remote.external_id,
-                    plan_end=defer_at,
-                    priority=pending_priority,
-                )
-            except Exception as error:
-                stats.errors.append(f"push_update_failed:{ref}")
-                logger.warning("todo field push failed for %s: %s", ref, error)
-                continue
-            if defer_at is not None:
-                await self._clear_mirror_defer(pending_local.id)
-                stats.defers_pushed += 1
-            if pending_priority is not None:
-                await self._clear_pending_priority(pending_local.id)
-                stats.priorities_pushed += 1
+        semaphore = asyncio.Semaphore(PUSH_CONCURRENCY)
+
+        async def limited(coro: Coroutine[Any, Any, None]) -> None:
+            async with semaphore:
+                await coro
+
+        field_pushes = [
+            limited(self._push_fields(ref, pending_local, remote, stats))
+            for ref, pending_local in local_by_ref.items()
+            if (remote := remote_by_ref.get(ref)) is not None
+            and pending_local.status == "active"
+            and (
+                _utc(pending_local.next_fire_at) is not None
+                or pending_local.pending_priority is not None
+            )
+        ]
+        if field_pushes:
+            await asyncio.gather(*field_pushes)
 
         # 1. 拉取 upsert + 删除检测
         for ref, item in remote_by_ref.items():
@@ -142,45 +140,86 @@ class TodoSyncService:
                 stats.mirrors_cancelled += 1
 
         # 2. 推完成（本地 done、远端未完成）
-        for ref, done_local in local_by_ref.items():
-            if done_local.status != "done":
-                continue
-            remote_done = remote_by_ref.get(ref)
-            if remote_done is None or remote_done.status:
-                continue
-            try:
-                await self._client.update(
-                    remote_done.external_id,
-                    status=True,
-                    finish_time=done_local.completed_at or self._clock(),
-                )
-                stats.completions_pushed += 1
-            except Exception as error:
-                stats.errors.append(f"push_completion_failed:{ref}")
-                logger.warning("todo completion push failed for %s: %s", ref, error)
+        completion_pushes = [
+            limited(self._push_completion(ref, done_local, remote_done, stats))
+            for ref, done_local in local_by_ref.items()
+            if done_local.status == "done"
+            and (remote_done := remote_by_ref.get(ref)) is not None
+            and not remote_done.status
+        ]
+        if completion_pushes:
+            await asyncio.gather(*completion_pushes)
 
         # 3. 推新建（本地手建、无 source_ref），崩溃后按 clientUuid 认领
-        for local in await self._local_manual_tasks(user_id):
-            client_uuid = f"{ARIA_CLIENT_PREFIX}{local.id}"
-            existing = remote_by_client_uuid.get(client_uuid)
-            if existing is not None:
-                await self._backfill_source_ref(local.id, existing)
-                stats.adopted_after_crash += 1
-                continue
-            try:
-                external_id = await self._client.create(
-                    content=local.title,
-                    client_uuid=client_uuid,
-                    priority=local.priority,
-                    label=local.group_label,
-                )
-            except Exception as error:
-                stats.errors.append(f"push_new_failed:{local.id}")
-                logger.warning("todo new push failed for %s: %s", local.id, error)
-                continue
-            await self._backfill_source_ref(local.id, None, external_id=external_id)
-            stats.new_pushed += 1
+        new_pushes = [
+            limited(self._push_new(local, remote_by_client_uuid, stats))
+            for local in await self._local_manual_tasks(user_id)
+        ]
+        if new_pushes:
+            await asyncio.gather(*new_pushes)
         return stats
+
+    async def _push_fields(
+        self, ref: str, pending_local: TaskItemRecord, remote: PnkxTodo, stats: SyncStats
+    ) -> None:
+        defer_at = _utc(pending_local.next_fire_at)
+        pending_priority = pending_local.pending_priority
+        try:
+            await self._client.update(
+                remote.external_id,
+                plan_end=defer_at,
+                priority=pending_priority,
+            )
+        except Exception as error:
+            stats.errors.append(f"push_update_failed:{ref}")
+            logger.warning("todo field push failed for %s: %s", ref, error)
+            return
+        if defer_at is not None:
+            await self._clear_mirror_defer(pending_local.id)
+            stats.defers_pushed += 1
+        if pending_priority is not None:
+            await self._clear_pending_priority(pending_local.id)
+            stats.priorities_pushed += 1
+
+    async def _push_completion(
+        self, ref: str, done_local: TaskItemRecord, remote_done: PnkxTodo, stats: SyncStats
+    ) -> None:
+        try:
+            await self._client.update(
+                remote_done.external_id,
+                status=True,
+                finish_time=done_local.completed_at or self._clock(),
+            )
+            stats.completions_pushed += 1
+        except Exception as error:
+            stats.errors.append(f"push_completion_failed:{ref}")
+            logger.warning("todo completion push failed for %s: %s", ref, error)
+
+    async def _push_new(
+        self,
+        local: TaskItemRecord,
+        remote_by_client_uuid: dict[str, PnkxTodo],
+        stats: SyncStats,
+    ) -> None:
+        client_uuid = f"{ARIA_CLIENT_PREFIX}{local.id}"
+        existing = remote_by_client_uuid.get(client_uuid)
+        if existing is not None:
+            await self._backfill_source_ref(local.id, existing)
+            stats.adopted_after_crash += 1
+            return
+        try:
+            external_id = await self._client.create(
+                content=local.title,
+                client_uuid=client_uuid,
+                priority=local.priority,
+                label=local.group_label,
+            )
+        except Exception as error:
+            stats.errors.append(f"push_new_failed:{local.id}")
+            logger.warning("todo new push failed for %s: %s", local.id, error)
+            return
+        await self._backfill_source_ref(local.id, None, external_id=external_id)
+        stats.new_pushed += 1
 
     async def _local_tasks(self, user_id: UUID) -> dict[str, TaskItemRecord]:
         async with self._database.sessions() as session:
