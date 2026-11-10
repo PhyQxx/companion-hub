@@ -22,7 +22,7 @@ from app.cognition import (
     SemanticEvent,
     render_action_catalog,
 )
-from app.config import ConfigStore, DatabaseConfigStore, HubConfig
+from app.config import ConfigSnapshot, ConfigStore, DatabaseConfigStore, HubConfig
 from app.db import (
     AppUserRecord,
     CognitiveDecisionRecord,
@@ -70,7 +70,7 @@ from app.runs.resources import recover_tool_reservations
 from app.runs.speech_delivery import recover_expired_speech_deliveries
 from app.runs.store import RunStore, append_run_event, transition_run
 from app.runs.trace_sources import capture_disabled_trace
-from app.schemas import PrivacyLevel
+from app.schemas import AgentReply, PrivacyLevel
 from app.skills.drafts import SkillDraftAssistant
 from app.skills.learning import SkillRevisionLearner, TurnSkillRun
 from app.skills.runtime import SkillReadToolHandler, SkillToolProvider
@@ -412,6 +412,70 @@ class RecentDeviceReference:
     user_id: UUID
     source_turn_seq: int
     updated_at: datetime
+
+
+@dataclass(slots=True)
+class _PreparedTurn:
+    """start_turn 事务阶段产物：回合记录已落库，上下文尚未装配。"""
+
+    turn_id: UUID
+    generation_id: UUID
+    conversation_id: UUID
+    user_id: UUID
+    now: datetime
+    user_record: MessageRecord
+    last_turn_seq: int
+    conversation_summary: tuple[str, int] | None
+    summary_exclusion_reason: str
+    summary_source_count: int
+    summary_privacy: str
+    user_timezone: str
+    parent_budget_enabled: bool
+
+
+@dataclass(slots=True)
+class _AssembledTurn:
+    """start_turn 上下文装配阶段产物：请求与挂载清单就绪，待构建 PendingTurn。"""
+
+    request: CompletionRequest
+    tool_names: tuple[str, ...]
+    mcp_handlers: tuple[McpReadToolHandler, ...]
+    skill_handlers: tuple[SkillReadToolHandler, ...]
+    memory_retrieval: RetrievalResult | None
+    history_recall: HistoryRecallResult | None
+    screen_activity_recall: ScreenActivityRecallResult | None
+    browser_activity_recall: BrowserActivityRecallResult | None
+    runtime_capabilities: tuple[RuntimeActionCapability, ...]
+    cognitive_decision: CognitiveDecision | None
+    persona: PersonaConfig
+    persona_version: int
+    context_references: tuple[ContextReference, ...]
+    context_manifest: tuple[dict[str, object], ...]
+
+
+@dataclass(slots=True)
+class _PostcommitSource:
+    """_run_postcommit 来源校验阶段产物：被维护任务引用的记录已锁定校验。"""
+
+    user_id: UUID
+    turn: InteractionTurnRecord
+    run: TaskRunRecord | None
+    meta: dict[str, Any]
+    budget_enabled: bool
+    parent_run_id: UUID | None
+    parent_budget_scope: dict[str, object] | None
+    assistant_view: MessageView
+    user_view: MessageView
+
+
+@dataclass(slots=True)
+class _PostcommitSnapshot:
+    """_run_postcommit 快照重建阶段产物：pending 上下文与配置已重建。"""
+
+    pending: PendingTurn
+    budget_enabled: bool
+    run: TaskRunRecord | None
+    snapshot: ConfigSnapshot
 
 
 class TurnCancelled(RuntimeError):
@@ -792,6 +856,54 @@ class ChatService:
         parent_run_id: UUID | None = None,
         parent_budget_scope: dict[str, object] | None = None,
     ) -> PendingTurn:
+        parent_budget_scope = self._validate_turn_request(
+            privacy_level=privacy_level,
+            client_request_id=client_request_id,
+            parent_run_id=parent_run_id,
+            parent_budget_scope=parent_budget_scope,
+        )
+        await self._note_turn_activity(text, user_id=user_id)
+        snapshot = (
+            await self._config_store.refresh()
+            if isinstance(self._config_store, DatabaseConfigStore)
+            else self._config_store.current
+        )
+        prepared = await self._prepare_turn(
+            conversation_id=conversation_id,
+            user_id=user_id,
+            text=text,
+            privacy_level=privacy_level,
+            client_request_id=client_request_id,
+            parent_run_id=parent_run_id,
+            parent_budget_scope=parent_budget_scope,
+            snapshot=snapshot,
+        )
+        assembled = await self._assemble_turn(
+            prepared,
+            text=text,
+            privacy_level=privacy_level,
+            llm_route=llm_route,
+            max_context_messages=max_context_messages,
+            snapshot=snapshot,
+        )
+        return await self._finish_pending_turn(
+            prepared,
+            assembled,
+            privacy_level=privacy_level,
+            client_location=client_location,
+            parent_run_id=parent_run_id,
+            parent_budget_scope=parent_budget_scope,
+            snapshot=snapshot,
+        )
+
+    def _validate_turn_request(
+        self,
+        *,
+        privacy_level: PrivacyLevel,
+        client_request_id: str | None,
+        parent_run_id: UUID | None,
+        parent_budget_scope: dict[str, object] | None,
+    ) -> dict[str, object] | None:
         if parent_budget_scope is not None:
             if parent_run_id is None:
                 raise BudgetDenied("chat_parent_scope_invalid")
@@ -802,6 +914,9 @@ class ChatService:
             raise ValueError("invalid_client_request_id")
         if privacy_level is PrivacyLevel.L3:
             raise ValueError("L3 durable chat is not allowed")
+        return parent_budget_scope
+
+    async def _note_turn_activity(self, text: str, *, user_id: UUID) -> None:
         if self._safety is not None:
             try:
                 # SAFE-02：聊天确认意图（"知道了/已处理"）确认活跃安全告警
@@ -813,11 +928,19 @@ class ChatService:
         if self._activity_tracker is not None:
             # SAFE-01：聊天回合刷新最后活动时间
             self._activity_tracker.record(user_id)
-        snapshot = (
-            await self._config_store.refresh()
-            if isinstance(self._config_store, DatabaseConfigStore)
-            else self._config_store.current
-        )
+
+    async def _prepare_turn(
+        self,
+        conversation_id: UUID,
+        *,
+        user_id: UUID,
+        text: str,
+        privacy_level: PrivacyLevel,
+        client_request_id: str | None,
+        parent_run_id: UUID | None,
+        parent_budget_scope: dict[str, object] | None,
+        snapshot: ConfigSnapshot,
+    ) -> _PreparedTurn:
         now = datetime.now(UTC)
         turn_id = uuid7()
         generation_id = uuid7()
@@ -985,8 +1108,34 @@ class ChatService:
                 raise ValueError("request_idempotency_conflict") from error
             raise
 
+        return _PreparedTurn(
+            turn_id=turn_id,
+            generation_id=generation_id,
+            conversation_id=conversation_id,
+            user_id=user_id,
+            now=now,
+            user_record=user_record,
+            last_turn_seq=conversation.last_turn_seq,
+            conversation_summary=conversation_summary,
+            summary_exclusion_reason=summary_exclusion_reason,
+            summary_source_count=summary_source_count,
+            summary_privacy=summary_privacy,
+            user_timezone=user_timezone,
+            parent_budget_enabled=parent_budget_enabled,
+        )
+
+    async def _assemble_turn(
+        self,
+        prepared: _PreparedTurn,
+        *,
+        text: str,
+        privacy_level: PrivacyLevel,
+        llm_route: LLMRoute,
+        max_context_messages: int | None,
+        snapshot: ConfigSnapshot,
+    ) -> _AssembledTurn:
         history = await self._context_messages(
-            conversation_id,
+            prepared.conversation_id,
             limit=max_context_messages or MAX_CONTEXT_MESSAGES,
             privacy_level=privacy_level,
         )
@@ -995,31 +1144,33 @@ class ChatService:
             try:
                 cognitive_decision = await self._cognitive_cycle.evaluate(
                     SemanticEvent(
-                        event_id=turn_id,
-                        user_id=user_id,
-                        conversation_id=conversation_id,
+                        event_id=prepared.turn_id,
+                        user_id=prepared.user_id,
+                        conversation_id=prepared.conversation_id,
                         kind="user.message_received",
                         summary="用户发起了一次被动对话请求",
-                        occurred_at=now,
+                        occurred_at=prepared.now,
                         privacy_level=privacy_level,
                         confidence=1,
-                        evidence_ids=[str(user_record.id)],
+                        evidence_ids=[str(prepared.user_record.id)],
                         attributes={"message_length": len(text)},
                         passive=True,
                     )
                 )
             except Exception:
-                logger.warning("passive cognitive cycle failed for turn %s", turn_id, exc_info=True)
+                logger.warning(
+                    "passive cognitive cycle failed for turn %s", prepared.turn_id, exc_info=True
+                )
         persona_snapshot = await self._persona_store.refresh() if self._persona_store else None
         persona = persona_snapshot.persona if persona_snapshot else PersonaConfig()
         profile_overrides, profile_references = await self._assistant_profile_overrides(
-            user_id, turn_id=turn_id, privacy_level=privacy_level
+            prepared.user_id, turn_id=prepared.turn_id, privacy_level=privacy_level
         )
         runtime_capabilities: tuple[RuntimeActionCapability, ...] = ()
         if self._capability_provider is not None:
             try:
                 runtime_capabilities = tuple(
-                    await self._capability_provider.available_actions(user_id)
+                    await self._capability_provider.available_actions(prepared.user_id)
                 )
             except Exception:
                 # 设备能力查询失败不能影响聊天；失败时按“没有现实能力”收紧边界。
@@ -1030,7 +1181,9 @@ class ChatService:
             try:
                 skill_handlers = await self._skill_tools.select(text, privacy_level=privacy_level)
             except Exception:
-                logger.warning("skill selection failed for turn %s", turn_id, exc_info=True)
+                logger.warning(
+                    "skill selection failed for turn %s", prepared.turn_id, exc_info=True
+                )
         # 工具挂载只看在线能力与配置就绪；选哪个、何时调用由模型根据工具描述自行判断。
         # 先于 reality_block 计算：能力边界提示需要知道本轮真正挂载了哪些工具。
         candidate_device_tools = self._device_tools.names()
@@ -1072,20 +1225,20 @@ class ChatService:
             else ""
         )
         recent_device_block = self._recent_device_context(
-            conversation_id,
-            user_id=user_id,
-            current_turn_seq=conversation.last_turn_seq,
+            prepared.conversation_id,
+            user_id=prepared.user_id,
+            current_turn_seq=prepared.last_turn_seq,
             runtime_capabilities=runtime_capabilities,
-            now=now,
+            now=prepared.now,
         )
-        time_block = render_time_context(now, user_timezone)
+        time_block = render_time_context(prepared.now, prepared.user_timezone)
         history_intent = has_history_intent(text)
         memory_retrieval: RetrievalResult | None = None
         grounded_memory_hits: tuple[MemoryHit, ...] = ()
         memory_block = ""
         if self._memory_retriever is not None:
             memory_retrieval = await self._memory_retriever.retrieve(
-                text, user_id=user_id, privacy_level=privacy_level
+                text, user_id=prepared.user_id, privacy_level=privacy_level
             )
             grounded_memory_hits = self._memory_retriever.grounded_hits(memory_retrieval)
             # Top-K 仍保留在 decision_meta 供调试，但只有证据级命中进入 Prompt。
@@ -1105,34 +1258,38 @@ class ChatService:
             try:
                 screen_activity_recall = await self._screen_activity_recall.recall(
                     text,
-                    user_id=user_id,
+                    user_id=prepared.user_id,
                     privacy_level=privacy_level,
-                    now=now,
-                    timezone_name=user_timezone,
+                    now=prepared.now,
+                    timezone_name=prepared.user_timezone,
                 )
                 if screen_activity_recall is not None:
                     screen_activity_block = ScreenActivityRecallService.render_context(
                         screen_activity_recall,
-                        timezone_name=user_timezone,
+                        timezone_name=prepared.user_timezone,
                     )
             except Exception:
-                logger.warning("screen activity recall failed for turn %s", turn_id, exc_info=True)
+                logger.warning(
+                    "screen activity recall failed for turn %s", prepared.turn_id, exc_info=True
+                )
         if self._browser_activity_recall is not None:
             try:
                 browser_activity_recall = await self._browser_activity_recall.recall(
                     text,
-                    user_id=user_id,
+                    user_id=prepared.user_id,
                     privacy_level=privacy_level,
-                    now=now,
-                    timezone_name=user_timezone,
+                    now=prepared.now,
+                    timezone_name=prepared.user_timezone,
                 )
                 if browser_activity_recall is not None:
                     browser_activity_block = BrowserActivityRecallService.render_context(
                         browser_activity_recall,
-                        timezone_name=user_timezone,
+                        timezone_name=prepared.user_timezone,
                     )
             except Exception:
-                logger.warning("browser activity recall failed for turn %s", turn_id, exc_info=True)
+                logger.warning(
+                    "browser activity recall failed for turn %s", prepared.turn_id, exc_info=True
+                )
         if (
             screen_activity_recall is None
             and browser_activity_recall is None
@@ -1142,16 +1299,16 @@ class ChatService:
             try:
                 history_recall = await self._history_recall.recall(
                     text,
-                    user_id=user_id,
+                    user_id=prepared.user_id,
                     privacy_level=privacy_level,
-                    now=now,
-                    timezone_name=user_timezone,
+                    now=prepared.now,
+                    timezone_name=prepared.user_timezone,
                 )
                 if not (history_recall.mode is RecallMode.NONE and grounded_memory_hits):
                     history_block = HistoryRecallService.render_context(history_recall)
             except Exception:
                 # 历史索引是增强路径，故障不能让普通聊天不可用。
-                logger.warning("history recall failed for turn %s", turn_id, exc_info=True)
+                logger.warning("history recall failed for turn %s", prepared.turn_id, exc_info=True)
         query_tool_names = _enabled_query_tools(snapshot.config, privacy_level, llm_route)
         tool_names = (*query_tool_names, *device_tool_names)
         definition_builders = {
@@ -1170,7 +1327,9 @@ class ChatService:
                     text, config=snapshot.config, privacy_level=privacy_level
                 )
             except Exception:
-                logger.warning("mcp tool selection failed for turn %s", turn_id, exc_info=True)
+                logger.warning(
+                    "mcp tool selection failed for turn %s", prepared.turn_id, exc_info=True
+                )
         if mcp_handlers:
             tool_names = (*tool_names, *(handler.name for handler in mcp_handlers))
             tool_definitions.extend(handler.definition() for handler in mcp_handlers)
@@ -1183,7 +1342,7 @@ class ChatService:
                     ContextReference(
                         kind="skill",
                         source_id=str(skill.id),
-                        owner_id=str(user_id),
+                        owner_id=str(prepared.user_id),
                         privacy_level="L1",
                         version=str(skill.version),
                     )
@@ -1191,7 +1350,7 @@ class ChatService:
                 )
             except Exception:
                 logger.warning(
-                    "skill guidance selection failed for turn %s", turn_id, exc_info=True
+                    "skill guidance selection failed for turn %s", prepared.turn_id, exc_info=True
                 )
         if skill_handlers:
             tool_names = (*tool_names, *(handler.name for handler in skill_handlers))
@@ -1230,12 +1389,12 @@ class ChatService:
             ),
         )
         request = CompletionRequest(
-            trace_id=turn_id,
+            trace_id=prepared.turn_id,
             messages=self._context_assembler.assemble(
                 system_prompt=persona.render_system_prompt(profile_overrides=profile_overrides),
                 reply_instruction=structured_reply_instruction(persona),
                 history=history,
-                conversation_summary=conversation_summary,
+                conversation_summary=prepared.conversation_summary,
                 blocks=blocks,
             ),
             privacy_level=privacy_level,
@@ -1250,7 +1409,7 @@ class ChatService:
                 ContextReference(
                     kind="message",
                     source_id=str(message.id),
-                    owner_id=str(user_id),
+                    owner_id=str(prepared.user_id),
                     privacy_level=message.privacy_level,
                     version=str(message.seq),
                     included=message.role in {"user", "assistant"},
@@ -1283,20 +1442,20 @@ class ChatService:
                 source_references[group] = await attach_memory_lineage(
                     session,
                     source_references[group],
-                    owner_id=user_id,
+                    owner_id=prepared.user_id,
                 )
         if (
-            self._context_assembler.summary_block(history, conversation_summary)
-            and conversation_summary
+            self._context_assembler.summary_block(history, prepared.conversation_summary)
+            and prepared.conversation_summary
         ):
             source_references["conversation_summary"] = (
                 ContextReference(
                     kind="summary",
-                    source_id=str(conversation_id),
-                    owner_id=str(user_id),
-                    privacy_level=summary_privacy or privacy_level.value,
-                    version=str(conversation_summary[1]),
-                    source_count=summary_source_count,
+                    source_id=str(prepared.conversation_id),
+                    owner_id=str(prepared.user_id),
+                    privacy_level=prepared.summary_privacy or privacy_level.value,
+                    version=str(prepared.conversation_summary[1]),
+                    source_count=prepared.summary_source_count,
                 ),
             )
         request = request.model_copy(
@@ -1306,52 +1465,80 @@ class ChatService:
                     reply_instruction=structured_reply_instruction(persona),
                     blocks=blocks,
                     history=history,
-                    conversation_summary=conversation_summary,
+                    conversation_summary=prepared.conversation_summary,
                 )
             }
         )
-        async with self._database.sessions.begin() as session:
-            prepared_run = await session.get(TaskRunRecord, turn_id)
-            if prepared_run is not None:
-                prepared_run.config_version = snapshot.version
-                prepared_run.persona_version = persona_snapshot.version if persona_snapshot else 0
-        return PendingTurn(
-            turn_id=turn_id,
-            generation_id=generation_id,
-            conversation_id=conversation_id,
-            user_id=user_id,
-            turn_seq=conversation.last_turn_seq,
-            user_message=self._message_view(user_record),
+        return _AssembledTurn(
             request=request,
-            config=snapshot.config,
-            config_version=snapshot.version,
-            persona=persona,
-            persona_version=persona_snapshot.version if persona_snapshot else 0,
-            user_timezone=user_timezone,
-            parent_run_id=parent_run_id,
-            parent_budget_enabled=parent_budget_enabled,
-            parent_budget_scope=parent_budget_scope,
+            tool_names=tool_names,
+            mcp_handlers=mcp_handlers,
+            skill_handlers=skill_handlers,
             memory_retrieval=memory_retrieval,
             history_recall=history_recall,
             screen_activity_recall=screen_activity_recall,
             browser_activity_recall=browser_activity_recall,
             runtime_capabilities=runtime_capabilities,
-            tool_names=tool_names,
-            mcp_handlers=mcp_handlers,
-            skill_handlers=skill_handlers,
-            client_location=client_location,
             cognitive_decision=cognitive_decision,
-            conversation_summary=conversation_summary,
+            persona=persona,
+            persona_version=persona_snapshot.version if persona_snapshot else 0,
             context_references=tuple(ref for group in source_references.values() for ref in group),
             context_manifest=self._context_assembler.source_manifest(
                 blocks=blocks,
                 history=history,
-                conversation_summary=conversation_summary,
-                owner_id=str(user_id),
+                conversation_summary=prepared.conversation_summary,
+                owner_id=str(prepared.user_id),
                 privacy_level=privacy_level.value,
-                summary_exclusion_reason=summary_exclusion_reason,
+                summary_exclusion_reason=prepared.summary_exclusion_reason,
                 references=source_references,
             ),
+        )
+
+    async def _finish_pending_turn(
+        self,
+        prepared: _PreparedTurn,
+        assembled: _AssembledTurn,
+        *,
+        privacy_level: PrivacyLevel,
+        client_location: ClientLocation | None,
+        parent_run_id: UUID | None,
+        parent_budget_scope: dict[str, object] | None,
+        snapshot: ConfigSnapshot,
+    ) -> PendingTurn:
+        async with self._database.sessions.begin() as session:
+            prepared_run = await session.get(TaskRunRecord, prepared.turn_id)
+            if prepared_run is not None:
+                prepared_run.config_version = snapshot.version
+                prepared_run.persona_version = assembled.persona_version
+        return PendingTurn(
+            turn_id=prepared.turn_id,
+            generation_id=prepared.generation_id,
+            conversation_id=prepared.conversation_id,
+            user_id=prepared.user_id,
+            turn_seq=prepared.last_turn_seq,
+            user_message=self._message_view(prepared.user_record),
+            request=assembled.request,
+            config=snapshot.config,
+            config_version=snapshot.version,
+            persona=assembled.persona,
+            persona_version=assembled.persona_version,
+            user_timezone=prepared.user_timezone,
+            parent_run_id=parent_run_id,
+            parent_budget_enabled=prepared.parent_budget_enabled,
+            parent_budget_scope=parent_budget_scope,
+            memory_retrieval=assembled.memory_retrieval,
+            history_recall=assembled.history_recall,
+            screen_activity_recall=assembled.screen_activity_recall,
+            browser_activity_recall=assembled.browser_activity_recall,
+            runtime_capabilities=assembled.runtime_capabilities,
+            tool_names=assembled.tool_names,
+            mcp_handlers=assembled.mcp_handlers,
+            skill_handlers=assembled.skill_handlers,
+            client_location=client_location,
+            cognitive_decision=assembled.cognitive_decision,
+            conversation_summary=prepared.conversation_summary,
+            context_references=assembled.context_references,
+            context_manifest=assembled.context_manifest,
         )
 
     async def run_stream(
@@ -2229,6 +2416,28 @@ class ChatService:
         consistency: MemoryConsistencyOutcome | None = None,
         tool_executions: tuple[ToolExecution, ...] = (),
     ) -> ChatTurn:
+        consistency, result, reply = await self._commit_resolve(
+            pending,
+            result,
+            backend=backend,
+            consistency=consistency,
+            tool_executions=tool_executions,
+        )
+        decision_meta = await self._commit_decision_meta(
+            pending, result, consistency, reply, tool_executions=tool_executions
+        )
+        assistant_record = await self._commit_persist(pending, reply, decision_meta)
+        return await self._commit_publish(pending, assistant_record)
+
+    async def _commit_resolve(
+        self,
+        pending: PendingTurn,
+        result: CompletionResult,
+        *,
+        backend: CompletionBackend | None,
+        consistency: MemoryConsistencyOutcome | None,
+        tool_executions: tuple[ToolExecution, ...],
+    ) -> tuple[MemoryConsistencyOutcome, CompletionResult, AgentReply]:
         if consistency is None:
             consistency = await self._memory_consistency_guard.enforce(
                 result=result,
@@ -2254,6 +2463,17 @@ class ChatService:
                 or "none",
                 result.text[:120],
             )
+        return consistency, result, reply
+
+    async def _commit_decision_meta(
+        self,
+        pending: PendingTurn,
+        result: CompletionResult,
+        consistency: MemoryConsistencyOutcome,
+        reply: AgentReply,
+        *,
+        tool_executions: tuple[ToolExecution, ...],
+    ) -> dict[str, object]:
         decision_meta: dict[str, object] = {
             "schema_version": 1,
             "task_run_id": str(pending.turn_id),
@@ -2409,6 +2629,14 @@ class ChatService:
         decision_meta["runtime_capabilities"] = [
             item.capability_id for item in pending.runtime_capabilities
         ]
+        return decision_meta
+
+    async def _commit_persist(
+        self,
+        pending: PendingTurn,
+        reply: AgentReply,
+        decision_meta: dict[str, object],
+    ) -> MessageRecord:
         assistant_time = datetime.now(UTC)
         async with self._database.sessions.begin() as session:
             parent = None
@@ -2508,7 +2736,11 @@ class ChatService:
                     privacy_level=pending.request.privacy_level,
                     quota_scope=pending.parent_budget_scope,
                 )
+        return assistant_record
 
+    async def _commit_publish(
+        self, pending: PendingTurn, assistant_record: MessageRecord
+    ) -> ChatTurn:
         turn_result = ChatTurn(
             user_message=pending.user_message,
             assistant_message=self._message_view(assistant_record),
@@ -2523,6 +2755,61 @@ class ChatService:
         return turn_result
 
     async def _run_postcommit(self, kind: str, payload: dict[str, Any], owner: str) -> None:
+        source = await self._postcommit_source(payload, owner)
+        prepared = await self._postcommit_snapshot(payload, source)
+        trace = (
+            await capture_disabled_trace(
+                self._database, prepared.pending.turn_id, source.user_id, maintenance=True
+            )
+            if not prepared.budget_enabled and prepared.run is not None
+            else None
+        )
+        with (
+            budget_scope(
+                self._model_budget(prepared.pending, phase="maintenance")
+                if prepared.budget_enabled
+                else None
+            ),
+            tool_budget_scope(None),
+            run_trace_scope(trace),
+            model_accounting_scope(
+                DisabledModelAccounting(
+                    self._database,
+                    run_id=prepared.pending.turn_id,
+                    user_id=source.user_id,
+                    trace=trace,
+                    maintenance=True,
+                )
+                if trace is not None
+                else None
+            ),
+        ):
+            backend = self._router_builder(prepared.snapshot.config)
+            if kind == "chat.memory":
+                await self._consolidate_memory(
+                    prepared.pending,
+                    assistant_message=source.assistant_view,
+                    backend=backend,
+                    strict=True,
+                )
+            elif kind == "chat.timeline":
+                await self._index_timeline(
+                    prepared.pending, assistant_message=source.assistant_view, strict=True
+                )
+            elif kind == "chat.commitments":
+                await self._extract_commitments(prepared.pending, backend=backend, strict=True)
+            elif kind == "chat.skill_draft":
+                await self._harvest_skill_draft(prepared.pending, strict=True)
+            elif kind == "chat.skill_revision":
+                await self._harvest_skill_revision(prepared.pending, strict=True)
+            elif kind == "chat.summary":
+                await self._update_conversation_summary(
+                    prepared.pending.conversation_id, strict=True
+                )
+            else:
+                raise ValueError("unknown_postcommit_kind")
+
+    async def _postcommit_source(self, payload: dict[str, Any], owner: str) -> _PostcommitSource:
         user_id = UUID(owner)
         async with self._database.sessions() as session:
             active_user = await session.scalar(
@@ -2613,19 +2900,34 @@ class ChatService:
                 raise PostcommitSourceGone() from error
             assistant_view = self._message_view(assistant)
             user_view = self._message_view(user_message)
+        return _PostcommitSource(
+            user_id=user_id,
+            turn=turn,
+            run=run,
+            meta=meta,
+            budget_enabled=budget_enabled,
+            parent_run_id=parent_run_id,
+            parent_budget_scope=parent_budget_scope,
+            assistant_view=assistant_view,
+            user_view=user_view,
+        )
+
+    async def _postcommit_snapshot(
+        self, payload: dict[str, Any], source: _PostcommitSource
+    ) -> _PostcommitSnapshot:
         snapshot = (
             await self._config_store.refresh()
             if isinstance(self._config_store, DatabaseConfigStore)
             else self._config_store.current
         )
         persona_snapshot = await self._persona_store.refresh() if self._persona_store else None
-        privacy = PrivacyLevel(assistant_view.privacy_level)
+        privacy = PrivacyLevel(source.assistant_view.privacy_level)
         retrieval = None
-        if self._memory_store is not None and meta.get("memory"):
+        if self._memory_store is not None and source.meta.get("memory"):
             hits = []
-            for item in meta["memory"].get("hits", []):
+            for item in source.meta["memory"].get("hits", []):
                 try:
-                    memory = await self._memory_store.get(item["id"], user_id=user_id)
+                    memory = await self._memory_store.get(item["id"], user_id=source.user_id)
                 except LookupError as error:
                     raise PostcommitSourceGone() from error
                 hits.append(
@@ -2639,21 +2941,21 @@ class ChatService:
                 )
             retrieval = RetrievalResult(
                 hits=tuple(hits),
-                policy_version=meta["memory"]["policy_version"],
+                policy_version=source.meta["memory"]["policy_version"],
                 candidate_count=len(hits),
                 vector_recalled=0,
                 lexical_recalled=0,
             )
         pending = PendingTurn(
-            turn_id=assistant_view.turn_id,
-            generation_id=assistant_view.generation_id or assistant_view.turn_id,
-            conversation_id=assistant_view.conversation_id,
-            user_id=user_id,
-            turn_seq=turn.turn_seq,
-            user_message=user_view,
+            turn_id=source.assistant_view.turn_id,
+            generation_id=source.assistant_view.generation_id or source.assistant_view.turn_id,
+            conversation_id=source.assistant_view.conversation_id,
+            user_id=source.user_id,
+            turn_seq=source.turn.turn_seq,
+            user_message=source.user_view,
             request=CompletionRequest(
-                trace_id=assistant_view.turn_id,
-                messages=[LLMMessage(role="user", content=user_view.content)],
+                trace_id=source.assistant_view.turn_id,
+                messages=[LLMMessage(role="user", content=source.user_view.content)],
                 privacy_level=privacy,
                 route=LLMRoute.PRIVATE if privacy is PrivacyLevel.L2 else LLMRoute.UTILITY,
             ),
@@ -2663,50 +2965,16 @@ class ChatService:
             persona_version=persona_snapshot.version if persona_snapshot else 0,
             user_timezone=str(payload.get("user_timezone", "Asia/Shanghai")),
             memory_retrieval=retrieval,
-            parent_run_id=parent_run_id,
-            parent_budget_enabled=budget_enabled if parent_run_id else False,
-            parent_budget_scope=parent_budget_scope,
+            parent_run_id=source.parent_run_id,
+            parent_budget_enabled=source.budget_enabled if source.parent_run_id else False,
+            parent_budget_scope=source.parent_budget_scope,
         )
-        trace = (
-            await capture_disabled_trace(self._database, pending.turn_id, user_id, maintenance=True)
-            if not budget_enabled and run is not None
-            else None
+        return _PostcommitSnapshot(
+            pending=pending,
+            budget_enabled=source.budget_enabled,
+            run=source.run,
+            snapshot=snapshot,
         )
-        with (
-            budget_scope(
-                self._model_budget(pending, phase="maintenance") if budget_enabled else None
-            ),
-            tool_budget_scope(None),
-            run_trace_scope(trace),
-            model_accounting_scope(
-                DisabledModelAccounting(
-                    self._database,
-                    run_id=pending.turn_id,
-                    user_id=user_id,
-                    trace=trace,
-                    maintenance=True,
-                )
-                if trace is not None
-                else None
-            ),
-        ):
-            backend = self._router_builder(snapshot.config)
-            if kind == "chat.memory":
-                await self._consolidate_memory(
-                    pending, assistant_message=assistant_view, backend=backend, strict=True
-                )
-            elif kind == "chat.timeline":
-                await self._index_timeline(pending, assistant_message=assistant_view, strict=True)
-            elif kind == "chat.commitments":
-                await self._extract_commitments(pending, backend=backend, strict=True)
-            elif kind == "chat.skill_draft":
-                await self._harvest_skill_draft(pending, strict=True)
-            elif kind == "chat.skill_revision":
-                await self._harvest_skill_revision(pending, strict=True)
-            elif kind == "chat.summary":
-                await self._update_conversation_summary(pending.conversation_id, strict=True)
-            else:
-                raise ValueError("unknown_postcommit_kind")
 
     async def _update_conversation_summary(
         self, conversation_id: UUID, *, strict: bool = False
