@@ -19,19 +19,15 @@ import {
 import {
   ApiError,
   ChatApi,
-  ChatSocket,
   THEME_CHANNEL_NAME,
   THEME_OPTIONS,
-  VoiceSocket,
   broadcastThemePreference,
   readThemePreference,
   readThemeSchedule,
-  safeWebStorage,
   saveThemePreference,
   matchesLocationIntent,
   type AgentReplyControl,
   type AvatarChoice,
-  type AuthSession,
   type ChatMessage,
   type ClientLocationPayload,
   type Conversation,
@@ -40,15 +36,11 @@ import {
   type ThemePreference,
   type ThemeSchedule,
   type ToolPresentation,
-  type VoiceControlEvent,
 } from "@aria/shared";
-import {
-  PcmMicrophoneCapture,
-  VoicePlaybackQueue,
-  type VoiceSentenceMeta,
-  type VoiceVisemeFrame,
-} from "./voice";
 import ToolResultCard from "./ToolResultCard.vue";
+import { useChatSocket } from "./composables/useChatSocket";
+import { useVoice, type StreamingState } from "./composables/useVoice";
+import { useAuth } from "./composables/useAuth";
 import PlanInbox from "./PlanInbox.vue";
 import GoogleCalendarConnection from "./GoogleCalendarConnection.vue";
 import RunHistory from "./RunHistory.vue";
@@ -63,18 +55,11 @@ import {
   enablePushNotifications,
   pushSubscriptionState,
 } from "./push";
-import {
-  copyMarkdown,
-  downloadMarkdown,
-  exportFileName,
-  formatConversationMarkdown,
-} from "./export";
+import { useConversationExport } from "./composables/useConversationExport";
 
 // 聊天前端主组件：登录 → 会话侧栏 → 流式消息区 → 发送区。
 // 普通 Web 保留既有本地会话；安装后的 PWA 只在当前会话存储令牌。
 const api = new ChatApi();
-const TOKEN_KEY = "ariaChatToken";
-const TEXT_REPLY_VOICE_KEY = "ariaTextReplyVoice";
 const LOCATION_ENABLED_KEY = "ariaLocationEnabled";
 const themePreference = ref<ThemePreference>(readThemePreference());
 const isStandalone =
@@ -83,15 +68,12 @@ const isStandalone =
 const isIos =
   /iPad|iPhone|iPod/.test(navigator.userAgent) ||
   (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
-const authStorage = safeWebStorage(isStandalone ? "session" : "local");
 // 与服务端 tools/location.py 的 LOCATION_TTL(15 分钟)保持一致。
 const LOCATION_TTL_MS = 15 * 60 * 1000;
 
 const token = ref<string>("");
 const displayName = ref<string>("");
 const accountName = ref<string>("");
-const ssoEnabled = ref(false);
-const authBusy = ref(false);
 const statusText = ref("");
 const statusError = ref(false);
 const personaMeta = ref<{ version: number; name: string } | null>(null);
@@ -104,6 +86,7 @@ const avatarMeta = ref<{
 } | null>(null);
 const avatars = ref<AvatarChoice[]>([]);
 const avatarSwitchBusy = ref(false);
+const avatarMotion = ref<{ value: string; sequence: number } | null>(null);
 
 const conversations = ref<Conversation[]>([]);
 const archivedConversations = ref<Conversation[]>([]);
@@ -112,32 +95,11 @@ const activeId = ref<string | null>(null);
 const messagesByConversation = reactive(new Map<string, ChatMessage[]>());
 const draft = ref("");
 const privacy = ref<PrivacyLevel>("L1");
-const streaming = ref<{
-  conversationId: string;
-  generationId: string;
-  text: string;
-  emotion: string | null;
-  expression?: string | null;
-} | null>(null);
-const socketReady = ref(false);
+const streaming = ref<StreamingState | null>(null);
 // PC-02：计划执行进度面板（plan.execution 事件驱动，展示目标/步骤/进度/证据与停止按钮）
 const planRefresh = ref(0);
 const messagesRoot = ref<HTMLElement | null>(null);
-const voiceReady = ref(false);
-const voiceAsrConfigured = ref<boolean | null>(null);
-const voiceAsrBlockMessage = ref("");
-const voiceRecording = ref(false);
-// 连续对话（电话模式）：麦克风常开，服务端自动断句即发送、说话即打断。
-const voiceLive = ref(false);
-const voiceBusy = ref(false);
 const sendPending = ref(false);
-const voiceStatus = ref("语音未连接");
-const voiceTranscript = ref("");
-const voiceVadBackend = ref("");
-const voiceViseme = ref(0);
-const avatarMotion = ref<{ value: string; sequence: number } | null>(null);
-const textReplyVoice = ref(localStorage.getItem(TEXT_REPLY_VOICE_KEY) === "1");
-const voiceTtsConfigured = ref<boolean | null>(null);
 const mobileConversationsOpen = ref(false);
 const mobileCompanionOpen = ref(false);
 const installPrompt = ref<BeforeInstallPromptEvent | null>(null);
@@ -274,44 +236,87 @@ async function syncThemePreference() {
   }
 }
 
-const asrUnavailableLabels: Record<string, string> = {
-  not_configured: "后台尚未启用语音识别",
-  local_asr_required: "当前是 L2，仅允许本地语音识别",
-  faster_whisper_not_installed: "本机尚未安装 faster-whisper",
-  model_load_failed: "本地语音模型加载失败",
-  transcription_failed: "本地语音转写失败",
-  provider_error: "语音识别服务调用失败",
-};
-
-const voiceErrorLabels: Record<string, string> = {
-  invalid_audio_frame: "音频片段格式或大小不合适，请重新开始录音",
-  utterance_too_large: "单次录音最长两分钟，请分段发送",
-};
-
-let socket: ChatSocket | null = null;
-let reconnectTimer: number | null = null;
-let reconnectAttempts = 0;
 let themeChannel: BroadcastChannel | null = null;
-let voiceSocket: VoiceSocket | null = null;
-let voiceSocketKey = "";
-let voiceConnectPromise: Promise<VoiceSocket> | null = null;
-let voiceConnectKey = "";
-let voiceSentence: {
-  meta: VoiceSentenceMeta;
-  chunks: ArrayBuffer[];
-  visemes: VoiceVisemeFrame[];
-} | null = null;
-const microphone = new PcmMicrophoneCapture();
-const playback = new VoicePlaybackQueue();
+const { socketReady, connectSocket, closeSocket, sendMessage, cancel, sync } = useChatSocket({
+  token: () => token.value,
+  activeConversationId: () => activeId.value,
+  onEvent: handleEvent,
+  setStatus,
+  lastSeqOf,
+});
+const {
+  voiceAsrConfigured,
+  voiceAsrBlockMessage,
+  voiceRecording,
+  voiceLive,
+  voiceBusy,
+  voiceStatus,
+  voiceTranscript,
+  voiceVadBackend,
+  voiceViseme,
+  textReplyVoice,
+  closeVoice,
+  ensureVoiceSocket,
+  toggleVoiceRecording,
+  toggleVoiceCall,
+  interruptVoice,
+  unlockVoicePlayback,
+  onPrivacyChanged,
+  onTextReplyVoiceChanged,
+  disposeVoice,
+} = useVoice({
+  token: () => token.value,
+  activeId,
+  privacy,
+  streaming,
+  draft,
+  setStatus,
+  scrollToEnd,
+  refreshMessages,
+  revokePendingUserMessages,
+  loadRuntimeMeta,
+  freshCachedLocation,
+  generationFailureText,
+});
+const {
+  ssoEnabled,
+  authBusy,
+  loginUsername,
+  loginPassword,
+  loginBusy,
+  loginWithPnkx,
+  loginWithPassword,
+  passwordPanelOpen,
+  passwordBusy,
+  passwordCurrent,
+  passwordNew,
+  passwordConfirm,
+  togglePasswordPanel,
+  submitPasswordChange,
+  logout,
+  restoreSession,
+  disposeAuth,
+} = useAuth({
+  api,
+  token,
+  displayName,
+  accountName,
+  notificationsEnabled,
+  isStandalone,
+  pushSupported,
+  setStatus,
+  closeSocket,
+  closeVoice,
+  enterChat,
+  refreshPushToggle,
+  clearConversationState,
+});
 
-function unlockVoicePlayback() {
-  void playback.unlock().then((unlocked) => {
-    if (!unlocked) voiceStatus.value = "浏览器尚未允许播放声音，请关闭再开启“文字回复播报”";
-  }).catch((error: unknown) => {
-    voiceStatus.value = error instanceof Error
-      ? `无法启用声音：${error.message}`
-      : "浏览器尚未允许播放声音";
-  });
+function clearConversationState() {
+  conversations.value = [];
+  archivedConversations.value = [];
+  activeId.value = null;
+  messagesByConversation.clear();
 }
 
 const activeMessages = computed(() =>
@@ -482,301 +487,6 @@ function setStatus(text: string, error = false) {
   statusError.value = error;
 }
 
-async function closeVoice() {
-  voiceRecording.value = false;
-  voiceLive.value = false;
-  voiceBusy.value = false;
-  voiceReady.value = false;
-  voiceAsrConfigured.value = null;
-  voiceTtsConfigured.value = null;
-  voiceAsrBlockMessage.value = "";
-  voiceSocketKey = "";
-  voiceConnectPromise = null;
-  voiceConnectKey = "";
-  voiceSentence = null;
-  voiceSocket?.close();
-  voiceSocket = null;
-  playback.interrupt();
-  await microphone.stop();
-  voiceStatus.value = "语音未连接";
-  voiceTranscript.value = "";
-  voiceViseme.value = 0;
-}
-
-async function ensureVoiceSocket(continuous = false): Promise<VoiceSocket> {
-  if (!activeId.value) throw new Error("请先选择会话");
-  const conversationId = activeId.value;
-  const privacyLevel = privacy.value;
-  const key = `${conversationId}:${privacyLevel}:${continuous ? "live" : "auto"}`;
-  if (
-    voiceSocket &&
-    voiceReady.value &&
-    voiceSocketKey === key
-  ) {
-    return voiceSocket;
-  }
-  if (voiceConnectPromise && voiceConnectKey === key) return voiceConnectPromise;
-  const connecting = (async () => {
-    await closeVoice();
-    voiceStatus.value = "正在连接语音…";
-    const next = new VoiceSocket(
-      (location.protocol === "https:" ? "wss://" : "ws://") + location.host + "/ws/voice",
-      token.value,
-      {
-        onEvent: handleVoiceEvent,
-        onAudio: handleVoiceAudio,
-        onClose: () => {
-          if (voiceSocket === next) {
-            voiceReady.value = false;
-            voiceBusy.value = false;
-            voiceLive.value = false;
-            if (streaming.value?.conversationId === activeId.value) {
-              streaming.value = null;
-            }
-            voiceStatus.value = "语音连接已断开";
-            setStatus("语音连接已断开，请重新发送", true);
-          }
-        },
-      },
-    );
-    voiceSocket = next;
-    voiceSocketKey = key;
-    try {
-      // 纯语音回合没有输入帧, hello 时带上新鲜缓存位置(不触发授权弹窗)。
-      await next.connect(conversationId, privacyLevel, freshCachedLocation(), { continuous });
-      return next;
-    } catch (error) {
-      if (voiceSocket === next) {
-        voiceSocket = null;
-        voiceSocketKey = "";
-        voiceReady.value = false;
-      }
-      throw error;
-    }
-  })();
-  voiceConnectPromise = connecting;
-  voiceConnectKey = key;
-  try {
-    return await connecting;
-  } finally {
-    if (voiceConnectPromise === connecting) {
-      voiceConnectPromise = null;
-      voiceConnectKey = "";
-    }
-  }
-}
-
-function handleVoiceAudio(chunk: ArrayBuffer) {
-  if (!voiceSentence) return;
-  voiceSentence.chunks.push(chunk);
-}
-
-function handleVoiceEvent(event: VoiceControlEvent) {
-  switch (event.type) {
-    case "voice.ready":
-      voiceReady.value = true;
-      voiceTtsConfigured.value = event.tts_configured ?? false;
-      voiceVadBackend.value = event.vad_backend === "silero" ? "Silero VAD" : "能量 VAD";
-      if (event.asr_configured === false) {
-        voiceAsrConfigured.value = false;
-        voiceAsrBlockMessage.value = "后台尚未启用语音识别";
-      } else if (privacy.value === "L2" && event.asr_runs_local === false) {
-        voiceAsrConfigured.value = false;
-        voiceAsrBlockMessage.value = "当前是 L2，需要在后台启用 faster-whisper 本地 ASR";
-      } else {
-        voiceAsrConfigured.value = true;
-        voiceAsrBlockMessage.value = "";
-      }
-      if (textReplyVoice.value) {
-        voiceStatus.value = voiceTtsConfigured.value
-          ? "文字语音回复已就绪"
-          : "未配置语音合成，回复将仅显示文字";
-      } else if (voiceLive.value) {
-        voiceStatus.value = "通话已连接，请说话";
-      } else {
-        voiceStatus.value = voiceAsrConfigured.value
-          ? `语音已就绪 · ${event.asr_runs_local ? "本地识别" : "云端识别"} · ${event.vad_backend === "silero" ? "Silero VAD" : "Energy VAD"}${event.wake_word_configured ? " · 唤醒词待命" : ""}`
-          : voiceAsrBlockMessage.value;
-      }
-      break;
-    case "voice.wake_detected":
-      voiceStatus.value = "已唤醒，开始说吧…";
-      break;
-    case "voice.wake_unavailable":
-      voiceStatus.value = "唤醒词不可用，已切回自动监听 / PTT";
-      break;
-    case "voice.microphone_preempted":
-      // 另一设备抢占了麦克风：本地立即停止采集（服务端已丢弃本连接话语）
-      if (voiceRecording.value || voiceLive.value) {
-        voiceRecording.value = false;
-        voiceLive.value = false;
-        void microphone.stop();
-        voiceStatus.value = "麦克风已被其他设备接管，通话结束";
-      }
-      break;
-    case "voice.audio_preempted":
-      // 音频输出被其他设备/桌宠抢占：清空本地播放队列，文字仍会正常到达
-      playback.interrupt();
-      voiceSentence = null;
-      voiceStatus.value = "语音播报已由其他设备接管";
-      break;
-    case "voice.partial_transcript":
-      // 流式 ASR 实时字幕（docs/04 §6.4 P1）：断句前即时显示识别中的文字
-      voiceTranscript.value = event.text ?? "";
-      voiceStatus.value = "正在识别…";
-      break;
-    case "voice.transcript":
-      voiceTranscript.value = event.text ?? "";
-      voiceStatus.value = textReplyVoice.value
-        ? "文字已提交，正在生成回复…"
-        : "已识别，正在生成回复…";
-      break;
-    case "turn.accepted":
-      voiceBusy.value = true;
-      voiceStatus.value = "正在生成语音回复…";
-      if (activeId.value && event.generation_id) {
-        streaming.value = {
-          conversationId: activeId.value,
-          generationId: event.generation_id,
-          text: "",
-          emotion: null,
-        };
-      }
-      if (activeId.value) void refreshMessages(activeId.value);
-      break;
-    case "reply.delta":
-      if (activeId.value && event.generation_id) {
-        if (streaming.value?.generationId === event.generation_id) {
-          streaming.value.text += event.delta ?? "";
-        } else {
-          streaming.value = {
-            conversationId: activeId.value,
-            generationId: event.generation_id,
-            text: event.delta ?? "",
-            emotion: null,
-          };
-        }
-        void scrollToEnd();
-      }
-      break;
-    case "tool.started":
-      voiceStatus.value = String(event.label ?? "正在查询外部信息…");
-      break;
-    case "tool.finished":
-      voiceStatus.value = event.ok === false
-        ? `查询未完成：${String(event.reason_code ?? "unknown")}`
-        : "查询完成，正在组织回复…";
-      break;
-    case "voice.sentence":
-      voiceSentence = {
-        meta: {
-          generationId: event.generation_id ?? null,
-          index: event.index ?? 0,
-          mime: event.mime ?? "audio/pcm;rate=24000",
-          sampleRate: event.sample_rate ?? 24_000,
-          provider: event.provider ?? null,
-        },
-        chunks: [],
-        visemes: [],
-      };
-      voiceStatus.value = "正在接收语音…";
-      break;
-    case "voice.sentence.end":
-      if (voiceSentence && (event.index ?? voiceSentence.meta.index) === voiceSentence.meta.index) {
-        playback.enqueue(
-          voiceSentence.meta,
-          voiceSentence.chunks,
-          voiceSentence.visemes,
-          (amp) => {
-            voiceViseme.value = amp;
-          },
-          (message) => {
-            voiceBusy.value = false;
-            voiceViseme.value = 0;
-            voiceStatus.value = `语音播放失败：${message}`;
-          },
-        );
-        voiceSentence = null;
-        voiceStatus.value = "正在播放回复…";
-      }
-      break;
-    case "voice.viseme":
-      if (voiceSentence && (event.sentence_index ?? voiceSentence.meta.index) === voiceSentence.meta.index) {
-        voiceSentence.visemes.push({
-          amp: Math.max(0, Math.min(1, Number(event.amp ?? 0))),
-          offsetMs: Math.max(0, Number(event.offset_ms ?? 0)),
-          durationMs: Math.max(0, Number(event.duration_ms ?? 50)),
-        });
-      }
-      break;
-    case "voice.interrupted":
-      voiceBusy.value = false;
-      if (streaming.value?.generationId === event.generation_id) streaming.value = null;
-      playback.interrupt();
-      voiceSentence = null;
-      voiceViseme.value = 0;
-      voiceStatus.value = voiceLive.value ? "已打断，请继续说" : "已打断";
-      break;
-    case "turn.cancelled":
-      voiceBusy.value = false;
-      if (streaming.value?.generationId === event.generation_id) streaming.value = null;
-      playback.interrupt();
-      voiceSentence = null;
-      voiceViseme.value = 0;
-      voiceStatus.value = voiceLive.value ? "已打断，请继续说" : "语音回合已取消";
-      break;
-    case "turn.failed":
-      voiceBusy.value = false;
-      if (streaming.value?.generationId === event.generation_id) streaming.value = null;
-      playback.interrupt();
-      voiceSentence = null;
-      voiceViseme.value = 0;
-      voiceStatus.value = generationFailureText(event.reason_code, "语音生成失败");
-      // 文字播报路径失败且没有回显时，回收占位消息并恢复到输入框。
-      if (activeId.value) {
-        const revoked = revokePendingUserMessages(activeId.value);
-        if (revoked && !draft.value) {
-          draft.value = revoked;
-          setStatus("语音提交失败，消息已恢复到输入框", true);
-        }
-      }
-      break;
-    case "voice.asr_unavailable":
-      voiceBusy.value = false;
-      voiceStatus.value = `语音识别不可用：${asrUnavailableLabels[event.reason ?? "not_configured"] ?? event.reason ?? "unknown"}`;
-      break;
-    case "voice.tts_unavailable":
-      voiceStatus.value = `语音合成不可用，将仅显示文字：${event.reason ?? "not_configured"}`;
-      break;
-    case "proactive.committed":
-      voiceStatus.value = `主动提醒：${event.content ?? ""}`;
-      break;
-    case "voice.error":
-      voiceBusy.value = false;
-      if (event.reason === "invalid_audio_frame" || event.reason === "utterance_too_large") {
-        voiceRecording.value = false;
-        voiceLive.value = false;
-        voiceTranscript.value = "";
-        void microphone.stop().catch(() => undefined);
-      }
-      voiceStatus.value = `语音请求失败：${voiceErrorLabels[event.reason ?? ""] ?? event.reason ?? "unknown"}`;
-      break;
-    case "reply.committed":
-      voiceBusy.value = false;
-      voiceStatus.value = voiceLive.value ? "回复完成，请继续说" : "语音回复已完成";
-      if (activeId.value) {
-        const conversationId = activeId.value;
-        const generationId = event.generation_id;
-        void refreshMessages(conversationId).finally(() => {
-          if (streaming.value?.generationId === generationId) streaming.value = null;
-        });
-      } else if (streaming.value?.generationId === event.generation_id) {
-        streaming.value = null;
-      }
-      void loadRuntimeMeta();
-      break;
-  }
-}
 
 async function refreshMessages(conversationId: string) {
   try {
@@ -787,98 +497,6 @@ async function refreshMessages(conversationId: string) {
   }
 }
 
-async function toggleVoiceRecording() {
-  if (voiceLive.value) return;
-  if (voiceRecording.value) {
-    voiceRecording.value = false;
-    voiceBusy.value = true;
-    voiceSocket?.endUtterance();
-    await microphone.stop();
-    voiceStatus.value = "正在识别…";
-    return;
-  }
-  if (!activeId.value || streaming.value || voiceBusy.value) return;
-  try {
-    // 麦克风按钮是移动端可信用户手势，同时解锁稍后的 TTS 播放。
-    unlockVoicePlayback();
-    const current = await ensureVoiceSocket();
-    if (voiceAsrConfigured.value === false) {
-      voiceStatus.value = voiceAsrBlockMessage.value || "语音识别当前不可用";
-      return;
-    }
-    await microphone.start((chunk) => {
-      if (voiceRecording.value) voiceSocket?.sendPcm(chunk);
-    });
-    current.beginUtterance();
-    voiceTranscript.value = "";
-    voiceRecording.value = true;
-    voiceStatus.value = "正在听你说话…";
-  } catch (error) {
-    voiceRecording.value = false;
-    await microphone.stop();
-    voiceStatus.value = error instanceof Error ? `麦克风不可用：${error.message}` : "麦克风不可用";
-  }
-}
-
-/**
- * 连续对话（电话模式）：接通后麦克风常开，不再逐句点开始/结束。
- * 服务端自动断句——停顿即发送；播报中一开口即打断（barge-in）；
- * 回复完毕继续待命，直到点挂断。
- */
-async function toggleVoiceCall() {
-  if (voiceLive.value) {
-    await closeVoice();
-    return;
-  }
-  if (!activeId.value || streaming.value || voiceBusy.value || voiceRecording.value) return;
-  try {
-    // 通话按钮是移动端可信用户手势，同时解锁稍后的 TTS 播放。
-    unlockVoicePlayback();
-    const socket = await ensureVoiceSocket(true);
-    if (voiceAsrConfigured.value === false) {
-      voiceStatus.value = voiceAsrBlockMessage.value || "语音识别当前不可用";
-      return;
-    }
-    await microphone.start((chunk) => {
-      if (voiceLive.value) voiceSocket?.sendPcm(chunk);
-    });
-    voiceLive.value = true;
-    voiceTranscript.value = "";
-    voiceStatus.value = voiceVadBackend.value
-      ? `通话已连接 · ${voiceVadBackend.value} · 请说话`
-      : "通话已连接，请说话";
-  } catch (error) {
-    voiceLive.value = false;
-    await microphone.stop();
-    voiceStatus.value = error instanceof Error ? `麦克风不可用：${error.message}` : "麦克风不可用";
-  }
-}
-
-function interruptVoice() {
-  playback.interrupt();
-  voiceSentence = null;
-  voiceSocket?.interrupt();
-  voiceStatus.value = "已请求打断";
-}
-
-function onPrivacyChanged() {
-  if (voiceReady.value || voiceRecording.value) void closeVoice();
-}
-
-function onTextReplyVoiceChanged() {
-  localStorage.setItem(TEXT_REPLY_VOICE_KEY, textReplyVoice.value ? "1" : "0");
-  if (textReplyVoice.value && activeId.value) {
-    // 必须在 change 手势仍生效时创建/恢复 AudioContext。
-    unlockVoicePlayback();
-    voiceStatus.value = "正在连接语音…";
-    void ensureVoiceSocket().catch((error) => {
-      voiceStatus.value = error instanceof Error ? error.message : "语音连接失败";
-    });
-  } else if (!voiceRecording.value) {
-    void closeVoice();
-  }
-  if (!textReplyVoice.value) voiceStatus.value = "已关闭文字回复播报";
-}
 
 function personaVersionOf(message: ChatMessage): number | null {
   const value = (message.decision_meta as { persona_version?: unknown } | null)?.persona_version;
@@ -1004,139 +622,6 @@ function emotionOf(message: ChatMessage): string | null {
   return emotion ? (emotionLabels[emotion] ?? emotion) : null;
 }
 
-function rememberSession(session: AuthSession) {
-  token.value = session.access_token;
-  displayName.value = session.user.display_name;
-  accountName.value = session.user.username ?? "";
-  authStorage.setItem(TOKEN_KEY, session.access_token);
-}
-
-async function loginWithPnkx() {
-  window.location.href = "/api/v1/auth/sso/login";
-}
-
-const loginUsername = ref("");
-const loginPassword = ref("");
-const loginBusy = ref(false);
-
-async function loginWithPassword() {
-  if (!loginPassword.value || loginBusy.value) return;
-  loginBusy.value = true;
-  try {
-    const session = await api.login(
-      loginPassword.value,
-      loginUsername.value.trim() || null,
-    );
-    rememberSession(session);
-    loginPassword.value = "";
-    setStatus("");
-    await enterChat();
-    void refreshPushToggle();
-  } catch (error) {
-    setStatus(error instanceof Error ? error.message : "登录失败", true);
-  } finally {
-    loginBusy.value = false;
-  }
-}
-
-// 设置/修改本人密码：已有密码时须提供当前密码（首次设置可留空）
-const passwordPanelOpen = ref(false);
-const passwordBusy = ref(false);
-const passwordCurrent = ref("");
-const passwordNew = ref("");
-const passwordConfirm = ref("");
-
-function togglePasswordPanel() {
-  passwordPanelOpen.value = !passwordPanelOpen.value;
-  passwordCurrent.value = "";
-  passwordNew.value = "";
-  passwordConfirm.value = "";
-}
-
-async function submitPasswordChange() {
-  if (passwordBusy.value) return;
-  if (passwordNew.value.length < 8) {
-    setStatus("新密码至少 8 位", true);
-    return;
-  }
-  if (passwordNew.value !== passwordConfirm.value) {
-    setStatus("两次输入的新密码不一致", true);
-    return;
-  }
-  passwordBusy.value = true;
-  try {
-    await api.setPassword(
-      token.value,
-      passwordNew.value,
-      passwordCurrent.value || null,
-    );
-    togglePasswordPanel();
-    setStatus("密码已更新");
-  } catch (error) {
-    setStatus(error instanceof Error ? error.message : "密码更新失败", true);
-  } finally {
-    passwordBusy.value = false;
-  }
-}
-
-async function logout() {
-  const current = token.value;
-  closeSocket();
-  await closeVoice();
-  if (current && pushSupported) {
-    await disablePushNotifications(api, current);
-    notificationsEnabled.value = false;
-  }
-  token.value = "";
-  displayName.value = "";
-  accountName.value = "";
-  authStorage.removeItem(TOKEN_KEY);
-  conversations.value = [];
-  archivedConversations.value = [];
-  activeId.value = null;
-  messagesByConversation.clear();
-  if (current) {
-    try {
-      await api.logout(current);
-    } catch {
-      /* session already gone server-side */
-    }
-  }
-}
-
-/**
- * 会话过期（登录态 8 小时 TTL）：轮询面板收到 401 时触发。WebSocket 是
- * 长连接、只在建连时鉴权，所以聊天看似正常而 REST 轮询持续 401——这里
- * 统一登出并明确提示，停止无效轮询刷屏。
- */
-let sessionExpiring = false;
-ChatApi.onUnauthorized = () => {
-  if (!token.value || sessionExpiring) return;
-  sessionExpiring = true;
-  void (async () => {
-    closeSocket();
-    await closeVoice();
-    token.value = "";
-    displayName.value = "";
-    authStorage.removeItem(TOKEN_KEY);
-    conversations.value = [];
-    archivedConversations.value = [];
-    activeId.value = null;
-    messagesByConversation.clear();
-    setStatus("登录已过期，请重新登录", true);
-    sessionExpiring = false;
-  })();
-}
-
-function closeSocket() {
-  if (reconnectTimer !== null) {
-    clearTimeout(reconnectTimer);
-    reconnectTimer = null;
-  }
-  socket?.close();
-  socket = null;
-  socketReady.value = false;
-}
 
 async function enterChat() {
   await syncThemePreference();
@@ -1181,7 +666,7 @@ async function openConversation(id: string) {
       return;
     }
   }
-  socket?.sync(id, lastSeqOf(id));
+  sync(id, lastSeqOf(id));
   if (textReplyVoice.value) {
     void ensureVoiceSocket().catch((error) => {
       voiceStatus.value = error instanceof Error ? error.message : "语音连接失败";
@@ -1273,125 +758,29 @@ async function restoreConversation(id: string) {
   }
 }
 
-// 会话导出：整会话下载 .md；选择模式下勾选若干条，复制或下载节选，
-// 方便把对话粘贴给外部 AI / 协作者分析。
-const selectMode = ref(false);
-const selectedMessageIds = ref(new Set<string>());
-
-const selectableMessages = computed(() =>
-  activeMessages.value.filter((message) => message.role !== "system"),
-);
-const selectedMessages = computed(() =>
-  selectableMessages.value.filter((message) => selectedMessageIds.value.has(message.id)),
-);
-
-function toggleSelectMode() {
-  selectMode.value = !selectMode.value;
-  selectedMessageIds.value = new Set();
-}
-
-function toggleMessageSelected(id: string) {
-  const next = new Set(selectedMessageIds.value);
-  if (next.has(id)) next.delete(id);
-  else next.add(id);
-  selectedMessageIds.value = next;
-}
-
-function selectAllMessages() {
-  selectedMessageIds.value = new Set(selectableMessages.value.map((message) => message.id));
-}
-
-function conversationTitleOf(id: string | null): string {
-  const conversation = [...conversations.value, ...archivedConversations.value]
-    .find((item) => item.id === id);
-  return conversation?.title || "未命名会话";
-}
-
-async function exportFullConversation(id: string) {
-  try {
-    setStatus("正在导出会话…");
-    // 从头分页拉全量，避免只导出当前已加载的部分。
-    await pullMessagesAfter(id, 0);
-    const messages = (messagesByConversation.get(id) ?? []).filter((message) => message.role !== "system");
-    if (!messages.length) {
-      setStatus("该会话还没有可导出的消息", true);
-      return;
-    }
-    const title = conversationTitleOf(id);
-    downloadMarkdown(exportFileName(title), formatConversationMarkdown({ conversationTitle: title, messages }));
-    setStatus(`已导出 ${messages.length} 条消息`);
-  } catch (error) {
-    setStatus(error instanceof Error ? error.message : "导出失败", true);
-  }
-}
-
-async function exportSelected(action: "copy" | "download") {
-  const messages = selectedMessages.value;
-  if (!messages.length) {
-    setStatus("请先勾选要导出的消息", true);
-    return;
-  }
-  const title = conversationTitleOf(activeId.value);
-  const markdown = formatConversationMarkdown({ conversationTitle: title, messages, excerptOnly: true });
-  if (action === "copy") {
-    const ok = await copyMarkdown(markdown);
-    setStatus(
-      ok ? `已复制 ${messages.length} 条消息的 Markdown，可直接粘贴` : "复制失败，请改用下载",
-      !ok,
-    );
-  } else {
-    downloadMarkdown(exportFileName(title, true), markdown);
-    setStatus(`已下载 ${messages.length} 条消息的节选`);
-  }
-}
-
-/** 建立实时连接；失败时保留基础 REST 可用性并提示 */
-function connectSocket() {
-  closeSocket();
-  let nextSocket: ChatSocket;
-  nextSocket = new ChatSocket(
-    (location.protocol === "https:" ? "wss://" : "ws://") + location.host + "/ws/chat",
-    token.value,
-    {
-      onEvent: (event) => {
-        if (socket === nextSocket) handleEvent(event);
-      },
-      onClose: (code) => {
-        if (socket === nextSocket) handleClose(code);
-      },
-    },
-  );
-  socket = nextSocket;
-  nextSocket
-    .connect()
-    .then(() => {
-      if (socket !== nextSocket) return;
-      socketReady.value = true;
-      reconnectAttempts = 0;
-      setStatus("已连接");
-      if (activeId.value) socket?.sync(activeId.value, lastSeqOf(activeId.value));
-    })
-    .catch(() => {
-      if (socket === nextSocket) setStatus("实时连接失败，仍可基础使用", true);
-    });
-}
-
-function handleClose(code: number) {
-  socketReady.value = false;
-  if (!token.value || code === 1000) return;
-  if (reconnectAttempts >= 3) {
-    setStatus("实时连接已断开", true);
-    return;
-  }
-  reconnectAttempts += 1;
-  reconnectTimer = window.setTimeout(connectSocket, 3000);
-}
+const {
+  selectMode,
+  selectedMessageIds,
+  selectableMessages,
+  toggleSelectMode,
+  toggleMessageSelected,
+  selectAllMessages,
+  exportFullConversation,
+  exportSelected,
+} = useConversationExport({
+  activeId,
+  activeMessages,
+  conversations,
+  archivedConversations,
+  messagesOf: (id) => messagesByConversation.get(id) ?? [],
+  pullMessagesAfter,
+  setStatus,
+});
 
 async function resumeSession() {
   if (!token.value || document.hidden || !navigator.onLine) return;
   if (resumePromise) return resumePromise;
   resumePromise = (async () => {
-    reconnectAttempts = 0;
     await syncThemePreference();
     const conversationId = activeId.value;
     if (conversationId) {
@@ -1407,7 +796,7 @@ async function resumeSession() {
       }
     }
     if (!socketReady.value) connectSocket();
-    else if (conversationId) socket?.sync(conversationId, lastSeqOf(conversationId));
+    else if (conversationId) sync(conversationId, lastSeqOf(conversationId));
   })().finally(() => {
     resumePromise = null;
   });
@@ -1464,7 +853,7 @@ function handleEvent(event: SocketEvent) {
     const afterSeq = Number(event.payload.after_seq ?? 0);
     const nextAfterSeq = Number(event.payload.next_after_seq ?? event.seq ?? afterSeq);
     if (event.payload.has_more === true && nextAfterSeq > afterSeq) {
-      socket?.sync(conversationId, nextAfterSeq);
+      sync(conversationId, nextAfterSeq);
       return;
     }
     // 同步收敛后仍存在的占位消息（超过最小年龄）说明服务端从未落库，恢复到输入框。
@@ -1559,12 +948,12 @@ async function send() {
     }
     return;
   }
-  socket?.sendMessage(conversationId, text, privacy.value, location);
+  sendMessage(conversationId, text, privacy.value, location);
   sendPending.value = false;
 }
 
 function cancelStreaming() {
-  if (streaming.value) socket?.cancel(streaming.value.generationId);
+  if (streaming.value) cancel(streaming.value.generationId);
 }
 
 onMounted(async () => {
@@ -1582,30 +971,8 @@ onMounted(async () => {
       saveThemePreference(selection, event.data?.schedule);
     };
   }
-  const saved = authStorage.getItem(TOKEN_KEY);
-  if (!saved) {
-    // 未登录不预载人格信息：伴侣名字等是登录后每个用户自己的视图
-    if (location.hash.startsWith("#sso-error=")) {
-      setStatus(decodeURIComponent(location.hash.slice("#sso-error=".length)), true);
-    }
-    try {
-      const res = await fetch("/api/v1/auth/sso/status");
-      if (res.ok) ssoEnabled.value = (await res.json()).enabled === true;
-    } catch {
-      setStatus("无法连接 Aria 服务", true);
-    }
-    return;
-  }
-  token.value = saved;
-  try {
-    const session = await api.me(token.value);
-    displayName.value = session.user.display_name;
-    accountName.value = session.user.username ?? "";
-  } catch {
-    authStorage.removeItem(TOKEN_KEY);
-    token.value = "";
-    return;
-  }
+  const restored = await restoreSession();
+  if (!restored) return;
   await enterChat();
   void refreshPushToggle();
 });
@@ -1620,7 +987,8 @@ onBeforeUnmount(() => {
   themeChannel = null;
   closeSocket();
   void closeVoice();
-  void playback.close();
+  disposeVoice();
+  disposeAuth();
 });
 
 function handleBeforeInstallPrompt(event: Event) {

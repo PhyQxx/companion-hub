@@ -827,8 +827,15 @@ export interface TaskRunEvent {
 }
 
 export class ChatApi {
-  /** 会话过期钩子：任一实例收到 401 时触发一次，供 UI 登出并提示重新登录。 */
-  static onUnauthorized: ((path: string) => void) | null = null;
+  private static unauthorizedHandlers = new Set<(path: string) => void>();
+
+  /** 会话过期钩子：任一实例收到 401 时触发全部订阅者；返回 dispose 用于组件卸载解绑。 */
+  static subscribeUnauthorized(handler: (path: string) => void): () => void {
+    ChatApi.unauthorizedHandlers.add(handler);
+    return () => {
+      ChatApi.unauthorizedHandlers.delete(handler);
+    };
+  }
 
   constructor(private baseUrl = "") {}
 
@@ -842,7 +849,9 @@ export class ChatApi {
     const response = await fetch(`${this.baseUrl}${path}`, { ...init, headers });
     const body = await response.json().catch(() => ({}));
     if (!response.ok) {
-      if (response.status === 401 && token) ChatApi.onUnauthorized?.(path);
+      if (response.status === 401 && token) {
+        for (const handler of ChatApi.unauthorizedHandlers) handler(path);
+      }
       const detail = (body as { detail?: unknown }).detail;
       throw new ApiError(response.status, describeDetail(detail, `HTTP ${response.status}`));
     }
