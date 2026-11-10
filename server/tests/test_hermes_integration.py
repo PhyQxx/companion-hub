@@ -565,7 +565,7 @@ class SimpleNamespaceStep:
 
 
 def test_chat_gating_blocks_delegate_and_allows_status_l1() -> None:
-    from app.chat.service import _device_tool_ready
+    from app.chat.turn_lifecycle import _device_tool_ready
     from app.llm import LLMRoute
     from app.schemas import PrivacyLevel
 

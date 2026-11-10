@@ -368,7 +368,7 @@ def _hub_config() -> HubConfig:
 
 
 def test_desktop_action_tools_never_mount_to_chat() -> None:
-    from app.chat.service import _device_tool_ready
+    from app.chat.turn_lifecycle import _device_tool_ready
     from app.llm import LLMRoute
 
     config = _hub_config()

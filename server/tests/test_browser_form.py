@@ -241,7 +241,7 @@ def test_registry_registers_browser_workflow_actions() -> None:
 
 def test_browser_workflow_capabilities_required_for_mounting() -> None:
     """挂载层面：四个工具一律不出现在聊天工具里（计划—确认—执行专用）。"""
-    from app.chat.service import _device_tool_ready
+    from app.chat.turn_lifecycle import _device_tool_ready
     from app.llm import LLMRoute
 
     config = HubConfig.model_validate(

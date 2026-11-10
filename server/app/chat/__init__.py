@@ -10,9 +10,7 @@ from .memory_consistency import (
     MemoryConsistencyGuard,
     MemoryConsistencyOutcome,
 )
-from .reply import ControlStreamFilter, parse_agent_reply
-from .service import (
-    ChatService,
+from .models import (
     ChatTurn,
     CompletionBackend,
     ConversationView,
@@ -20,6 +18,8 @@ from .service import (
     PendingTurn,
     TurnCancelled,
 )
+from .reply import ControlStreamFilter, parse_agent_reply
+from .service import ChatService
 
 __all__ = [
     "AgentAction",

@@ -10,7 +10,7 @@ from uuid import UUID
 from sqlalchemy import select, update
 from sqlalchemy.engine import CursorResult
 
-from app.chat.service import PendingTurn
+from app.chat.models import PendingTurn
 from app.db import Database, InteractionTurnRecord, UserModeRecord
 from app.runtime.lease import LeaseManager, LeaseResult
 from app.schemas import PrivacyLevel

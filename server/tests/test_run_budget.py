@@ -291,7 +291,7 @@ async def test_chat_uses_preserved_final_slot_and_reports_budget(
         )
 
     monkeypatch.setattr(
-        "app.chat.service.build_query_tool_runtime", lambda config, secrets: FakeToolRuntime()
+        "app.chat.agent_loop.build_query_tool_runtime", lambda config, secrets: FakeToolRuntime()
     )
     governed = ChatService(database, service._config_store, router_builder=router)
     try:

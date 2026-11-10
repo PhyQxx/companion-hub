@@ -17,7 +17,7 @@ from app.api import create_chat_router
 from app.auth import AuthService
 from app.avatar import AvatarStore
 from app.chat import ChatService, RuntimeActionCapability, TurnCancelled
-from app.chat.service import _render_mail_send_receipt, _render_pnkx_tool_reply
+from app.chat.agent_loop import _render_mail_send_receipt, _render_pnkx_tool_reply
 from app.cognition import (
     ActionDefinition,
     ActionRegistry,
@@ -1171,7 +1171,7 @@ async def test_weather_tool_round_hides_preamble_and_records_redacted_metadata(
     await store.publish(draft.version, actor="test")
     backend = FakeToolRouter()
     monkeypatch.setattr(
-        "app.chat.service.build_query_tool_runtime",
+        "app.chat.agent_loop.build_query_tool_runtime",
         lambda config, secrets: FakeToolRuntime(),
     )
     service = ChatService(database, store, router_builder=lambda config: backend)
@@ -1298,7 +1298,7 @@ async def test_text_form_tool_call_is_absorbed_executed_and_never_leaks(
     await store.publish(draft.version, actor="test")
     backend = TextToolCallRouter()
     monkeypatch.setattr(
-        "app.chat.service.build_query_tool_runtime",
+        "app.chat.agent_loop.build_query_tool_runtime",
         lambda config, secrets: FakeToolRuntime(),
     )
     service = ChatService(database, store, router_builder=lambda config: backend)
@@ -1438,7 +1438,7 @@ async def test_tool_loop_chains_read_tools_across_rounds(
         final_text="济南多云 29 度，附近有超市。",
     )
     monkeypatch.setattr(
-        "app.chat.service.build_query_tool_runtime",
+        "app.chat.agent_loop.build_query_tool_runtime",
         lambda config, secrets: FakeToolRuntime(),
     )
     service = ChatService(database, store, router_builder=lambda config: backend)
@@ -1501,7 +1501,7 @@ async def test_tool_loop_stops_at_configured_round_cap(
         final_text="按你给的两条信息，济南今天多云。",
     )
     monkeypatch.setattr(
-        "app.chat.service.build_query_tool_runtime",
+        "app.chat.agent_loop.build_query_tool_runtime",
         lambda config, secrets: FakeToolRuntime(),
     )
     service = ChatService(database, store, router_builder=lambda config: backend)
@@ -2213,7 +2213,7 @@ async def test_multi_read_calls_execute_in_one_round(
     await _publish_loop_config(store, max_tool_rounds=2)
     backend = MultiCallRouter(names=["get_weather", "search_nearby"])
     monkeypatch.setattr(
-        "app.chat.service.build_query_tool_runtime",
+        "app.chat.agent_loop.build_query_tool_runtime",
         lambda config, secrets: FakeToolRuntime(),
     )
     service = ChatService(database, store, router_builder=lambda config: backend)
@@ -2251,7 +2251,7 @@ async def test_mixed_write_calls_rejected_without_execution(
     await _publish_loop_config(store, max_tool_rounds=2)
     backend = MultiCallRouter(names=["get_weather", "home_control"])
     monkeypatch.setattr(
-        "app.chat.service.build_query_tool_runtime",
+        "app.chat.agent_loop.build_query_tool_runtime",
         lambda config, secrets: FakeToolRuntime(),
     )
     service = ChatService(database, store, router_builder=lambda config: backend)
@@ -2432,7 +2432,7 @@ async def test_unmounted_tool_cannot_reach_executor(
     def forbidden_runtime(*args: object) -> None:
         raise AssertionError("unmounted tool reached executor")
 
-    monkeypatch.setattr("app.chat.service.build_query_tool_runtime", forbidden_runtime)
+    monkeypatch.setattr("app.chat.agent_loop.build_query_tool_runtime", forbidden_runtime)
     service = ChatService(database, store, router_builder=lambda config: FakeRouter("reply", []))
     user = await create_user(database)
     conversation = await service.create_conversation(user_id=user.id, title="mount")

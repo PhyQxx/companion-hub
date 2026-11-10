@@ -6,6 +6,7 @@
 转移话题或提出现实活动建议时，只能引用这里列出的能力，避免虚构“去训练场、
 去后院、一起做饭”等系统无法完成的行动。
 """
+
 from __future__ import annotations
 
 from collections.abc import Collection, Iterable, Sequence
@@ -99,8 +100,7 @@ def render_reality_grounding(
     )
     if not actions:
         return (
-            base
-            + "\n当前没有可用的现实设备/工具动作。你可以继续聊天、换一个纯对话话题，"
+            base + "\n当前没有可用的现实设备/工具动作。你可以继续聊天、换一个纯对话话题，"
             "但不要建议去训练场、后院、厨房、商店等现实地点，也不要声称能做饭、训练、"
             "移动物品或控制未接入设备。这个限制不影响你自然谈论自己的角色身体设定、"
             "个人档案、喜好和生活化自我描述。"
@@ -125,13 +125,10 @@ def render_reality_grounding(
             available.append(item)
         else:
             gated.append((item, note))
-    lines = [
-        f"- {item.capability_id}｜{item.label}：{item.description}" for item in available
-    ]
+    lines = [f"- {item.capability_id}｜{item.label}：{item.description}" for item in available]
     if gated:
         lines.append(
-            "以下设备能力在线，但当前会话未开放对应的聊天工具，"
-            "不得声称能使用、不得承诺执行："
+            "以下设备能力在线，但当前会话未开放对应的聊天工具，不得声称能使用、不得承诺执行："
         )
         lines.extend(
             f"- {item.capability_id}｜{item.label}：{item.description}（{note}）"
@@ -160,9 +157,7 @@ def render_reality_grounding(
             for entity_id, (label, entity_actions) in sorted(grouped.items())
         )
     elif home_actions and not ha_gated:
-        entity_count = len(
-            {item.capability_id.split(":", 2)[1] for item in home_actions}
-        )
+        entity_count = len({item.capability_id.split(":", 2)[1] for item in home_actions})
         lines.append(
             f"- Home Assistant：当前有 {entity_count} 个已授权且在线的设备。"
             "设备名称、房间、可用动作以 search_devices 返回为准；名称明确时可直接调用状态、"
@@ -170,9 +165,7 @@ def render_reality_grounding(
             "确认要求和实际状态。"
         )
     elif home_actions:
-        entity_count = len(
-            {item.capability_id.split(":", 2)[1] for item in home_actions}
-        )
+        entity_count = len({item.capability_id.split(":", 2)[1] for item in home_actions})
         lines.append(
             f"- Home Assistant：当前有 {entity_count} 个已授权且在线的设备，"
             "但当前会话未开放 Home Assistant 工具，不得读取、控制或承诺操作这些设备。"
