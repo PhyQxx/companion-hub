@@ -3,6 +3,7 @@ import { computed, inject, onActivated, onMounted, ref, watch } from "vue";
 import { AdminApi } from "@aria/shared";
 import { ElMessage } from "element-plus";
 import { useRoute } from "vue-router";
+import { withToast, withToastStatus } from "../toast";
 
 type ModelKind = "text" | "vision" | "image_generation" | "video_generation";
 
@@ -69,25 +70,23 @@ async function testModelConnection() {
   }
   testingConnection.value = true;
   connectionTest.value = null;
-  try {
-    const result = await api.request<ModelConnectionTestResult>("/api/v1/admin/config/models/test", {
+  const result = await withToastStatus(
+    () => api.request<ModelConnectionTestResult>("/api/v1/admin/config/models/test", {
       method: "POST",
       body: JSON.stringify({ endpoint_name: activeModelTab.value, endpoint: draftModelToEndpoint(model) }),
-    });
-    connectionTest.value = result;
-    if (!result.ok) {
-      ElMessage.error(`连接失败：${result.message}`);
-    } else if (result.model_available === false || result.model_loaded === false) {
-      ElMessage.warning(result.message);
-    } else {
-      ElMessage.success(result.message);
-    }
-  } catch (error) {
-    const message = error instanceof Error ? error.message : "连接测试失败";
-    ElMessage.error(message);
-    emit("status", message, true);
-  } finally {
-    testingConnection.value = false;
+    }),
+    (message) => emit("status", message, true),
+    "连接测试失败",
+  );
+  testingConnection.value = false;
+  if (result === null) return;
+  connectionTest.value = result;
+  if (!result.ok) {
+    ElMessage.error(`连接失败：${result.message}`);
+  } else if (result.model_available === false || result.model_loaded === false) {
+    ElMessage.warning(result.message);
+  } else {
+    ElMessage.success(result.message);
   }
 }
 
@@ -557,8 +556,8 @@ async function checkLocalAsrEnvironment() {
   }
   testingVoiceAsr.value = true;
   voiceAsrCheck.value = null;
-  try {
-    const result = await api.request<VoiceAsrEnvironmentCheckResult>(
+  const result = await withToast(
+    () => api.request<VoiceAsrEnvironmentCheckResult>(
       "/api/v1/admin/config/voice/asr/check",
       {
         method: "POST",
@@ -576,16 +575,14 @@ async function checkLocalAsrEnvironment() {
           },
         }),
       },
-    );
-    voiceAsrCheck.value = result;
-    if (result.ok) ElMessage.success(result.message);
-    else ElMessage.warning(result.message);
-  } catch (error) {
-    const message = error instanceof Error ? error.message : "本地 ASR 自检失败";
-    ElMessage.error(message);
-  } finally {
-    testingVoiceAsr.value = false;
-  }
+    ),
+    "本地 ASR 自检失败",
+  );
+  testingVoiceAsr.value = false;
+  if (result === null) return;
+  voiceAsrCheck.value = result;
+  if (result.ok) ElMessage.success(result.message);
+  else ElMessage.warning(result.message);
 }
 
 function cleanRequestPrice(price: HubToolsConfig["amap"]["admin_probe_cost"]) {
@@ -607,8 +604,8 @@ async function testAmapConnection() {
   }
   testingAmap.value = true;
   amapTestResult.value = null;
-  try {
-    const result = await api.request<AmapConnectionTestResult>(
+  const result = await withToast(
+    () => api.request<AmapConnectionTestResult>(
       "/api/v1/admin/config/tools/amap/test",
       {
         method: "POST",
@@ -623,18 +620,16 @@ async function testAmapConnection() {
           requests_per_minute: amap.requests_per_minute,
         }),
       },
-    );
-    amapTestResult.value = result;
-    if (result.ok) {
-      ElMessage.success(result.message);
-    } else {
-      ElMessage.error(`高德连接测试失败：${result.message}`);
-    }
-  } catch (error) {
-    const message = error instanceof Error ? error.message : "高德连接测试失败";
-    ElMessage.error(message);
-  } finally {
-    testingAmap.value = false;
+    ),
+    "高德连接测试失败",
+  );
+  testingAmap.value = false;
+  if (result === null) return;
+  amapTestResult.value = result;
+  if (result.ok) {
+    ElMessage.success(result.message);
+  } else {
+    ElMessage.error(`高德连接测试失败：${result.message}`);
   }
 }
 
@@ -972,16 +967,15 @@ function syncFromDraftJson() {
 }
 
 async function load() {
-  try {
-    const config = await api.request<typeof current.value>("/api/v1/admin/config/current");
-    current.value = config;
-    draft.value = hubConfigToDraft(config?.config);
-    syncDraftJson();
-  } catch (error) {
-    const message = error instanceof Error ? error.message : "加载失败";
-    emit("status", message, true);
-    ElMessage.error(message);
-  }
+  const config = await withToastStatus(
+    () => api.request<typeof current.value>("/api/v1/admin/config/current"),
+    (message) => emit("status", message, true),
+    "加载失败",
+  );
+  if (config === null) return;
+  current.value = config;
+  draft.value = hubConfigToDraft(config?.config);
+  syncDraftJson();
 }
 
 const TOKEN_PATTERN = /^[a-z][a-z0-9_-]*(\.[a-z0-9_-]+)*$/;
@@ -1179,35 +1173,43 @@ const senseaudioVoiceOptions = computed(() => {
 
 async function saveConfig() {
   busy.value = true;
+  let edited: HubConfig;
   try {
     if (editMode.value === "visual") {
       syncDraftJson();
     }
-    const edited = JSON.parse(draftJson.value) as HubConfig;
-    const candidate = mergePreservingUnknown(current.value?.config ?? {}, edited) as HubConfig;
-    const problem = validateCandidate(candidate);
-    if (problem) {
-      emit("status", problem, true);
-      ElMessage.error(problem);
-      return;
-    }
-    const saved = await api.request<typeof current.value>("/api/v1/admin/config/current", {
-      method: "PUT",
-      body: JSON.stringify(candidate),
-    });
-    current.value = saved;
-    draft.value = hubConfigToDraft(saved?.config);
-    syncDraftJson();
-    const message = "配置已保存并生效";
-    emit("status", message);
-    ElMessage.success(message);
+    edited = JSON.parse(draftJson.value) as HubConfig;
   } catch (error) {
     const message = error instanceof Error ? error.message : "保存失败";
     emit("status", message, true);
     ElMessage.error(message);
-  } finally {
     busy.value = false;
+    return;
   }
+  const candidate = mergePreservingUnknown(current.value?.config ?? {}, edited) as HubConfig;
+  const problem = validateCandidate(candidate);
+  if (problem) {
+    emit("status", problem, true);
+    ElMessage.error(problem);
+    busy.value = false;
+    return;
+  }
+  const saved = await withToastStatus(
+    () => api.request<typeof current.value>("/api/v1/admin/config/current", {
+      method: "PUT",
+      body: JSON.stringify(candidate),
+    }),
+    (message) => emit("status", message, true),
+    "保存失败",
+  );
+  busy.value = false;
+  if (saved === null) return;
+  current.value = saved;
+  draft.value = hubConfigToDraft(saved?.config);
+  syncDraftJson();
+  const message = "配置已保存并生效";
+  emit("status", message);
+  ElMessage.success(message);
 }
 
 onMounted(load);

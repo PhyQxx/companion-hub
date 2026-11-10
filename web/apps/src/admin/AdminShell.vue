@@ -133,9 +133,8 @@ const navGroups = computed(() => groupsForRole(role.value));
 if (api.token) void connect();
 else {
   setStatus("尚未登录", true);
-  void fetch("/api/v1/auth/sso/status")
-    .then((res) => (res.ok ? res.json() : { enabled: false }))
-    .then((data: { enabled?: boolean }) => {
+  api.ssoStatus()
+    .then((data) => {
       ssoEnabled.value = data.enabled === true;
     })
     .catch(() => {

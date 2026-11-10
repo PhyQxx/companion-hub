@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { inject, onMounted, ref } from "vue";
-import { AdminApi } from "@aria/shared";
+import { AdminApi, withErrorToast } from "@aria/shared";
 import { ElMessage } from "element-plus";
 
 interface SyncCost {
@@ -159,22 +159,25 @@ async function syncCalendar(provider: "caldav" | "google") {
   const resultRef = provider === "caldav" ? caldavSyncResult : googleSyncResult;
   syncing.value = true;
   resultRef.value = "";
-  try {
-    const result = await api.request<Record<string, unknown>>(
-      `/api/v1/admin/config/integrations/calendar/${provider}/sync`,
-      { method: "POST" },
-    );
-    const errors = (result.errors as string[]) ?? [];
-    resultRef.value = errors.length
-      ? `失败：${errors.join("；")}`
-      : `同步 ${result.pulled} 条事件，新建 ${result.mirrors_created}，更新 ${result.mirrors_updated}`;
-    errors.length ? ElMessage.error(resultRef.value) : ElMessage.success("同步完成");
-  } catch (error) {
-    resultRef.value = error instanceof Error ? error.message : "同步失败";
-    ElMessage.error(resultRef.value);
-  } finally {
-    syncing.value = false;
-  }
+  const result = await withErrorToast(
+    () =>
+      api.request<Record<string, unknown>>(
+        `/api/v1/admin/config/integrations/calendar/${provider}/sync`,
+        { method: "POST" },
+      ),
+    (message) => {
+      resultRef.value = message;
+      ElMessage.error(message);
+    },
+    "同步失败",
+  );
+  syncing.value = false;
+  if (result === null) return;
+  const errors = (result.errors as string[]) ?? [];
+  resultRef.value = errors.length
+    ? `失败：${errors.join("；")}`
+    : `同步 ${result.pulled} 条事件，新建 ${result.mirrors_created}，更新 ${result.mirrors_updated}`;
+  errors.length ? ElMessage.error(resultRef.value) : ElMessage.success("同步完成");
 }
 
 onMounted(load);

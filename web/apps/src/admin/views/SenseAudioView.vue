@@ -2,6 +2,7 @@
 import { inject, onActivated, onBeforeUnmount, ref } from "vue";
 import { AdminApi } from "@aria/shared";
 import { ElMessage } from "element-plus";
+import { withToast, withToastStatus } from "../toast";
 
 // 声音管理：SenseAudio 连接配置、音色库、试听合成与识别历史。
 // 密钥只保存在 Hub 配置中心；已配置时输入框留空即保持原值（回传掩码由后端还原）。
@@ -132,16 +133,16 @@ async function loadStatus() {
 
 async function saveConnection() {
   saving.value = true;
-  try {
-    const secret = form.value.secret_value.trim();
-    const costs: Partial<Record<Operation, RequestCost>> = {};
-    for (const { key } of operations) {
-      const { currency, ceiling } = requestCosts.value[key];
-      if (currency.trim() || ceiling.trim()) {
-        costs[key] = { cost_currency: currency.trim().toUpperCase() || null, request_cost_ceiling: ceiling.trim() || null };
-      }
+  const secret = form.value.secret_value.trim();
+  const costs: Partial<Record<Operation, RequestCost>> = {};
+  for (const { key } of operations) {
+    const { currency, ceiling } = requestCosts.value[key];
+    if (currency.trim() || ceiling.trim()) {
+      costs[key] = { cost_currency: currency.trim().toUpperCase() || null, request_cost_ceiling: ceiling.trim() || null };
     }
-    status.value = await api.request<StatusResponse>("/api/v1/admin/senseaudio/connection", {
+  }
+  const next = await withToastStatus(
+    () => api.request<StatusResponse>("/api/v1/admin/senseaudio/connection", {
       method: "PUT",
       body: JSON.stringify({
         enabled: form.value.enabled,
@@ -151,16 +152,16 @@ async function saveConnection() {
         tts_model: form.value.tts_model,
         admin_operation_costs: costs,
       }),
-    });
-    form.value.secret_value = "";
-    ElMessage.success("SenseAudio 连接已保存并生效");
-    emit("status", "SenseAudio 连接已保存");
-  } catch (error) {
-    ElMessage.error(error instanceof Error ? error.message : "保存失败");
-    emit("status", error instanceof Error ? error.message : "保存失败", true);
-  } finally {
-    saving.value = false;
-  }
+    }),
+    (message) => emit("status", message, true),
+    "保存失败",
+  );
+  saving.value = false;
+  if (next === null) return;
+  status.value = next;
+  form.value.secret_value = "";
+  ElMessage.success("SenseAudio 连接已保存并生效");
+  emit("status", "SenseAudio 连接已保存");
 }
 
 async function loadVoices() {
@@ -181,18 +182,17 @@ async function loadVoices() {
 /** 连通性探测：直接拉一次系统音色目录 */
 async function testConnection() {
   voicesLoading.value = true;
-  try {
-    const result = await api.request<{ voices: VoiceItem[] }>(
+  const result = await withToastStatus(
+    () => api.request<{ voices: VoiceItem[] }>(
       "/api/v1/admin/senseaudio/voices?voice_type=system",
-    );
-    ElMessage.success(`连接成功，系统音色 ${result.voices.length} 个`);
-    emit("status", "SenseAudio 连接正常");
-  } catch (error) {
-    ElMessage.error(error instanceof Error ? error.message : "连接失败");
-    emit("status", error instanceof Error ? error.message : "连接失败", true);
-  } finally {
-    voicesLoading.value = false;
-  }
+    ),
+    (message) => emit("status", message, true),
+    "连接失败",
+  );
+  voicesLoading.value = false;
+  if (result === null) return;
+  ElMessage.success(`连接成功，系统音色 ${result.voices.length} 个`);
+  emit("status", "SenseAudio 连接正常");
 }
 
 function useVoice(item: VoiceItem) {
@@ -230,33 +230,38 @@ async function runClone() {
     return;
   }
   cloneLoading.value = true;
-  try {
-    if (!cloneUploaded.value) {
-      const form = new FormData();
-      form.append("file", cloneFile.value);
-      cloneUploaded.value = await api.request<CloneFileResult>(
-        "/api/v1/admin/senseaudio/clone/upload",
-        { method: "POST", body: form },
-      );
-    }
-    cloneResult.value = await api.request<CloneResult>("/api/v1/admin/senseaudio/clone", {
-      method: "POST",
-      body: JSON.stringify({
-        file_id: cloneUploaded.value.file_id,
-        label: cloneForm.value.label.trim(),
-        description: cloneForm.value.description.trim(),
-        text: cloneForm.value.text,
-      }),
-    });
-    ElMessage.success(`克隆完成，音色 ID：${cloneResult.value.label}`);
-    emit("status", `音色克隆完成：${cloneResult.value.label}`);
-  } catch (error) {
+  const file = cloneFile.value;
+  const result = await withToastStatus(
+    async () => {
+      if (!cloneUploaded.value) {
+        const form = new FormData();
+        form.append("file", file);
+        cloneUploaded.value = await api.request<CloneFileResult>(
+          "/api/v1/admin/senseaudio/clone/upload",
+          { method: "POST", body: form },
+        );
+      }
+      return api.request<CloneResult>("/api/v1/admin/senseaudio/clone", {
+        method: "POST",
+        body: JSON.stringify({
+          file_id: cloneUploaded.value.file_id,
+          label: cloneForm.value.label.trim(),
+          description: cloneForm.value.description.trim(),
+          text: cloneForm.value.text,
+        }),
+      });
+    },
+    (message) => emit("status", message, true),
+    "克隆失败",
+  );
+  cloneLoading.value = false;
+  if (result === null) {
     cloneUploaded.value = null; // 上传/克隆任一失败都重置，下次重传
-    ElMessage.error(error instanceof Error ? error.message : "克隆失败");
-    emit("status", error instanceof Error ? error.message : "克隆失败", true);
-  } finally {
-    cloneLoading.value = false;
+    return;
   }
+  cloneResult.value = result;
+  ElMessage.success(`克隆完成，音色 ID：${result.label}`);
+  emit("status", `音色克隆完成：${result.label}`);
 }
 
 async function runPreview() {
@@ -265,28 +270,28 @@ async function runPreview() {
     return;
   }
   previewLoading.value = true;
-  try {
-    const result = await api.request<PreviewResult>("/api/v1/admin/senseaudio/preview", {
-      method: "POST",
-      body: JSON.stringify(previewForm.value),
-    });
-    const binary = atob(result.audio_base64);
-    const bytes = new Uint8Array(binary.length);
-    for (let i = 0; i < binary.length; i += 1) bytes[i] = binary.charCodeAt(i);
-    if (previewUrl.value) URL.revokeObjectURL(previewUrl.value);
-    previewUrl.value = URL.createObjectURL(new Blob([bytes], { type: `audio/${result.audio_format}` }));
-    previewMeta.value = {
-      usage_characters: result.usage_characters,
-      audio_length: result.audio_length,
-      audio_size: result.audio_size,
-    };
-    emit("status", "试听已生成");
-  } catch (error) {
-    ElMessage.error(error instanceof Error ? error.message : "试听失败");
-    emit("status", error instanceof Error ? error.message : "试听失败", true);
-  } finally {
-    previewLoading.value = false;
-  }
+  const result = await withToastStatus(
+    () =>
+      api.request<PreviewResult>("/api/v1/admin/senseaudio/preview", {
+        method: "POST",
+        body: JSON.stringify(previewForm.value),
+      }),
+    (message) => emit("status", message, true),
+    "试听失败",
+  );
+  previewLoading.value = false;
+  if (result === null) return;
+  const binary = atob(result.audio_base64);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i += 1) bytes[i] = binary.charCodeAt(i);
+  if (previewUrl.value) URL.revokeObjectURL(previewUrl.value);
+  previewUrl.value = URL.createObjectURL(new Blob([bytes], { type: `audio/${result.audio_format}` }));
+  previewMeta.value = {
+    usage_characters: result.usage_characters,
+    audio_length: result.audio_length,
+    audio_size: result.audio_size,
+  };
+  emit("status", "试听已生成");
 }
 
 async function loadRecords() {

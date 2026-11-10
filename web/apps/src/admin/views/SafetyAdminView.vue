@@ -2,6 +2,7 @@
 import { computed, inject, onActivated, ref } from "vue";
 import { AdminApi } from "@aria/shared";
 import { ElMessage, ElMessageBox } from "element-plus";
+import { withToastStatus } from "../toast";
 
 const api = inject("adminApi") as AdminApi;
 const emit = defineEmits<{ status: [text: string, error?: boolean] }>();
@@ -94,25 +95,26 @@ async function load() {
 
 async function updateConfig(patch: Record<string, unknown>, message: string) {
   saving.value = true;
-  try {
-    const current = await api.request<{ config: Record<string, unknown> & { safety?: Record<string, unknown> } }>(
-      "/api/v1/admin/config/current",
-    );
-    const config = structuredClone(current.config);
-    if (!config.safety) throw new Error("当前配置缺少 safety 节");
-    config.safety = { ...config.safety, ...patch };
-    await api.request("/api/v1/admin/config/current", {
-      method: "PUT",
-      body: JSON.stringify(config),
-    });
-    ElMessage.success(message);
-    await load();
-  } catch (error) {
-    emit("status", error instanceof Error ? error.message : "配置保存失败", true);
-    ElMessage.error("配置保存失败");
-  } finally {
-    saving.value = false;
-  }
+  const done = await withToastStatus(
+    async () => {
+      const current = await api.request<{ config: Record<string, unknown> & { safety?: Record<string, unknown> } }>(
+        "/api/v1/admin/config/current",
+      );
+      const config = structuredClone(current.config);
+      if (!config.safety) throw new Error("当前配置缺少 safety 节");
+      config.safety = { ...config.safety, ...patch };
+      return api.request("/api/v1/admin/config/current", {
+        method: "PUT",
+        body: JSON.stringify(config),
+      });
+    },
+    (message) => emit("status", message, true),
+    "配置保存失败",
+  );
+  saving.value = false;
+  if (done === null) return;
+  ElMessage.success(message);
+  await load();
 }
 
 async function ackAlert(item: AlertItem) {
@@ -131,30 +133,31 @@ async function createAuthorization() {
     return;
   }
   saving.value = true;
-  try {
-    const user = await api.request<{ items: Array<{ user_id: string }> }>(
-      "/api/v1/admin/memories?status=active&limit=1",
-    );
-    const userId = user.items[0]?.user_id;
-    if (!userId) throw new Error("未找到用户");
-    await api.request("/api/v1/admin/safety/authorizations", {
-      method: "POST",
-      body: JSON.stringify({
-        user_id: userId,
-        contact_name: addForm.value.contact_name.trim(),
-        destination: addForm.value.destination.trim(),
-      }),
-    });
-    adding.value = false;
-    addForm.value = { contact_name: "", destination: "" };
-    ElMessage.success("预授权已创建");
-    await load();
-  } catch (error) {
-    emit("status", error instanceof Error ? error.message : "预授权创建失败", true);
-    ElMessage.error("预授权创建失败");
-  } finally {
-    saving.value = false;
-  }
+  const done = await withToastStatus(
+    async () => {
+      const user = await api.request<{ items: Array<{ user_id: string }> }>(
+        "/api/v1/admin/memories?status=active&limit=1",
+      );
+      const userId = user.items[0]?.user_id;
+      if (!userId) throw new Error("未找到用户");
+      return api.request("/api/v1/admin/safety/authorizations", {
+        method: "POST",
+        body: JSON.stringify({
+          user_id: userId,
+          contact_name: addForm.value.contact_name.trim(),
+          destination: addForm.value.destination.trim(),
+        }),
+      });
+    },
+    (message) => emit("status", message, true),
+    "预授权创建失败",
+  );
+  saving.value = false;
+  if (done === null) return;
+  adding.value = false;
+  addForm.value = { contact_name: "", destination: "" };
+  ElMessage.success("预授权已创建");
+  await load();
 }
 
 async function revokeAuthorization(item: AuthorizationItem) {

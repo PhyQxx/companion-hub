@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { inject, onActivated, onMounted, ref } from "vue";
-import { AdminApi } from "@aria/shared";
+import { AdminApi, withErrorToast } from "@aria/shared";
 import { ElMessage } from "element-plus";
 
 type SourceKey = "screen_awareness" | "browser_awareness";
@@ -42,26 +42,31 @@ async function updateSource(key: SourceKey, enabled: boolean) {
   if (loading.value || saving.value) return;
   saving.value = key;
   errorMessage.value = "";
-  try {
-    // 保存前读取最新完整配置，只修改当前来源的主动话题字段。
-    const latest = await api.request<CurrentConfig>("/api/v1/admin/config/current");
-    const source = latest.config[key];
-    if (!source) throw new Error("当前配置缺少观察来源，请刷新后重试");
-    latest.config[key] = { ...source, proactive_enabled: enabled };
-    current.value = await api.request<CurrentConfig>("/api/v1/admin/config/current", {
-      method: "PUT",
-      body: JSON.stringify(latest.config),
-    });
-    const message = `主动话题已${enabled ? "开启" : "关闭"}`;
-    ElMessage.success(`${message}，已保存`);
-    emit("status", `${message}，配置版本 ${current.value.version}`);
-  } catch (error) {
-    errorMessage.value = error instanceof Error ? error.message : "主动话题配置保存失败";
-    ElMessage.error("保存失败，请重试");
-    emit("status", errorMessage.value, true);
-  } finally {
-    saving.value = null;
-  }
+  const saved = await withErrorToast(
+    async () => {
+      // 保存前读取最新完整配置，只修改当前来源的主动话题字段。
+      const latest = await api.request<CurrentConfig>("/api/v1/admin/config/current");
+      const source = latest.config[key];
+      if (!source) throw new Error("当前配置缺少观察来源，请刷新后重试");
+      latest.config[key] = { ...source, proactive_enabled: enabled };
+      return api.request<CurrentConfig>("/api/v1/admin/config/current", {
+        method: "PUT",
+        body: JSON.stringify(latest.config),
+      });
+    },
+    (message) => {
+      errorMessage.value = message;
+      ElMessage.error("保存失败，请重试");
+      emit("status", message, true);
+    },
+    "主动话题配置保存失败",
+  );
+  saving.value = null;
+  if (saved === null) return;
+  current.value = saved;
+  const message = `主动话题已${enabled ? "开启" : "关闭"}`;
+  ElMessage.success(`${message}，已保存`);
+  emit("status", `${message}，配置版本 ${current.value.version}`);
 }
 
 onMounted(load);

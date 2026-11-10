@@ -3,6 +3,7 @@ import { inject, onActivated, onDeactivated, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { AdminApi } from "@aria/shared";
 import { ElMessage } from "element-plus";
+import { withToastStatus } from "../toast";
 
 const api = inject("adminApi") as AdminApi;
 const emit = defineEmits<{ status: [text: string, error?: boolean] }>();
@@ -113,25 +114,26 @@ function onObservationPageChange() {
 
 async function updateConfig(patch: Partial<BrowserAwarenessConfig>, message: string) {
   saving.value = true;
-  try {
-    const current = await api.request<CurrentConfig>("/api/v1/admin/config/current");
-    const config = structuredClone(current.config);
-    const existing = config.browser_awareness;
-    if (!existing) throw new Error("当前配置缺少 browser_awareness");
-    config.browser_awareness = { ...existing, ...patch };
-    await api.request("/api/v1/admin/config/current", {
-      method: "PUT",
-      body: JSON.stringify(config),
-    });
-    await loadStatus();
-    ElMessage.success(message);
-    emit("status", message);
-  } catch (error) {
-    ElMessage.error("浏览感知配置保存失败");
-    emit("status", error instanceof Error ? error.message : "浏览感知配置保存失败", true);
-  } finally {
-    saving.value = false;
-  }
+  const done = await withToastStatus(
+    async () => {
+      const current = await api.request<CurrentConfig>("/api/v1/admin/config/current");
+      const config = structuredClone(current.config);
+      const existing = config.browser_awareness;
+      if (!existing) throw new Error("当前配置缺少 browser_awareness");
+      config.browser_awareness = { ...existing, ...patch };
+      return api.request("/api/v1/admin/config/current", {
+        method: "PUT",
+        body: JSON.stringify(config),
+      });
+    },
+    (errorMessage) => emit("status", errorMessage, true),
+    "浏览感知配置保存失败",
+  );
+  saving.value = false;
+  if (done === null) return;
+  await loadStatus();
+  ElMessage.success(message);
+  emit("status", message);
 }
 
 async function saveBlockedHosts() {

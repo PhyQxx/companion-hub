@@ -150,8 +150,8 @@ export function useAuth(options: {
         options.setStatus(decodeURIComponent(location.hash.slice("#sso-error=".length)), true);
       }
       try {
-        const res = await fetch("/api/v1/auth/sso/status");
-        if (res.ok) ssoEnabled.value = (await res.json()).enabled === true;
+        const data = await options.api.ssoStatus();
+        ssoEnabled.value = data.enabled === true;
       } catch {
         options.setStatus("无法连接 Aria 服务", true);
       }

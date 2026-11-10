@@ -2,6 +2,7 @@
 import { computed, inject, onMounted, ref } from "vue";
 import { AdminApi } from "@aria/shared";
 import { ElMessage } from "element-plus";
+import { withToast } from "../toast";
 
 type PrivacyLevel = "L0" | "L1" | "L2";
 type ChannelKey = "web_chat" | "desktop_notification" | "web_push" | "voice";
@@ -131,17 +132,17 @@ async function save() {
 
 async function testDelivery() {
   testing.value = true;
-  try {
-    const result = await api.request<{ ok: boolean; message: string }>(
-      "/api/v1/admin/config/integrations/home-assistant/proactive/test",
-      { method: "POST" },
-    );
-    result.ok ? ElMessage.success(result.message) : ElMessage.warning(result.message);
-  } catch (error) {
-    ElMessage.error(error instanceof Error ? error.message : "测试推送失败");
-  } finally {
-    testing.value = false;
-  }
+  const result = await withToast(
+    () =>
+      api.request<{ ok: boolean; message: string }>(
+        "/api/v1/admin/config/integrations/home-assistant/proactive/test",
+        { method: "POST" },
+      ),
+    "测试推送失败",
+  );
+  testing.value = false;
+  if (result === null) return;
+  result.ok ? ElMessage.success(result.message) : ElMessage.warning(result.message);
 }
 
 onMounted(load);

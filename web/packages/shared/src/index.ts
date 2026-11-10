@@ -741,6 +741,28 @@ function describeDetail(detail: unknown, fallback: string): string {
   return fallback;
 }
 
+/** 错误统一文案：Error 取其 message，其余用调用方兜底文案 */
+export function errorMessageOf(error: unknown, fallback = "操作失败"): string {
+  return error instanceof Error ? error.message : fallback;
+}
+
+/**
+ * 错误提示包装：执行 fn，失败时经 onError 通知统一文案并返回 null。
+ * onError 由 UI 层注入（如 ElMessage.error），shared 不依赖具体组件库。
+ */
+export async function withErrorToast<T>(
+  fn: () => Promise<T>,
+  onError: (message: string) => void,
+  fallback = "操作失败",
+): Promise<T | null> {
+  try {
+    return await fn();
+  } catch (error) {
+    onError(errorMessageOf(error, fallback));
+    return null;
+  }
+}
+
 /** 聊天侧 REST 客户端：身份、会话与消息（不含管理端点） */
 export interface SafetyAlertItem {
   id: string;
@@ -947,6 +969,13 @@ export class ChatApi {
       { method: "GET" },
       token,
     );
+  }
+
+  /** SSO 登录通道探测（无鉴权）：失败或不启用一律回落 enabled=false */
+  async ssoStatus(): Promise<{ enabled: boolean }> {
+    const response = await fetch(`${this.baseUrl}/api/v1/auth/sso/status`);
+    if (!response.ok) return { enabled: false };
+    return (await response.json()) as { enabled: boolean };
   }
 
   logout(token: string) {
@@ -1165,6 +1194,25 @@ export class AdminApi {
     }
     if (response.status === 204) return {} as T;
     return (await response.json()) as T;
+  }
+
+  /** SSO 登录通道探测（无鉴权）：失败或不启用一律回落 enabled=false */
+  async ssoStatus(): Promise<{ enabled: boolean }> {
+    const response = await fetch(`${this.baseUrl}/api/v1/auth/sso/status`);
+    if (!response.ok) return { enabled: false };
+    return (await response.json()) as { enabled: boolean };
+  }
+
+  /** 全量数据导出下载：返回 JSON 文件 blob，错误展开与 request 一致 */
+  async exportDataBlob(): Promise<Blob> {
+    const headers: Record<string, string> = {};
+    if (this.token) headers.Authorization = `Bearer ${this.token}`;
+    const response = await fetch(`${this.baseUrl}/api/v1/admin/data/export`, { headers });
+    if (!response.ok) {
+      const body = (await response.json().catch(() => ({}))) as { detail?: unknown };
+      throw new ApiError(response.status, describeDetail(body.detail, `HTTP ${response.status}`));
+    }
+    return response.blob();
   }
 }
 

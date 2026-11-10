@@ -2,6 +2,7 @@
 import { inject, onMounted, ref } from "vue";
 import { ElMessage, ElMessageBox } from "element-plus";
 import { AdminApi } from "@aria/shared";
+import { withToastStatus } from "../toast";
 
 interface UserItem {
   id: string;
@@ -50,21 +51,20 @@ async function setStatus(item: UserItem, status: "active" | "disabled") {
     if (!confirmed) return;
   }
   busy.value = item.id;
-  try {
-    const updated = await api.request<UserItem>(`/api/v1/admin/users/${item.id}`, {
-      method: "PATCH",
-      body: JSON.stringify({ status }),
-    });
-    Object.assign(item, updated);
-    emit("status", `用户 ${updated.display_name} 已${status === "active" ? "启用" : "停用"}`);
-    ElMessage.success(status === "active" ? "已启用" : "已停用");
-  } catch (error) {
-    const message = error instanceof Error ? error.message : "操作失败";
-    emit("status", message, true);
-    ElMessage.error(message);
-  } finally {
-    busy.value = null;
-  }
+  const updated = await withToastStatus(
+    () =>
+      api.request<UserItem>(`/api/v1/admin/users/${item.id}`, {
+        method: "PATCH",
+        body: JSON.stringify({ status }),
+      }),
+    (message) => emit("status", message, true),
+    "操作失败",
+  );
+  busy.value = null;
+  if (updated === null) return;
+  Object.assign(item, updated);
+  emit("status", `用户 ${updated.display_name} 已${status === "active" ? "启用" : "停用"}`);
+  ElMessage.success(status === "active" ? "已启用" : "已停用");
 }
 
 async function rename(item: UserItem) {
@@ -77,21 +77,20 @@ async function rename(item: UserItem) {
   }).catch(() => null);
   if (!name || name.value === item.display_name) return;
   busy.value = item.id;
-  try {
-    const updated = await api.request<UserItem>(`/api/v1/admin/users/${item.id}`, {
-      method: "PATCH",
-      body: JSON.stringify({ display_name: name.value }),
-    });
-    Object.assign(item, updated);
-    emit("status", "名称已更新");
-    ElMessage.success("已保存");
-  } catch (error) {
-    const message = error instanceof Error ? error.message : "操作失败";
-    emit("status", message, true);
-    ElMessage.error(message);
-  } finally {
-    busy.value = null;
-  }
+  const updated = await withToastStatus(
+    () =>
+      api.request<UserItem>(`/api/v1/admin/users/${item.id}`, {
+        method: "PATCH",
+        body: JSON.stringify({ display_name: name.value }),
+      }),
+    (message) => emit("status", message, true),
+    "操作失败",
+  );
+  busy.value = null;
+  if (updated === null) return;
+  Object.assign(item, updated);
+  emit("status", "名称已更新");
+  ElMessage.success("已保存");
 }
 
 async function createUser() {
@@ -113,21 +112,20 @@ async function createUser() {
     return;
   }
   busy.value = "new";
-  try {
-    await api.request("/api/v1/admin/users", {
-      method: "POST",
-      body: JSON.stringify({ display_name: displayName, username, password }),
-    });
-    emit("status", `已创建用户 ${displayName}`);
-    ElMessage.success("已创建");
-    await load();
-  } catch (error) {
-    const message = error instanceof Error ? error.message : "创建失败";
-    emit("status", message, true);
-    ElMessage.error(message);
-  } finally {
-    busy.value = null;
-  }
+  const created = await withToastStatus(
+    () =>
+      api.request("/api/v1/admin/users", {
+        method: "POST",
+        body: JSON.stringify({ display_name: displayName, username, password }),
+      }),
+    (message) => emit("status", message, true),
+    "创建失败",
+  );
+  busy.value = null;
+  if (created === null) return;
+  emit("status", `已创建用户 ${displayName}`);
+  ElMessage.success("已创建");
+  await load();
 }
 
 async function setUsername(item: UserItem) {
@@ -144,21 +142,20 @@ async function setUsername(item: UserItem) {
   ).catch(() => null);
   if (!input || input.value === item.username) return;
   busy.value = item.id;
-  try {
-    const updated = await api.request<UserItem>(`/api/v1/admin/users/${item.id}`, {
-      method: "PATCH",
-      body: JSON.stringify({ username: input.value }),
-    });
-    Object.assign(item, updated);
-    emit("status", "用户名已更新");
-    ElMessage.success("已保存");
-  } catch (error) {
-    const message = error instanceof Error ? error.message : "操作失败";
-    emit("status", message, true);
-    ElMessage.error(message);
-  } finally {
-    busy.value = null;
-  }
+  const updated = await withToastStatus(
+    () =>
+      api.request<UserItem>(`/api/v1/admin/users/${item.id}`, {
+        method: "PATCH",
+        body: JSON.stringify({ username: input.value }),
+      }),
+    (message) => emit("status", message, true),
+    "操作失败",
+  );
+  busy.value = null;
+  if (updated === null) return;
+  Object.assign(item, updated);
+  emit("status", "用户名已更新");
+  ElMessage.success("已保存");
 }
 
 async function resetPassword(item: UserItem) {
@@ -175,20 +172,19 @@ async function resetPassword(item: UserItem) {
   ).catch(() => null);
   if (!input) return;
   busy.value = item.id;
-  try {
-    await api.request(`/api/v1/admin/users/${item.id}/password`, {
-      method: "POST",
-      body: JSON.stringify({ new_password: input.value }),
-    });
-    emit("status", `已重置 ${item.display_name} 的密码`);
-    ElMessage.success("已重置");
-  } catch (error) {
-    const message = error instanceof Error ? error.message : "操作失败";
-    emit("status", message, true);
-    ElMessage.error(message);
-  } finally {
-    busy.value = null;
-  }
+  const done = await withToastStatus(
+    () =>
+      api.request(`/api/v1/admin/users/${item.id}/password`, {
+        method: "POST",
+        body: JSON.stringify({ new_password: input.value }),
+      }),
+    (message) => emit("status", message, true),
+    "操作失败",
+  );
+  busy.value = null;
+  if (done === null) return;
+  emit("status", `已重置 ${item.display_name} 的密码`);
+  ElMessage.success("已重置");
 }
 
 onMounted(load);

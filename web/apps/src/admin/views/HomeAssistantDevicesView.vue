@@ -2,6 +2,7 @@
 import { computed, inject, onMounted, ref, watch } from "vue";
 import { AdminApi } from "@aria/shared";
 import { ElMessage, ElMessageBox } from "element-plus";
+import { withToast } from "../toast";
 
 type Action =
   | "turn_on"
@@ -306,24 +307,24 @@ async function load() {
 
 async function fetchAllEntities(silent = false) {
   fetchingAll.value = true;
-  try {
-    const result = await api.request<{
-      ok: boolean;
-      latency_ms: number;
-      message: string;
-      entities: EntityDetail[];
-    }>("/api/v1/admin/config/integrations/home-assistant/entities", { method: "POST" });
-    if (result.ok) {
-      allEntities.value = result.entities;
-      saveCachedEntities(result.entities);
-      if (!silent) ElMessage.success(result.message);
-    } else {
-      ElMessage.error(result.message);
-    }
-  } catch (error) {
-    ElMessage.error(error instanceof Error ? error.message : "获取 HA 设备列表失败");
-  } finally {
-    fetchingAll.value = false;
+  const result = await withToast(
+    () =>
+      api.request<{
+        ok: boolean;
+        latency_ms: number;
+        message: string;
+        entities: EntityDetail[];
+      }>("/api/v1/admin/config/integrations/home-assistant/entities", { method: "POST" }),
+    "获取 HA 设备列表失败",
+  );
+  fetchingAll.value = false;
+  if (result === null) return;
+  if (result.ok) {
+    allEntities.value = result.entities;
+    saveCachedEntities(result.entities);
+    if (!silent) ElMessage.success(result.message);
+  } else {
+    ElMessage.error(result.message);
   }
 }
 
@@ -333,18 +334,18 @@ async function testConnection() {
   testing.value = true;
   testResult.value = null;
   selected.value = [];
-  try {
-    const result = await api.request<ConnectionResult>(
-      "/api/v1/admin/config/integrations/home-assistant/test",
-      { method: "POST", body: JSON.stringify({ config: cleanedHa }) },
-    );
-    testResult.value = result;
-    result.ok ? ElMessage.success(result.message) : ElMessage.error(result.message);
-  } catch (error) {
-    ElMessage.error(error instanceof Error ? error.message : "HA 连接测试失败");
-  } finally {
-    testing.value = false;
-  }
+  const result = await withToast(
+    () =>
+      api.request<ConnectionResult>(
+        "/api/v1/admin/config/integrations/home-assistant/test",
+        { method: "POST", body: JSON.stringify({ config: cleanedHa }) },
+      ),
+    "HA 连接测试失败",
+  );
+  testing.value = false;
+  if (result === null) return;
+  testResult.value = result;
+  result.ok ? ElMessage.success(result.message) : ElMessage.error(result.message);
 }
 
 async function testProactive() {

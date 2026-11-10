@@ -2,6 +2,7 @@
 import { computed, inject, onMounted, ref } from "vue";
 import { AdminApi } from "@aria/shared";
 import { ElMessage } from "element-plus";
+import { withToast } from "../toast";
 
 interface XiaoAiConfig {
   enabled: boolean;
@@ -130,24 +131,24 @@ function generateGatewayToken() {
 
 async function fetchDevices() {
   fetchingDevices.value = true;
-  try {
-    const result = await api.request<{ ok: boolean; message: string; entities: EntityDetail[] }>(
-      "/api/v1/admin/config/integrations/home-assistant/entities",
-      { method: "POST" },
-    );
-    if (result.ok) {
-      allEntities.value = result.entities;
-      try {
-        localStorage.setItem(HA_ENTITIES_KEY, JSON.stringify(result.entities));
-      } catch { /* storage full or private mode */ }
-      ElMessage.success(result.message);
-    } else {
-      ElMessage.error(result.message);
-    }
-  } catch (error) {
-    ElMessage.error(error instanceof Error ? error.message : "获取 HA 设备列表失败");
-  } finally {
-    fetchingDevices.value = false;
+  const result = await withToast(
+    () =>
+      api.request<{ ok: boolean; message: string; entities: EntityDetail[] }>(
+        "/api/v1/admin/config/integrations/home-assistant/entities",
+        { method: "POST" },
+      ),
+    "获取 HA 设备列表失败",
+  );
+  fetchingDevices.value = false;
+  if (result === null) return;
+  if (result.ok) {
+    allEntities.value = result.entities;
+    try {
+      localStorage.setItem(HA_ENTITIES_KEY, JSON.stringify(result.entities));
+    } catch { /* storage full or private mode */ }
+    ElMessage.success(result.message);
+  } else {
+    ElMessage.error(result.message);
   }
 }
 

@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, inject, onActivated, reactive, ref } from "vue";
-import { AdminApi } from "@aria/shared";
+import { AdminApi, withErrorToast } from "@aria/shared";
 import { ElMessage } from "element-plus";
 
 const api = inject("adminApi") as AdminApi;
@@ -87,21 +87,25 @@ const statusText = computed(() => {
 
 async function load() {
   loading.value = true;
-  try {
-    const [statusData, configData] = await Promise.all([
-      api.request<StatusResponse>("/api/v1/admin/hermes/status"),
-      api.request<{ config: { hermes?: HermesConfigShape } }>(
-        "/api/v1/admin/config/current",
-      ),
-    ]);
-    status.value = statusData;
-    config.value = configData.config.hermes ?? null;
-  } catch (error) {
-    emit("status", `加载 hermes 状态失败：${String(error)}`, true);
-    ElMessage.error("加载 hermes 状态失败");
-  } finally {
-    loading.value = false;
-  }
+  const result = await withErrorToast(
+    async () => {
+      const [statusData, configData] = await Promise.all([
+        api.request<StatusResponse>("/api/v1/admin/hermes/status"),
+        api.request<{ config: { hermes?: HermesConfigShape } }>(
+          "/api/v1/admin/config/current",
+        ),
+      ]);
+      status.value = statusData;
+      config.value = configData.config.hermes ?? null;
+    },
+    (message) => {
+      emit("status", `加载 hermes 状态失败：${message}`, true);
+      ElMessage.error("加载 hermes 状态失败");
+    },
+    "加载失败",
+  );
+  loading.value = false;
+  if (result === null) return;
 }
 
 onActivated(load);

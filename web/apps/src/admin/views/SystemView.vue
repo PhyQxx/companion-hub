@@ -103,14 +103,7 @@ const importResult = ref("");
 async function downloadExport() {
   exporting.value = true;
   try {
-    const response = await fetch("/api/v1/admin/data/export", {
-      headers: { Authorization: `Bearer ${api.token}` },
-    });
-    if (!response.ok) {
-      const body = (await response.json().catch(() => ({}))) as { detail?: string };
-      throw new Error(body.detail ?? `HTTP ${response.status}`);
-    }
-    const blob = await response.blob();
+    const blob = await api.exportDataBlob();
     const stamp = new Date().toISOString().slice(0, 16).replace(/[-:T]/g, "");
     const link = document.createElement("a");
     link.href = URL.createObjectURL(blob);

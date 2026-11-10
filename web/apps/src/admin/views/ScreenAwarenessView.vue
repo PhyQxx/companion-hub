@@ -3,6 +3,7 @@ import { computed, inject, onActivated, onDeactivated, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { AdminApi } from "@aria/shared";
 import { ElMessage } from "element-plus";
+import { withToastStatus } from "../toast";
 
 const api = inject("adminApi") as AdminApi;
 const emit = defineEmits<{ status: [text: string, error?: boolean] }>();
@@ -169,26 +170,26 @@ async function updateScreenAwareness(
   successMessage: string,
 ) {
   savingConfig.value = true;
-  try {
-    const current = await api.request<CurrentConfig>("/api/v1/admin/config/current");
-    const config = structuredClone(current.config);
-    const existing = config.screen_awareness;
-    if (!existing) throw new Error("当前配置缺少 screen_awareness");
-    config.screen_awareness = { ...existing, ...patch };
-    const saved = await api.request<CurrentConfig>("/api/v1/admin/config/current", {
-      method: "PUT",
-      body: JSON.stringify(config),
-    });
-    await loadStatus();
-    emit("status", `${successMessage}，配置版本 ${saved.version}`);
-    ElMessage.success(successMessage);
-  } catch (error) {
-    emit("status", error instanceof Error ? error.message : "屏幕感知配置保存失败", true);
-    ElMessage.error("屏幕感知配置保存失败");
-    await loadStatus();
-  } finally {
-    savingConfig.value = false;
-  }
+  const saved = await withToastStatus(
+    async () => {
+      const current = await api.request<CurrentConfig>("/api/v1/admin/config/current");
+      const config = structuredClone(current.config);
+      const existing = config.screen_awareness;
+      if (!existing) throw new Error("当前配置缺少 screen_awareness");
+      config.screen_awareness = { ...existing, ...patch };
+      return api.request<CurrentConfig>("/api/v1/admin/config/current", {
+        method: "PUT",
+        body: JSON.stringify(config),
+      });
+    },
+    (message) => emit("status", message, true),
+    "屏幕感知配置保存失败",
+  );
+  savingConfig.value = false;
+  await loadStatus();
+  if (saved === null) return;
+  emit("status", `${successMessage}，配置版本 ${saved.version}`);
+  ElMessage.success(successMessage);
 }
 
 async function toggleEnabled(value: string | number | boolean) {

@@ -2,6 +2,7 @@
 import { computed, inject, onActivated, reactive, ref } from "vue";
 import { AdminApi } from "@aria/shared";
 import { ElMessage, ElMessageBox } from "element-plus";
+import { withToastStatus } from "../toast";
 
 const api = inject("adminApi") as AdminApi;
 const emit = defineEmits<{ status: [text: string, error?: boolean] }>();
@@ -118,26 +119,29 @@ async function load() {
 
 async function updateConfig(patch: Partial<McpConfigShape>, message: string) {
   saving.value = true;
-  try {
-    const current = await api.request<{ config: { mcp: McpConfigShape } }>(
-      "/api/v1/admin/config/current",
-    );
-    const config = structuredClone(current.config);
-    config.mcp = { ...config.mcp, ...patch };
-    await api.request("/api/v1/admin/config/current", {
-      method: "PUT",
-      body: JSON.stringify(config),
-    });
-    ElMessage.success(message);
-    emit("status", message);
+  const done = await withToastStatus(
+    async () => {
+      const current = await api.request<{ config: { mcp: McpConfigShape } }>(
+        "/api/v1/admin/config/current",
+      );
+      const config = structuredClone(current.config);
+      config.mcp = { ...config.mcp, ...patch };
+      return api.request("/api/v1/admin/config/current", {
+        method: "PUT",
+        body: JSON.stringify(config),
+      });
+    },
+    (message) => emit("status", message, true),
+    "MCP 配置保存失败",
+  );
+  saving.value = false;
+  if (done === null) {
     await load();
-  } catch (error) {
-    emit("status", error instanceof Error ? error.message : "MCP 配置保存失败", true);
-    ElMessage.error("MCP 配置保存失败");
-    await load();
-  } finally {
-    saving.value = false;
+    return;
   }
+  ElMessage.success(message);
+  emit("status", message);
+  await load();
 }
 
 async function toggleEnabled(value: string | number | boolean) {
@@ -241,54 +245,55 @@ async function saveServer() {
     return;
   }
   saving.value = true;
-  try {
-    const current = await api.request<{ config: { mcp: McpConfigShape } }>(
-      "/api/v1/admin/config/current",
-    );
-    const config = structuredClone(current.config);
-    const entry: ServerConfig = {
-      server_id: serverId,
-      enabled: form.enabled,
-      endpoint,
-      secret_value: null,
-      secret_ref: secretRef || null,
-      allowed_tools: allowed,
-      allow_write_tools: form.allow_write_tools,
-      allow_insecure_local_http: form.allow_insecure_local_http,
-      connect_timeout_seconds: Math.max(1, Math.min(60, Number(form.connect_timeout_seconds) || 5)),
-      call_timeout_seconds: Math.max(1, Math.min(300, Number(form.call_timeout_seconds) || 15)),
-      catalog_ttl_seconds: Math.max(30, Math.min(86_400, Number(form.catalog_ttl_seconds) || 300)),
-      max_result_bytes: Math.max(1_024, Math.min(1_000_000, Number(form.max_result_bytes) || 32_000)),
-      catalog_refresh_cost: refreshCost,
-      tool_call_cost: toolCost,
-    };
-    const existing = config.mcp.servers.find((item) => item.server_id === serverId);
-    if (editingId.value && existing) {
-      // 凭据留空则保持原值（掩码原样回传，由服务端还原）
-      const secretChanged = form.secret_value.trim().length > 0;
-      entry.secret_value = secretChanged
-        ? form.secret_value.trim()
-        : existing.secret_value ?? SECRET_MASK;
-      if (secretChanged) entry.secret_ref = secretRef || null;
-      else entry.secret_ref = existing.secret_ref;
-      config.mcp.servers = config.mcp.servers.map((item) => (item.server_id === serverId ? entry : item));
-    } else {
-      entry.secret_value = form.secret_value.trim() || null;
-      config.mcp.servers = [...config.mcp.servers, entry];
-    }
-    await api.request("/api/v1/admin/config/current", {
-      method: "PUT",
-      body: JSON.stringify(config),
-    });
-    editing.value = false;
-    ElMessage.success(`Server ${serverId} 已保存`);
-    await refreshServer(serverId);
-  } catch (error) {
-    emit("status", error instanceof Error ? error.message : "Server 保存失败", true);
-    ElMessage.error("Server 保存失败");
-  } finally {
-    saving.value = false;
-  }
+  const done = await withToastStatus(
+    async () => {
+      const current = await api.request<{ config: { mcp: McpConfigShape } }>(
+        "/api/v1/admin/config/current",
+      );
+      const config = structuredClone(current.config);
+      const entry: ServerConfig = {
+        server_id: serverId,
+        enabled: form.enabled,
+        endpoint,
+        secret_value: null,
+        secret_ref: secretRef || null,
+        allowed_tools: allowed,
+        allow_write_tools: form.allow_write_tools,
+        allow_insecure_local_http: form.allow_insecure_local_http,
+        connect_timeout_seconds: Math.max(1, Math.min(60, Number(form.connect_timeout_seconds) || 5)),
+        call_timeout_seconds: Math.max(1, Math.min(300, Number(form.call_timeout_seconds) || 15)),
+        catalog_ttl_seconds: Math.max(30, Math.min(86_400, Number(form.catalog_ttl_seconds) || 300)),
+        max_result_bytes: Math.max(1_024, Math.min(1_000_000, Number(form.max_result_bytes) || 32_000)),
+        catalog_refresh_cost: refreshCost,
+        tool_call_cost: toolCost,
+      };
+      const existing = config.mcp.servers.find((item) => item.server_id === serverId);
+      if (editingId.value && existing) {
+        // 凭据留空则保持原值（掩码原样回传，由服务端还原）
+        const secretChanged = form.secret_value.trim().length > 0;
+        entry.secret_value = secretChanged
+          ? form.secret_value.trim()
+          : existing.secret_value ?? SECRET_MASK;
+        if (secretChanged) entry.secret_ref = secretRef || null;
+        else entry.secret_ref = existing.secret_ref;
+        config.mcp.servers = config.mcp.servers.map((item) => (item.server_id === serverId ? entry : item));
+      } else {
+        entry.secret_value = form.secret_value.trim() || null;
+        config.mcp.servers = [...config.mcp.servers, entry];
+      }
+      return api.request("/api/v1/admin/config/current", {
+        method: "PUT",
+        body: JSON.stringify(config),
+      });
+    },
+    (message) => emit("status", message, true),
+    "Server 保存失败",
+  );
+  saving.value = false;
+  if (done === null) return;
+  editing.value = false;
+  ElMessage.success(`Server ${serverId} 已保存`);
+  await refreshServer(serverId);
 }
 
 async function removeServer(server: ServerConfig) {
