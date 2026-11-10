@@ -1,8 +1,15 @@
 FROM node:22-bookworm-slim AS web-build
 WORKDIR /web
 RUN corepack enable
-COPY web ./
-RUN pnpm install --no-frozen-lockfile && pnpm -r build
+# 依赖清单先行 COPY：web 源码改动时 install 层命中缓存；--frozen-lockfile 保证构建可复现
+COPY web/pnpm-workspace.yaml web/pnpm-lock.yaml ./
+COPY web/package.json ./
+COPY web/apps/package.json ./apps/
+COPY web/packages/shared/package.json ./packages/shared/
+RUN pnpm install --frozen-lockfile
+COPY web/apps ./apps
+COPY web/packages ./packages
+RUN pnpm -r build
 
 FROM ghcr.io/astral-sh/uv:python3.11-bookworm-slim
 

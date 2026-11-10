@@ -44,10 +44,7 @@ llm-check:
 llm-first-token-bench:
 	uv run python server/scripts/benchmark_llm_first_token.py
 
-p5-backend:
-	uv run ruff check server
-	uv run mypy server/app server/tests
-	uv run pytest
+p5-backend: lint test
 	git diff --check
 	uv run alembic heads
 
