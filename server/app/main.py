@@ -266,6 +266,7 @@ def create_app(
     deps.focus_scheduler = focus_scheduler
     deps.daily_brief_scheduler = daily_brief_scheduler
     deps.daily_review_scheduler = daily_review_scheduler
+    deps.activity_summary_scheduler = domain.activity_summary_scheduler
     deps.todo_sync_scheduler = todo_sync_scheduler
     deps.caldav_sync_scheduler = caldav_sync_scheduler
     deps.google_calendar_sync_scheduler = google_calendar_sync_scheduler

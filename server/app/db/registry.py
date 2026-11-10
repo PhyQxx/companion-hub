@@ -9,6 +9,7 @@ def registered_metadata() -> MetaData:
     # Keep registration explicit; services and compatibility exports are optional.
     from . import (  # noqa: F401
         actions,
+        activity_summaries,
         appearance,
         assets,
         calendar,

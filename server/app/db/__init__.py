@@ -1,3 +1,4 @@
+from .activity_summaries import ActivitySummaryRecord as ActivitySummaryRecord
 from .costs import ModelCostRecord
 from .models import (
     ActionPlanRecord,

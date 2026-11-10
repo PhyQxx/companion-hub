@@ -44,6 +44,7 @@ from app.api import (
     create_xiaoai_websocket_router,
     load_sso_settings,
 )
+from app.api.activity_summaries import create_activity_summaries_router
 from app.api.mail import create_mail_router
 from app.api.runs import create_runs_router
 from app.auth import AuthService
@@ -226,9 +227,7 @@ def assemble_runtime(
     )
     default_timezone = os.getenv("ARIA_DEFAULT_TIMEZONE", "Asia/Shanghai")
     # FIX-01/01B 确认预览统一持久化：跨重启/跨 worker 存活
-    pending_mutations = (
-        DatabasePendingMutationStore(runtime_database) if runtime_database else None
-    )
+    pending_mutations = DatabasePendingMutationStore(runtime_database) if runtime_database else None
     if domain.task_store is not None:
         device_tools.append(ReminderCreateTool(domain.task_store, timezone_name=default_timezone))
         device_tools.append(ReminderListTool(domain.task_store, timezone_name=default_timezone))
@@ -304,9 +303,7 @@ def assemble_runtime(
         )
     if domain.action_plan_service is not None:
         if device_target_resolver is not None and device_command_gateway is not None:
-            device_tools.append(
-                DesktopNotifyTool(device_target_resolver, device_command_gateway)
-            )
+            device_tools.append(DesktopNotifyTool(device_target_resolver, device_command_gateway))
             if runtime_config is not None:
 
                 def desktop_actions_config() -> DesktopActionsConfig:
@@ -378,13 +375,14 @@ def assemble_runtime(
             # DIST：回放复用与计划执行同一套工具注册表与隐私闸门
             domain.plan_distiller.set_executor(ToolExecutor(ToolRegistry(device_tools)))
     capability_provider = (
-        CompositeRuntimeCapabilityProvider(capability_providers)
-        if capability_providers
-        else None
+        CompositeRuntimeCapabilityProvider(capability_providers) if capability_providers else None
     )
     runtime_chat_service = build_conversation(
-        runtime_database, runtime_config, domain=domain,
-        capability_provider=capability_provider, device_tools=device_tools,
+        runtime_database,
+        runtime_config,
+        domain=domain,
+        capability_provider=capability_provider,
+        device_tools=device_tools,
     )
     app.state.auth_service = auth_service
     app.state.chat_service = runtime_chat_service
@@ -393,9 +391,7 @@ def assemble_runtime(
     sso_settings = load_sso_settings()
     if sso_settings.enabled:
         sso_base_url = os.getenv("ARIA_SSO_BASE_URL", "").rstrip("/")
-        app.include_router(
-            create_sso_router(auth_service, sso_settings, base_url=sso_base_url)
-        )
+        app.include_router(create_sso_router(auth_service, sso_settings, base_url=sso_base_url))
     app.include_router(create_chat_router(runtime_chat_service, auth_service))
     app.include_router(create_runs_router(runtime_chat_service, auth_service))
     for device_tool in device_tools:
@@ -431,6 +427,11 @@ def assemble_runtime(
         app.include_router(create_briefs_router(domain.daily_brief_service, auth_service))
         app.state.daily_brief_service = domain.daily_brief_service
         app.state.daily_brief_scheduler = domain.daily_brief_scheduler
+    if domain.activity_summary_service is not None:
+        app.include_router(
+            create_activity_summaries_router(domain.activity_summary_service, auth_service)
+        )
+        app.state.activity_summary_service = domain.activity_summary_service
     if domain.daily_review_service is not None:
         app.include_router(create_reviews_router(domain.daily_review_service, auth_service))
         app.state.daily_review_service = domain.daily_review_service
@@ -508,9 +509,7 @@ def assemble_runtime(
         domain.action_plan_service.set_execution_listener(push_plan_execution)
         domain.action_plan_service.set_change_listener(push_plan_changed)
     if device_command_gateway is not None:
-        device_command_gateway.set_pet_message_handler(
-            websocket_manager.submit_device_message
-        )
+        device_command_gateway.set_pet_message_handler(websocket_manager.submit_device_message)
     app.include_router(websocket_router)
     if domain.xiaoai_materializer is not None:
         xiaoai_router, xiaoai_manager = create_xiaoai_websocket_router(
@@ -555,9 +554,7 @@ def assemble_runtime(
             device_command_gateway.set_satellite_takeover_handler(
                 voice_manager.transfer_satellite_conversation
             )
-            voice_manager.set_satellite_broadcaster(
-                device_command_gateway.broadcast_satellite
-            )
+            voice_manager.set_satellite_broadcaster(device_command_gateway.broadcast_satellite)
         app.include_router(voice_router)
     push_subscription_store = (
         PushSubscriptionStore(runtime_database) if runtime_database is not None else None

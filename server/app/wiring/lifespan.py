@@ -47,6 +47,7 @@ from app.skills.audit import SkillAuditScheduler
 from app.skills.connections import SkillHttpClient
 from app.skills.store import SkillStore
 from app.tasks import TaskScheduler
+from app.tasks.activity_summary_scheduler import ActivitySummaryScheduler
 from app.tasks.brief_scheduler import DailyBriefScheduler
 from app.tasks.goal_scheduler import GoalReminderScheduler
 from app.tasks.review_scheduler import DailyReviewScheduler
@@ -86,6 +87,7 @@ class LifespanDeps:
     goal_reminder_scheduler: GoalReminderScheduler | None = None
     focus_scheduler: object | None = None
     daily_brief_scheduler: DailyBriefScheduler | None = None
+    activity_summary_scheduler: ActivitySummaryScheduler | None = None
     daily_review_scheduler: DailyReviewScheduler | None = None
     todo_sync_scheduler: TodoSyncScheduler | None = None
     caldav_sync_scheduler: CalDavSyncScheduler | None = None
@@ -216,6 +218,7 @@ def _core_modules(deps: LifespanDeps) -> ModuleRegistry:
     add_service("focus", deps.focus_scheduler)
     add_service("daily-brief", deps.daily_brief_scheduler)
     add_service("daily-review", deps.daily_review_scheduler)
+    add_service("activity-summaries", deps.activity_summary_scheduler)
     add_service("todo-sync", deps.todo_sync_scheduler)
     add_service("caldav-sync", deps.caldav_sync_scheduler)
     add_service("google-calendar-sync", deps.google_calendar_sync_scheduler)

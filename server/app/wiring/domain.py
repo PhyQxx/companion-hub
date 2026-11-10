@@ -106,6 +106,8 @@ from app.skills.learning import SkillRevisionLearner
 from app.skills.runtime import SkillToolProvider
 from app.skills.store import SkillStore
 from app.tasks import TaskScheduler, TaskStore
+from app.tasks.activity_summary import ActivitySummaryService
+from app.tasks.activity_summary_scheduler import ActivitySummaryScheduler
 from app.tasks.brief import BriefCommute, BriefWeather, DailyBriefService
 from app.tasks.brief_scheduler import DailyBriefScheduler
 from app.tasks.brief_sources import read_brief_weather
@@ -193,6 +195,8 @@ class DomainAssembly:
     daily_brief_service: DailyBriefService | None
     daily_brief_scheduler: DailyBriefScheduler | None
     daily_review_service: DailyReviewService | None
+    activity_summary_service: ActivitySummaryService | None
+    activity_summary_scheduler: ActivitySummaryScheduler | None
     daily_review_scheduler: DailyReviewScheduler | None
     todo_sync_service: TodoSyncService | None
     todo_sync_scheduler: TodoSyncScheduler | None
@@ -614,6 +618,18 @@ def assemble_domain(
         if runtime_database is not None and task_store is not None and cognitive_store is not None
         else None
     )
+    activity_summary_service = (
+        ActivitySummaryService(
+            runtime_database, timezone_name=os.getenv("ARIA_DEFAULT_TIMEZONE", "Asia/Shanghai")
+        )
+        if runtime_database is not None
+        else None
+    )
+    activity_summary_scheduler = (
+        ActivitySummaryScheduler(activity_summary_service)
+        if activity_summary_service is not None
+        else None
+    )
     daily_review_scheduler = (
         DailyReviewScheduler(
             daily_review_service,
@@ -718,12 +734,8 @@ def assemble_domain(
         )
     # HRM（docs/06 Hermes 集成）：受控 hermes 客户端 + deleg.hermes_task 委派；
     # 审批通知在 ProactiveDeliveryService 装配后经 set_notify 注入。
-    hermes_manager = (
-        HermesManager(runtime_config) if runtime_config is not None else None
-    )
-    hermes_task_handler = (
-        HermesTaskHandler(hermes_manager) if hermes_manager is not None else None
-    )
+    hermes_manager = HermesManager(runtime_config) if runtime_config is not None else None
+    hermes_task_handler = HermesTaskHandler(hermes_manager) if hermes_manager is not None else None
     if deleg_worker is not None and hermes_task_handler is not None:
         deleg_worker.register(DELEG_KIND_HERMES, hermes_task_handler)
     hermes_delegate_tool = (
@@ -879,6 +891,8 @@ def assemble_domain(
         daily_brief_service=daily_brief_service,
         daily_brief_scheduler=daily_brief_scheduler,
         daily_review_service=daily_review_service,
+        activity_summary_service=activity_summary_service,
+        activity_summary_scheduler=activity_summary_scheduler,
         daily_review_scheduler=daily_review_scheduler,
         todo_sync_service=todo_sync_service,
         todo_sync_scheduler=todo_sync_scheduler,
