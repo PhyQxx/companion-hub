@@ -717,3 +717,48 @@ async def test_ack_cancellation_remains_owned_until_cleanup_finishes(tmp_path: A
         release.set()
         await service.stop()
         await database.close()
+
+
+async def test_assembled_app_registers_chat_safety_routes(tmp_path: Any) -> None:
+    """F-06 回归：装配后的应用必须真实注册用户侧 safety 路由。
+
+    注册曾置于 contacts 块内、早于 register_proactive_stack 对
+    safety_alert_service 的赋值，条件恒假 → /api/v1/safety/* 恒 404。
+    """
+    from httpx import ASGITransport, AsyncClient
+
+    from app.config import DatabaseConfigStore
+    from app.main import create_app
+
+    database = await _database(tmp_path)
+    # 装配段只对 DatabaseConfigStore 生效；create_app 阶段不读配置文件内容，
+    # 最小合法 YAML 即可驱动 register_proactive_stack 与 safety 路由注册。
+    bootstrap = tmp_path / "hub.yaml"
+    bootstrap.write_text("schema_version: 1\n")
+    store = DatabaseConfigStore(database, bootstrap)
+    app = create_app(
+        database,
+        config_store=store,
+        watch_config=False,
+        admin_token="test-admin-token",
+    )
+    try:
+        # fastapi 0.141 起 include_router 惰性化：真实路由经 effective_candidates 展开
+        paths: set[str] = set()
+        for route in app.routes:
+            expand = getattr(route, "effective_candidates", None)
+            candidates = (route,) if expand is None else expand()
+            for candidate in candidates:
+                path = getattr(candidate, "path", None)
+                if path is not None:
+                    paths.add(path)
+        assert "/api/v1/safety/alerts" in paths
+        assert "/api/v1/safety/alerts/{alert_id}/ack" in paths
+        # 行为层复核：路由存在时未认证请求应 401/422，而非 404
+        async with AsyncClient(
+            transport=ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            response = await client.get("/api/v1/safety/alerts")
+        assert response.status_code in {401, 422}
+    finally:
+        await database.close()

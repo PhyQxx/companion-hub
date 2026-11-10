@@ -454,8 +454,6 @@ def assemble_runtime(
         app.state.meeting_service = domain.meeting_service
     if domain.contact_store is not None:
         app.include_router(create_contacts_router(domain.contact_store, auth_service))
-        if safety_alert_service is not None:
-            app.include_router(create_safety_router(safety_alert_service, auth_service))
         app.state.contact_store = domain.contact_store
     if domain.home_scene_service is not None:
         app.include_router(create_home_scenes_router(domain.home_scene_service, auth_service))
@@ -601,6 +599,10 @@ def assemble_runtime(
             perception_pipeline=domain.perception_pipeline,
             self_check_scheduler=domain.self_check_scheduler,
         )
+    # F-06：safety_alert_service 由上方 register_proactive_stack 赋值，
+    # 用户侧 safety 路由必须在其后注册（早于赋值时条件恒假 → /api/v1/safety 恒 404）。
+    if safety_alert_service is not None:
+        app.include_router(create_safety_router(safety_alert_service, auth_service))
     if (
         runtime_database is not None
         and domain.timeline_store is not None
