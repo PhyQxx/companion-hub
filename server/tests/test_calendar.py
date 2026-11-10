@@ -310,6 +310,28 @@ async def test_calendar_draft_api_binds_user_content_and_confirmation(database: 
         await tool.confirm(uuid7(), UUID(str(draft_id)), str(draft["digest"]))
 
 
+async def test_cancel_pending_revokes_unconfirmed_calendar_previews(
+    database: Database, user_id: UUID
+) -> None:
+    tool = CalendarCreateTool(
+        _service(database, clock=lambda: datetime.now(UTC)), timezone_name="Asia/Shanghai"
+    )
+    payload = {
+        "title": "断开来源前的待确认会议",
+        "starts_at": (datetime.now(UTC) + timedelta(days=1)).isoformat(),
+        "ends_at": (datetime.now(UTC) + timedelta(days=1, hours=1)).isoformat(),
+    }
+    context = ToolContext(privacy_level="L1", user_id=user_id, turn_id=uuid7())
+    prepared = await tool.execute(tool.arguments_model.model_validate(payload), context)
+    draft_id = UUID(str(prepared.data["draft_id"]))
+    draft = (await tool.list_drafts(user_id))[0]
+
+    assert await tool.cancel_pending(user_id) == 1
+    with pytest.raises(ValueError, match="not_pending"):
+        await tool.confirm(user_id, draft_id, str(draft["digest"]))
+    assert await tool.cancel_pending(user_id) == 0
+
+
 # ---------------------------------------------------------------------------
 # CAL-01 聊天端手动同步工具
 # ---------------------------------------------------------------------------

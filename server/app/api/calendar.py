@@ -150,9 +150,14 @@ def create_calendar_router(
         @router.delete("/google/token")
         async def disconnect_google(
             principal: Annotated[ChatPrincipal, Depends(guard)],
-        ) -> dict[str, bool]:
+        ) -> dict[str, object]:
             removed = await GoogleTokenStore(google_sync._database).delete(principal.user_id)
-            return {"removed": removed}
+            cancelled = (
+                await create_tool.cancel_pending(principal.user_id)
+                if create_tool is not None
+                else 0
+            )
+            return {"removed": removed, "previews_cancelled": cancelled}
 
     if caldav_sync is not None:
 

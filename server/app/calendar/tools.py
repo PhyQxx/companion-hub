@@ -148,6 +148,18 @@ class CalendarCreateTool:
     async def cancel(self, user_id: UUID, draft_id: UUID) -> dict[str, object]:
         return (await self._drafts.cancel(user_id, draft_id)).view()
 
+    async def cancel_pending(self, user_id: UUID) -> int:
+        """来源断开后作废全部未确认预览，防止确认落到已删除的来源。"""
+        cancelled = 0
+        for item in await self._drafts.list(user_id):
+            if item.kind == "calendar_create" and item.status == "pending":
+                try:
+                    await self._drafts.cancel(user_id, item.id)
+                except ValueError:
+                    continue
+                cancelled += 1
+        return cancelled
+
     async def confirm(self, user_id: UUID, draft_id: UUID, digest: str) -> dict[str, object]:
         draft = await self._drafts.claim(user_id, draft_id, digest)
         if draft.status == "completed":

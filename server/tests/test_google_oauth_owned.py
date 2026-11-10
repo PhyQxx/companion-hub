@@ -440,7 +440,7 @@ async def test_changed_authority_before_callback_prevents_http(
                 await http.delete(
                     "/api/v1/calendar/google/token", headers={"Authorization": f"Bearer {token}"}
                 )
-            ).json() == {"removed": False}
+            ).json() == {"removed": False, "previews_cancelled": 0}
         response = await http.get(
             "/api/v1/calendar/google/callback", params={"state": state, "code": "synthetic-code"}
         )
@@ -840,7 +840,8 @@ async def test_status_is_owner_scoped_and_disconnect_revokes_pending_authorizati
             "connected": True,
         }
         assert (await http.delete("/api/v1/calendar/google/token", headers=headers)).json() == {
-            "removed": True
+            "removed": True,
+            "previews_cancelled": 0,
         }
         assert (await http.get(path, headers=headers)).json() == {
             "configured": True,

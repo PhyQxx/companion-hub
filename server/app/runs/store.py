@@ -15,6 +15,7 @@ from app.db import (
     InteractionTurnRecord,
     JobRecord,
     ModelReservationRecord,
+    PendingMutationRecord,
     TaskRunEventRecord,
     TaskRunRecord,
 )
@@ -297,6 +298,19 @@ class RunStore:
                 turn.cancel_reason = reason[:160]
                 turn.completed_at = now
                 generations.append(turn.generation_id)
+            # 撤销后未确认的预览不得再受理；认领中的外部操作保持其结果未知/回执。
+            await session.execute(
+                update(PendingMutationRecord)
+                .where(
+                    PendingMutationRecord.turn_id.in_(
+                        select(InteractionTurnRecord.id).where(
+                            InteractionTurnRecord.task_run_id == run_id,
+                        )
+                    ),
+                    PendingMutationRecord.status == "pending",
+                )
+                .values(status="cancelled", updated_at=now)
+            )
             # Ownership can change while waiting on earlier locks. Scope the
             # final write fence too; failure rolls back all dependent updates.
             row = await session.scalar(

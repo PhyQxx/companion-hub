@@ -132,6 +132,19 @@ class TestDatabasePendingMutationStore:
         with pytest.raises(ValueError, match="not_pending"):
             await store.claim(user_id, first.id, first.digest)
 
+    async def test_mark_unknown_preserves_completed_receipt(
+        self, database: Database, user_id: UUID
+    ) -> None:
+        store = DatabasePendingMutationStore(database)
+        item = await _prepare(store, user_id, content={"title": "receipt"})
+        claimed = await store.claim(user_id, item.id, item.digest)
+        await store.complete(claimed, {"id": "saved"})
+        # 并发/重放写入不确定终态时不得覆盖已落库的回执
+        await store.mark_unknown(claimed)
+        assert claimed.status == "completed"
+        rows = await DatabasePendingMutationStore(database).list(user_id)
+        assert rows[0].status == "completed" and rows[0].result == {"id": "saved"}
+
     async def test_capacity_limit(self, database: Database, user_id: UUID) -> None:
         store = DatabasePendingMutationStore(database, limit=2)
         await _prepare(store, user_id, content={"title": "1"})

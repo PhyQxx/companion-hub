@@ -303,12 +303,17 @@ class DatabasePendingMutationStore:
 
     async def mark_unknown(self, item: PendingMutation) -> None:
         async with self._database.sessions.begin() as session:
-            await session.execute(
+            result = await session.execute(
                 update(PendingMutationRecord)
-                .where(PendingMutationRecord.id == item.id)
+                .where(
+                    PendingMutationRecord.id == item.id,
+                    PendingMutationRecord.status == "saving",
+                )
                 .values(status="unknown_outcome", updated_at=datetime.now(UTC))
             )
-        item.status = "unknown_outcome"
+        # 已完成的回执/已取消的终态不被并发方覆盖；仅认领中可转入不确定终态。
+        if int(cast(CursorResult[Any], result).rowcount or 0):
+            item.status = "unknown_outcome"
 
     async def cancel(self, user_id: UUID, item_id: UUID) -> PendingMutation:
         item = await self._owned(user_id, item_id)

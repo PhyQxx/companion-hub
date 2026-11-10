@@ -16,6 +16,7 @@ from .models import (
     JobStepRecord,
     MessageRecord,
     ModelReservationRecord,
+    PendingMutationRecord,
     SkillDraftRecord,
     TaskRunEventRecord,
     TaskRunRecord,
@@ -165,6 +166,14 @@ async def purge_conversation(
         await session.execute(
             delete(SkillDraftRecord).where(
                 SkillDraftRecord.turn_id.in_([str(turn_id) for turn_id in turn_ids]),
+            )
+        )
+        # 未确认的预览是来源派生物：删源后不得再受理；已认领/已完成的
+        # 外部操作保留其结果未知/回执，不在删除中伪造终态。
+        await session.execute(
+            delete(PendingMutationRecord).where(
+                PendingMutationRecord.turn_id.in_(turn_ids),
+                PendingMutationRecord.status == "pending",
             )
         )
     await session.execute(
