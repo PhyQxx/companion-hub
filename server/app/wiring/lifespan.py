@@ -13,49 +13,53 @@ import logging
 from collections.abc import AsyncIterator, Callable
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from dataclasses import dataclass
-from typing import cast
+from typing import TYPE_CHECKING, cast
 
 from fastapi import FastAPI
 
-from app.appearance import ThemeStore
-from app.avatar import AvatarStore
-from app.browser_awareness import BrowserAwarenessLoop
-from app.bus import DispatcherWorker
-from app.calendar import CalDavSyncScheduler, GoogleCalendarSyncScheduler
-from app.chat import ChatService
-from app.cognition import ActionRegistry
-from app.config import ConfigStore, ConfigWatcher, DatabaseConfigStore
-from app.db import Database
-from app.devices import MqttPresenceBridge
-from app.devices.mqtt_client import MqttDeviceClient
-from app.home_assistant import HomeAssistantManager, HomeAssistantProactiveEngine
-from app.integrations.mcp import McpManager
-from app.jobs import DelegatedJobWorker
+# LifespanDeps 注解在 future annotations 下字符串化，域类型仅需静态导入
+# （类型装配在 main.py），组合根运行时只依赖下方真正使用的模块。
 from app.llm.provider import EnvSecretProvider
-from app.mail_awareness import MailAwarenessLoop
 from app.memory import build_embedding_provider, probe_embedding_provider
-from app.memory.store import MemoryStore
 from app.observability import apply_observability
-from app.observability.selfcheck import DailySelfCheckScheduler
-from app.perception import PerceptionPipeline
-from app.persona import PersonaStore
-from app.pnkx import PnkxLifeClient
-from app.runtime import TurnCoordinator
-from app.screen_awareness import ScreenAwarenessLoop
 from app.skills.actions import sync_skill_actions
-from app.skills.audit import SkillAuditScheduler
-from app.skills.connections import SkillHttpClient
-from app.skills.store import SkillStore
-from app.tasks import TaskScheduler
-from app.tasks.activity_summary_scheduler import ActivitySummaryScheduler
-from app.tasks.brief_scheduler import DailyBriefScheduler
-from app.tasks.goal_scheduler import GoalReminderScheduler
-from app.tasks.review_scheduler import DailyReviewScheduler
-from app.todo.sync_scheduler import TodoSyncScheduler
-from app.workflows.drafts import PlanDistiller
-from app.xiaoai_config import XiaoAiConfigMaterializer
 
 from .registry import ModuleRegistry, ModuleSpec
+
+if TYPE_CHECKING:
+    from app.appearance import ThemeStore
+    from app.avatar import AvatarStore
+    from app.browser_awareness import BrowserAwarenessLoop
+    from app.bus import DispatcherWorker
+    from app.calendar import CalDavSyncScheduler, GoogleCalendarSyncScheduler
+    from app.chat import ChatService
+    from app.cognition import ActionRegistry
+    from app.config import ConfigStore, ConfigWatcher, DatabaseConfigStore
+    from app.db import Database
+    from app.devices import MqttPresenceBridge
+    from app.devices.mqtt_client import MqttDeviceClient
+    from app.home_assistant import HomeAssistantManager, HomeAssistantProactiveEngine
+    from app.integrations.mcp import McpManager
+    from app.jobs import DelegatedJobWorker
+    from app.mail_awareness import MailAwarenessLoop
+    from app.memory.store import MemoryStore
+    from app.observability.selfcheck import DailySelfCheckScheduler
+    from app.perception import PerceptionPipeline
+    from app.persona import PersonaStore
+    from app.pnkx import PnkxLifeClient
+    from app.runtime import TurnCoordinator
+    from app.screen_awareness import ScreenAwarenessLoop
+    from app.skills.audit import SkillAuditScheduler
+    from app.skills.connections import SkillHttpClient
+    from app.skills.store import SkillStore
+    from app.tasks import TaskScheduler
+    from app.tasks.activity_summary_scheduler import ActivitySummaryScheduler
+    from app.tasks.brief_scheduler import DailyBriefScheduler
+    from app.tasks.goal_scheduler import GoalReminderScheduler
+    from app.tasks.review_scheduler import DailyReviewScheduler
+    from app.todo.sync_scheduler import TodoSyncScheduler
+    from app.workflows.drafts import PlanDistiller
+    from app.xiaoai_config import XiaoAiConfigMaterializer
 
 
 @dataclass

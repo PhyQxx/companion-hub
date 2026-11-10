@@ -41,6 +41,7 @@ jobs:
             desktop/pnpm-lock.yaml
             web/pnpm-lock.yaml
             browser-extension/pnpm-lock.yaml
+            integrations/xiaoai_gateway/pnpm-lock.yaml
       - run: uv sync --dev --locked
       - run: uv run python server/scripts/check_architecture.py
       - run: uv run ruff check server
@@ -61,8 +62,8 @@ jobs:
       - run: pnpm --dir browser-extension install --frozen-lockfile
       - run: pnpm --dir browser-extension test
       - run: pnpm --dir browser-extension build
-      - run: npm --prefix integrations/xiaoai_gateway ci
-      - run: npm --prefix integrations/xiaoai_gateway run build
+      - run: pnpm --prefix integrations/xiaoai_gateway install --frozen-lockfile
+      - run: pnpm --prefix integrations/xiaoai_gateway run build
       - run: node --check server/app/admin/models.js
       - run: node --check server/app/admin/personas.js
       - run: node --check server/app/admin/module.js

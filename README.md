@@ -10,7 +10,7 @@
 
 Aria 不只是聊天窗口，而是一个完整的陪伴终端：你可以为她设定人格、选择形象、和她文字或语音交流，她会在本地长期记住你们的点滴，也能通过工具感知天气、地图等现实世界信息。
 
-![Aria 主界面](docs/visuals/aria-chat-main-v1.png)
+![Aria 主界面](docs/visuals/aria-chat-main-v1.jpg)
 
 ---
 
@@ -22,7 +22,7 @@ Aria 拥有真正的长期记忆系统。她会记住你提到的重要事情、
 ### 人格与形象
 你可以为她设定完整的人格（Persona），从说话风格到行为边界；也可以选择内置形象、上传自定义立绘或导入自有授权的 Live2D 模型包。人格与形象解耦，换形象不会丢失记忆和关系。Live2D Web 运行时按官方许可在本机安装，不随仓库分发 Cubism Core。
 
-![形象中心](docs/visuals/aria-avatar-center-v1.png)
+![形象中心](docs/visuals/aria-avatar-center-v1.jpg)
 
 ### 语音对话
 支持双向语音通道：语音输入经 ASR 转文字、大模型流式回复、再经 TTS 合成输出。支持 VAD 自动断句、人声打断（barge-in）、按键说话（PTT）和口型同步。本地私有内容可强制走本地模型，敏感语音不上云。
@@ -36,7 +36,7 @@ Aria 拥有真正的长期记忆系统。她会记住你提到的重要事情、
 ### 管理后台
 内置 Admin 面板，可视化配置模型路由、语音参数、SenseAudio 声音管理（音色库/试听/克隆）、人格草稿、记忆检索、时间线、设备配对与授权、主题外观、屏幕感知和系统观测。配置保存即生效，无需重启。
 
-![管理后台](docs/visuals/aria-admin-overview-v1.png)
+![管理后台](docs/visuals/aria-admin-overview-v1.jpg)
 
 ### 隐私分级
 四层隐私控制（L0~L3），从公开信息到原始高敏传感数据逐级收紧。L2 敏感内容强制本地模型处理，L3 数据不进入通用持久化或云端。
@@ -47,7 +47,7 @@ Aria 拥有真正的长期记忆系统。她会记住你提到的重要事情、
 
 | 主题与外观 | 角色设定 |
 |:---:|:---:|
-| ![主题画廊](docs/visuals/aria-theme-center-v1.png) | ![角色设定](docs/visuals/aria-persona-editor-v1.png) |
+| ![主题画廊](docs/visuals/aria-theme-center-v1.jpg) | ![角色设定](docs/visuals/aria-persona-editor-v1.jpg) |
 
 当前内置“纯净明亮”和“静夜紫”，支持跟随系统、定时切换（白天明亮/夜晚深色，时段可配）、账户同步与聊天端即时切换；形象中心支持内置形象、自定义立绘、Live2D 导入、Persona 默认绑定和安全降级。参数化换装、VRM 与 AI 形象工厂仍在规划中。
 
