@@ -1,6 +1,6 @@
 # Aria 当前任务
 
-> 最后更新：2026-11-11（A-01 阶段一映射搬迁批次 6 已交付：mail/workflows 落域 persistence 包，业务提交 `1491415`；两域 `__init__` 同批转懒加载，下一优先：剩余急加载域同法续搬、A-02/A-03 或 B-03 产品决策项）
+> 最后更新：2026-11-11（A-01 阶段一映射搬迁批次 7 已交付：skills 落域 persistence 包，业务提交 `bcf7b74`；`__init__` 同批转懒加载，下一优先：剩余急加载域同法续搬、A-02/A-03 或 B-03 产品决策项）
 > 详细设计入口：[00-产品与架构.md](./00-产品与架构.md)
 > **进度查看入口：[整体架构与 Harness 改造进度](./架构改造进度.md)**（模块状态、剩余工作包、验收缺口和下一批队列）
 
@@ -64,7 +64,7 @@
 - [x] B 聊天运行核心：TaskRun/Event、owner 查询/取消和事件补读、状态版本/取消代次、Plan/委派 Job 关联；文字 REST 可选 client_request_id 重放已完成回复并拒绝冲突。succeeded 仅表示回复提交，历史和独立入口保留 nullable 兼容。
 - [x] B 可靠后处理：与回复同事务入队；lifespan 拥有维护 worker；租约心跳、有限重试与 worker/attempt fencing；恢复读取当前配置并重新校验源；记忆、技能、承诺和时间线事务校验/局部去重，删源不复活。不是任意外部副作用的 exactly-once 保证。
 - [x] 本批验收：全量后端 **1,186 通过 / 2 集成跳过**；严格类型检查 444 文件、lint、架构检查、Schema/TS 同步、Chat/Admin 类型与构建通过；单 head `0060_task_runs`、临时 SQLite 空库实际升级、PostgreSQL 离线 SQL 导出及差异检查通过。安全提醒关闭时的任务清理竞态修复并有回归。没有升级运行库或完成 PostgreSQL 并发、真实模型/真机验收。
-- [ ] A/B 后续迁移：模型 tokenizer 校准、领域仓储/provider 与剩余模块生命周期、删除血缘补齐（B-03 第一批已交付 G1/G4/G5/G7/G8/G9 围栏/G10；G2/G3/G6 与 G9 状态迁移待产品决策；A-01 逐入口清单已盘点落 00 §157、映射搬迁批次 1~6 已交付 meetings/tasks/calendar/contacts/memory/timeline/cognition/avatar/appearance/mail/workflows、剩余急加载域待转懒加载后续搬）和恢复重放；非聊天入口 TaskRun、切面配置开关和回退演练。
+- [ ] A/B 后续迁移：模型 tokenizer 校准、领域仓储/provider 与剩余模块生命周期、删除血缘补齐（B-03 第一批已交付 G1/G4/G5/G7/G8/G9 围栏/G10；G2/G3/G6 与 G9 状态迁移待产品决策；A-01 逐入口清单已盘点落 00 §157、映射搬迁批次 1~7 已交付 meetings/tasks/calendar/contacts/memory/timeline/cognition/avatar/appearance/mail/workflows/skills、剩余急加载域待转懒加载后续搬）和恢复重放；非聊天入口 TaskRun、切面配置开关和回退演练。
 - [x] C 首批：文字/流式/语音共用 Harness 有界循环；终轮擅自返回调用不执行、本轮挂载名单检查、每轮来源校验与取消检查；现有确认和记忆一致性 Guard 保留。ExecutionOutcome 与内容无关的行动证据投影接入运行详情，回执 V1、已有状态校验 V3，无证据仍 V0，未知写结果需核对。完整 TaskRun 业务成功聚合尚未实施。
 - [x] C 首批最终验收：全量 **1,206 通过 / 2 集成跳过**；严格类型检查 449 文件、lint、架构检查、契约同步、Shared/Chat/Admin 类型与构建、差异检查通过。没有增加迁移，运行库与真实环境验收状态不变。
 - [x] D 聊天模型预算首批：同回合 Router 提供方调用原子预留与幂等结算，跟进/repair/retry/fallback/维护共享额度；未知或部分 usage 保留扣占；保留无工具终答名额与绝对模型 deadline；维护预算拒绝终止重试，运行查询与文字/语音错误提示接入。迁移 `0061_model_budget`，表集合 72。
@@ -419,6 +419,8 @@
 - [x] 验收后按 `docs/07` 的实施顺序接真实数据：health/activity/usage/quality/conflicts/pairing/diagnostics + logs/privacy/system 三个聚合 dashboard（含实时日志独立 Tab）已全部接入真实数据；Trace、隐私审计、备份恢复和成本能力按 M3B 计划推进。
 
 ## 3. 最近完成
+
+- [x] 2026-11-11 `A-01 阶段一映射搬迁批次 7：skills 落域 persistence 包（零行为变化）`：SkillRecord/SkillVersionRecord/SkillConnectionRecord/SkillCredentialRecord/SkillRunRecord/SkillSuggestionRecord/SkillDraftRecord 7 类 → `app/skills/persistence/`（类体原样搬移、`__module__="app.db.models"` 映射身份保留），`db/skills.py` 转迁移期兼容重导出；skills 急加载 `__init__` 同批转懒加载 `resolve_export` 模式，`mapped_records.json` 7 项改指新模块。**验证**：架构门禁零豁免；`test_harness_architecture.py` 57 项全绿；受影响回归（harness+test_skills/test_deletion_recovery/test_runs）**90 通过 / 0 失败**；隔离空 SQLite `alembic upgrade head` **77 表与快照零差集**；ruff check+format、mypy 零错；全量 `-n 4` 失败集与基线 15 项逐一一致、零新增。**限制**：未跑 PG 集成。**下一优先**：剩余急加载域（todo/home_scene/persona/auth/safety）同法续搬，及 db 侧其余映射文件按域归属分批；或 A-02/A-03、B-03 产品决策项。业务提交哈希 `bcf7b74`（已回填，2026-11-11）。
 
 - [x] 2026-11-11 `A-01 阶段一映射搬迁批次 6：mail/workflows 落域 persistence 包（零行为变化）`：MailAttachmentRecord/MailOutboxLogRecord → `app/mail/persistence/`，WorkflowRecord/WorkflowDraftRecord → `app/workflows/persistence/`（类体原样搬移、`__module__="app.db.models"` 映射身份保留），`db/mail.py`/`db/workflows.py` 转迁移期兼容重导出；mail/workflows 两个急加载 `__init__` 同批转懒加载 `resolve_export` 模式，`mapped_records.json` 4 项改指新模块。**验证**：架构门禁零豁免；`test_harness_architecture.py` 57 项全绿；受影响回归 6 文件 **103 通过 / 20 跳过 / 0 失败**（mail/conversation_run_descendants/domain_delete_fence/workflow_drafts/deletion_recovery/runs）；隔离空 SQLite `alembic upgrade head` **77 表与快照零差集**；ruff check+format、mypy 零错（两包内 3 个历史未格式化文件不在本批范围）；全量 `-n 4` 首跑 15 基线 + database_config×5 + persona×1（单独重跑全绿、负载敏感），复跑失败集与基线 15 项逐一一致、零新增。**限制**：未跑 PG 集成。**下一优先**：剩余急加载域（todo/home_scene/persona/auth/safety/skills）同法续搬；或 A-02/A-03、B-03 产品决策项。业务提交哈希 `1491415`（已回填，2026-11-11）。
 
