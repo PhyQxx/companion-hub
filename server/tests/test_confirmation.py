@@ -67,3 +67,36 @@ async def test_confirmation_claim_is_single_use_and_completion_replays() -> None
     replay = await store.claim(owner, item.id, item.digest)
     assert completed.result == {"id": "saved"}
     assert replay.status == "completed"
+
+
+async def test_memory_prune_keeps_receipts_and_drops_unaccepted_previews() -> None:
+    """G5 内存版同口径：回执保留，未受理预览到期修剪，回执不占容量。"""
+    store = PendingMutationStore(limit=1)
+    owner = uuid7()
+    item = await store.prepare(
+        user_id=owner,
+        turn_id=uuid7(),
+        kind="calendar_create",
+        content={"title": "receipt"},
+        preview={"title": "receipt"},
+    )
+    claimed = await store.claim(owner, item.id, item.digest)
+    await store.complete(claimed, {"id": "saved"})
+    cancelled = await store.prepare(
+        user_id=owner,
+        turn_id=uuid7(),
+        kind="calendar_create",
+        content={"title": "cancel"},
+        preview={"title": "cancel"},
+    )
+    await store.cancel(owner, cancelled.id)
+    cancelled.expires_at = datetime.now(UTC) - timedelta(hours=1)
+    await store.prepare(
+        user_id=owner,
+        turn_id=uuid7(),
+        kind="calendar_create",
+        content={"title": "fresh"},
+        preview={"title": "fresh"},
+    )
+    statuses = {entry.content["title"]: entry.status for entry in await store.list(owner)}
+    assert statuses == {"receipt": "completed", "fresh": "pending"}

@@ -9,7 +9,7 @@ from uuid import UUID
 
 import pytest
 from pydantic import ValidationError
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, select
 
 from app.cognition import (
     ActionEngine,
@@ -419,6 +419,65 @@ async def test_store_saves_and_lists_reflection_candidates(
     pending = await sql_store(cognitive_cycle).pending_candidates(user_id, limit=10)
     assert len(pending) == 1
     assert pending[0].content == "test candidate"
+
+
+async def test_pending_candidates_filters_dangling_uuid_evidence(
+    database: Database,
+    user_id: UUID,
+) -> None:
+    from app.cognition import ReflectionCandidate
+    from app.db import ConversationRecord, MessageRecord
+
+    store = CognitiveStore(database)
+    conversation = ConversationRecord(id=uuid7(), user_id=user_id, title="evidence")
+    live_message = MessageRecord(
+        id=uuid7(),
+        conversation_id=conversation.id,
+        turn_id=uuid7(),
+        seq=1,
+        role="user",
+        content="存活证据",
+        privacy_level="L1",
+        created_at=datetime.now(UTC),
+    )
+    dangling_id = uuid7()
+    async with database.sessions.begin() as session:
+        session.add_all([conversation, live_message])
+    await store.save_candidate(
+        user_id=user_id,
+        candidate=ReflectionCandidate(
+            content="all live", evidence_ids=[str(live_message.id)], confidence=0.9
+        ),
+    )
+    await store.save_candidate(
+        user_id=user_id,
+        candidate=ReflectionCandidate(
+            content="mixed evidence",
+            evidence_ids=[str(live_message.id), "ev-keep"],
+            confidence=0.9,
+        ),
+    )
+    await store.save_candidate(
+        user_id=user_id,
+        candidate=ReflectionCandidate(
+            content="opaque evidence", evidence_ids=["ev-keep"], confidence=0.9
+        ),
+    )
+    await store.save_candidate(
+        user_id=user_id,
+        candidate=ReflectionCandidate(
+            content="dangling evidence", evidence_ids=[str(dangling_id)], confidence=0.9
+        ),
+    )
+
+    pending = await store.pending_candidates(user_id, limit=10)
+    assert [item.content for item in pending] == ["opaque evidence", "mixed evidence", "all live"]
+
+    # 删除证据消息后：引用过它的候选（含混合证据）不再挂出。
+    async with database.sessions.begin() as session:
+        await session.execute(delete(MessageRecord).where(MessageRecord.id == live_message.id))
+    pending_after = await store.pending_candidates(user_id, limit=10)
+    assert [item.content for item in pending_after] == ["opaque evidence"]
 
 
 async def test_model_deliberation_is_structured_and_cannot_enable_act(

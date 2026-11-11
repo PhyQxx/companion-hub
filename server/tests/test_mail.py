@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 from uuid import UUID, uuid4
@@ -589,6 +590,31 @@ async def test_attachment_store_lifecycle_and_validation(database_mail: None = N
         await store.discard(user, record.id)
         assert await store.list_pending(user) == []
         assert await store.delete_expired() == 0  # 已丢弃的行过期前不重复删
+        # 发送成功后硬删：delete_used 立即移除载荷行
+        consumed = await store.create(
+            user_id=user, filename="合同.pdf", mime_type="application/pdf", payload=b"%PDF-2"
+        )
+        await store.delete_used([consumed.id])
+        with pytest.raises(LookupError):
+            await store.get_owned(user, consumed.id)
+        # 历史存量 used 行（升级前遗留）随 TTL 惰性清理一并清出
+        from sqlalchemy import update as sa_update
+
+        from app.db import MailAttachmentRecord
+
+        legacy = await store.create(
+            user_id=user, filename="旧附件.txt", mime_type="text/plain", payload=b"old"
+        )
+        async with database.sessions.begin() as session:
+            await session.execute(
+                sa_update(MailAttachmentRecord)
+                .where(MailAttachmentRecord.id == legacy.id)
+                .values(
+                    status="used",
+                    expires_at=datetime.now(UTC) - timedelta(minutes=1),
+                )
+            )
+        assert await store.delete_expired() == 1
     finally:
         await database.close()
 
@@ -672,8 +698,10 @@ async def test_attachment_upload_and_send_flow(
         assert len(sends) == 1
         assert sends[0]["attachments"][0].filename == "照片.png"
         assert sends[0]["attachments"][0].payload.startswith(b"\x89PNG")
-        # 发送后附件被消费，不再出现在待发送列表
+        # 发送后附件行删除（载荷随邮件离开，outbox 日志保留审计）
         assert await attachments.list_pending(owner.principal.user_id) == []
+        with pytest.raises(LookupError):
+            await attachments.get_owned(owner.principal.user_id, UUID(attachment_id))
     finally:
         await database.close()
 

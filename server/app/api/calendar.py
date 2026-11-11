@@ -157,7 +157,12 @@ def create_calendar_router(
                 if create_tool is not None
                 else 0
             )
-            return {"removed": removed, "previews_cancelled": cancelled}
+            mirrors_cancelled = await google_sync._mirror.cancel_local_mirrors(principal.user_id)
+            return {
+                "removed": removed,
+                "previews_cancelled": cancelled,
+                "mirrors_cancelled": mirrors_cancelled,
+            }
 
     if caldav_sync is not None:
 

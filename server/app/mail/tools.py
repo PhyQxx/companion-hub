@@ -220,7 +220,7 @@ class MailSendTool:
             await self._drafts.mark_unknown(draft)
             raise
         if self._attachments is not None and attachment_ids:
-            await self._attachments.mark_used(attachment_ids)
+            await self._attachments.delete_used(attachment_ids)
         completed = await self._drafts.complete(draft, dict(receipt))
         if self._outbox is not None:
             # 邮件已真实发出：日志只回查凭据（收件人/主题/message_id），

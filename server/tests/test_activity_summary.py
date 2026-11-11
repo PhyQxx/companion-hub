@@ -105,3 +105,89 @@ async def test_summary_api(tmp_path: Path) -> None:
             ).status_code == 204
     finally:
         await db.close()
+
+
+async def test_purge_conversation_invalidates_summaries_referencing_its_timeline(
+    tmp_path: Path,
+) -> None:
+    from app.db import ConversationRecord, TimelineEventRecord
+    from app.db.deletions import purge_conversation
+
+    db = create_database(f"sqlite+aiosqlite:///{tmp_path / 'purge.db'}")
+    async with db.engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    owner, other = uuid7(), uuid7()
+    conversation = uuid7()
+    now = datetime(2026, 11, 9, 8, 0, tzinfo=UTC)
+    try:
+        async with db.sessions.begin() as session:
+            session.add_all(
+                [
+                    AppUserRecord(id=user, display_name="User", status="active")
+                    for user in (owner, other)
+                ]
+            )
+            session.add(ConversationRecord(id=conversation, user_id=owner, title="被删会话"))
+            session.add(
+                TimelineEventRecord(
+                    user_id=owner,
+                    occurred_at=datetime(2026, 11, 8, 8, 0, tzinfo=UTC),
+                    source_type="message",
+                    source_id=str(uuid7()),
+                    actor="user",
+                    event_type="chat.message",
+                    conversation_id=conversation,
+                    summary="整理设计",
+                    privacy_level="L1",
+                )
+            )
+            session.add(
+                TimelineEventRecord(
+                    user_id=owner,
+                    occurred_at=datetime(2026, 11, 8, 8, 0, tzinfo=UTC),
+                    source_type="system",
+                    source_id=str(uuid7()),
+                    actor="user",
+                    event_type="browser.visited",
+                    conversation_id=None,
+                    summary="浏览记录",
+                    privacy_level="L1",
+                )
+            )
+            session.add(
+                TimelineEventRecord(
+                    user_id=other,
+                    occurred_at=datetime(2026, 11, 8, 8, 0, tzinfo=UTC),
+                    source_type="message",
+                    source_id=str(uuid7()),
+                    actor="user",
+                    event_type="chat.message",
+                    conversation_id=None,
+                    summary="别人的记录",
+                    privacy_level="L1",
+                )
+            )
+        service = ActivitySummaryService(db)
+        result = await service.build(owner, "daily", now=now)
+        assert "整理设计" in result.text
+        await service.build(other, "daily", now=now)
+
+        async with db.sessions.begin() as session:
+            assert await purge_conversation(session, conversation, user_id=owner)
+
+        async with db.sessions() as session:
+            owner_rows = list(
+                await session.scalars(
+                    select(ActivitySummaryRecord).where(ActivitySummaryRecord.user_id == owner)
+                )
+            )
+            other_rows = list(
+                await session.scalars(
+                    select(ActivitySummaryRecord).where(ActivitySummaryRecord.user_id == other)
+                )
+            )
+        # 引用被删会话时间线的摘要随源作废；他人摘要不受影响。
+        assert owner_rows == []
+        assert len(other_rows) == 1
+    finally:
+        await db.close()

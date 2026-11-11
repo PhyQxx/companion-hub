@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Sequence
 from datetime import UTC, datetime, timedelta
 from typing import Any, Literal, cast
 from uuid import UUID
@@ -18,6 +19,7 @@ from app.db import (
     ConversationRecord,
     Database,
     DeletionLedgerRecord,
+    MemoryRecord,
     MessageRecord,
     ProactiveQuotaEntryRecord,
     ReflectionCandidateRecord,
@@ -963,6 +965,9 @@ class CognitiveStore:
                     .limit(limit)
                 )
             )
+            parseable, live_ids = await self._live_evidence_ids(
+                session, [row for row in rows if row.evidence_ids]
+            )
         return [
             ReflectionCandidate(
                 content=row.content,
@@ -971,7 +976,32 @@ class CognitiveStore:
                 requires_confirmation=row.requires_confirmation,
             )
             for row in rows
+            # 证据围栏：UUID 形证据指向的行已随源删除（消息/记忆不复存在）
+            # 的候选不再挂出；非 UUID 证据无格式合同，保持透传。
+            if not any(eid in parseable and eid not in live_ids for eid in row.evidence_ids)
         ]
+
+    async def _live_evidence_ids(
+        self, session: AsyncSession, rows: Sequence[ReflectionCandidateRecord]
+    ) -> tuple[set[str], set[str]]:
+        """返回（可校验的 UUID 形证据, 其中仍存活的消息/记忆 id）。"""
+        parseable: dict[str, UUID] = {}
+        for row in rows:
+            for raw in row.evidence_ids:
+                try:
+                    parseable.setdefault(raw, UUID(str(raw)))
+                except ValueError:
+                    continue
+        if not parseable:
+            return set(), set()
+        ids = set(parseable.values())
+        live = set(
+            await session.scalars(select(MessageRecord.id).where(MessageRecord.id.in_(ids)))
+        )
+        live.update(
+            await session.scalars(select(MemoryRecord.id).where(MemoryRecord.id.in_(ids)))
+        )
+        return set(parseable), {str(item) for item in live}
 
 
 def _goal(record: CognitiveGoalRecord) -> GoalView:

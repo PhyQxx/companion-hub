@@ -141,6 +141,30 @@ class CalendarMirrorService:
             records = await self._local_rows(session, user_id)
         return _canonical_records(records)[0]
 
+    async def cancel_local_mirrors(self, user_id: UUID) -> int:
+        """来源断开后软取消全部活动镜像（与权威扫描"远端消失"同口径）。
+
+        断开后无 token 同步必失败，镜像行不会再有权威扫描来取消；
+        同步联动取消出发提醒任务（commute 依赖随 calendar: ref 一并处理）。
+        """
+        moment = datetime.now(UTC)
+        cancelled_refs: list[str] = []
+        async with self._database.sessions.begin() as session:
+            for local in await self._local_rows(session, user_id, lock=True):
+                if local.status != "active":
+                    continue
+                local.status = "cancelled"
+                local.updated_at = moment
+                cancelled_refs.append(f"calendar:{local.id}")
+            if cancelled_refs:
+                await TaskStore(self._database).cancel_tasks_by_source_refs_in_session(
+                    session,
+                    user_id,
+                    cancelled_refs,
+                    now=moment,
+                )
+        return len(cancelled_refs)
+
     def _cancel_local(
         self,
         local: CalendarEventRecord,

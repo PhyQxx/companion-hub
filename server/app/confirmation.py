@@ -105,7 +105,11 @@ class PendingMutationStore:
                     return item
                 if item.status == "pending":
                     item.status = "cancelled"
-        if len(self._items) >= self._limit:
+        # 回执不计容量：只数待受理（pending）与在途认领（saving）。
+        actionable = sum(
+            1 for item in self._items.values() if item.status in {"pending", "saving"}
+        )
+        if actionable >= self._limit:
             raise OverflowError("confirmation_preview_capacity")
         item = PendingMutation(
             id=uuid4(),
@@ -160,10 +164,12 @@ class PendingMutationStore:
         return item
 
     def _prune(self, now: datetime) -> None:
+        # 未受理预览（pending/cancelled）到期即清；已认领回执（saving/
+        # completed/unknown_outcome）独立保留，与 purge_conversation 口径一致。
         self._items = {
             key: item
             for key, item in self._items.items()
-            if item.expires_at > now or item.status == "saving"
+            if item.expires_at > now or item.status not in {"pending", "cancelled"}
         }
 
 
@@ -218,7 +224,12 @@ class DatabasePendingMutationStore:
                 .values(status="cancelled")
             )
             count = int(
-                await session.scalar(select(func.count()).select_from(PendingMutationRecord)) or 0
+                await session.scalar(
+                    select(func.count())
+                    .select_from(PendingMutationRecord)
+                    .where(PendingMutationRecord.status.in_(("pending", "saving")))
+                )
+                or 0
             )
             if count >= self._limit:
                 raise OverflowError("confirmation_preview_capacity")
@@ -347,10 +358,12 @@ class DatabasePendingMutationStore:
 
     async def _prune(self, now: datetime) -> None:
         async with self._database.sessions.begin() as session:
+            # 未受理预览（pending/cancelled）到期即清；已认领回执独立保留
+            # （purge_conversation 只删 pending 的同口径）。
             await session.execute(
                 delete(PendingMutationRecord).where(
                     PendingMutationRecord.expires_at <= now,
-                    PendingMutationRecord.status != "saving",
+                    PendingMutationRecord.status.in_(("pending", "cancelled")),
                 )
             )
 

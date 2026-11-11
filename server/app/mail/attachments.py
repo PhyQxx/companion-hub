@@ -154,23 +154,21 @@ class MailAttachmentStore:
                 .values(status="discarded")
             )
 
-    async def mark_used(self, attachment_ids: list[UUID]) -> None:
+    async def delete_used(self, attachment_ids: list[UUID]) -> None:
+        """发送成功后删除已消费附件：载荷随邮件离开，outbox 日志保留审计。"""
         if not attachment_ids:
             return
         async with self._database.sessions.begin() as session:
             await session.execute(
-                update(MailAttachmentRecord)
-                .where(MailAttachmentRecord.id.in_(attachment_ids))
-                .values(status="used")
+                delete(MailAttachmentRecord).where(MailAttachmentRecord.id.in_(attachment_ids))
             )
 
     async def delete_expired(self, *, now: datetime | None = None) -> int:
         current = now or datetime.now(UTC)
         async with self._database.sessions.begin() as session:
+            # 不再豁免 used 行：历史存量（升级前已标记 used 的载荷）随下次
+            # 惰性触发一并清出；新发送路径在发送成功后即硬删（delete_used）。
             result = await session.execute(
-                delete(MailAttachmentRecord).where(
-                    MailAttachmentRecord.expires_at <= current,
-                    MailAttachmentRecord.status != "used",
-                )
+                delete(MailAttachmentRecord).where(MailAttachmentRecord.expires_at <= current)
             )
         return int(cast(CursorResult[Any], result).rowcount or 0)

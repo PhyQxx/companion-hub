@@ -3,9 +3,10 @@
 from datetime import UTC, datetime
 from uuid import UUID
 
-from sqlalchemy import String, cast, delete, literal, select, update
+from sqlalchemy import String, cast, delete, literal, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from .activity_summaries import ActivitySummaryRecord
 from .models import (
     ActionPlanRecord,
     ActionStepRecord,
@@ -343,8 +344,26 @@ async def purge_conversation(
             TaskRunRecord.user_id == user_id,
         )
     )
+    # 活动摘要文本快照内嵌 timeline 事件标记：来源行随会话删除后，
+    # 引用它们的摘要一并作废（重建会丢失"生成时状态"语义，作废更诚实）。
+    timeline_ids = list(
+        await session.scalars(
+            select(TimelineEventRecord.id).where(
+                TimelineEventRecord.conversation_id == conversation_id
+            )
+        )
+    )
     await session.execute(
         delete(TimelineEventRecord).where(TimelineEventRecord.conversation_id == conversation_id)
     )
+    markers = [f"[timeline:{identifier}]" for identifier in timeline_ids]
+    for offset in range(0, len(markers), 100):
+        chunk = markers[offset : offset + 100]
+        await session.execute(
+            delete(ActivitySummaryRecord).where(
+                ActivitySummaryRecord.user_id == user_id,
+                or_(*[ActivitySummaryRecord.text.contains(marker) for marker in chunk]),
+            )
+        )
     await session.delete(conversation)
     return True

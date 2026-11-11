@@ -10,7 +10,13 @@ from uuid import UUID
 
 import httpx
 import pytest
+from fastapi import FastAPI
+from httpx import ASGITransport, AsyncClient
+from sqlalchemy import select
 
+from app.api.calendar import create_calendar_router
+from app.auth import AuthService
+from app.calendar import CalendarService, CalendarStore
 from app.calendar.google import (
     GoogleCalendarClient,
     GoogleCalendarError,
@@ -21,8 +27,17 @@ from app.calendar.google import (
     verify_state,
 )
 from app.config import ConfigStore
-from app.db import AppUserRecord, Base, Database, create_database
+from app.db import (
+    AppUserRecord,
+    Base,
+    CalendarEventRecord,
+    Database,
+    TaskItemRecord,
+    create_database,
+)
 from app.ids import uuid7
+from app.tasks.models import TaskStatus
+from app.tasks.store import TaskStore
 
 NOW = datetime(2026, 9, 16, 4, 0, tzinfo=UTC)
 
@@ -281,3 +296,113 @@ class TestGoogleSync:
                 client=httpx.AsyncClient(transport=httpx.MockTransport(bad.handler)),
             )
         assert exchange_failed.value.reason_code == "google_code_exchange_failed"
+
+
+class TestGoogleDisconnect:
+    async def test_disconnect_cancels_mirrors_and_linked_tasks(
+        self, database: Database, user_id: UUID, tmp_path: Path
+    ) -> None:
+        store = await _config_store(tmp_path)
+        auth = AuthService(database)
+        owner = await auth.setup(display_name="Disconnect owner", password="correct horse")
+        google = _service(database, store, FakeGoogleHttp([]))
+        service = CalendarService(CalendarStore(database), TaskStore(database))
+
+        mirror_active = CalendarEventRecord(
+            id=uuid7(),
+            user_id=owner.principal.user_id,
+            title="远端会议",
+            starts_at=NOW,
+            ends_at=NOW + timedelta(hours=1),
+            status="active",
+            source="google",
+            source_ref="google:evt-1",
+            created_at=NOW,
+            updated_at=NOW,
+        )
+        mirror_cancelled = CalendarEventRecord(
+            id=uuid7(),
+            user_id=owner.principal.user_id,
+            title="早已取消",
+            starts_at=NOW,
+            ends_at=NOW + timedelta(hours=1),
+            status="cancelled",
+            source="google",
+            source_ref="google:evt-2",
+            created_at=NOW,
+            updated_at=NOW,
+        )
+        local_event = CalendarEventRecord(
+            id=uuid7(),
+            user_id=owner.principal.user_id,
+            title="本地事件不受影响",
+            starts_at=NOW,
+            ends_at=NOW + timedelta(hours=1),
+            status="active",
+            source="api",
+            source_ref=None,
+            created_at=NOW,
+            updated_at=NOW,
+        )
+        reminder = TaskItemRecord(
+            id=uuid7(),
+            user_id=owner.principal.user_id,
+            title="会议提醒",
+            status=str(TaskStatus.ACTIVE),
+            trigger_type="time",
+            trigger_config={"type": "time", "at": "2026-09-16T04:30:00+00:00"},
+            source_ref=f"calendar:{mirror_active.id}",
+            next_fire_at=NOW + timedelta(minutes=30),
+            created_at=NOW,
+            updated_at=NOW,
+        )
+        unrelated_task = TaskItemRecord(
+            id=uuid7(),
+            user_id=owner.principal.user_id,
+            title="无关任务",
+            status=str(TaskStatus.ACTIVE),
+            trigger_type="time",
+            trigger_config={"type": "time", "at": "2026-09-16T04:30:00+00:00"},
+            source_ref="calendar:other",
+            next_fire_at=NOW + timedelta(minutes=30),
+            created_at=NOW,
+            updated_at=NOW,
+        )
+        async with database.sessions.begin() as session:
+            session.add_all(
+                [mirror_active, mirror_cancelled, local_event, reminder, unrelated_task]
+            )
+        await GoogleTokenStore(database).save(owner.principal.user_id, "refresh-1", None)
+
+        app = FastAPI()
+        app.include_router(
+            create_calendar_router(service, auth, google_sync=google, google_state_key="k")
+        )
+        headers = {"Authorization": f"Bearer {owner.access_token}"}
+        async with AsyncClient(
+            transport=ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            response = await client.delete("/api/v1/calendar/google/token", headers=headers)
+
+        assert response.status_code == 200, response.text
+        body = response.json()
+        assert body == {"removed": True, "previews_cancelled": 0, "mirrors_cancelled": 1}
+
+        async with database.sessions() as session:
+            rows = list(
+                await session.scalars(
+                    select(CalendarEventRecord).where(
+                        CalendarEventRecord.user_id == owner.principal.user_id
+                    )
+                )
+            )
+        by_id = {str(row.id): row for row in rows}
+        assert by_id[str(mirror_active.id)].status == "cancelled"
+        assert by_id[str(mirror_cancelled.id)].status == "cancelled"  # 原状，不重复计数
+        assert by_id[str(local_event.id)].status == "active"
+
+        tasks = TaskStore(database)
+        cancelled = await tasks.get_task(owner.principal.user_id, reminder.id)
+        assert cancelled.status == TaskStatus.CANCELLED
+        untouched = await tasks.get_task(owner.principal.user_id, unrelated_task.id)
+        assert untouched.status == TaskStatus.ACTIVE

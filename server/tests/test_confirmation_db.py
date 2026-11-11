@@ -145,6 +145,68 @@ class TestDatabasePendingMutationStore:
         rows = await DatabasePendingMutationStore(database).list(user_id)
         assert rows[0].status == "completed" and rows[0].result == {"id": "saved"}
 
+    async def test_prune_keeps_receipts_and_drops_unaccepted_previews(
+        self, database: Database, user_id: UUID
+    ) -> None:
+        # G5：TTL 修剪只清未受理预览（pending/cancelled）；
+        # 已认领回执独立保留，且不占用预览容量。
+        from sqlalchemy import select, update
+
+        from app.db import PendingMutationRecord
+
+        store = DatabasePendingMutationStore(database, limit=1)
+        receipt = await _prepare(store, user_id, content={"title": "receipt"})
+        claimed = await store.claim(user_id, receipt.id, receipt.digest)
+        await store.complete(claimed, {"id": "saved"})
+        cancelled = await _prepare(store, user_id, content={"title": "cancel"})
+        await store.cancel(user_id, cancelled.id)
+
+        # 把两行推旧到 TTL 之外，模拟时间流逝。
+        stale = datetime.now(UTC) - timedelta(hours=1)
+        async with database.sessions.begin() as session:
+            await session.execute(
+                update(PendingMutationRecord).values(expires_at=stale, created_at=stale)
+            )
+        # 触发修剪：新建一条未过期预览（回执不占 limit=1 容量）。
+        fresh = await _prepare(store, user_id, content={"title": "fresh"})
+        assert fresh.status == "pending"
+        async with database.sessions() as session:
+            rows = (
+                (
+                    await session.execute(
+                        select(PendingMutationRecord).order_by(PendingMutationRecord.created_at)
+                    )
+                )
+                .scalars()
+                .all()
+            )
+        statuses = {row.content["title"]: row.status for row in rows}
+        assert statuses.get("receipt") == "completed"
+        assert "cancel" not in statuses
+        # 回执仍在 store 全部行视图；模型侧展示由工具层过滤。
+        listed = {item.content["title"] for item in await store.list(user_id)}
+        assert "receipt" in listed and "fresh" in listed
+
+    async def test_unknown_outcome_receipt_survives_prune(
+        self, database: Database, user_id: UUID
+    ) -> None:
+        from sqlalchemy import update
+
+        from app.db import PendingMutationRecord
+
+        store = DatabasePendingMutationStore(database)
+        item = await _prepare(store, user_id, content={"title": "unknown"})
+        claimed = await store.claim(user_id, item.id, item.digest)
+        await store.mark_unknown(claimed)
+        stale = datetime.now(UTC) - timedelta(hours=1)
+        async with database.sessions.begin() as session:
+            await session.execute(
+                update(PendingMutationRecord).values(expires_at=stale, created_at=stale)
+            )
+        await _prepare(store, user_id, content={"title": "fresh"})
+        statuses = {entry.content["title"]: entry.status for entry in await store.list(user_id)}
+        assert statuses["unknown"] == "unknown_outcome"
+
     async def test_capacity_limit(self, database: Database, user_id: UUID) -> None:
         store = DatabasePendingMutationStore(database, limit=2)
         await _prepare(store, user_id, content={"title": "1"})

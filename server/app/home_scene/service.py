@@ -80,6 +80,10 @@ class HomeSceneService:
         return await self._store.get_scene_view(user_id, scene_id)
 
     async def delete_scene(self, user_id: UUID, scene_id: UUID) -> None:
+        # 先校验归属，再取消展开计划，最后删除：避免删除后残留活动计划
+        # 继续执行动作（idempotency 键前缀独立于场景行存在）。
+        await self._store.get_scene_view(user_id, scene_id)
+        await self._cancel_scene_plans(user_id, scene_id)
         await self._store.delete_scene(user_id, scene_id)
 
     async def set_enabled(self, user_id: UUID, scene_id: UUID, *, enabled: bool) -> HomeSceneView:
@@ -151,6 +155,26 @@ class HomeSceneService:
                     except ValueError:
                         # A concurrently completed plan no longer needs cancellation.
                         logging.getLogger(__name__).debug("arrival plan already terminal")
+            if len(page) < 100:
+                break
+            cursor = page[-1].id
+
+    async def _cancel_scene_plans(self, user_id: UUID, scene_id: UUID) -> None:
+        """删除场景前撤销其全部展开计划（感知与手动两种幂等键前缀）。"""
+        plans = self._plans() if callable(self._plans) else self._plans
+        prefixes = (f"scene:{scene_id}:", f"scene-arrival:{scene_id}:")
+        cursor: UUID | None = None
+        while True:
+            page = await plans.list_plans(user_id=user_id, active_only=True, before_id=cursor)
+            for plan in page:
+                if plan.idempotency_key.startswith(prefixes):
+                    try:
+                        await plans.cancel_plan(
+                            user_id=user_id, plan_id=plan.id, reason="scene_deleted"
+                        )
+                    except ValueError:
+                        # 并发中已终态的计划无需再撤销。
+                        logging.getLogger(__name__).debug("scene plan already terminal")
             if len(page) < 100:
                 break
             cursor = page[-1].id

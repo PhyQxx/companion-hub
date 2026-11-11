@@ -330,7 +330,6 @@ async def test_scene_notification_replay_recovery_and_departure(
     # An explicitly run plan should not be cancelled by an unrelated departure.
     manual = await scenes.run_manual(user_id, scene.id)
     assert manual is not None
-    await scenes.delete_scene(user_id, scene.id)
     restarted = HomeSceneService(HomeSceneStore(database), recovered_plans, registry)
     await restarted.handle_semantic_event(user_id, uuid4(), "user_left_home")
     cancelled = await recovered_plans.get_plan(user_id=user_id, plan_id=first[0].plan_id)
@@ -338,6 +337,11 @@ async def test_scene_notification_replay_recovery_and_departure(
     assert (
         await recovered_plans.get_plan(user_id=user_id, plan_id=manual.plan_id)
     ).status == "awaiting_confirmation"
+    # 删除场景撤销剩余展开计划（含手动），不再依赖后续离家事件兜底。
+    await restarted.delete_scene(user_id, scene.id)
+    cancelled_manual = await recovered_plans.get_plan(user_id=user_id, plan_id=manual.plan_id)
+    assert cancelled_manual.status == "cancelled"
+    assert cancelled_manual.cancel_reason == "scene_deleted"
 
 
 async def test_departure_stops_executing_scene_after_inflight_step(
@@ -423,3 +427,33 @@ async def test_delayed_departure_preserves_newer_arrival(database: Database, use
     ).status == "awaiting_confirmation"
     await service.on_departure(user_id, plan.created_at + timedelta(seconds=1))
     assert (await plans.get_plan(user_id=user_id, plan_id=plan.id)).status == "cancelled"
+
+
+async def test_delete_scene_cancels_expanded_plans(database: Database, user_id: UUID) -> None:
+    registry = build_builtin_action_registry()
+    plans = ActionPlanService(database, registry)
+    service = HomeSceneService(HomeSceneStore(database), plans, registry)
+    scene = await service.create_scene(
+        user_id=user_id, name="回家模式", trigger="user_arrived_home", steps=_steps()
+    )
+    other = await service.create_scene(
+        user_id=user_id, name="观影模式", trigger="manual", steps=_steps()
+    )
+    arrival = (await service.handle_semantic_event(user_id, uuid4(), "user_arrived_home"))[0]
+    manual = await service.run_manual(user_id, scene.id)
+    assert manual is not None
+    other_run = await service.run_manual(user_id, other.id)
+    assert other_run is not None and other_run.plan_id not in {arrival.plan_id, manual.plan_id}
+
+    await service.delete_scene(user_id, scene.id)
+
+    cancelled_arrival = await plans.get_plan(user_id=user_id, plan_id=arrival.plan_id)
+    assert cancelled_arrival.status == "cancelled"
+    assert cancelled_arrival.cancel_reason == "scene_deleted"
+    cancelled_manual = await plans.get_plan(user_id=user_id, plan_id=manual.plan_id)
+    assert cancelled_manual.status == "cancelled"
+    assert cancelled_manual.cancel_reason == "scene_deleted"
+    untouched = await plans.get_plan(user_id=user_id, plan_id=other_run.plan_id)
+    assert untouched.status == "awaiting_confirmation"
+    with pytest.raises(LookupError):
+        await service.delete_scene(user_id, scene.id)

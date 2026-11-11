@@ -160,6 +160,14 @@ class TestAvatarStore:
         default = await store.get_default_for_persona(1)
         assert default is None
 
+    async def test_delete_instance_clears_non_default_bindings(self, store: AvatarStore) -> None:
+        await store.load_builtin_packs()
+        instance = await store.create_instance("warm-daily", "bound")
+        await store.bind_to_persona(1, instance.id)
+        assert len(await store.list_bindings_for_persona(1)) == 1
+        assert await store.delete_instance(instance.id) is True
+        assert await store.list_bindings_for_persona(1) == []
+
     async def test_list_bindings(self, store: AvatarStore) -> None:
         await store.load_builtin_packs()
         i1 = await store.create_instance("warm-daily", "a")

@@ -6,7 +6,7 @@ from datetime import datetime
 from typing import Any
 from uuid import UUID
 
-from sqlalchemy import select, update
+from sqlalchemy import delete, select, update
 
 from app.db import (
     AvatarInstanceRecord,
@@ -322,6 +322,12 @@ class AvatarStore:
             )
             if current_binding is not None:
                 raise ValueError("default avatar cannot be deleted; switch the default first")
+            # 显式清理绑定，不依赖 FK ondelete=CASCADE（删除血缘显式化）。
+            await session.execute(
+                delete(PersonaAvatarBindingRecord).where(
+                    PersonaAvatarBindingRecord.avatar_instance_id == instance_id
+                )
+            )
             await session.delete(record)
             return True
 
