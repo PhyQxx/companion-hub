@@ -1,6 +1,6 @@
 # Aria 当前任务
 
-> 最后更新：2026-11-11（A-01 阶段一映射搬迁批次 9 已交付：config/persona 落域 persistence 包，业务提交 `ad1dd2f`；`db/configuration.py` 拆分两域、persona `__init__` 同批转懒加载，下一优先：剩余急加载域同法续搬、A-02/A-03 或 B-03 产品决策项）
+> 最后更新：2026-11-11（A-01 阶段一映射搬迁批次 10 已交付：auth/context 落域 persistence 包，业务提交 `4b7dc03`；`db/identity.py` 拆分两域、auth `__init__` 同批转懒加载，下一优先：剩余急加载域同法续搬、A-02/A-03 或 B-03 产品决策项）
 > 详细设计入口：[00-产品与架构.md](./00-产品与架构.md)
 > **进度查看入口：[整体架构与 Harness 改造进度](./架构改造进度.md)**（模块状态、剩余工作包、验收缺口和下一批队列）
 
@@ -64,7 +64,7 @@
 - [x] B 聊天运行核心：TaskRun/Event、owner 查询/取消和事件补读、状态版本/取消代次、Plan/委派 Job 关联；文字 REST 可选 client_request_id 重放已完成回复并拒绝冲突。succeeded 仅表示回复提交，历史和独立入口保留 nullable 兼容。
 - [x] B 可靠后处理：与回复同事务入队；lifespan 拥有维护 worker；租约心跳、有限重试与 worker/attempt fencing；恢复读取当前配置并重新校验源；记忆、技能、承诺和时间线事务校验/局部去重，删源不复活。不是任意外部副作用的 exactly-once 保证。
 - [x] 本批验收：全量后端 **1,186 通过 / 2 集成跳过**；严格类型检查 444 文件、lint、架构检查、Schema/TS 同步、Chat/Admin 类型与构建通过；单 head `0060_task_runs`、临时 SQLite 空库实际升级、PostgreSQL 离线 SQL 导出及差异检查通过。安全提醒关闭时的任务清理竞态修复并有回归。没有升级运行库或完成 PostgreSQL 并发、真实模型/真机验收。
-- [ ] A/B 后续迁移：模型 tokenizer 校准、领域仓储/provider 与剩余模块生命周期、删除血缘补齐（B-03 第一批已交付 G1/G4/G5/G7/G8/G9 围栏/G10；G2/G3/G6 与 G9 状态迁移待产品决策；A-01 逐入口清单已盘点落 00 §157、映射搬迁批次 1~9 已交付 meetings/tasks/calendar/contacts/memory/timeline/cognition/avatar/appearance/mail/workflows/skills/jobs+assets/config/persona、剩余急加载域待转懒加载后续搬）和恢复重放；非聊天入口 TaskRun、切面配置开关和回退演练。
+- [ ] A/B 后续迁移：模型 tokenizer 校准、领域仓储/provider 与剩余模块生命周期、删除血缘补齐（B-03 第一批已交付 G1/G4/G5/G7/G8/G9 围栏/G10；G2/G3/G6 与 G9 状态迁移待产品决策；A-01 逐入口清单已盘点落 00 §157、映射搬迁批次 1~10 已交付 meetings/tasks/calendar/contacts/memory/timeline/cognition/avatar/appearance/mail/workflows/skills/jobs+assets/config/persona/auth+context、剩余急加载域待转懒加载后续搬）和恢复重放；非聊天入口 TaskRun、切面配置开关和回退演练。
 - [x] C 首批：文字/流式/语音共用 Harness 有界循环；终轮擅自返回调用不执行、本轮挂载名单检查、每轮来源校验与取消检查；现有确认和记忆一致性 Guard 保留。ExecutionOutcome 与内容无关的行动证据投影接入运行详情，回执 V1、已有状态校验 V3，无证据仍 V0，未知写结果需核对。完整 TaskRun 业务成功聚合尚未实施。
 - [x] C 首批最终验收：全量 **1,206 通过 / 2 集成跳过**；严格类型检查 449 文件、lint、架构检查、契约同步、Shared/Chat/Admin 类型与构建、差异检查通过。没有增加迁移，运行库与真实环境验收状态不变。
 - [x] D 聊天模型预算首批：同回合 Router 提供方调用原子预留与幂等结算，跟进/repair/retry/fallback/维护共享额度；未知或部分 usage 保留扣占；保留无工具终答名额与绝对模型 deadline；维护预算拒绝终止重试，运行查询与文字/语音错误提示接入。迁移 `0061_model_budget`，表集合 72。
@@ -420,6 +420,8 @@
 
 ## 3. 最近完成
 
+- [x] 2026-11-11 `A-01 阶段一映射搬迁批次 10：auth/context 落域 persistence 包（零行为变化）`：`db/identity.py` 拆分——AppUserRecord/AuthCredentialRecord/AuthSessionRecord → `app/auth/persistence/`，ObservationOwnerBindingRecord → `app/context/persistence/`（类体原样搬移、`__module__="app.db.models"` 映射身份保留），原文件转迁移期兼容重导出；auth 急加载 `__init__` 同批转懒加载 `resolve_export` 模式，`mapped_records.json` 4 项改指新模块。**验证**：架构门禁零豁免；`test_harness_architecture.py` 57 项全绿；受影响回归：AppUserRecord 为全域 FK 锚点（引用测试约百文件 ≈ 全量），以全量 `-n 4` 对照为受影响回归 **3111 通过、失败 15 项全为登记基线、零新增**；隔离空 SQLite `alembic upgrade head` **77 表与快照零差集**；ruff check+format、mypy 零错。**限制**：未跑 PG 集成。**下一优先**：剩余急加载域（todo/home_scene/safety）同法续搬，及 db 侧其余映射文件（claims/conversation/costs/deletions/delivery/devices/events/home/registry/runs/activity_summaries）按域归属分批；或 A-02/A-03、B-03 产品决策项。业务提交哈希 `4b7dc03`（已回填，2026-11-11）。
+
 - [x] 2026-11-11 `A-01 阶段一映射搬迁批次 9：config/persona 落域 persistence 包（零行为变化）`：`db/configuration.py` 拆分——ConfigVersionRecord/ConfigPointerRecord → `app/config/persistence/`，PersonaVersionRecord/PersonaPointerRecord → `app/persona/persistence/`（类体原样搬移、`__module__="app.db.models"` 映射身份保留），原文件转迁移期兼容重导出；persona 急加载 `__init__` 同批转懒加载 `resolve_export` 模式，`mapped_records.json` 4 项改指新模块。**验证**：架构门禁零豁免；`test_harness_architecture.py` 57 项全绿；受影响回归（harness+test_database_config/test_avatar）**86 通过 / 0 失败**；隔离空 SQLite `alembic upgrade head` **77 表与快照零差集**；ruff check+format、mypy 零错；全量 `-n 4` 失败集与基线 15 项逐一一致、零新增。**限制**：未跑 PG 集成。**下一优先**：剩余急加载域（todo/home_scene/auth/safety）同法续搬，及 db 侧其余映射文件（claims/conversation/costs/deletions/delivery/devices/events/home/identity/registry/runs/activity_summaries）按域归属分批；或 A-02/A-03、B-03 产品决策项。业务提交哈希 `ad1dd2f`（已回填，2026-11-11）。
 
 - [x] 2026-11-11 `A-01 阶段一映射搬迁批次 8：jobs/assets 落域 persistence 包（零行为变化）`：JobRecord/JobStepRecord/JobArtifactRecord 与 AssetRecord/AssetReferenceRecord/AssetDerivationRecord（资产归 jobs 域，asset_store 位于 app/jobs）→ `app/jobs/persistence/`（类体原样搬移、`__module__="app.db.models"` 映射身份保留），`db/jobs.py`/`db/assets.py` 转迁移期兼容重导出；jobs 急加载 `__init__` 同批转懒加载 `resolve_export` 模式，`mapped_records.json` 6 项改指新模块。**验证**：架构门禁零豁免；`test_harness_architecture.py` 57 项全绿；受影响回归 23 文件 **411 通过 / 0 失败**（run/claim/job/asset/perception/deletion/workflow_drafts/self_check 系列等）；隔离空 SQLite `alembic upgrade head` **77 表与快照零差集**；ruff check+format、mypy 零错；全量 `-n 4` 失败集与基线 15 项逐一一致、零新增。**新发现约束**：persistence 模块不能先于 `app.db` 冷导入（真实链路均以 `app.db` 为入口，不受影响）。**限制**：未跑 PG 集成。**下一优先**：剩余急加载域（todo/home_scene/persona/auth/safety）同法续搬，及 db 侧其余映射文件（claims/configuration/conversation/costs/deletions/delivery/devices/events/home/identity/registry/runs/activity_summaries）按域归属分批；或 A-02/A-03、B-03 产品决策项。业务提交哈希 `966994f`（已回填，2026-11-11）。
@@ -742,5 +744,15 @@
 
 - [x] 代码交付：独立日/周归档、60 秒调度、用户隔离、唯一键幂等持久化、历史分页/手动生成/删除 API；迁移 0071。详见 [综合活动总结](./综合活动总结.md)。首版为五类事实摘录，每类最多 100 条，不调用模型；不影响 REVIEW-01。
 - [x] 相关验证：报告 + 晚间回顾 10 项通过（已有一条 HTTP 422 弃用警告）；新增模块/测试 mypy、Ruff、架构门禁及 diff 检查通过；隔离 SQLite 空库迁移到单 head 0071 成功。
-- [ ] 剩余与下一优先级：后台历史 UI、源删除联动/禁止重生成策略；当前独立快照须单独删除，最新周期删除后调度可重建。模型主题归纳、更多历史缺口补齐暂未实现。
+- [ ] 剩余与下一优先级：源删除联动/禁止重生成策略；当前独立快照须单独删除，最新周期删除后调度可重建。模型主题归纳、更多历史缺口补齐暂未实现。
 - [ ] 验收：PostgreSQL、冻结源码全量、性能、运行库迁移与真实环境调度尚未验收；本批未提交/部署，实际业务提交哈希待产生后补记。
+
+
+### SUMMARY-01 后台历史入口（2026-11-11）
+
+- [x] 代码：个人管家 → 简报与回顾新增日/周总结切换、每页 10 条历史、日期范围及展开正文、加载/空态/失败重试。新增只读 Admin API，沿用个人管家用户范围控制；原简报/回顾保留。
+- [x] 相关证据：管家与总结测试 12 项通过，覆盖新增 API 鉴权、类型筛选、分页、用户筛选与非法参数；前端 typecheck、后端两文件 mypy/Ruff 通过。
+- [ ] 剩余及下一优先级：真实浏览器与运行环境验收、源删除联动/禁止重生成策略；本批未运行冻结源码全量或性能测试，未部署。
+- 业务基线：前批自动总结实际提交为 `e6ac51e`；本批 UI 尚未提交，不以历史验证替代本批证据。
+
+- 本批构建：Node 22.23.1 下 production build 通过（依赖 PURE 注释警告）；默认 Node 18 构建失败，需使用 Node 22。diff 检查通过，尚未做真实浏览器验收。
