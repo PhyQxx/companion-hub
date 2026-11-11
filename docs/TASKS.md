@@ -1,6 +1,6 @@
 # Aria 当前任务
 
-> 最后更新：2026-11-10（F-06 safety 路由注册顺序修复交付；执行队列未变，下一优先 B-02～B-03）
+> 最后更新：2026-11-11（B-02 全域删除血缘清单核对完成，落 00 §156；B-03 缺口 G1～G11 待修；执行队列未变，下一优先 B-03 或 A-01～A-03）
 > 详细设计入口：[00-产品与架构.md](./00-产品与架构.md)
 > **进度查看入口：[整体架构与 Harness 改造进度](./架构改造进度.md)**（模块状态、剩余工作包、验收缺口和下一批队列）
 
@@ -64,7 +64,7 @@
 - [x] B 聊天运行核心：TaskRun/Event、owner 查询/取消和事件补读、状态版本/取消代次、Plan/委派 Job 关联；文字 REST 可选 client_request_id 重放已完成回复并拒绝冲突。succeeded 仅表示回复提交，历史和独立入口保留 nullable 兼容。
 - [x] B 可靠后处理：与回复同事务入队；lifespan 拥有维护 worker；租约心跳、有限重试与 worker/attempt fencing；恢复读取当前配置并重新校验源；记忆、技能、承诺和时间线事务校验/局部去重，删源不复活。不是任意外部副作用的 exactly-once 保证。
 - [x] 本批验收：全量后端 **1,186 通过 / 2 集成跳过**；严格类型检查 444 文件、lint、架构检查、Schema/TS 同步、Chat/Admin 类型与构建通过；单 head `0060_task_runs`、临时 SQLite 空库实际升级、PostgreSQL 离线 SQL 导出及差异检查通过。安全提醒关闭时的任务清理竞态修复并有回归。没有升级运行库或完成 PostgreSQL 并发、真实模型/真机验收。
-- [ ] A/B 后续迁移：模型 tokenizer 校准、领域仓储/provider 与剩余模块生命周期、全域删除血缘和恢复重放；非聊天入口 TaskRun、切面配置开关和回退演练。
+- [ ] A/B 后续迁移：模型 tokenizer 校准、领域仓储/provider 与剩余模块生命周期、删除血缘补齐（清单已核对 B-02，G1～G11 待修）和恢复重放；非聊天入口 TaskRun、切面配置开关和回退演练。
 - [x] C 首批：文字/流式/语音共用 Harness 有界循环；终轮擅自返回调用不执行、本轮挂载名单检查、每轮来源校验与取消检查；现有确认和记忆一致性 Guard 保留。ExecutionOutcome 与内容无关的行动证据投影接入运行详情，回执 V1、已有状态校验 V3，无证据仍 V0，未知写结果需核对。完整 TaskRun 业务成功聚合尚未实施。
 - [x] C 首批最终验收：全量 **1,206 通过 / 2 集成跳过**；严格类型检查 449 文件、lint、架构检查、契约同步、Shared/Chat/Admin 类型与构建、差异检查通过。没有增加迁移，运行库与真实环境验收状态不变。
 - [x] D 聊天模型预算首批：同回合 Router 提供方调用原子预留与幂等结算，跟进/repair/retry/fallback/维护共享额度；未知或部分 usage 保留扣占；保留无工具终答名额与绝对模型 deadline；维护预算拒绝终止重试，运行查询与文字/语音错误提示接入。迁移 `0061_model_budget`，表集合 72。
@@ -212,7 +212,7 @@
 - [x] B/D 联系人补丁与名称并发裁决（§153）：创建/更新先锁实际 owner，同事务 casefold 名称/别名唯一检查；更新以 ID/owner 条件写锁合并最新字段，返回已提交视图。新增三种事务模式 21 项，旧源码专项 13 失败/8 通过；首轮关联 70、最终联系人/删除/后代/恢复关联 98 通过（41.25 秒），轮次重叠，无资源警告；类型 774 与后端/Schema 门禁通过。76 表/0068 不变，全量/性能与其余领域规则仍待收口。
 - [x] B/D 删除来源的 Job 内容清除（§154）：后代步骤检查点/自定义名称及 Job 步骤/错误字段清除，状态/时间/进度保留，独立 Job 不受影响；完成/失败回执第一写锁所属 Job，删除后不回写内容。新增三种事务模式 33 项，旧备份恢复包含步骤内容；首次专项复现 2 个 SQLite 显式事务升级，修复后旧源码对照 34 失败/5 通过，最终关联 159 通过（52.63 秒）、无资源警告，类型 775 与后端/Schema 门禁通过。76 表/0068 不变，全量/性能及其余领域审计规则仍待继续。
 - [x] B/C 未开始行动来源内容清除（§155）：从未开始且无结果的来源步骤参数/验证载荷清空，没有执行证据的待执行/取消/过期计划标题清空；实际/未知尝试审计及独立计划保留。认领第一写锁实际 owner 计划，等待删除后拒绝执行；备份恢复同步。新增 30 项，认领专项复现两个 SQLite 事务升级，旧源码对照 19 失败/17 通过，最终关联 127 全部通过（46.32 秒），无资源警告；类型 776 与后端/Schema 门禁通过。76 表/0068 不变，全量/性能仍待最终验收，确认预览来源绑定单独继续。
-- [ ] 剩余代码范围：领域 repository/provider 分离；剩余领域删除血缘及审计保留规则（含持久确认预览来源绑定与在途终态）；全部非聊天入口 Run/父预算、直接领域连接预算、ASR/TTS/媒体费用预留、提供方账单核对；更多明确声明的业务判据与实际证据；配置回退演练与性能基线。已交付各增量不等于 A–F 全部完成。
+- [ ] 剩余代码范围：领域 repository/provider 分离；剩余领域删除血缘及审计保留规则（血缘清单已核对 B-02 见 00 §156，G1～G11 待修；持久确认预览来源绑定与在途终态已交付 `9d7965b`）；全部非聊天入口 Run/父预算、直接领域连接预算、ASR/TTS/媒体费用预留、提供方账单核对；更多明确声明的业务判据与实际证据；配置回退演练与性能基线。已交付各增量不等于 A–F 全部完成。
 - [ ] 外部环境验收：真实模型、授权测试连接/设备与发布环境验证；需要逐项记录环境和证据，不用模拟回归替代。
 
 
@@ -419,6 +419,8 @@
 - [x] 验收后按 `docs/07` 的实施顺序接真实数据：health/activity/usage/quality/conflicts/pairing/diagnostics + logs/privacy/system 三个聚合 dashboard（含实时日志独立 Tab）已全部接入真实数据；Trace、隐私审计、备份恢复和成本能力按 M3B 计划推进。
 
 ## 3. 最近完成
+
+- [x] 2026-11-11 `B-02 全域删除血缘清单核对（核对产物，无业务代码变更）`：按 §21 口径（来源/派生/独立已接受产物/删除入口/来源围栏/恢复重放路径）逐域核对，完整清单落 [docs/00-产品与架构.md §156](./00-产品与架构.md#156-全域删除血缘现状清单b-02-核对2026-11-11)。**第一组（台账与级联已覆盖）**：会话/消息——`delete_conversation`（`chat/service.py:854-886`，先记 message 台账 `always_record=True` 再级联）→ `purge_conversation`（`db/deletions.py:135-350`）删记忆链/时间线/认知目标(message)/技能草稿/流程草稿/pending 预览/Run 后代，独立保留已尝试步骤回执、脱敏 Job/Plan 审计；记忆——`hard_delete`（`memory/store.py:644-667`）沿 supersede 链删派生与 conflict 指针并记 memory 台账；时间线随会话级联+`enforce_sources` 围栏；恢复重放基建——台账 CHECK 仅 memory/message（`db/memory.py:222-224`）、唯一写入入口 `_record_ledger`（`memory/store.py:860-889`）、journal fsync（`privacy/deletion_journal.py`）、启动先导入 journal 再重放（`wiring/lifespan.py:113-142`）、七类来源围栏（`_guard_sources`/timeline `_insert`/skills `save_draft`/context `validate_references`/cognition `save_decision`+`create_goal`+`goal_visibility`/plan_delivery）。**第二组（其余 12 域现状）**：contacts/calendar 镜像/mail/tasks-todo/safety/home_scene/avatar/workflows 发布/activity_summaries/focus/skills 凭据/reflection_candidate/用户级——均不写台账、不参与恢复重放，逐域现状行见 §156。**第三组（B-03 缺口 G1～G11）**：G1 断开 Google 不清理镜像（`api/calendar.py:150-160` 只删 token/state/预览）；G2 其余实体删除恢复复活，台账 kind 扩展需迁移+journal 版本化决策；G3 日历/tasks 软取消行无保留策略；G4 邮件附件 used 行永不清理且 TTL 无调度器（`mail/attachments.py:167-176` 仅惰性触发）；G5 预览 `_prune`（`confirmation.py:348-355`）删除 completed 回执与会话删除保留口径矛盾、saving 豁免残留；G6 safety 告警/升级/授权只增不删；G7 活动摘要快照与源解耦（删源后仍含已删事实）；G8 `delete_scene`（`home_scene/service.py:82-83`）不撤其展开的未完成计划；G9 ReflectionCandidateRecord 全仓无删除/状态迁移/来源围栏（仅插入 `cognition/store.py:929-949`、仅查 pending `:951-966`）；G10 avatar 绑定仅靠 DB FK `ondelete=CASCADE`（`db/appearance.py:99-102`），SQLite 引擎（`db/session.py:34`）未启用 FK pragma；G11 测试盲区（Google 断开路由/附件周期清理/_prune 回执行为/safety 过期独立用例/候选专项）。**验证与限制**：盘点=两份只读代码研究 + 8 项关键断言人工复核（含全仓 grep 证明 ReflectionCandidateRecord 无 delete/update、`_prune` 实删非 saving 行等）；行号以 2026-11-11 源码为准；G2/G3/G6 含产品保留策略决策，不属纯代码修复；无代码/测试变更，未跑测试。业务基线仍为 `716bc99`（本批 docs-only，不回填业务哈希）。
 
 - [x] 2026-11-10 `F-06：safety 路由注册顺序修复（P1-2c 手测新发现缺口，当日交付）`：`wiring/runtime.py` 中用户侧 `create_safety_router` 注册原在 contacts 块内、早于 `register_proactive_stack` 对 `safety_alert_service` 的赋值，条件恒假 → `/api/v1/safety/alerts` 恒 404（SafetyAlerts 面板拿不到数据）。**归因修正**：缺陷预存自 `57190f4`（2026-09-14 chat-side alert API 引入，注册在 SafetyAlertService 构造之前）；`314f13f`（PERE-03 第六批）拆分时保留了原顺序，此前文档误记为该提交引入。修复：safety 路由注册移出 contacts 块、置于 `register_proactive_stack` 调用之后（与 contacts 解耦），行为不变。回归：`test_safety.py` 新增 `test_assembled_app_registers_chat_safety_routes`——真实 `DatabaseConfigStore` 驱动 create_app 装配路径（fake store 不触发装配段），断言路由展开后含 `/api/v1/safety/alerts` 与 `/api/v1/safety/alerts/{alert_id}/ack`（fastapi 0.141 include_router 惰性化，需经 `effective_candidates` 展开），且未认证 GET 返回 401/422 而非 404（行为层断言，对版本内部结构不敏感）；守门验证——stash 修复后该测试按预期失败（缺路由）、恢复后通过。`test_safety.py` 13 项全通过；`test_harness_architecture.py` + `test_module_lifecycle_interrupts.py` 仅 3 项预存架构快照失败（`mapped_tables.json`/`mapped_ddl_sha256.json` 未随 SUMMARY-01 更新，基线已登记）；ruff、严格 mypy（--no-incremental）零错。**限制**：真实浏览器端到端（SafetyAlerts 面板拉取渲染）未复测；本批只改装配顺序，safety 服务逻辑与 Admin 侧路由未动。业务提交哈希 `716bc99`（已回填，2026-11-10）。
 
