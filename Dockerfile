@@ -31,5 +31,10 @@ COPY --from=web-build /web/apps/dist ./web/apps/dist
 COPY deploy/hub-entrypoint.sh /usr/local/bin/hub-entrypoint
 RUN chmod +x /usr/local/bin/hub-entrypoint
 
+# Stamp after source/static assets so every changed image has a distinct identity.
+ARG BUILD_REVISION=""
+COPY deploy/write-build-info.py /tmp/write-build-info.py
+RUN BUILD_REVISION="$BUILD_REVISION" /app/.venv/bin/python /tmp/write-build-info.py
+
 EXPOSE 8000
 ENTRYPOINT ["hub-entrypoint"]

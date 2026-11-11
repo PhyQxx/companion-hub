@@ -12,6 +12,7 @@ import {
   type PrivacyLevel,
   type ThemePreference,
 } from "@aria/shared";
+import DeploymentInfo from "./DeploymentInfo.vue";
 import GoogleCalendarConnection from "./GoogleCalendarConnection.vue";
 
 defineProps<{
@@ -80,6 +81,7 @@ const emit = defineEmits<{
       </div>
     </div>
     <div class="aside-footer">
+      <div class="footer-heading"><span>偏好与连接</span><a class="debug-link" href="/chat/debug">调试台 ↗</a></div>
       <label class="theme-field">
         <span>界面主题</span>
         <select v-model="themePreference" aria-label="界面主题" @change="emit('themeChanged')">
@@ -87,7 +89,7 @@ const emit = defineEmits<{
         </select>
       </label>
       <GoogleCalendarConnection v-if="privacy === 'L1'" :key="token" :token="token" />
-      <a class="debug-link" href="/chat/debug">调试台</a>
+      <DeploymentInfo compact />
     </div>
   </aside>
 </template>
@@ -115,15 +117,21 @@ const emit = defineEmits<{
 .conversation-action:hover:not(:disabled),.conversation-action:focus-visible { border-color:transparent; background:var(--accent-soft); color:var(--accent); outline:none; }
 .conversation-action.danger-action:hover:not(:disabled),.conversation-action.danger-action:focus-visible { background:color-mix(in srgb,var(--danger) 10%,var(--panel)); color:var(--danger); }
 .debug-link { color: var(--muted); font-size: 12px; text-decoration: none; }
-.aside-footer { display:flex; align-items:end; gap:8px; min-width:0; padding-top:10px; border-top:1px solid var(--line); }
-.theme-field { display:grid; flex:1; min-width:0; gap:5px; color:var(--muted); font-size:10px; }
-.theme-field select { min-width:0; width:100%; padding:7px 9px; font-size:12px; }
-.aside-footer .debug-link { flex:none; padding:8px 2px; }
+.aside-footer { display:grid; flex:none; gap:10px; min-width:0; max-height:50%; overflow-y:auto; padding:12px; border:1px solid var(--line); border-radius:12px; background:var(--panel); }
+.footer-heading { display:flex; align-items:center; justify-content:space-between; gap:8px; color:var(--muted); font-size:11px; }
+.theme-field { display:grid; grid-template-columns:auto minmax(0,1fr); align-items:center; gap:12px; min-width:0; color:var(--text); font-size:12px; }
+.theme-field select { min-width:0; width:100%; min-height:34px; padding:6px 8px; border-radius:8px; font-size:12px; }
+.aside-footer .debug-link { flex:none; padding:4px 0; font-size:11px; }
+.debug-link:hover { color:var(--accent); }
+.debug-link:focus-visible { outline:2px solid var(--accent); outline-offset:3px; }
+.aside-footer :deep(.calendar-connection) { min-width:0; border-top:1px solid var(--line); padding-top:8px; }
+.aside-footer :deep(.calendar-connection summary) { padding:5px 0; line-height:1.5; }
+.aside-footer :deep(.calendar-actions button) { min-height:34px; padding:7px; font-size:11px; }
 
 @media (max-width: 760px) {
   .conversation-heading { display:flex; }
   .conversation-list { display:grid; overflow-x:hidden; overflow-y:auto; gap:6px; }
   .conversation-item { flex:initial; }
-  .aside-footer { display:flex; }
+  .aside-footer { display:grid; max-height:55%; }
 }
 </style>

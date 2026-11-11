@@ -10,7 +10,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.responses import FileResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
@@ -18,6 +18,7 @@ from app import __version__
 from app.adapters import AdapterRegistry
 from app.api.events import create_event_router
 from app.avatar import AvatarStore
+from app.build_info import build_info
 from app.bus import DispatcherWorker
 from app.config import ConfigStore, DatabaseConfigStore
 from app.db import Database
@@ -51,9 +52,7 @@ def register_frontend(
             name="admin-assets",
         )
     chat_root = Path(__file__).parent.parent / "chat_ui"
-    app.mount(
-        "/chat/debug/assets", StaticFiles(directory=chat_root), name="chat-debug-assets"
-    )
+    app.mount("/chat/debug/assets", StaticFiles(directory=chat_root), name="chat-debug-assets")
     pet_ui_root = Path(__file__).parent.parent / "pet_ui"
     app.mount(
         "/desktop/pet",
@@ -171,6 +170,13 @@ def register_frontend(
             # 合并后的 SPA 回退：/chat/admin 等子路由均由前端路由接管
             return FileResponse(chat_dist / "index.html")
 
+    deployment = build_info()
+
+    @app.get("/api/v1/meta/version", tags=["system"])
+    async def version_info(response: Response) -> dict[str, str | None]:
+        response.headers["Cache-Control"] = "no-store"
+        return deployment
+
     @app.get("/healthz", tags=["system"])
     async def health() -> dict[str, object]:
         dispatcher = None
@@ -183,7 +189,11 @@ def register_frontend(
             }
             if not worker.state.running or worker.state.last_error is not None:
                 status = "degraded"
-        result: dict[str, object] = {"status": status, "version": __version__}
+        result: dict[str, object] = {
+            "status": status,
+            "version": __version__,
+            "deployment": deployment,
+        }
         modules = getattr(app.state, "module_registry", None)
         if modules is not None:
             result["modules"] = {
@@ -269,9 +279,7 @@ def register_frontend(
             # 前端据此决定定位授权节奏(每次询问/会话内允许); 不含任何密钥。
             result["location_policy"] = {
                 "tools_enabled": config_store.current.config.tools.enabled,
-                "precise": (
-                    config_store.current.config.tools.query.precise_location_policy
-                ),
+                "precise": (config_store.current.config.tools.query.precise_location_policy),
             }
         if persona_store is not None:
             persona_snapshot = await persona_store.refresh()
@@ -297,9 +305,7 @@ def register_frontend(
     @app.get("/api/v1/meta/adapters", tags=["system"])
     async def adapters_view() -> dict[str, object]:
         return {
-            "adapters": [
-                manifest.model_dump(mode="json") for manifest in adapters.list_manifests()
-            ]
+            "adapters": [manifest.model_dump(mode="json") for manifest in adapters.list_manifests()]
         }
 
     @app.get("/api/v1/meta/config", tags=["system"])

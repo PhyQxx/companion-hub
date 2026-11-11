@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import DeploymentInfo from "../DeploymentInfo.vue";
 import { computed, provide, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { AdminApi, ChatApi } from "@aria/shared";
@@ -182,6 +183,7 @@ else {
         </section>
       </nav>
       <div class="privacy-note"><span class="dot"></span>{{ statusText }}</div>
+      <DeploymentInfo />
     </aside>
     <main>
       <header class="topbar">
