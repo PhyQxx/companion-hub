@@ -1,5 +1,6 @@
-from .activity_summaries import ActivitySummaryRecord as ActivitySummaryRecord
-from .costs import ModelCostRecord
+# models must load before the shim re-exports below: their persistence packages
+# de-stringify mapped annotations against app.db.models (see A-01 batch 14).
+from .costs import ModelCostRecord  # noqa: I001
 from .models import (
     ActionPlanRecord,
     ActionResultRecord,
@@ -78,6 +79,7 @@ from .models import (
     WorkflowDraftRecord,
     WorkflowRecord,
 )
+from .activity_summaries import ActivitySummaryRecord as ActivitySummaryRecord
 from .session import Database, create_database
 
 __all__ = [
