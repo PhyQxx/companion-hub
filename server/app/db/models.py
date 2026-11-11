@@ -11,6 +11,9 @@ from .actions import (
     ActionStepRecord,
     PendingMutationRecord,
 )
+from .activity_summaries import (
+    ActivitySummaryRecord,
+)
 from .appearance import (
     AvatarInstanceRecord,
     AvatarPackRecord,
@@ -132,6 +135,7 @@ __all__ = [
     "ActionPlanRecord",
     "ActionResultRecord",
     "ActionStepRecord",
+    "ActivitySummaryRecord",
     "Any",
     "AppUserRecord",
     "AssetDerivationRecord",

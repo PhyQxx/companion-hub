@@ -553,9 +553,12 @@ def test_mapped_ddl_is_unchanged_for_sqlite_and_postgresql() -> None:
 def test_domain_mapping_definitions_only_depend_on_shared_base() -> None:
     records = json.loads((ROOT / "server" / "architecture" / "mapped_records.json").read_text())
     for module in set(records.values()):
-        path = ROOT / "server" / Path(*module.split(".")).with_suffix(".py")
+        base = ROOT / "server" / Path(*module.split("."))
+        path = base / "__init__.py" if base.is_dir() else base.with_suffix(".py")
         source = path.read_text()
-        dependencies = set(check_architecture.imports(source, module))
+        dependencies = set(
+            check_architecture.imports(source, module, package=path.name == "__init__.py")
+        )
         assert {name for name in dependencies if name.startswith("app.")} <= {
             "app.db.base",
             "app.db.base.Base",

@@ -10,6 +10,9 @@ from .base import Base
 
 
 class ActivitySummaryRecord(Base):
+    # Preserve legacy mapper ordering and serialized class references.
+    __module__ = "app.db.models"
+
     __tablename__ = "activity_summary"
     __table_args__ = (
         UniqueConstraint("user_id", "kind", "period_start", name="uq_activity_summary_period"),

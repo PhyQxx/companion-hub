@@ -11,6 +11,10 @@
     "postgresql": "d1f9c7fb1281a839f8c232fd60073145aa3619e163e6610d3c996547b741729d",
     "sqlite": "1159e8a01071d0c519be670f3251bc51952f349ef26bf9fc77e989bbbb285ced"
   },
+  "activity_summary": {
+    "postgresql": "be8898abe0502550ba446cc57d1467565486526995825a8138fb29dd6bf68108",
+    "sqlite": "fa2ebb0217528046b1edecd5a6f1c82f8fe12e8bc2a313d4260cc3b180399a5d"
+  },
   "app_user": {
     "postgresql": "e91fbc5fb69c922d44d8d8ad2251066009fbd66d9b4733a70a3411efe353859e",
     "sqlite": "d8e42f929f15ef4991d9553c6a21795d5bc057fb4ecbeae21fc509b6edf92b20"
