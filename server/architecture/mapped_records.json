@@ -1,7 +1,7 @@
 {
-  "ActionPlanRecord": "app.db.actions",
+  "ActionPlanRecord": "app.cognition.persistence",
   "ActionResultRecord": "app.cognition.persistence",
-  "ActionStepRecord": "app.db.actions",
+  "ActionStepRecord": "app.cognition.persistence",
   "ActivitySummaryRecord": "app.tasks.persistence",
   "AppUserRecord": "app.auth.persistence",
   "AssetDerivationRecord": "app.jobs.persistence",
@@ -47,7 +47,7 @@
   "ModelReservationRecord": "app.runs.persistence",
   "ObservationOwnerBindingRecord": "app.context.persistence",
   "OutboxRecord": "app.bus.persistence",
-  "PendingMutationRecord": "app.db.actions",
+  "PendingMutationRecord": "app.runs.persistence",
   "PersonaAvatarBindingRecord": "app.avatar.persistence",
   "PersonaPointerRecord": "app.persona.persistence",
   "PersonaVersionRecord": "app.persona.persistence",

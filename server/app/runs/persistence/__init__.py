@@ -17,6 +17,7 @@ from sqlalchemy import (
     String,
     UniqueConstraint,
     Uuid,
+    func,
 )
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -113,3 +114,43 @@ class ModelReservationRecord(Base):
     actual_tokens: Mapped[int | None] = mapped_column(BigInteger)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     settled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class PendingMutationRecord(Base):
+    # Preserve legacy mapper ordering and serialized class references.
+    __module__ = "app.db.models"
+
+    """FIX-01/01B 待确认预览的持久化形态：邮件/日程/流程共享同一底座。
+
+    跨重启/跨 worker 存活；认领以 ``status='pending'`` 条件更新做原子守卫，
+    ``saving`` 中断遗留的行保持不确定终态语义由调用方写入。
+    """
+
+    __tablename__ = "pending_mutation"
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('pending','saving','completed','unknown_outcome','cancelled')",
+            name="ck_pending_mutation_status",
+        ),
+        Index("ix_pending_mutation_user_status", "user_id", "status"),
+        Index("ix_pending_mutation_expires", "expires_at"),
+    )
+
+    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True)
+    user_id: Mapped[UUID] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("app_user.id", ondelete="CASCADE"), nullable=False
+    )
+    turn_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
+    kind: Mapped[str] = mapped_column(String(64), nullable=False)
+    content: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    preview: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="pending")
+    result: Mapped[dict[str, Any] | None] = mapped_column(JSON)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now()
+    )
