@@ -36,8 +36,8 @@
   "JobArtifactRecord": "app.db.jobs",
   "JobRecord": "app.db.jobs",
   "JobStepRecord": "app.db.jobs",
-  "MailAttachmentRecord": "app.db.mail",
-  "MailOutboxLogRecord": "app.db.mail",
+  "MailAttachmentRecord": "app.mail.persistence",
+  "MailOutboxLogRecord": "app.mail.persistence",
   "MeetingActionClaimRecord": "app.meetings.persistence",
   "MeetingRecord": "app.meetings.persistence",
   "MemoryRecord": "app.memory.persistence",
@@ -74,6 +74,6 @@
   "UiPreferenceRecord": "app.appearance.persistence",
   "UiThemeRecord": "app.appearance.persistence",
   "UserModeRecord": "app.db.conversation",
-  "WorkflowDraftRecord": "app.db.workflows",
-  "WorkflowRecord": "app.db.workflows"
+  "WorkflowDraftRecord": "app.workflows.persistence",
+  "WorkflowRecord": "app.workflows.persistence"
 }
