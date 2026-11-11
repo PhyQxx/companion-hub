@@ -178,6 +178,15 @@ class ChatService:
         self._memory_ingester = (
             MemoryIngester(memory_store, extractor=memory_extractor) if memory_store else None
         )
+        self._memory_review_worker = None
+        if self._memory_ingester is not None:
+            from app.skills.conversation_memory import ConversationMemoryTool
+            from app.skills.conversation_memory_worker import ConversationMemoryWorker
+            from app.skills.store import SkillStore
+
+            review_tool = ConversationMemoryTool(self, SkillStore(database), self._memory_ingester)
+            self._memory_review_worker = ConversationMemoryWorker(self, review_tool)
+            self._device_tools.register(review_tool)
         # 后台记忆任务的强引用集合：既防止任务被 GC，也支持停机前等待收尾
         self._background_tasks: set[asyncio.Task[None]] = set()
         self._recent_devices: dict[UUID, list[RecentDeviceReference]] = {}
@@ -919,6 +928,8 @@ class ChatService:
 
     def start_postcommit_worker(self) -> None:
         self._postcommit.start()
+        if self._memory_review_worker is not None:
+            self._memory_review_worker.start()
 
     async def _commit_turn(
         self,
@@ -1013,6 +1024,8 @@ class ChatService:
     async def drain_background_work(self) -> None:
         """等待后台记忆任务完成；测试断言与优雅停机使用。"""
         await self._postcommit.stop()
+        if self._memory_review_worker is not None:
+            await self._memory_review_worker.stop()
         if self._background_tasks:
             await asyncio.gather(*self._background_tasks)
         # Explicit drains also process durable work when no lifespan worker ran.

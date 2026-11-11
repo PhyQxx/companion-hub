@@ -173,6 +173,7 @@ def _device_tool_ready(
         "contact_query",
         "workflow_save",
         "workflow_run",
+        "conversation_memory_review",
         "propose_action",
         "commute_check",
         "focus_start",

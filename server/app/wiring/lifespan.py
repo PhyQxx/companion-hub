@@ -206,6 +206,7 @@ def _core_modules(deps: LifespanDeps) -> ModuleRegistry:
     add_service(
         "pnkx-client", deps.pnkx_life_client, start_method=None, stop_method="close", requires=()
     )
+
     # SSO 回调共享连接池：无启动动作，仅随逆序关闭释放连接
     async def stop_sso_http_client() -> None:
         from app.api.auth_sso import close_sso_http_client
@@ -275,6 +276,10 @@ def build_lifespan(
                 await deps.theme_store.load_builtin_themes()
             await modules.start("conversation")
             await modules.start_all()
+            if deps.skill_store is not None:
+                from app.skills.conversation_memory import ensure_conversation_memory_skill
+
+                await ensure_conversation_memory_skill(deps.skill_store)
             if deps.skill_store is not None and deps.action_registry is not None:
                 # 技能 S3：启动时把已启用技能的写操作同步进动作目录
                 try:
