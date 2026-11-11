@@ -1,12 +1,7 @@
-"""管家能力 Admin 可视化：流程 / 家庭场景 / 会议 / 简报 / 回顾。
+"""个人管家管理：列表、模板创建、会议文本整理与显式行动项确认。
 
-只读为主，用于运维检视与验收支撑；开放的写操作仅限删除流程模板与
-场景启停这类无设备副作用的动作——运行、计划确认、会议授权与摘要
-确认仍必须走聊天端确认流，Admin 不提供替代入口。
-
-多用户：个人数据路由（任意活跃会话可访问）；会话访问强制 scope 到
-本人，业主会话可显式指定 user_id 检视其他用户，admin token 机器访问
-缺省取第一个活跃用户。
+写操作复用领域校验和用户范围；模板保存不执行动作，会议文本需显式授权。
+会话访问限本人，机器 token 缺省取第一个活跃用户。
 """
 
 from __future__ import annotations
@@ -19,11 +14,11 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from sqlalchemy import select
 
 from app.db import AppUserRecord, Database
-from app.home_scene.models import HomeSceneView
+from app.home_scene.models import HomeSceneStep, HomeSceneView
 from app.home_scene.service import HomeSceneService
 from app.meetings.models import MeetingView
 from app.meetings.service import MeetingService
-from app.schemas.common import StrictModel
+from app.schemas.common import PrivacyLevel, StrictModel
 from app.schemas.evaluation import WorkflowFixtureRequest
 from app.tasks.activity_summary import ActivitySummaryService, ActivitySummaryView, Kind
 from app.tasks.brief import BriefView, DailyBriefService
@@ -33,6 +28,14 @@ from app.workflows.models import WorkflowStep, WorkflowView
 from app.workflows.service import WorkflowService
 
 from .admin_config import AdminTokenGuard, admin_access
+from .home_scenes import HomeScenePayload
+from .meetings import (
+    ConfirmMeetingActionRequest,
+    PrepareMeetingRequest,
+    TranscriptAppendRequest,
+    TranscriptionConsentRequest,
+)
+from .workflows import WorkflowPayload
 
 
 class AdminButlerSummary(StrictModel):
@@ -113,10 +116,123 @@ def create_admin_butler_router(
             raise HTTPException(status.HTTP_404_NOT_FOUND, detail="no active user")
         return first
 
+    @router.get("/actions")
+    async def available_actions() -> list[dict[str, object]]:
+        return [
+            item.model_dump(mode="json")
+            for item in workflows.registry.definitions()
+            if item.risk != "A3"
+        ]
+
+    @router.post("/workflows/preview")
+    async def preview_workflow(body: WorkflowPayload) -> object:
+        try:
+            return await workflows.preview(
+                name=body.name, description=body.description, steps=body.steps
+            )
+        except (ValueError, LookupError, PermissionError) as error:
+            raise HTTPException(422, str(error)) from error
+
+    @router.post("/workflows", status_code=201)
+    async def create_workflow(body: WorkflowPayload, request: Request) -> WorkflowView:
+        try:
+            return await workflows.save_workflow(
+                user_id=await resolve_user(request),
+                name=body.name,
+                description=body.description,
+                steps=body.steps,
+            )
+        except (ValueError, LookupError, PermissionError) as error:
+            raise HTTPException(422, str(error)) from error
+
+    @router.post("/scenes", status_code=201)
+    async def create_scene(body: HomeScenePayload, request: Request) -> HomeSceneView:
+        try:
+            return await scenes.create_scene(
+                user_id=await resolve_user(request),
+                name=body.name,
+                trigger=body.trigger,
+                steps=[HomeSceneStep.model_validate(step.model_dump()) for step in body.steps],
+                window_start=body.window_start,
+                window_end=body.window_end,
+            )
+        except (ValueError, LookupError, PermissionError) as error:
+            raise HTTPException(422, str(error)) from error
+
+    @router.post("/meetings", status_code=201)
+    async def create_meeting(body: PrepareMeetingRequest, request: Request) -> MeetingView:
+        try:
+            return await meetings.prepare(
+                await resolve_user(request),
+                title=body.title,
+                participants=body.participants,
+                privacy_level=PrivacyLevel(body.privacy_level),
+                calendar_event_id=body.calendar_event_id,
+            )
+        except LookupError as error:
+            raise HTTPException(404, str(error)) from error
+        except ValueError as error:
+            raise HTTPException(422, str(error)) from error
+
+    @router.post("/meetings/{meeting_id}/transcription/authorize")
+    async def authorize_meeting(
+        meeting_id: UUID, body: TranscriptionConsentRequest, request: Request
+    ) -> MeetingView:
+        try:
+            return await meetings.authorize_transcription(await resolve_user(request), meeting_id)
+        except LookupError as error:
+            raise HTTPException(404, str(error)) from error
+        except ValueError as error:
+            raise HTTPException(409, str(error)) from error
+
+    @router.post("/meetings/{meeting_id}/transcription/revoke")
+    async def revoke_meeting(meeting_id: UUID, request: Request) -> MeetingView:
+        try:
+            return await meetings.revoke_transcription(await resolve_user(request), meeting_id)
+        except LookupError as error:
+            raise HTTPException(404, str(error)) from error
+        except ValueError as error:
+            raise HTTPException(409, str(error)) from error
+
+    @router.post("/meetings/{meeting_id}/transcript")
+    async def append_meeting(
+        meeting_id: UUID, body: TranscriptAppendRequest, request: Request
+    ) -> MeetingView:
+        try:
+            return await meetings.append_transcript(
+                await resolve_user(request), meeting_id, body.segments
+            )
+        except LookupError as error:
+            raise HTTPException(404, str(error)) from error
+        except PermissionError as error:
+            raise HTTPException(403, str(error)) from error
+        except ValueError as error:
+            raise HTTPException(422, str(error)) from error
+
+    @router.post("/meetings/{meeting_id}/finish")
+    async def finish_meeting(meeting_id: UUID, request: Request) -> MeetingView:
+        try:
+            return await meetings.finish(await resolve_user(request), meeting_id)
+        except LookupError as error:
+            raise HTTPException(404, str(error)) from error
+        except ValueError as error:
+            raise HTTPException(409, str(error)) from error
+
+    @router.post("/meetings/{meeting_id}/actions/{index}/confirm")
+    async def confirm_meeting_action(
+        meeting_id: UUID, index: int, body: ConfirmMeetingActionRequest, request: Request
+    ) -> MeetingView:
+        try:
+            return await meetings.confirm_action_item(
+                await resolve_user(request), meeting_id, index, due_at=body.due_at
+            )
+        except LookupError as error:
+            raise HTTPException(404, str(error)) from error
+        except ValueError as error:
+            raise HTTPException(409, str(error)) from error
+
     @router.get("/summary", response_model=AdminButlerSummary)
-    async def summary(
-        request: Request, user_id: UUID | None = None
-    ) -> AdminButlerSummary:
+    async def summary(request: Request, user_id: UUID | None = None) -> AdminButlerSummary:
         owner = await resolve_user(request, user_id)
         workflow_items = await workflows.list_workflows(owner, limit=100)
         scene_items = await scenes.list_scenes(owner)
@@ -258,9 +374,7 @@ def create_admin_butler_router(
             raise HTTPException(status.HTTP_404_NOT_FOUND, detail=str(error)) from error
 
     @router.delete("/scenes/{scene_id}", status_code=status.HTTP_204_NO_CONTENT)
-    async def delete_scene(
-        scene_id: UUID, request: Request, user_id: UUID | None = None
-    ) -> None:
+    async def delete_scene(scene_id: UUID, request: Request, user_id: UUID | None = None) -> None:
         try:
             await scenes.delete_scene(await resolve_user(request, user_id), scene_id)
         except LookupError as error:

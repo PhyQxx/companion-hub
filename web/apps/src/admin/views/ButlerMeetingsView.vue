@@ -1,5 +1,7 @@
 <script setup lang="ts">
 import { inject, onMounted, ref } from "vue";
+import ButlerMeetingEditor from "../components/ButlerMeetingEditor.vue";
+import ButlerCreateDialog from "../components/ButlerCreateDialog.vue";
 import { AdminApi } from "@aria/shared";
 
 interface MeetingItem {
@@ -21,7 +23,9 @@ const api = inject("adminApi") as AdminApi;
 const emit = defineEmits<{ status: [text: string, error?: boolean] }>();
 
 const meetings = ref<MeetingItem[]>([]);
+const creating = ref(false);
 const loading = ref(false);
+const loadError = ref<string | null>(null);
 
 const statusLabels: Record<string, { label: string; type: "info" | "success" | "warning" | "danger" }> = {
   prepared: { label: "已准备", type: "info" },
@@ -37,10 +41,12 @@ function fmt(value: string | null) {
 
 async function load() {
   loading.value = true;
+  loadError.value = null;
   try {
     meetings.value = await api.request<MeetingItem[]>("/api/v1/admin/butler/meetings");
   } catch (error) {
-    emit("status", error instanceof Error ? error.message : "会议加载失败", true);
+    loadError.value = error instanceof Error ? error.message : "会议加载失败";
+    emit("status", loadError.value, true);
   } finally {
     loading.value = false;
   }
@@ -51,20 +57,23 @@ onMounted(load);
 
 <template>
   <section class="content">
+    <ButlerCreateDialog v-model="creating" kind="meetings" @created="load" />
     <div class="hero panel">
       <div>
         <div class="eyebrow">个人管家 · MEET-01</div>
         <h2>会议助手</h2>
-        <p>会议记录与摘要的只读检视。录音授权、转写上传与行动项确认都在聊天端进行——Hub 不接收原始音频，Admin 也不提供写入口。</p>
+        <p>创建会议后展开记录，显式授权保存文本笔记，再生成摘要并逐项确认行动项。此页面不采集原始音频。</p>
       </div>
-      <el-button :loading="loading" @click="load">刷新</el-button>
+      <div><el-button type="primary" @click="creating = true">新建会议</el-button><el-button :loading="loading" @click="load">刷新</el-button></div>
     </div>
 
     <div class="panel">
-      <el-table v-loading="loading" :data="meetings" empty-text="还没有会议记录（从日历准备会议或让 Aria 帮你记录）" style="width:100%">
+      <el-alert v-if="loadError" :title="loadError" type="error" :closable="false"><el-button @click="load">重试</el-button></el-alert>
+      <el-table v-else v-loading="loading" :data="meetings" empty-text="暂无会议记录，请点击新建会议" style="width:100%">
         <el-table-column type="expand">
           <template #default="{ row }">
             <div class="detail">
+              <ButlerMeetingEditor :meeting="row as MeetingItem" @updated="load" />
               <p v-if="row.summary"><strong>摘要：</strong>{{ row.summary }}</p>
               <p v-if="row.decisions.length"><strong>决定：</strong></p>
               <ul v-if="row.decisions.length">
@@ -74,7 +83,7 @@ onMounted(load);
               <ul v-if="row.action_items.length">
                 <li v-for="(item, index) in row.action_items" :key="index">
                   {{ item.title }}<small v-if="item.owner"> · {{ item.owner }}</small>
-                  <el-tag size="small" effect="plain" class="ai-tag">{{ item.status === "confirmed" ? "已确认" : item.status === "proposed" ? "待确认" : item.status }}</el-tag>
+                  <el-tag size="small" effect="plain" class="ai-tag">{{ item.status === "created" ? "已确认" : item.status === "proposed" ? "待确认" : item.status }}</el-tag>
                 </li>
               </ul>
               <p v-if="!row.summary && !row.decisions.length && !row.action_items.length" class="muted">尚无摘要（会议未完成或未生成）。</p>

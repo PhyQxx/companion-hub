@@ -494,3 +494,78 @@ async def test_activity_summary_history(
         assert (
             await client.get(path, headers=AUTH, params={"kind": "daily", "offset": -1})
         ).status_code == 422
+
+
+async def test_create_preview_and_meeting_text(
+    client_app: tuple[
+        FastAPI,
+        tuple[
+            WorkflowService, HomeSceneService, MeetingService, DailyBriefService, DailyReviewService
+        ],
+    ],
+    user_id: UUID,
+) -> None:
+    app, services = client_app
+    payload = {
+        "name": "新流程",
+        "steps": [{"action_id": "desktop.app.open", "arguments": {"app": "Safari"}}],
+    }
+    async with _client(app) as client:
+        assert (
+            await client.post("/api/v1/admin/butler/workflows", json=payload)
+        ).status_code == 401
+        preview = await client.post(
+            "/api/v1/admin/butler/workflows/preview", headers=AUTH, json=payload
+        )
+        assert preview.status_code == 200
+        assert preview.json()["steps"][0]["risk"]
+        assert await services[0].list_workflows(user_id) == []
+        saved = await client.post("/api/v1/admin/butler/workflows", headers=AUTH, json=payload)
+        assert saved.status_code == 201
+        assert saved.json()["user_id"] == str(user_id)
+        scene = await client.post(
+            "/api/v1/admin/butler/scenes", headers=AUTH, json={**payload, "trigger": "manual"}
+        )
+        assert scene.status_code == 201
+        invalid = await client.post(
+            "/api/v1/admin/butler/scenes",
+            headers=AUTH,
+            json={
+                "name": "错误",
+                "trigger": "manual",
+                "steps": [{"action_id": "missing", "arguments": {}}],
+            },
+        )
+        assert invalid.status_code == 422
+        meeting = await client.post(
+            "/api/v1/admin/butler/meetings", headers=AUTH, json={"title": "讨论"}
+        )
+        assert meeting.status_code == 201
+        path = f"/api/v1/admin/butler/meetings/{meeting.json()['id']}"
+        transcript = {"segments": [{"speaker": "我", "text": "会议笔记"}]}
+        assert (
+            await client.post(path + "/transcript", headers=AUTH, json=transcript)
+        ).status_code == 403
+        assert (
+            await client.post(
+                path + "/transcription/authorize", headers=AUTH, json={"authorized": False}
+            )
+        ).status_code == 422
+        assert (
+            await client.post(
+                path + "/transcription/authorize", headers=AUTH, json={"authorized": True}
+            )
+        ).status_code == 200
+        result = await client.post(path + "/transcript", headers=AUTH, json=transcript)
+        assert result.status_code == 200
+        assert result.json()["transcript_segments"][0]["text"] == "会议笔记"
+        other = await services[2].prepare(
+            uuid7(), title="other", participants=[], privacy_level=PrivacyLevel.L1
+        )
+        assert (
+            await client.post(
+                f"/api/v1/admin/butler/meetings/{other.id}/transcript",
+                headers=AUTH,
+                json=transcript,
+            )
+        ).status_code == 404

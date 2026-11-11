@@ -1,7 +1,7 @@
 """Bounded, deterministic daily/weekly reports from owned L0/L1 facts."""
 
 from datetime import UTC, date, datetime, time, timedelta
-from typing import Literal
+from typing import Literal, cast
 from uuid import UUID
 from zoneinfo import ZoneInfo
 
@@ -19,6 +19,8 @@ from app.db import (
 from app.ids import uuid7
 from app.schemas.common import StrictModel
 
+from .activity_overview import compose_overview
+
 Kind = Literal["daily", "weekly"]
 
 
@@ -29,11 +31,21 @@ class ActivitySummaryView(StrictModel):
     period_end: date
     timezone: str
     text: str
+    overview: str
     created_at: datetime
 
 
 def view(row: ActivitySummaryRecord) -> ActivitySummaryView:
-    return ActivitySummaryView.model_validate(row, from_attributes=True)
+    return ActivitySummaryView(
+        id=row.id,
+        kind=cast(Kind, row.kind),
+        period_start=row.period_start,
+        period_end=row.period_end,
+        timezone=row.timezone,
+        text=row.text,
+        created_at=row.created_at,
+        overview=compose_overview(row.text, row.kind),
+    )
 
 
 class ActivitySummaryService:

@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { inject, onMounted, ref } from "vue";
 import { ElMessage, ElMessageBox } from "element-plus";
+import ButlerCreateDialog from "../components/ButlerCreateDialog.vue";
 import { AdminApi } from "@aria/shared";
 
 interface SceneStep {
@@ -23,7 +24,9 @@ const api = inject("adminApi") as AdminApi;
 const emit = defineEmits<{ status: [text: string, error?: boolean] }>();
 
 const scenes = ref<SceneItem[]>([]);
+const creating = ref(false);
 const loading = ref(false);
+const loadError = ref<string | null>(null);
 const toggling = ref<string | null>(null);
 
 const triggerLabels: Record<string, string> = {
@@ -39,10 +42,12 @@ function fmt(value: string | null) {
 
 async function load() {
   loading.value = true;
+  loadError.value = null;
   try {
     scenes.value = await api.request<SceneItem[]>("/api/v1/admin/butler/scenes");
   } catch (error) {
-    emit("status", error instanceof Error ? error.message : "场景加载失败", true);
+    loadError.value = error instanceof Error ? error.message : "场景加载失败";
+    emit("status", loadError.value, true);
   } finally {
     loading.value = false;
   }
@@ -89,17 +94,19 @@ onMounted(load);
 
 <template>
   <section class="content">
+    <ButlerCreateDialog v-model="creating" kind="scenes" @created="load" />
     <div class="hero panel">
       <div>
         <div class="eyebrow">个人管家 · HOME-01</div>
         <h2>家庭场景</h2>
         <p>感知事件（到家/离家）或手动触发时展开为待确认行动计划。场景只建计划不直接执行；运行与确认仍在聊天端完成。</p>
       </div>
-      <el-button :loading="loading" @click="load">刷新</el-button>
+      <div><el-button type="primary" @click="creating = true">新建场景</el-button><el-button :loading="loading" @click="load">刷新</el-button></div>
     </div>
 
     <div class="panel">
-      <el-table v-loading="loading" :data="scenes" empty-text="还没有场景（在聊天里说“帮我建一个回家模式”即可创建）" style="width:100%">
+      <el-alert v-if="loadError" :title="loadError" type="error" :closable="false"><el-button @click="load">重试</el-button></el-alert>
+      <el-table v-else v-loading="loading" :data="scenes" empty-text="暂无场景，请点击新建场景配置触发条件与动作" style="width:100%">
         <el-table-column label="名称" min-width="140">
           <template #default="{ row }"><strong>{{ row.name }}</strong></template>
         </el-table-column>

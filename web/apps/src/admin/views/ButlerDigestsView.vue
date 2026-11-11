@@ -27,6 +27,7 @@ interface ButlerSummary {
 }
 
 interface ActivitySummary {
+  overview: string;
   id: string;
   period_start: string;
   period_end: string;
@@ -128,10 +129,14 @@ onMounted(() => { void load(); void loadActivity(); });
       </el-alert>
       <template v-else>
         <el-empty v-if="!activityItems.length" description="暂无已保存的总结，自动生成后会显示在这里" :image-size="60" />
-        <details v-for="item in activityItems" :key="item.id" class="digest-card">
-          <summary class="activity-title">{{ periodLabel(item) }} <span class="muted">· {{ item.timezone }} · 展开查看</span></summary>
+        <article v-for="item in activityItems" :key="item.id" class="digest-card">
+          <strong>{{ periodLabel(item) }}</strong>
+          <p class="digest-text">{{ item.overview }}</p>
+          <details>
+          <summary class="activity-title">{{ periodLabel(item) }} <span class="muted">· {{ item.timezone }} · 展开活动明细</span></summary>
           <p class="digest-text">{{ item.text }}</p>
-        </details>
+          </details>
+        </article>
         <div class="activity-pages" v-if="activityItems.length || activityPage">
           <el-button :disabled="activityPage === 0" @click="loadActivity(activityPage - 1)">上一页</el-button>
           <span>第 {{ activityPage + 1 }} 页</span>

@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { inject, onMounted, ref } from "vue";
 import { ElMessage, ElMessageBox } from "element-plus";
+import ButlerCreateDialog from "../components/ButlerCreateDialog.vue";
 import { AdminApi } from "@aria/shared";
 
 interface WorkflowStep {
@@ -38,7 +39,9 @@ const api = inject("adminApi") as AdminApi;
 const emit = defineEmits<{ status: [text: string, error?: boolean] }>();
 
 const workflows = ref<WorkflowItem[]>([]);
+const creating = ref(false);
 const loading = ref(false);
+const loadError = ref<string | null>(null);
 const drafts = ref<DraftItem[]>([]);
 const draftError = ref<string | null>(null);
 const busyDraft = ref<string | null>(null);
@@ -90,6 +93,7 @@ function fmt(value: string | null) {
 
 async function load() {
   loading.value = true;
+  loadError.value = null;
   try {
     const [saved, candidates] = await Promise.allSettled([
       api.request<WorkflowItem[]>("/api/v1/admin/butler/workflows"),
@@ -105,7 +109,8 @@ async function load() {
       draftError.value = candidates.reason instanceof Error ? candidates.reason.message : "候选服务暂不可用";
     }
   } catch (error) {
-    emit("status", error instanceof Error ? error.message : "流程加载失败", true);
+    loadError.value = error instanceof Error ? error.message : "流程加载失败";
+    emit("status", loadError.value, true);
   } finally {
     loading.value = false;
   }
@@ -135,17 +140,19 @@ onMounted(load);
 
 <template>
   <section class="content">
+    <ButlerCreateDialog v-model="creating" kind="workflows" @created="load" />
     <div class="hero panel">
       <div>
         <div class="eyebrow">个人管家 · FLOW-01</div>
         <h2>可复用流程</h2>
-        <p>已保存的动作模板（1-10 步，保存时经动作注册表编译校验）。运行须在聊天里说「运行某某流程」，展开为待确认计划后执行——Admin 只读，不提供运行入口。</p>
+        <p>已保存的动作模板（1-10 步，保存时经动作注册表编译校验）。运行须在聊天里说「运行某某流程」，展开为待确认计划后执行——也可在此新建模板，保存不会执行动作。</p>
       </div>
-      <el-button :loading="loading" @click="load">刷新</el-button>
+      <div><el-button type="primary" @click="creating = true">新建流程</el-button><el-button :loading="loading" @click="load">刷新</el-button></div>
     </div>
 
     <div class="panel">
-      <el-table v-loading="loading" :data="workflows" empty-text="还没有保存的流程（在聊天里说“把这个流程存下来”即可创建）" style="width:100%">
+      <el-alert v-if="loadError" :title="loadError" type="error" :closable="false"><el-button @click="load">重试</el-button></el-alert>
+      <el-table v-else v-loading="loading" :data="workflows" empty-text="还没有保存的流程（在聊天里说“把这个流程存下来”即可创建）" style="width:100%">
         <el-table-column label="名称" min-width="150">
           <template #default="{ row }">
             <strong>{{ row.name }}</strong>

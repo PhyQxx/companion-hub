@@ -1,6 +1,6 @@
 # Aria 当前任务
 
-> 最后更新：2026-11-11（A-01 阶段一映射搬迁批次 15/16 已交付：delivery 三拆 home_assistant/output/push（`6fb95ed`）、actions 拆 cognition/runs（`6f91723`）——db 侧映射全部迁完、阶段一收尾，下一优先：阶段二调用方替换为仓储端口、A-02/A-03 或 B-03 产品决策项）
+> 最后更新：2026-11-11（A-01 阶段一映射搬迁批次 15/16 已交付：delivery 三拆 home_assistant/output/push（`6fb95ed`）、actions 拆 cognition/runs（`6f91723`）——db 侧映射全部迁完、阶段一收尾；SUMMARY-01 历史入口与 ADMIN-UI-01 已随 `d51aaff` 入库并回填哈希。下一优先：阶段二调用方替换为仓储端口、A-02/A-03 或 B-03 产品决策项）
 > 详细设计入口：[00-产品与架构.md](./00-产品与架构.md)
 > **进度查看入口：[整体架构与 Harness 改造进度](./架构改造进度.md)**（模块状态、剩余工作包、验收缺口和下一批队列）
 
@@ -470,7 +470,7 @@
 - [x] 2026-11-10 `B-01 确认预览来源绑定与在途终态（架构队列下一批）`：先核对——预览底座（PendingMutationStore/DatabasePendingMutationStore）绑定用户+回合、15 分钟 TTL、同回合作废、认领走 `status='pending'` 条件更新原子守卫、生产装配数据库实现（runtime.py 注入，跨重启/跨 worker 存活）原有语义核实无误，既有测试覆盖重启与并发认领。补齐四个缺口：**①删源**——`purge_conversation` 删除该会话回合的未确认预览（pending 行随来源派生内容清除），认领中/已完成的行不动；**②撤销**——`runs/store.cancel_work` 把该 Run 全部回合（含已完成回合残留）的 pending 预览置 cancelled，saving 不动；**③在途终态**——`DatabasePendingMutationStore.mark_unknown` 加 `status='saving'` 守卫，并发/重放写入不确定终态不得覆盖已落库回执；**④日历删源**——`CalendarCreateTool.cancel_pending` 在 Google token 断开（DELETE /google/token）时作废该用户全部未确认 calendar_create 预览，响应新增 `previews_cancelled`。新增 **5 项**测试（test_preview_source_binding：删会话删预览+在途回执保留、撤销跨回合作废+在途不受影响；mark_unknown 回执守卫；cancel_pending 工具级两断言）并更新 2 项既有断言。验证：受影响族回归全绿（确认×2、日历、邮件、流程×2、聊天×2、运行取消围栏、来源清除、任务来源清除、后代删除、域删除围栏、投递/能力 Run、备份）；严格 mypy 797 文件零错误、ruff、架构门禁通过。**限制**：PG 参数化用例本机跳过（无 ARIA_TEST_DATABASE_URL），CI 环境执行；test_calendar_owned_sync 4 项失败与干净树预存清单「calendar ×4」一致，非本批引入；崩溃遗留的 saving 行保持不确定终态（确认重试 409 且不自动重试），符合既有设计。业务提交哈希 `9d7965b` 已回填。
 - [x] 2026-11-10 `OPT 优化批次一（横切质量，见 docs/优化分析.md 交付状态表）`：**P0-1 前端代码分割**——路由三入口与 ModuleWorkspaceView 43 个 admin 视图全部改异步加载，Element Plus 经 unplugin-vue-components 按需导入（`v-loading` 手动注册，ElMessage/ElMessageBox 样式显式补齐），UsersView 5 处插槽行补 `as UserItem` 断言（按需导入带来的真实类型收紧）；聊天首屏 JS 1.7MB 单 chunk → index 173KB + ChatRoot 232KB，CSS 按组件拆分。**P0-2 Dockerfile**——web 构建依赖清单先行 COPY + `--frozen-lockfile`（配套 web/package.json 钉 `packageManager` pnpm@10.17.1），源码改动后 install 层 CACHED 已验证。**P2-1 启动并行**——ModuleRegistry.start_all 按拓扑深度分层 `asyncio.gather`，同层全部尝试后统一裁决，critical 失败中止后续层并保留逆序清理语义；更新 1 个测试为分层语义，新增 blocked 语义与并行生效 2 个用例。**P2-2**——todo/sync 三段网络推送改 gather+信号量(5)（逐项错误记录与镜像清理语义不变）；review_core 与 runs/store cancel_work 评估后缓做（端口契约改动/锁序敏感）。**P2-3**——AST 全量三角定位 90 处无日志吞咽，绝大多数为带注释的合理回退；修复 drafts.py:629 静默 continue；BLE/TRY 规则启用留待白名单批次。**P2-4**——CI 补 browser-extension（test+build）与 xiaoai_gateway（npm ci+tsc+docker build），本地均验证通过。**P2-5**——pytest-xdist 入 dev 依赖，全量 `-n 4` 与串行失败集合逐项一致，CI 改 `pytest -n 4`。**P3 部分**——Makefile p5-backend 去重为 `lint test` 依赖；pyproject 删除重复 dev httpx；auth_sso 回调改共享 AsyncClient（lifespan 注册 `sso-http-client` 关闭钩子）。验证：干净环境（`env -u no_proxy -u NO_PROXY`）全量 xdist 基线仅 15 个失败且全部经干净 stash 树对照确认为预存（架构快照缺口 ×3、迁移链 ×3、satellite ×4、calendar ×4、voice ×1）；受影响族回归、严格 mypy、Ruff、diff 检查通过；dev/preview 浏览器验证聊天与 admin 登录页渲染。**限制**：登录后的 admin 视图切换、registry 并行的真实冷启动提速、CI 实际运行均未验证；本机 `NO_PROXY=[::1]` 会污染 httpx 测试（56 个假失败），已在 docs/优化分析.md 与记忆登记。**剩余**：P1-1/P1-2/P2-6 及 P3 其余项待批次（见 docs/优化分析.md）。本批已按三笔业务提交入库：`10b6297`（P0 前端代码分割）、`f6a83eb`（P0-2 Dockerfile + P2-4/P2-5 CI + P3 工程项）、`a55a633`（P2-1/P2-2/P2-3 与 auth_sso 后端）。
 
-- [x] 2026-10-21 `Admin 感知与守护标签排序`：代码已交付，顺序调整为「屏幕感知 → 浏览感知 → HA 实体授权 → 安全守护 → 主动输出」，同步导航设计表。验证：`pnpm --dir web/apps typecheck` 通过；未执行冻结源码全量回归、性能测试、部署或真实浏览器验收。剩余与下一步：部署后确认标签位置与切换；整体架构执行优先级保持不变。本批未提交，业务提交哈希待实际提交后补记。
+- [x] 2026-10-21 `Admin 感知与守护标签排序`：代码已交付，顺序调整为「屏幕感知 → 浏览感知 → HA 实体授权 → 安全守护 → 主动输出」，同步导航设计表。验证：`pnpm --dir web/apps typecheck` 通过；未执行冻结源码全量回归、性能测试、部署或真实浏览器验收。剩余与下一步：部署后确认标签位置与切换；整体架构执行优先级保持不变。业务提交哈希 `31547ae`（已回填，2026-11-11）。
 
 - [x] 2026-09-23 `Chat 实时字幕（voice.partial_transcript 展示）+ 本日五批逻辑提交`：Chat 语音事件处理新增 `voice.partial_transcript` 分支——流式识别（sherpa_streaming）说话期间的增量转写即时写入语音状态区的「识别：…」行并置状态为「正在识别…」；断句后由既有 `voice.transcript` 终稿覆盖，重置路径复用 voiceTranscript 既有清理点，无新增状态。非流式提供方不下发该事件，行为不变。同日将本日全部工作按依赖序拆为 5 个逻辑提交入库：①`feat(admin)` 控制台信息架构重整+管家中心；②`feat(ops)` 备份状态卡片+数据导出/导入；③`feat(theme)` 定时主题（含 0045 迁移与测试）；④`feat(voice)` 流式 ASR P1+P2 测量+faulthandler 防护；⑤`feat(app)` 路由接线与文档同步。Chat typecheck 与全仓 production build、`git diff --check` 通过。
 
@@ -756,7 +756,7 @@
 - [x] 代码交付：独立日/周归档、60 秒调度、用户隔离、唯一键幂等持久化、历史分页/手动生成/删除 API；迁移 0071。详见 [综合活动总结](./综合活动总结.md)。首版为五类事实摘录，每类最多 100 条，不调用模型；不影响 REVIEW-01。
 - [x] 相关验证：报告 + 晚间回顾 10 项通过（已有一条 HTTP 422 弃用警告）；新增模块/测试 mypy、Ruff、架构门禁及 diff 检查通过；隔离 SQLite 空库迁移到单 head 0071 成功。
 - [ ] 剩余与下一优先级：源删除联动/禁止重生成策略；当前独立快照须单独删除，最新周期删除后调度可重建。模型主题归纳、更多历史缺口补齐暂未实现。
-- [ ] 验收：PostgreSQL、冻结源码全量、性能、运行库迁移与真实环境调度尚未验收；本批未提交/部署，实际业务提交哈希待产生后补记。
+- [ ] 验收：PostgreSQL、冻结源码全量、性能、运行库迁移与真实环境调度尚未验收；业务提交哈希 `e6ac51e`（已回填，2026-11-11），未部署。
 
 
 ### SUMMARY-01 后台历史入口（2026-11-11）
@@ -764,7 +764,7 @@
 - [x] 代码：个人管家 → 简报与回顾新增日/周总结切换、每页 10 条历史、日期范围及展开正文、加载/空态/失败重试。新增只读 Admin API，沿用个人管家用户范围控制；原简报/回顾保留。
 - [x] 相关证据：管家与总结测试 12 项通过，覆盖新增 API 鉴权、类型筛选、分页、用户筛选与非法参数；前端 typecheck、后端两文件 mypy/Ruff 通过。
 - [ ] 剩余及下一优先级：真实浏览器与运行环境验收、源删除联动/禁止重生成策略；本批未运行冻结源码全量或性能测试，未部署。
-- 业务基线：前批自动总结实际提交为 `e6ac51e`；本批 UI 尚未提交，不以历史验证替代本批证据。
+- 业务基线：前批自动总结为 `e6ac51e`；本批实际提交 `d51aaff`（已回填，2026-11-11，同批含 ADMIN-UI-01）。2026-11-11 对该提交源码复跑管家与总结测试 12/12 通过。
 
 - 本批构建：Node 22.23.1 下 production build 通过（依赖 PURE 注释警告）；默认 Node 18 构建失败，需使用 Node 22。diff 检查通过，尚未做真实浏览器验收。
 
@@ -774,4 +774,21 @@
 - [x] 代码：ModelsView 的 Teleport 操作栏随 KeepAlive 激活/停用挂载和移除；离开模型配置视图（含进入 MCP、SenseAudio 或会议等模块）不再残留，返回时恢复，配置草稿仍缓存。
 - [x] 验证：Node 22.23.1 前端类型检查及 production build 通过；git diff --check 通过。默认 Node 18 构建因 unplugin 运行环境不兼容失败；Node 22 构建仅有依赖 PURE 注释警告。
 - [ ] 下一优先级：真实浏览器切换模型→会议→模型及模型→MCP/SenseAudio 验收；未做冻结源码全量、性能或线上验收，未部署。
-- 本批未提交，实际业务哈希待产生后回填；不改变 A–F 工作包完成状态。
+- 本批实际提交 `d51aaff`（已回填，2026-11-11，与 SUMMARY-01 历史入口同批）；不改变 A–F 工作包完成状态。
+
+
+### SUMMARY-01 总结概览（2026-11-11）
+
+- [x] 代码：日/周报告返回独立 overview，归纳活动主题、生成时任务进展与待推进事项，标明日程仅为计划；页面默认展示概览，原始事实明细折叠。旧报告从已保存正文生成概览，不重新读取或扩大来源。
+- [x] 相关验证：概览/总结/后台测试 14 项通过；两模块 mypy、相关 Ruff、diff 检查通过。
+- [ ] 剩余/下一优先级：真实内容质量和浏览器验收；当前采用关键词主题规则，不是模型语义归纳，不能保证识别所有主题；模型归纳及预算接线仍待后续。源删除策略、全量/性能/真实环境验收状态不变。未部署，本批未提交，业务哈希待后续补记。
+
+- 本批前端验证：Node 22 下 typecheck 和 production build 通过，仅依赖 PURE 注释警告；未做真实浏览器验收。
+
+## 2026-11-11 个人管家入口优化（FLOW-01 / HOME-01 / MEET-01，进行中）
+
+- [x] 代码：三页区分请求失败与空列表并提供重试；流程/场景提供动作选择、参数填写、服务端预览及显式保存；会议创建、文本授权/撤销、分段保存、摘要生成与逐项确认任务入口接通。新写接口复用现有用户范围和领域服务，不自动执行设备动作。
+- [x] 相关回归：管家/会议/场景/流程 43 项通过（其中管家 API 10 项）；前端 typecheck、后端两文件 mypy、Ruff 与 diff 检查通过。新增预览不落库、保存归属、非法动作拒绝、未授权文本拒绝和跨用户会议访问拒绝覆盖；不代表真实浏览器或模型验收。
+- [ ] 剩余：复杂动作参数控件、场景时间窗/模板、编辑复制、日历选择、账号归属展示与真实浏览器全路径验收；会议真实模型摘要及任务确认需真实环境验证。现有功能包 ID 保留，本批为入口增量，不重标整体完成。
+- 下一优先级：浏览器新用户创建→刷新回显→跨账号隔离验收，随后完善复杂动作表单与日历选择。
+- 未执行冻结源码全量、性能或生产验收；未部署、未提交，业务哈希待实际提交后回填。本批不覆盖工作区已有活动总结改动。
