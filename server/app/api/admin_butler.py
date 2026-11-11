@@ -25,6 +25,7 @@ from app.meetings.models import MeetingView
 from app.meetings.service import MeetingService
 from app.schemas.common import StrictModel
 from app.schemas.evaluation import WorkflowFixtureRequest
+from app.tasks.activity_summary import ActivitySummaryService, ActivitySummaryView, Kind
 from app.tasks.brief import BriefView, DailyBriefService
 from app.tasks.review import DailyReviewService, ReviewView
 from app.workflows.drafts import PlanDistiller, WorkflowDraftStore, replay_pending_draft
@@ -280,6 +281,18 @@ def create_admin_butler_router(
         limit: Annotated[int, Query(ge=1, le=30)] = 14,
     ) -> list[BriefView]:
         return await briefs.recent_briefs(await resolve_user(request, user_id), limit=limit)
+
+    @router.get("/activity-summaries", response_model=list[ActivitySummaryView])
+    async def list_activity_summaries(
+        request: Request,
+        kind: Kind,
+        user_id: UUID | None = None,
+        limit: Annotated[int, Query(ge=1, le=100)] = 10,
+        offset: Annotated[int, Query(ge=0)] = 0,
+    ) -> list[ActivitySummaryView]:
+        return await ActivitySummaryService(database).recent(
+            await resolve_user(request, user_id), kind=kind, limit=limit, offset=offset
+        )
 
     @router.get("/reviews", response_model=list[ReviewView])
     async def list_reviews(

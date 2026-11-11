@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, inject, onActivated, onMounted, ref, watch } from "vue";
+import { computed, inject, onActivated, onDeactivated, onMounted, ref, watch } from "vue";
 import { AdminApi } from "@aria/shared";
 import { ElMessage } from "element-plus";
 import { useRoute } from "vue-router";
@@ -1212,16 +1212,20 @@ async function saveConfig() {
   ElMessage.success(message);
 }
 
+// KeepAlive 缓存页面时，Teleport 内容需要随激活状态显式移除。
+const pageActive = ref(false);
+onDeactivated(() => { pageActive.value = false; });
 onMounted(load);
 // 每次进入模型模块时刷新 SenseAudio 音色目录（新克隆的音色会出现在语音服务下拉里）
 onActivated(() => {
+  pageActive.value = true;
   void loadSenseaudioVoices();
 });
 </script>
 
 <template>
   <section v-if="current" class="models-page">
-    <Teleport to="#module-tab-actions">
+    <Teleport v-if="pageActive" to="#module-tab-actions">
       <div class="tabs-actions">
         <div class="tab-meta"><span>配置哈希</span><code>{{ current.content_hash.slice(0, 12) }}</code></div>
         <div class="tab-meta"><span>状态</span><strong class="live-status">● 已生效</strong></div>

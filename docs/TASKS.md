@@ -767,3 +767,11 @@
 - 业务基线：前批自动总结实际提交为 `e6ac51e`；本批 UI 尚未提交，不以历史验证替代本批证据。
 
 - 本批构建：Node 22.23.1 下 production build 通过（依赖 PURE 注释警告）；默认 Node 18 构建失败，需使用 Node 22。diff 检查通过，尚未做真实浏览器验收。
+
+
+### ADMIN-UI-01 配置操作栏作用域（2026-11-11）
+
+- [x] 代码：ModelsView 的 Teleport 操作栏随 KeepAlive 激活/停用挂载和移除；离开模型配置视图（含进入 MCP、SenseAudio 或会议等模块）不再残留，返回时恢复，配置草稿仍缓存。
+- [x] 验证：Node 22.23.1 前端类型检查及 production build 通过；git diff --check 通过。默认 Node 18 构建因 unplugin 运行环境不兼容失败；Node 22 构建仅有依赖 PURE 注释警告。
+- [ ] 下一优先级：真实浏览器切换模型→会议→模型及模型→MCP/SenseAudio 验收；未做冻结源码全量、性能或线上验收，未部署。
+- 本批未提交，实际业务哈希待产生后回填；不改变 A–F 工作包完成状态。

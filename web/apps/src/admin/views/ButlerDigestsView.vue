@@ -26,6 +26,48 @@ interface ButlerSummary {
   reviews: number;
 }
 
+interface ActivitySummary {
+  id: string;
+  period_start: string;
+  period_end: string;
+  timezone: string;
+  text: string;
+}
+const activityKind = ref<"daily" | "weekly">("daily");
+const activityItems = ref<ActivitySummary[]>([]);
+const activityPage = ref(0);
+const activityLoading = ref(false);
+const activityError = ref("");
+const hasMore = ref(false);
+let activityRequest = 0;
+
+async function loadActivity(page = 0) {
+  const request = ++activityRequest;
+  activityLoading.value = true;
+  activityError.value = "";
+  try {
+    const items = await api.request<ActivitySummary[]>(
+      `/api/v1/admin/butler/activity-summaries?kind=${activityKind.value}&limit=11&offset=${page * 10}`,
+    );
+    if (request !== activityRequest) return;
+    activityItems.value = items.slice(0, 10);
+    hasMore.value = items.length > 10;
+    activityPage.value = page;
+  } catch (error) {
+    if (request !== activityRequest) return;
+    activityError.value = error instanceof Error ? error.message : "总结加载失败，请重试";
+    activityItems.value = [];
+  } finally {
+    if (request === activityRequest) activityLoading.value = false;
+  }
+}
+
+function periodLabel(item: ActivitySummary) {
+  const end = new Date(`${item.period_end}T00:00:00Z`);
+  end.setUTCDate(end.getUTCDate() - 1);
+  return activityKind.value === "daily" ? item.period_start : `${item.period_start} 至 ${end.toISOString().slice(0, 10)}`;
+}
+
 const api = inject("adminApi") as AdminApi;
 const emit = defineEmits<{ status: [text: string, error?: boolean] }>();
 
@@ -52,7 +94,7 @@ async function load() {
   }
 }
 
-onMounted(load);
+onMounted(() => { void load(); void loadActivity(); });
 </script>
 
 <template>
@@ -63,12 +105,39 @@ onMounted(load);
         <h2>简报与回顾</h2>
         <p>每日智能简报（默认 08:00）与晚间回顾（默认 21:30）的投递历史。内容为确定性模板拼装，每条事实带来源引用；修正入口在聊天端。</p>
       </div>
-      <el-button :loading="loading" @click="load">刷新</el-button>
+      <el-button :loading="loading" @click="load(); loadActivity(activityPage)">刷新</el-button>
     </div>
 
     <div class="stats" v-if="summary">
       <article><span>最近简报</span><strong>{{ summary.latest_brief_date ?? "—" }}</strong><small>共 {{ summary.briefs }} 期</small></article>
       <article><span>最近回顾</span><strong>{{ summary.latest_review_date ?? "—" }}</strong><small>共 {{ summary.reviews }} 期</small></article>
+    </div>
+
+    <div class="panel" aria-label="综合活动总结">
+      <div class="panel-head">
+        <h2>综合活动总结</h2>
+        <el-radio-group v-model="activityKind" @change="loadActivity(0)">
+          <el-radio-button value="daily">日总结</el-radio-button>
+          <el-radio-button value="weekly">周总结</el-radio-button>
+        </el-radio-group>
+      </div>
+      <p class="muted">汇总聊天、浏览、屏幕活动、任务和日程。日总结覆盖前一天，周总结覆盖上周一至周日。</p>
+      <p v-if="activityLoading" role="status">正在加载总结…</p>
+      <el-alert v-else-if="activityError" :title="activityError" type="error" :closable="false">
+        <el-button size="small" @click="loadActivity(activityPage)">重试</el-button>
+      </el-alert>
+      <template v-else>
+        <el-empty v-if="!activityItems.length" description="暂无已保存的总结，自动生成后会显示在这里" :image-size="60" />
+        <details v-for="item in activityItems" :key="item.id" class="digest-card">
+          <summary class="activity-title">{{ periodLabel(item) }} <span class="muted">· {{ item.timezone }} · 展开查看</span></summary>
+          <p class="digest-text">{{ item.text }}</p>
+        </details>
+        <div class="activity-pages" v-if="activityItems.length || activityPage">
+          <el-button :disabled="activityPage === 0" @click="loadActivity(activityPage - 1)">上一页</el-button>
+          <span>第 {{ activityPage + 1 }} 页</span>
+          <el-button :disabled="!hasMore" @click="loadActivity(activityPage + 1)">下一页</el-button>
+        </div>
+      </template>
     </div>
 
     <div class="columns">
@@ -116,6 +185,8 @@ onMounted(load);
 .panel-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; }
 .digest-card { border: 1px solid #e8edf5; border-radius: 10px; padding: 12px 14px; margin-top: 10px; background: #fbfcff; }
 .digest-head { display: flex; justify-content: space-between; align-items: center; }
-.digest-text { margin: 8px 0 0; font-size: 12px; line-height: 1.7; white-space: pre-wrap; color: #303640; }
+.activity-title { cursor: pointer; line-height: 1.8; }
+.activity-pages { display: flex; justify-content: center; align-items: center; gap: 12px; margin-top: 16px; }
+.digest-text { overflow-wrap: anywhere; margin: 8px 0 0; font-size: 12px; line-height: 1.7; white-space: pre-wrap; color: #303640; }
 @media (max-width: 1100px) { .columns { grid-template-columns: 1fr; } }
 </style>

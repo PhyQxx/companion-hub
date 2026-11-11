@@ -458,3 +458,39 @@ async def test_workflow_fixture_endpoint_auth_ownership_and_contract(
         assert report["status"] == "passed" and report["validation_level"] == "V2"
         assert "fixture-device" not in str(report)
         assert await services[0].list_workflows(user_id) == []
+
+
+async def test_activity_summary_history(
+    client_app: tuple[
+        FastAPI,
+        tuple[
+            WorkflowService, HomeSceneService, MeetingService, DailyBriefService, DailyReviewService
+        ],
+    ],
+    database: Database,
+    user_id: UUID,
+) -> None:
+    from app.tasks.activity_summary import ActivitySummaryService
+
+    app, _ = client_app
+    service = ActivitySummaryService(database)
+    daily = await service.build(user_id, "daily", now=NOW)
+    await service.build(user_id, "weekly", now=NOW)
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        path = "/api/v1/admin/butler/activity-summaries"
+        assert (await client.get(path, params={"kind": "daily"})).status_code == 401
+        result = await client.get(path, headers=AUTH, params={"kind": "daily"})
+        assert result.status_code == 200
+        assert [row["id"] for row in result.json()] == [str(daily.id)]
+        assert (await client.get(path, headers=AUTH, params={"kind": "weekly"})).json()[0][
+            "kind"
+        ] == "weekly"
+        assert (
+            await client.get(path, headers=AUTH, params={"kind": "daily", "offset": 1})
+        ).json() == []
+        assert (
+            await client.get(path, headers=AUTH, params={"kind": "daily", "user_id": str(uuid7())})
+        ).json() == []
+        assert (
+            await client.get(path, headers=AUTH, params={"kind": "daily", "offset": -1})
+        ).status_code == 422
