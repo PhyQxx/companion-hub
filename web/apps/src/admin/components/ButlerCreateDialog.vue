@@ -58,7 +58,7 @@ async function submit() {
       <template v-if="kind !== 'meetings'">
         <div v-for="(step, index) in steps" :key="index">
           <el-form-item :label="`动作 ${index + 1}`"><el-select v-model="step.action_id" filterable @change="step.arguments = {}"><el-option v-for="action in actions" :key="action.action_id" :label="action.label" :value="action.action_id" /></el-select><el-button @click="steps.splice(index, 1)">删除</el-button></el-form-item>
-          <el-form-item v-for="(field, key) in fields(step)" :key="key" :label="field.description ?? field.title ?? key"><el-input :model-value="String(step.arguments[key] ?? '')" @update:model-value="value => argument(step, key, value, field.type)" /></el-form-item>
+          <el-form-item v-for="(field, key) in fields(step)" :key="key" :label="field.description ?? field.title ?? key"><el-input :model-value="String(step.arguments[key] ?? '')" @update:model-value="(value: string) => argument(step, key, value, field.type)" /></el-form-item>
         </div>
         <el-button :disabled="steps.length >= 10" @click="steps.push({ action_id: '', arguments: {} })">添加动作（最多 10 步）</el-button>
       </template>
