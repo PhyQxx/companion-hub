@@ -568,6 +568,7 @@ class PostcommitHandlers:
         strict: bool = False,
     ) -> None:
         if self._service._memory_ingester is None:
+            logger.info("memory.turn turn_id=%s reason=ingester_unavailable", pending.turn_id)
             return
         try:
             retrieved_memories = (

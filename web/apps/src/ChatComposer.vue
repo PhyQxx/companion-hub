@@ -50,6 +50,18 @@ const emit = defineEmits<{
   send: [];
   cancelStreaming: [];
 }>();
+// Vue defers v-model updates while the IME is composing. Never submit the
+// previous draft or prevent the IME's default confirmation action in that state.
+let composing = false;
+function startComposition() { composing = true; }
+function endComposition() { composing = false; }
+function onDraftKeydown(event: KeyboardEvent) {
+  if (event.key !== "Enter" || event.shiftKey || event.ctrlKey || event.altKey || event.metaKey) return;
+  // keyCode 229 also covers browsers that end composition before this keydown.
+  if (composing || event.isComposing || event.keyCode === 229) return;
+  event.preventDefault();
+  emit("send");
+}
 </script>
 
 <template>
@@ -152,7 +164,10 @@ const emit = defineEmits<{
         rows="2"
         placeholder="输入消息，Enter 发送"
         :disabled="!socketReady || activeConversationArchived"
-        @keydown.enter.exact.prevent="emit('send')"
+        @compositionstart="startComposition"
+        @compositionend="endComposition"
+        @blur="endComposition"
+        @keydown="onDraftKeydown"
       />
       <button v-if="!streaming" class="primary send-button" type="button" :disabled="!canSend" @click="emit('send')">
         <span>发送</span>

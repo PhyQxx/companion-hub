@@ -236,3 +236,18 @@ def test_memory_rule_and_json_legacy_exports_are_compatible() -> None:
 )
 def test_memory_extraction_core_cannot_import_runtime_adapters(module: str, adapter: str) -> None:
     assert not allowed(module, adapter)
+
+
+@pytest.mark.asyncio
+async def test_extraction_diagnostics_distinguish_empty_and_fallback(caplog):
+    import logging
+
+    caplog.set_level(logging.INFO)
+    await extracted(Completion('{"candidates":[]}'))
+    assert "reason=model_empty" in caplog.text
+    caplog.clear()
+    await extracted(Completion(error=RuntimeError("private provider payload")))
+    assert "reason=model_or_payload_error error_type=RuntimeError" in caplog.text
+    assert "reason=rule_candidates" in caplog.text
+    assert "private provider payload" not in caplog.text
+    assert TEXT not in caplog.text

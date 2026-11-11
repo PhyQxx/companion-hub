@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import logging
 import re
 from collections.abc import Sequence
 from datetime import datetime, timedelta
@@ -176,6 +177,13 @@ class RuleBasedExtractor:
                     ),
                 )
             )
+        logging.getLogger(__name__).info(
+            "memory.extract message_id=%s reason=%s candidates=%d discarded_limit=%d",
+            message_id,
+            "rule_candidates" if results else "rule_no_match",
+            min(len(results), 4),
+            max(0, len(results) - 4),
+        )
         return results[:4]
 
 
@@ -393,11 +401,19 @@ def _dedupe_and_suppress_echo(
             _normalize_memory_text(candidate.content),
         )
         if key in seen:
+            logging.getLogger(__name__).info(
+                "memory.filter sources=%s reason=duplicate_candidate",
+                [source.source_id for source in candidate.sources],
+            )
             continue
         seen.add(key)
         if subject == MemorySubjectKind.ASSISTANT.value and any(
             _normalize_memory_text(memory.content) == key[-1] for memory in retrieved_assistant
         ):
+            logging.getLogger(__name__).info(
+                "memory.filter sources=%s reason=retrieved_assistant_echo",
+                [source.source_id for source in candidate.sources],
+            )
             continue
         results.append(candidate)
     return results

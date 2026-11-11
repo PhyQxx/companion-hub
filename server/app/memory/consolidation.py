@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from datetime import datetime
 from typing import final
 from uuid import UUID
@@ -62,9 +63,26 @@ class MemoryIngester:
         actor: str = "extractor",
         enforce_sources: bool = False,
     ) -> ConsolidateOutcome:
-        return await self._consolidator.ingest(
-            candidate, user_id=user_id, actor=actor, enforce_sources=enforce_sources
+        sources = [source.source_id for source in candidate.sources]
+        try:
+            outcome = await self._consolidator.ingest(
+                candidate, user_id=user_id, actor=actor, enforce_sources=enforce_sources
+            )
+        except Exception as exc:
+            logging.getLogger(__name__).warning(
+                "memory.persist sources=%s reason=write_failed error_type=%s",
+                sources,
+                type(exc).__name__,
+            )
+            raise
+        logging.getLogger(__name__).info(
+            "memory.persist sources=%s decision=%s memory_id=%s related_id=%s",
+            sources,
+            outcome.decision,
+            outcome.memory.id,
+            outcome.related.id if outcome.related else None,
         )
+        return outcome
 
     async def ingest_message(
         self,
@@ -119,6 +137,12 @@ class MemoryIngester:
             privacy_level=privacy_level,
             retrieved_memories=retrieved_memories,
             backend=backend,
+        )
+        logging.getLogger(__name__).info(
+            "memory.turn message_id=%s reason=%s candidates=%d",
+            user_message_id,
+            "candidates_ready" if candidates else "no_candidates",
+            len(candidates),
         )
         return [
             await self.ingest(

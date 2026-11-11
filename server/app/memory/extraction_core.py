@@ -1,5 +1,6 @@
 """Memory candidate policy with detached completion and offline rule fallback."""
 
+import logging
 from datetime import datetime
 from math import isfinite
 from uuid import UUID
@@ -18,6 +19,8 @@ from .extraction_rules import (
 )
 from .models import ExtractedCandidates, MemoryCandidate, MemorySourceKind, MemorySourceRef
 
+logger = logging.getLogger(__name__)
+
 
 class StructuredMemoryExtractor:
     def __init__(self, *, fallback: RuleBasedExtractor | None = None) -> None:
@@ -34,8 +37,10 @@ class StructuredMemoryExtractor:
     ) -> list[MemoryCandidate]:
         privacy_level = PrivacyLevel(privacy_level)
         if privacy_level is PrivacyLevel.L3:
+            logger.info("memory.extract reason=privacy_l3")
             return []
         if completion is None:
+            logger.info("memory.extract message_id=%s reason=no_backend", message_id)
             return await self._fallback.extract(
                 text, message_id=message_id, privacy_level=privacy_level, occurred_at=occurred_at
             )
@@ -57,10 +62,22 @@ class StructuredMemoryExtractor:
                 for item in payload.candidates
             ):
                 raise ValueError("memory_candidate_score_invalid")
-        except Exception:
+        except Exception as exc:
+            logger.warning(
+                "memory.extract message_id=%s reason=model_or_payload_error error_type=%s",
+                message_id,
+                type(exc).__name__,
+            )
             return await self._fallback.extract(
                 text, message_id=message_id, privacy_level=privacy_level, occurred_at=occurred_at
             )
+        logger.info(
+            "memory.extract message_id=%s reason=%s candidates=%d discarded_limit=%d",
+            message_id,
+            "model_candidates" if payload.candidates else "model_empty",
+            min(len(payload.candidates), MAX_LLM_CANDIDATES),
+            max(0, len(payload.candidates) - MAX_LLM_CANDIDATES),
+        )
         return [
             MemoryCandidate(
                 type=item.type,
