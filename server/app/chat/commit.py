@@ -243,6 +243,11 @@ class CommitHandlers:
             decision_meta["tool_calls"] = [
                 {
                     "call_id": execution.call_id,
+                    **(
+                        {"memory_ids_used": list(execution.memory_ids_used)}
+                        if execution.memory_ids_used
+                        else {}
+                    ),
                     "tool_name": execution.result.tool_name,
                     "latency_ms": execution.result.latency_ms,
                     "outcome": "success" if execution.result.ok else "failed",
@@ -443,6 +448,10 @@ class CommitHandlers:
             await transition_run(session, pending.turn_id, "succeeded")
             operations = ["timeline"] if service._timeline_store is not None else []
             if service._memory_ingester is not None:
+                assistant_record.decision_meta = {
+                    **decision_meta,
+                    "memory_receipt": {"state": "queued"},
+                }
                 operations.append("memory")
             if service._goal_tracker is not None:
                 operations.append("commitments")
@@ -462,6 +471,7 @@ class CommitHandlers:
                     },
                     owner=str(pending.user_id),
                     resource_class=POSTCOMMIT_RESOURCE,
+                    max_attempts=4 if operation == "memory" else 3,
                     idempotency_key=f"chat:{pending.turn_id}:{operation}",
                     task_run_id=pending.turn_id,
                 )

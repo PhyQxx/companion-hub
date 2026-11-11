@@ -12,6 +12,7 @@ from uuid import UUID
 from app.harness.json_payload import load_json_object
 from app.schemas.common import PrivacyLevel
 
+from .fact_keys import birthday_key
 from .models import (
     MemoryCandidate,
     MemoryEntry,
@@ -26,7 +27,7 @@ RULE_EXTRACTOR_VERSION = "rule-v1"
 LLM_EXTRACTOR_VERSION = "llm-utility-v1"
 
 MAX_EXTRACT_INPUT_CHARS = 4_000
-MAX_LLM_CANDIDATES = 4
+MAX_LLM_CANDIDATES = 12
 
 _SENTENCE_SPLIT = re.compile(r"[。！？!?\n；;]+")
 _TIME_WORDS = re.compile(
@@ -109,7 +110,7 @@ def extraction_instruction(privacy_level: PrivacyLevel) -> str:
         '{"candidates":[{"type":"semantic|preference|commitment|episodic|emotional",'
         '"content":"……","importance":0.6,"confidence":0.8}]}\n'
         "要求：content 用第三人称“用户……”的中文描述，不超过 80 字；"
-        "只提取稳定事实、偏好、承诺或重要事件；寒暄和与用户无关的内容不要提取；"
+        "能记则记：保存有依据的事实、习惯、关系、偏好、经历和约定，不因重要性低而省略。每个事实单独一条，最多12条；生日需绑定实际人物，不保存易过期年龄。禁止把助手猜测当成用户事实；寒暄不提取；"
         '没有值得记忆的内容时输出 {"candidates":[]}。'
     )
     if privacy_level == PrivacyLevel.L2:
@@ -181,10 +182,10 @@ class RuleBasedExtractor:
             "memory.extract message_id=%s reason=%s candidates=%d discarded_limit=%d",
             message_id,
             "rule_candidates" if results else "rule_no_match",
-            min(len(results), 4),
-            max(0, len(results) - 4),
+            len(results),
+            0,
         )
-        return results[:4]
+        return results
 
 
 def _load_json_object(raw: str) -> dict[str, object]:
@@ -213,7 +214,7 @@ def _third_person(sentence: str) -> str:
 def _infer_user_fact_key(content: str) -> str | None:
     """为稳定用户事实补确定性槽位，避免 LLM 分类波动破坏精确召回。"""
 
-    return "profile.job" if _USER_JOB_FACT.search(content) else None
+    return birthday_key(content) or ("profile.job" if _USER_JOB_FACT.search(content) else None)
 
 
 def _default_importance(memory_type: MemoryType) -> float:

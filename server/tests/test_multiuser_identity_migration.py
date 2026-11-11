@@ -124,7 +124,7 @@ def test_full_sqlite_chain_reaches_multiuser_head(tmp_path: Path) -> None:
     assert result.returncode == 0, result.stderr
     with sqlite3.connect(path) as connection:
         assert connection.execute("SELECT version_num FROM alembic_version").fetchone() == (
-            "0070_password_login",
+            "0072_memory_lifecycle",
         )
         columns = {row[1] for row in connection.execute("PRAGMA table_info(app_user)")}
         assert {"sso_sub", "role"} <= columns

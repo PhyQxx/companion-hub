@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import math
+import os
 import re
 from collections import Counter
 from collections.abc import Callable, Mapping, Sequence
@@ -19,6 +20,8 @@ from uuid import UUID
 from app.harness.time import utc
 from app.schemas.common import PrivacyLevel, persistent_privacy_levels
 
+from .fact_keys import birthday_key
+from .lifecycle_policy import TIERS, MemoryTier
 from .models import MemoryEntry, MemoryStatus, MemorySubjectKind, MemoryType
 from .retrieval_models import MemoryHit as MemoryHit
 from .retrieval_models import RetrievalCandidate
@@ -26,7 +29,7 @@ from .retrieval_models import RetrievalResult as RetrievalResult
 from .retrieval_ports import MemoryRetrievalRepository
 from .similarity import cosine_similarity, lexical_cosine, text_tokens
 
-RETRIEVAL_POLICY_VERSION = "hybrid-subject-v6"
+RETRIEVAL_POLICY_VERSION = "hybrid-lifecycle-v7"
 
 DEFAULT_SUBJECT_SCOPES: tuple[tuple[MemorySubjectKind, str], ...] = (
     (MemorySubjectKind.USER, "user:self"),
@@ -79,6 +82,7 @@ class MemoryRetriever:
         user_id: UUID,
         privacy_level: PrivacyLevel,
         now: datetime | None = None,
+        deep: bool = False,
     ) -> RetrievalResult:
         moment = utc(now or datetime.now(UTC))
         privacy = PrivacyLevel(privacy_level)
@@ -103,6 +107,8 @@ class MemoryRetriever:
             privacy_levels=allowed_levels,
             valid_at=moment,
             limit=self._policy.candidate_limit,
+            query_text=query,
+            deep=deep,
         )
         candidates = tuple(
             RetrievalCandidate(
@@ -199,7 +205,9 @@ class MemoryRetriever:
                 self._policy.relevance_weight * relevance
                 + self._policy.importance_weight * entry.importance
             )
-            reasons: list[str] = []
+            if os.getenv("ARIA_MEMORY_TIERED_RETRIEVAL", "1") == "1":
+                score += 0.15 * TIERS.index(MemoryTier(entry.tier)) / (len(TIERS) - 1)
+            reasons: list[str] = [f"tier:{entry.tier}"]
             if vector_score > 0:
                 reasons.append("vector")
             if lexical_score > 0:
@@ -410,6 +418,9 @@ def _infer_subject_hint(query: str) -> MemorySubjectKind | None:
 
 def _infer_fact_keys(query: str) -> tuple[str, ...]:
     normalized = query.strip().lower()
+    birthday = birthday_key(query)
+    if birthday:
+        return (birthday,)
     patterns: tuple[tuple[str, tuple[str, ...]], ...] = (
         ("profile.measurements", ("三围", "身材数据", "身体围度", "胸围腰围臀围")),
         ("profile.height", ("身高", "多高")),

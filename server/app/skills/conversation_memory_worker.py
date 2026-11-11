@@ -12,8 +12,14 @@ from pydantic import Field
 from app.config import DatabaseConfigStore
 from app.db import AppUserRecord
 from app.harness.json_payload import load_json_object
-from app.jobs.maintenance import MaintenanceSourceGone, MaintenanceWorker, maintenance_job
+from app.jobs.maintenance import (
+    MaintenanceFailure,
+    MaintenanceSourceGone,
+    MaintenanceWorker,
+    maintenance_job,
+)
 from app.llm import CompletionRequest, LLMMessage, LLMRoute
+from app.llm.router import LLMRouteExhausted
 from app.schemas import PrivacyLevel
 from app.schemas.common import StrictModel
 from app.tools.contracts import ToolContext
@@ -24,6 +30,16 @@ if TYPE_CHECKING:
     from app.chat import ChatService
 
 RESOURCE = "conversation-memory-review"
+
+
+def failure_details(error: Exception) -> dict[str, Any]:
+    detail: dict[str, Any] = {"error_type": type(error).__name__}
+    if isinstance(error, LLMRouteExhausted):
+        detail["route_failures"] = [
+            {"endpoint": item.endpoint, "attempt": item.attempt, "error_type": item.error_type}
+            for item in error.failures[:10]
+        ]
+    return detail
 
 
 class ReviewResponse(StrictModel):
@@ -41,18 +57,36 @@ class ConversationMemoryWorker(MaintenanceWorker):
         )
 
     async def review(self, kind: str, payload: dict[str, Any], owner: str) -> None:
+        diagnostic: dict[str, Any] = {"stage": "initialization", "message_seq": None}
+        try:
+            await self._review(kind, payload, owner, diagnostic)
+        except (MaintenanceSourceGone, MaintenanceFailure):
+            raise
+        except Exception as exc:
+            diagnostic.update(failure_details(exc))
+            logging.getLogger(__name__).warning(
+                "memory.review job_id=%s failure=%s", maintenance_job().id, diagnostic
+            )
+            raise MaintenanceFailure("memory_review_stage_failed", diagnostic) from exc
+
+    async def _review(
+        self, kind: str, payload: dict[str, Any], owner: str, diagnostic: dict[str, Any]
+    ) -> None:
         uid, cid = UUID(owner), UUID(payload["conversation_id"])
         upper = int(payload["until_seq"])
         ctx = ToolContext(user_id=uid, privacy_level=PrivacyLevel.L1)
+        diagnostic["stage"] = "load_config"
         snapshot = (
             await self.service._config_store.refresh()
             if isinstance(self.service._config_store, DatabaseConfigStore)
             else self.service._config_store.current
         )
+        diagnostic["stage"] = "build_router"
         backend = self.service._router_builder(snapshot.config)
         cursor = 0
         preceding: list[dict[str, Any]] = []
         failures = 0
+        failed_messages: list[dict[str, Any]] = []
         while cursor < upper:
             job = maintenance_job()
             async with self.service._database.sessions() as session:
@@ -62,6 +96,7 @@ class ConversationMemoryWorker(MaintenanceWorker):
             skill = await self.tool.store.get_by_name(NAME)
             if skill is None or not skill.enabled or await self.engine.cancel_requested(job.id):
                 raise MaintenanceSourceGone()
+            diagnostic["stage"] = "read_page"
             page = await self.tool.execute(
                 ReviewArguments(
                     operation="read", conversation_id=cid, after_seq=cursor, until_seq=upper
@@ -75,6 +110,7 @@ class ConversationMemoryWorker(MaintenanceWorker):
                 break
             for row in rows:
                 cursor = row["seq"]
+                diagnostic.update(stage="start_message", message_seq=cursor)
                 if await self.engine.cancel_requested(job.id):
                     raise MaintenanceSourceGone()
                 step = await self.engine.start_step(
@@ -92,6 +128,7 @@ class ConversationMemoryWorker(MaintenanceWorker):
                     )
                 else:
                     try:
+                        diagnostic["stage"] = "model_call"
                         result = await backend.complete(
                             CompletionRequest(
                                 trace_id=UUID(row["id"]),
@@ -129,9 +166,11 @@ class ConversationMemoryWorker(MaintenanceWorker):
                                 ],
                             )
                         )
+                        diagnostic["stage"] = "parse_candidates"
                         review = ReviewResponse.model_validate(load_json_object(result.text))
                         if any(item.source_seq != cursor for item in review.items):
                             raise ValueError("review_source_mismatch")
+                        diagnostic["stage"] = "persist_candidates"
                         receipt = await self.tool.execute(
                             ReviewArguments(
                                 operation="review",
@@ -148,22 +187,35 @@ class ConversationMemoryWorker(MaintenanceWorker):
                             for item in receipt.data["results"]
                         ):
                             failures += 1
+                            if len(failed_messages) < 20:
+                                failed_messages.append(
+                                    {
+                                        **diagnostic,
+                                        "error_type": "SourceValidation",
+                                        "reason": "source_unavailable_or_quote_mismatch",
+                                    }
+                                )
                     except MaintenanceSourceGone:
                         raise
                     except Exception as exc:
                         failures += 1
+                        if len(failed_messages) < 20:
+                            failed_messages.append({**diagnostic, **failure_details(exc)})
                         logging.getLogger(__name__).warning(
                             "memory.review job_id=%s seq=%s reason=review_failed error_type=%s",
                             job.id,
                             cursor,
                             type(exc).__name__,
                         )
-                await self.engine.complete_step(
+                diagnostic["stage"] = "complete_message"
+                completed = await self.engine.complete_step(
                     step,
                     progress=cursor / max(1, upper),
                     worker_id=self._worker_id,
                     claim_version=job.attempts,
                 )
+                if not completed:
+                    raise MaintenanceSourceGone()
                 if row["content"] is not None:
                     preceding.append(
                         {"seq": row["seq"], "role": row["role"], "content": row["content"][-2000:]}
@@ -178,4 +230,13 @@ class ConversationMemoryWorker(MaintenanceWorker):
             failures,
         )
         if failures:
-            raise ValueError("memory_review_partial_failure")
+            raise MaintenanceFailure(
+                "memory_review_partial_failure",
+                {
+                    "stage": "scan_finished",
+                    "scanned_until_seq": cursor,
+                    "failed_count": failures,
+                    "failures": failed_messages,
+                    "failures_truncated": failures > len(failed_messages),
+                },
+            )

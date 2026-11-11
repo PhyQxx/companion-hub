@@ -101,8 +101,10 @@ from .meetings import (
 )
 from .memory import (
     DeletionLedgerRecord,
+    MemoryLifecycleRecord,
     MemoryRecord,
     MemorySourceRecord,
+    MemoryUsageRecord,
     TimelineEventRecord,
 )
 from .runs import (
@@ -176,8 +178,10 @@ __all__ = [
     "Mapped",
     "MeetingActionClaimRecord",
     "MeetingRecord",
+    "MemoryLifecycleRecord",
     "MemoryRecord",
     "MemorySourceRecord",
+    "MemoryUsageRecord",
     "MessageRecord",
     "ModelReservationRecord",
     "ObservationOwnerBindingRecord",

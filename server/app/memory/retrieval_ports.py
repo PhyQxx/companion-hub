@@ -37,6 +37,8 @@ class MemoryRetrievalRepository(Protocol):
         privacy_levels: Sequence[PrivacyLevel],
         valid_at: datetime,
         limit: int,
+        query_text: str = "",
+        deep: bool = False,
     ) -> list[RetrievalCandidate]: ...
 
     async def fact_candidates(

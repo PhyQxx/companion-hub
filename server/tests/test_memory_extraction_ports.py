@@ -156,7 +156,7 @@ async def test_empty_memory_completion_does_not_invent_rule_candidates() -> None
     assert await extracted(Completion('{"candidates":[]}')) == []
 
 
-async def test_memory_completion_clips_input_and_keeps_four_candidates() -> None:
+async def test_memory_completion_chunks_input_and_preserves_all_candidates() -> None:
     completion = Completion(
         json.dumps(
             {
@@ -173,9 +173,11 @@ async def test_memory_completion_clips_input_and_keeps_four_candidates() -> None
         occurred_at=NOW,
         completion=completion,
     )
+    assert len(completion.inputs) == 2
+    assert len(completion.inputs[-1].text) == 1200
     assert len(completion.inputs[0].text) == MAX_EXTRACT_INPUT_CHARS
     assert [candidate.content for candidate in result] == [
-        f"Synthetic {index}" for index in range(4)
+        f"Synthetic {index}" for index in range(6)
     ]
 
 
@@ -213,7 +215,7 @@ async def test_legacy_memory_adapter_retains_request_contract(privacy: PrivacyLe
     request = requests[0]
     assert request.trace_id == identifier and request.privacy_level == privacy
     assert request.route == LLMRoute.UTILITY and request.json_mode and request.temperature == 0.1
-    assert request.max_tokens == 1024 and len(request.messages) == 2
+    assert request.max_tokens == 4096 and len(request.messages) == 2
     assert request.messages[0].content == extraction_instruction(privacy)
     assert request.messages[1].content == TEXT
 
@@ -251,3 +253,14 @@ async def test_extraction_diagnostics_distinguish_empty_and_fallback(caplog):
     assert "reason=rule_candidates" in caplog.text
     assert "private provider payload" not in caplog.text
     assert TEXT not in caplog.text
+
+
+async def test_context_disambiguation_keeps_dependency_sources_and_resets_scope() -> None:
+    from app.memory.extraction_scope import extraction_scope
+
+    previous = str(uuid7())
+    with extraction_scope("assistant: synthetic subject", source_ids=(previous,)):
+        contextual = await extracted(Completion())
+    assert previous in {source.source_id for source in contextual[0].sources}
+    independent = await extracted(Completion())
+    assert previous not in {source.source_id for source in independent[0].sources}

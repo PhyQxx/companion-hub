@@ -142,6 +142,9 @@ class _StubSSOClient:
     def __init__(self, *args: object, **kwargs: object) -> None:
         pass
 
+    async def aclose(self) -> None:
+        pass
+
     async def __aenter__(self) -> _StubSSOClient:
         return self
 
@@ -166,6 +169,8 @@ class _StubSSOClient:
 async def test_sso_callback_whitelist_and_provisioning(
     database: Database, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    # Restore the pooled stub at teardown; it must not escape into later lifespans.
+    monkeypatch.setattr("app.api.auth_sso._sso_http_client", None)
     monkeypatch.setattr(httpx, "AsyncClient", _StubSSOClient)
     service = AuthService(database)
     settings = SsoSettings(
@@ -231,6 +236,8 @@ async def test_sso_callback_whitelist_and_provisioning(
 async def test_sso_callback_rejects_replayed_state(
     database: Database, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    # Restore the pooled stub at teardown; it must not escape into later lifespans.
+    monkeypatch.setattr("app.api.auth_sso._sso_http_client", None)
     monkeypatch.setattr(httpx, "AsyncClient", _StubSSOClient)
     service = AuthService(database)
     settings = SsoSettings(

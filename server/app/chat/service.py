@@ -22,6 +22,7 @@ from app.db import (
     ConversationRecord,
     Database,
     InteractionTurnRecord,
+    JobRecord,
     MessageRecord,
     TaskRunRecord,
 )
@@ -189,6 +190,7 @@ class ChatService:
             self._device_tools.register(review_tool)
         # 后台记忆任务的强引用集合：既防止任务被 GC，也支持停机前等待收尾
         self._background_tasks: set[asyncio.Task[None]] = set()
+        self._memory_decay_task: asyncio.Task[None] | None = None
         self._recent_devices: dict[UUID, list[RecentDeviceReference]] = {}
         # PERE-02：本进程已取消的 generation_id（cancel_turn 写入，回合收尾
         # 逐出）。流式热路径的取消检查由此走内存而非逐 delta 查库。
@@ -300,7 +302,31 @@ class ChatService:
                 )
             )
         records.reverse()
+        await self._attach_memory_receipts(records, user_id)
         return [self._message_view(record) for record in records]
+
+    async def _attach_memory_receipts(self, records: list[MessageRecord], user_id: UUID) -> None:
+        async with self._database.sessions() as session:
+            jobs = list(
+                await session.scalars(
+                    select(JobRecord).where(
+                        JobRecord.owner == str(user_id),
+                        JobRecord.kind == "chat.memory",
+                        JobRecord.task_run_id.in_([row.turn_id for row in records]),
+                    )
+                )
+            )
+        by_turn = {job.task_run_id: job for job in jobs}
+        for row in records:
+            job = by_turn.get(row.turn_id)
+            if row.role != "assistant" or job is None:
+                continue
+            meta = dict(row.decision_meta or {})
+            receipt = dict(meta.get("memory_receipt", {}))
+            receipt["state"] = "completed" if job.status == "succeeded" else job.status
+            receipt["error_code"] = job.error_code
+            meta["memory_receipt"] = receipt
+            row.decision_meta = meta
 
     async def send_message(
         self,
@@ -928,8 +954,19 @@ class ChatService:
 
     def start_postcommit_worker(self) -> None:
         self._postcommit.start()
+        if self._memory_store is not None and self._memory_decay_task is None:
+            self._memory_decay_task = asyncio.create_task(self._decay_memory_loop())
         if self._memory_review_worker is not None:
             self._memory_review_worker.start()
+
+    async def _decay_memory_loop(self) -> None:
+        while True:
+            await asyncio.sleep(60)
+            try:
+                if self._memory_store is not None:
+                    await self._memory_store.decay_memories()
+            except Exception:
+                logger.exception("memory lifecycle maintenance failed")
 
     async def _commit_turn(
         self,
@@ -1023,6 +1060,11 @@ class ChatService:
 
     async def drain_background_work(self) -> None:
         """等待后台记忆任务完成；测试断言与优雅停机使用。"""
+        if self._memory_decay_task is not None:
+            self._memory_decay_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await self._memory_decay_task
+            self._memory_decay_task = None
         await self._postcommit.stop()
         if self._memory_review_worker is not None:
             await self._memory_review_worker.stop()

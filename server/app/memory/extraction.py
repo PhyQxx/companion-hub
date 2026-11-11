@@ -111,6 +111,7 @@ class _ChatMemoryCompletion:
                 route=LLMRoute.UTILITY,
                 temperature=0.1,
                 json_mode=True,
+                max_tokens=4096,
             )
         )
         return MemoryExtractionCompletion(result.text)

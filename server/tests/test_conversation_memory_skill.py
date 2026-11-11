@@ -210,5 +210,41 @@ async def test_worker_partial_model_failure_is_not_success(setup):
     await worker.drain_ready()
     current = await worker.engine.get(job.id)
     assert current.status == "failed"
+    detail = await worker.engine.failure_detail(job.id, owner=str(user.id))
+    assert detail["failed_count"] == 1
+    assert detail["failures"][0]["message_seq"] == 3
+    assert detail["failures"][0]["stage"] == "model_call"
+    assert detail["failures"][0]["error_type"] == "TimeoutError"
+    assert "private provider error" not in str(detail)
+    assert await worker.engine.failure_detail(job.id, owner=str(_other.id)) is None
+
     memories = await tool.ingester._store.list_memories(user_id=user.id)
     assert len(memories) == 1
+
+
+async def test_initialization_failure_has_no_invented_message_position(setup):
+    tool, user, _other, conv, _, _ = setup
+
+    def broken_router(config):
+        raise ValueError("secret configuration payload")
+
+    tool.service._router_builder = broken_router
+    worker = tool.service._memory_review_worker
+    job = await worker.engine.submit(
+        NAME,
+        {"conversation_id": str(conv.id), "until_seq": 140},
+        owner=str(user.id),
+        resource_class=NAME,
+        max_attempts=1,
+    )
+    await worker.drain_ready()
+    status = await tool.execute(
+        ReviewArguments(operation="status", job_id=job.id),
+        ToolContext(user_id=user.id, privacy_level=PrivacyLevel.L1),
+    )
+    assert status.data["status"] == "failed"
+    assert status.data["scope"]["until_seq"] == 140
+    assert status.data["failure_detail"]["stage"] == "build_router"
+    assert status.data["failure_detail"]["message_seq"] is None
+    assert status.data["failure_detail"]["error_type"] == "ValueError"
+    assert "secret configuration payload" not in str(status.data)

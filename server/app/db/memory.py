@@ -2,14 +2,18 @@
 
 from app.memory.persistence import (
     DeletionLedgerRecord,
+    MemoryLifecycleRecord,
     MemoryRecord,
     MemorySourceRecord,
+    MemoryUsageRecord,
 )
 from app.timeline.persistence import TimelineEventRecord
 
 __all__ = [
     "DeletionLedgerRecord",
+    "MemoryLifecycleRecord",
     "MemoryRecord",
     "MemorySourceRecord",
+    "MemoryUsageRecord",
     "TimelineEventRecord",
 ]

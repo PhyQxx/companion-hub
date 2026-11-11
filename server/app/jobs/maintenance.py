@@ -15,6 +15,7 @@ from app.harness.budget import BudgetDenied
 from app.harness.claim import ClaimInvalidated, ExecutionClaim, claim_scope
 from app.ids import uuid7
 from app.jobs.engine import JobEngine, JobView
+from app.jobs.worker_identity import worker_identity
 
 logger = logging.getLogger(__name__)
 _CURRENT_JOB: ContextVar[JobView | None] = ContextVar("maintenance_job", default=None)
@@ -33,6 +34,16 @@ Handler = Callable[[str, dict[str, Any], str], Awaitable[None]]
 MaintenanceSourceGone = ClaimInvalidated
 
 
+class MaintenanceFailure(RuntimeError):
+    """Internal handlers provide allowlisted diagnostics, never exception text."""
+
+    def __init__(self, reason_code: str, detail: dict[str, Any], *, retryable: bool = True) -> None:
+        super().__init__(reason_code)
+        self.reason_code = reason_code
+        self.detail = detail
+        self.retryable = retryable
+
+
 class MaintenanceWorker:
     def __init__(
         self,
@@ -48,6 +59,7 @@ class MaintenanceWorker:
         self._error_code = error_code
         self._handler = handler
         self._worker_id = f"{resource_class}-{uuid7()}"
+        self._identity = worker_identity(self._worker_id, resource_class)
         self._lock = asyncio.Lock()
         self._stop = asyncio.Event()
         self._task: asyncio.Task[None] | None = None
@@ -91,6 +103,7 @@ class MaintenanceWorker:
                 step_id = await self.engine.start_step(
                     job.id,
                     "derive",
+                    checkpoint={"consumer": self._identity},
                     worker_id=self._worker_id,
                     claim_version=job.attempts,
                 )
@@ -118,7 +131,10 @@ class MaintenanceWorker:
                         job.id, worker_id=self._worker_id, claim_version=job.attempts
                     )
                     await self.engine.confirm_cancelled(
-                        job.id, self._worker_id, claim_version=job.attempts
+                        job.id,
+                        self._worker_id,
+                        claim_version=job.attempts,
+                        reason_code="maintenance_source_or_claim_invalidated",
                     )
                 except Exception as error:
                     logger.warning("maintenance failed job=%s kind=%s", job.id, job.kind)
@@ -129,11 +145,21 @@ class MaintenanceWorker:
                     else:
                         await self.engine.fail_step(
                             step_id,
+                            retry_delay_seconds=(30, 120, 600)[min(job.attempts - 1, 2)]
+                            if job.kind == "chat.memory"
+                            else None,
                             error_code=error.reason_code
-                            if isinstance(error, BudgetDenied)
+                            if isinstance(error, (BudgetDenied, MaintenanceFailure))
                             else self._error_code,
-                            retryable=not isinstance(error, BudgetDenied)
-                            or error.reason_code == "user_model_concurrency_exhausted",
+                            error_detail=error.detail
+                            if isinstance(error, MaintenanceFailure)
+                            else None,
+                            retryable=error.retryable
+                            if isinstance(error, MaintenanceFailure)
+                            else (
+                                not isinstance(error, BudgetDenied)
+                                or error.reason_code == "user_model_concurrency_exhausted"
+                            ),
                             worker_id=self._worker_id,
                             claim_version=job.attempts,
                         )

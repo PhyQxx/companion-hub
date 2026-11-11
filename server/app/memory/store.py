@@ -14,7 +14,7 @@ from datetime import UTC, datetime
 from typing import cast
 from uuid import UUID
 
-from sqlalchemy import Select, bindparam, delete, func, or_, select, text, update
+from sqlalchemy import Select, bindparam, case, delete, func, literal, or_, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db import (
@@ -57,8 +57,11 @@ def _list_filter(
     type: MemoryType | None,
     status: MemoryStatus | None,
     min_importance: float | None,
+    tier: str | None = None,
 ) -> Select[tuple[MemoryRecord]]:
     query = select(MemoryRecord)
+    if tier is not None:
+        query = query.where(MemoryRecord.tier == tier)
     if user_id is not None:
         query = query.where(MemoryRecord.user_id == user_id)
     if subject_kind is not None:
@@ -176,6 +179,7 @@ class MemoryStore:
                 embedding_version=self._embedding_provider.version,
                 importance=min(1.0, max(0.0, candidate.importance)),
                 pin=candidate.pin,
+                tier_locked=candidate.pin,
                 status=status.value,
                 confidence=candidate.confidence,
                 valid_from=candidate.valid_from or now,
@@ -192,6 +196,27 @@ class MemoryStore:
             await self._sync_vector_column(session, record.id, vector)
             await session.refresh(record)
         return self._entry(record)
+
+    async def record_use(
+        self, memory_id: int, *, user_id: UUID, turn_key: str, kind: str, timezone: str = "UTC"
+    ) -> None:
+        import os
+
+        from .lifecycle import MemoryLifecycle
+
+        if os.getenv("ARIA_MEMORY_COLLECT_USAGE", "1") == "1":
+            await MemoryLifecycle(self._database).use(
+                memory_id, user_id=user_id, turn_key=turn_key, kind=kind, timezone=timezone
+            )
+
+    async def decay_memories(self) -> int:
+        import os
+
+        from .lifecycle import MemoryLifecycle
+
+        if os.getenv("ARIA_MEMORY_AUTO_DECAY", "1") != "1":
+            return 0
+        return await MemoryLifecycle(self._database).decay_batch()
 
     async def get(self, memory_id: int, *, user_id: UUID | None = None) -> MemoryEntry:
         async with self._database.sessions() as session:
@@ -229,8 +254,10 @@ class MemoryStore:
         type: MemoryType | None = None,
         status: MemoryStatus | None = None,
         min_importance: float | None = None,
+        tier: str | None = None,
         limit: int = 100,
         offset: int = 0,
+        newest: bool = False,
     ) -> list[MemoryEntry]:
         query = _list_filter(
             user_id=user_id,
@@ -241,7 +268,12 @@ class MemoryStore:
             type=type,
             status=status,
             min_importance=min_importance,
+            tier=tier,
         ).order_by(MemoryRecord.importance.desc(), MemoryRecord.id.desc())
+        if newest:
+            query = query.order_by(None).order_by(
+                MemoryRecord.created_at.desc(), MemoryRecord.id.desc()
+            )
         query = query.limit(limit).offset(offset)
         async with self._database.sessions() as session:
             records = list(await session.scalars(query))
@@ -258,6 +290,7 @@ class MemoryStore:
         type: MemoryType | None = None,
         status: MemoryStatus | None = None,
         min_importance: float | None = None,
+        tier: str | None = None,
     ) -> int:
         """与 list_memories 同过滤条件的精确总数，供管理端分页。"""
         statement = select(func.count()).select_from(
@@ -270,6 +303,7 @@ class MemoryStore:
                 type=type,
                 status=status,
                 min_importance=min_importance,
+                tier=tier,
             ).subquery()
         )
         async with self._database.sessions() as session:
@@ -287,6 +321,8 @@ class MemoryStore:
         privacy_levels: Sequence[PrivacyLevel] | None = None,
         valid_at: datetime | None = None,
         limit: int = 500,
+        query_text: str = "",
+        deep: bool = False,
     ) -> list[RetrievalCandidate]:
         query = select(MemoryRecord)
         if subject_kind is not None:
@@ -318,9 +354,48 @@ class MemoryStore:
                 (MemoryRecord.valid_from.is_(None) | (MemoryRecord.valid_from <= valid_at)),
                 (MemoryRecord.valid_to.is_(None) | (MemoryRecord.valid_to > valid_at)),
             )
-        query = query.order_by(MemoryRecord.importance.desc()).limit(limit)
-        async with self._database.sessions() as session:
-            records = list(await session.scalars(query))
+        import os
+
+        from .similarity import text_tokens
+
+        if query_text and os.getenv("ARIA_MEMORY_TIERED_RETRIEVAL", "1") == "1":
+            tokens = list(text_tokens(query_text))[:24]
+            matches = sum(
+                (
+                    case((MemoryRecord.content.contains(token, autoescape=True), 1), else_=0)
+                    for token in tokens
+                ),
+                start=literal(0),
+            )
+            query = query.order_by(
+                matches.desc() if tokens else MemoryRecord.id.desc(),
+                MemoryRecord.importance.desc(),
+                MemoryRecord.id.desc(),
+            )
+            async with self._database.sessions() as session:
+                hot = (
+                    []
+                    if deep
+                    else list(
+                        await session.scalars(
+                            query.where(
+                                MemoryRecord.tier.in_(["core", "important", "medium"])
+                            ).limit(limit // 2)
+                        )
+                    )
+                )
+                rest = list(
+                    await session.scalars(
+                        query.where(MemoryRecord.id.not_in([item.id for item in hot])).limit(
+                            limit - len(hot)
+                        )
+                    )
+                )
+                records = hot + rest
+        else:
+            query = query.order_by(MemoryRecord.importance.desc()).limit(limit)
+            async with self._database.sessions() as session:
+                records = list(await session.scalars(query))
         return [
             RetrievalCandidate(entry=self._entry(record), embedding=record.embedding)
             for record in records
@@ -573,6 +648,7 @@ class MemoryStore:
                 embedding_version=self._embedding_provider.version,
                 importance=importance if importance is not None else old.importance,
                 pin=pin if pin is not None else old.pin,
+                tier_locked=pin if pin is not None else old.tier_locked,
                 status=MemoryStatus.ACTIVE.value,
                 confidence=old.confidence,
                 valid_from=old.valid_from or now,
@@ -855,6 +931,10 @@ class MemoryStore:
             .where(MemoryRecord.conflict_with.in_(deleted_ids))
             .values(conflict_with=None)
         )
+        from .persistence import MemoryLifecycleRecord, MemoryUsageRecord
+
+        for model in (MemoryUsageRecord, MemoryLifecycleRecord):
+            await session.execute(delete(model).where(model.memory_id.in_(deleted_ids)))
         await session.execute(delete(MemoryRecord).where(MemoryRecord.id.in_(deleted_ids)))
 
     async def _record_ledger(
@@ -1057,6 +1137,13 @@ class MemoryStore:
             updated_at=cast(datetime, _aware(record.updated_at)),
             last_accessed_at=_aware(record.last_accessed_at),
             access_count=record.access_count,
+            tier=record.tier,
+            tier_locked=record.tier_locked,
+            tier_changed_at=_aware(record.tier_changed_at),
+            last_used_at=_aware(record.last_used_at),
+            next_decay_at=_aware(record.next_decay_at),
+            use_count=record.use_count,
+            lifecycle_version=record.lifecycle_version,
             embedding_model=record.embedding_model,
             embedding_dimension=record.embedding_dimension,
             embedding_version=record.embedding_version,

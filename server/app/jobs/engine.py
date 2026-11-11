@@ -252,6 +252,13 @@ class JobEngine:
             record = await session.get(JobRecord, job_id)
             return self._to_view(record) if record is not None else None
 
+    async def failure_detail(self, job_id: UUID, *, owner: str) -> dict[str, Any] | None:
+        async with self._database.sessions() as session:
+            row = await session.scalar(
+                select(JobRecord).where(JobRecord.id == job_id, JobRecord.owner == owner)
+            )
+            return dict(row.error_detail_safe) if row and row.error_detail_safe else None
+
     async def job_input(self, job_id: UUID) -> dict[str, Any] | None:
         """Worker 侧读取任务输入（JobView 刻意不透出 input）。"""
         async with self._database.sessions() as session:
@@ -480,6 +487,7 @@ class JobEngine:
         error_code: str,
         error_detail: dict[str, Any] | None = None,
         retryable: bool = True,
+        retry_delay_seconds: int | None = None,
         worker_id: str | None = None,
         claim_version: int | None = None,
     ) -> None:
@@ -515,7 +523,11 @@ class JobEngine:
             else:
                 # 进入重试等待
                 job.status = "retry_wait"
-                backoff = timedelta(seconds=2**job.attempts)
+                backoff = timedelta(
+                    seconds=retry_delay_seconds
+                    if retry_delay_seconds is not None
+                    else 2**job.attempts
+                )
                 job.available_at = now + backoff
                 job.error_code = error_code
                 job.error_detail_safe = error_detail
@@ -577,7 +589,12 @@ class JobEngine:
             )
 
     async def confirm_cancelled(
-        self, job_id: UUID, worker_id: str, *, claim_version: int | None = None
+        self,
+        job_id: UUID,
+        worker_id: str,
+        *,
+        claim_version: int | None = None,
+        reason_code: str | None = None,
     ) -> bool:
         """Worker 确认取消完成。"""
         now = datetime.now(UTC)
@@ -591,7 +608,11 @@ class JobEngine:
                     *([JobRecord.attempts == claim_version] if claim_version is not None else []),
                 )
                 .values(
-                    status="cancelled", completed_at=now, lease_owner=None, lease_expires_at=None
+                    status="cancelled",
+                    completed_at=now,
+                    lease_owner=None,
+                    lease_expires_at=None,
+                    **({"error_code": reason_code} if reason_code else {}),
                 )
                 .returning(JobRecord.id, JobRecord.task_run_id)
             )

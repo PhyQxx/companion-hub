@@ -21,6 +21,8 @@ from app.memory import (
     MemoryType,
     replay_deletions,
 )
+from app.memory.lifecycle import LifecycleConflict, MemoryLifecycle
+from app.memory.lifecycle_policy import MemoryTier
 from app.schemas.common import PrivacyLevel, StrictModel
 
 from .admin_config import AdminTokenGuard, admin_access
@@ -55,6 +57,12 @@ class MemoryView(StrictModel):
     embedding_model: str | None
     embedding_dimension: int | None
     embedding_version: str | None
+    tier: MemoryTier = MemoryTier.MEDIUM
+    tier_locked: bool = False
+    use_count: int = 0
+    last_used_at: datetime | None = None
+    next_decay_at: datetime | None = None
+    lifecycle_version: int = 0
 
 
 class MemorySourceView(StrictModel):
@@ -83,6 +91,12 @@ class ManualMemoryCreate(StrictModel):
     valid_to: datetime | None = None
 
 
+class MemoryLifecycleRequest(StrictModel):
+    tier: MemoryTier
+    locked: bool
+    expected_version: Annotated[int, Field(ge=0)]
+
+
 class MemoryEditRequest(StrictModel):
     content: Annotated[str | None, Field(min_length=2, max_length=2_000)] = None
     summary: Annotated[str | None, Field(max_length=2_000)] = None
@@ -100,6 +114,7 @@ class RetrievalQueryRequest(StrictModel):
     user_id: UUID
     query: Annotated[str, Field(min_length=1, max_length=2_000)]
     privacy_level: PrivacyLevel = PrivacyLevel.L1
+    deep: bool = False
 
 
 class MemoryHitView(StrictModel):
@@ -196,6 +211,12 @@ def _view(entry: MemoryEntry) -> MemoryView:
         embedding_model=entry.embedding_model,
         embedding_dimension=entry.embedding_dimension,
         embedding_version=entry.embedding_version,
+        tier=MemoryTier(entry.tier),
+        tier_locked=entry.tier_locked,
+        use_count=entry.use_count,
+        last_used_at=entry.last_used_at,
+        next_decay_at=entry.next_decay_at,
+        lifecycle_version=entry.lifecycle_version,
     )
 
 
@@ -236,17 +257,63 @@ def create_admin_memory_router(store: MemoryStore, *, admin_token: str | None) -
         if entry.user_id != principal.user_id:
             raise HTTPException(status.HTTP_404_NOT_FOUND, detail="memory not found")
 
+    @router.get("/{memory_id}/lifecycle-events")
+    async def lifecycle_history(memory_id: int, request: Request) -> list[dict[str, object]]:
+        await require_ownership(memory_id, request)
+        try:
+            entry = await store.get(memory_id)
+            return await MemoryLifecycle(store.database).history(memory_id, user_id=entry.user_id)
+        except LookupError as error:
+            raise HTTPException(404, "memory not found") from error
+
+    @router.post("/{memory_id}/confirm", response_model=MemoryView)
+    async def confirm_memory(memory_id: int, request: Request) -> MemoryView:
+        await require_ownership(memory_id, request)
+        try:
+            entry = await store.get(memory_id)
+            # A manual confirmation counts once per UTC day, even on repeated clicks.
+            from datetime import UTC
+
+            await store.record_use(
+                memory_id,
+                user_id=entry.user_id,
+                turn_key=f"manual-confirm:{datetime.now(UTC).date()}",
+                kind="user_confirmed",
+            )
+            return _view(await store.get(memory_id))
+        except LookupError as error:
+            raise HTTPException(404, "memory not found") from error
+
+    @router.patch("/{memory_id}/lifecycle", response_model=MemoryView)
+    async def set_lifecycle(
+        memory_id: int, payload: MemoryLifecycleRequest, request: Request
+    ) -> MemoryView:
+        await require_ownership(memory_id, request)
+        try:
+            entry = await store.get(memory_id)
+            await MemoryLifecycle(store.database).set_tier(
+                memory_id,
+                user_id=entry.user_id,
+                tier=MemoryTier(payload.tier),
+                locked=payload.locked,
+                expected_version=payload.expected_version,
+            )
+            return _view(await store.get(memory_id))
+        except LookupError as error:
+            raise HTTPException(404, "memory not found") from error
+        except LifecycleConflict as error:
+            raise HTTPException(409, "memory strength changed; refresh and retry") from error
+
     @router.post("/query", response_model=RetrievalQueryResult)
     async def query_memories(
         payload: RetrievalQueryRequest, request: Request
     ) -> RetrievalQueryResult:
-        payload = payload.model_copy(
-            update={"user_id": scoped_user_id(request, payload.user_id)}
-        )
+        payload = payload.model_copy(update={"user_id": scoped_user_id(request, payload.user_id)})
         result = await MemoryRetriever(store).retrieve(
             payload.query,
             user_id=payload.user_id,
             privacy_level=payload.privacy_level,
+            deep=payload.deep,
         )
         provider = store.embedding_provider
         return RetrievalQueryResult(
@@ -280,6 +347,8 @@ def create_admin_memory_router(store: MemoryStore, *, admin_token: str | None) -
         type: MemoryType | None = None,
         memory_status: Annotated[MemoryStatus | None, Query(alias="status")] = None,
         min_importance: float | None = None,
+        tier: MemoryTier | None = None,
+        newest: bool = True,
         limit: Annotated[int, Query(ge=1, le=200)] = 50,
         offset: Annotated[int, Query(ge=0)] = 0,
     ) -> MemoryListResponse:
@@ -293,6 +362,7 @@ def create_admin_memory_router(store: MemoryStore, *, admin_token: str | None) -
             type=type,
             status=memory_status,
             min_importance=min_importance,
+            tier=tier.value if tier else None,
         )
         entries = await store.list_memories(
             user_id=user_id,
@@ -303,8 +373,10 @@ def create_admin_memory_router(store: MemoryStore, *, admin_token: str | None) -
             type=type,
             status=memory_status,
             min_importance=min_importance,
+            tier=tier.value if tier else None,
             limit=limit,
             offset=offset,
+            newest=newest,
         )
         return MemoryListResponse(
             items=[_view(entry) for entry in entries],
@@ -317,9 +389,7 @@ def create_admin_memory_router(store: MemoryStore, *, admin_token: str | None) -
     async def create_memory(payload: ManualMemoryCreate, request: Request) -> MemoryView:
         if payload.privacy_level == PrivacyLevel.L3:
             raise HTTPException(422, "L3 cannot be stored")
-        payload = payload.model_copy(
-            update={"user_id": scoped_user_id(request, payload.user_id)}
-        )
+        payload = payload.model_copy(update={"user_id": scoped_user_id(request, payload.user_id)})
         candidate = MemoryCandidate(
             subject_kind=payload.subject,
             subject_key=payload.subject_key or _default_subject_key(payload.subject),

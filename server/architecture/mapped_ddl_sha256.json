@@ -164,12 +164,20 @@
     "sqlite": "aa2f0c674e5f1f73726cc10bf19614b291a8bc28a8b2dd50706ee86cb293628f"
   },
   "memory": {
-    "postgresql": "95ac2106bb4bc626871415c97f3639ef72d0f4c17469b4e982889e7c33f74581",
-    "sqlite": "179dbe427415cb13ed883a07e9327caa3694db316419bb15a6544ff4ba43b70e"
+    "postgresql": "ce741f747bfa5b0eaf705b03865f510ad06278aeade3f64b545a4e2afffb7db9",
+    "sqlite": "eb7a9f491eaf87183d512a04b94f856a8ad0200013f265620e5f21c96c769c56"
+  },
+  "memory_lifecycle_event": {
+    "postgresql": "8db0c7b6198d92c79b5cd4547d4b8c348324ac3dae33e8fa6d2dfb1fb58bd769",
+    "sqlite": "b3d03fb62fa002a6dd0e2fbdd845d07faa54f3bc28f915847fe5bf69fcb534f4"
   },
   "memory_source": {
     "postgresql": "c28b4ba5ca23950458263e4683a4c4ee19ff7d514518bfddea6c37501b03f32e",
     "sqlite": "5fed179cd53d2cdac84d032650e5e897e375d9d107c1cc766f0b7f2a2694c44a"
+  },
+  "memory_usage": {
+    "postgresql": "f1a992615201f3f0788bd589ca1d7ac14dae73fc242b92d20dd6baec4583b272",
+    "sqlite": "3a1b620308ec7ed32da050d371422c757f48f6038feeb10d0e947c687f75ac47"
   },
   "message": {
     "postgresql": "3e45d6755772023a219a1497b5f8055f94cda883b76792e25db2fa8cce7962a6",

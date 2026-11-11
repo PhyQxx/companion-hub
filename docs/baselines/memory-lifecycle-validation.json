@@ -1,0 +1,58 @@
+{
+  "date": "2026-11-11",
+  "business_commit": null,
+  "parent_commit": "a101ddf",
+  "source_sha256": "aebf5360e3554875f375fe04cb25588af3e3af844598bd6d3084b5eccf57f8a3",
+  "files": 690,
+  "source_scope": [
+    "server/app/**/*.py",
+    "server/alembic/**/*.py",
+    "web/apps/src/**/*.{vue,ts,py}"
+  ],
+  "full_regression": {
+    "passed": 3974,
+    "skipped": 1083,
+    "failed": 12,
+    "duration_seconds": 173.36,
+    "failures": [
+      "server/tests/test_calendar_owned_sync.py::test_terminal_fee_failure_rolls_back_mirror_and_success_evidence[caldav-sqlite]",
+      "server/tests/test_calendar_owned_sync.py::test_production_admin_sync_wiring_fences_bearer_through_fee_commit[False-caldav-sqlite]",
+      "server/tests/test_calendar_owned_sync.py::test_native_sync_owns_actual_requests_and_atomic_mirrors[False-caldav-sqlite]",
+      "server/tests/test_calendar_owned_sync.py::test_native_sync_owns_actual_requests_and_atomic_mirrors[True-caldav-sqlite]",
+      "server/tests/test_event_bus.py::test_dev_event_endpoint_appends_event",
+      "server/tests/test_google_oauth_owned.py::test_changed_authority_before_callback_prevents_http[disconnect-sqlite]",
+      "server/tests/test_google_oauth_owned.py::test_status_is_owner_scoped_and_disconnect_revokes_pending_authorization[sqlite]",
+      "server/tests/test_satellite_client_protocol.py::test_client_signature_matches_hub",
+      "server/tests/test_satellite_client_protocol.py::test_client_chunking_matches_hub_limits",
+      "server/tests/test_satellite_client_protocol.py::test_client_frame_shapes_match_hub_schema",
+      "server/tests/test_satellite_client_protocol.py::test_client_sign_uses_canonical_json",
+      "server/tests/test_voice_turn_delivery.py::test_one_root_owns_recognition_chat_and_tail_audio[False-sqlite]"
+    ],
+    "postgres_optional_tests": "not enabled in full run"
+  },
+  "targeted_sqlite_postgresql": {
+    "passed": 177
+  },
+  "sso_isolation_architecture": {
+    "passed": 64
+  },
+  "frontend": {
+    "node": "22.23.1",
+    "build": "passed",
+    "batch_delete_tests": 4
+  },
+  "runtime": {
+    "migration": "0072_memory_lifecycle",
+    "memory_rows_preserved": 56,
+    "source_rows_preserved": 58,
+    "health_status": 200,
+    "memory_list_status": 200,
+    "history_status": 200
+  },
+  "limitations": [
+    "Real model fresh-chat acceptance pending",
+    "Authenticated browser interactions pending",
+    "Full suite is not green",
+    "PostgreSQL million-row ANN performance not tested"
+  ]
+}

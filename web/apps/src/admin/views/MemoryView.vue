@@ -31,6 +31,12 @@ interface MemoryItem {
   updated_at: string;
   last_accessed_at: string | null;
   access_count: number;
+  tier: string;
+  tier_locked: boolean;
+  use_count: number;
+  last_used_at: string | null;
+  next_decay_at: string | null;
+  lifecycle_version: number;
 }
 interface MemoryDetail extends MemoryItem {
   sources: Array<{ source_kind: string; source_id: string; excerpt_hash: string | null }>;
@@ -59,6 +65,29 @@ interface LedgerItem {
 const api = inject("adminApi") as AdminApi;
 const emit = defineEmits<{ status: [text: string, error?: boolean] }>();
 
+const tierLabels: Record<string, string> = { core: "核心", important: "重要", medium: "中级", ordinary: "一般", low: "不重要", dormant: "冷存档" };
+async function setTier(row: MemoryItem, tier: string, locked: boolean) {
+  try {
+    const updated = await api.request<MemoryItem>(`/api/v1/admin/memories/${row.id}/lifecycle`, {
+      method: "PATCH", body: JSON.stringify({ tier, locked, expected_version: row.lifecycle_version }),
+    });
+    Object.assign(row, updated);
+    emit("status", "记忆等级已更新");
+  } catch (error) { emit("status", String(error), true); }
+}
+async function showStrengthHistory(row: MemoryItem) {
+  try {
+    const events = await api.request<Array<{ old_tier: string; new_tier: string; reason: string; occurred_at: string }>>(`/api/v1/admin/memories/${row.id}/lifecycle-events`);
+    const reasons: Record<string, string> = { unused: "长期未使用", frequent_use: "近期频繁使用", sustained_use: "持续使用", used_again: "再次使用唤醒", manual: "手动调整", manual_locked: "手动固定" };
+    await ElMessageBox.alert(events.map(e => `${e.occurred_at}: ${tierLabels[e.old_tier]} → ${tierLabels[e.new_tier]}（${reasons[e.reason] ?? e.reason}）`).join("\n") || "尚无等级变更记录", "等级变化记录");
+  } catch (error) { emit("status", String(error), true); }
+}
+async function confirmMemory(row: MemoryItem) {
+  try {
+    Object.assign(row, await api.request<MemoryItem>(`/api/v1/admin/memories/${row.id}/confirm`, { method: "POST" }));
+    emit("status", "已确认；同一天重复确认不会重复计分");
+  } catch (error) { emit("status", String(error), true); }
+}
 const types = ["semantic", "preference", "commitment", "episodic", "emotional"];
 const statuses = ["active", "conflict", "archived", "superseded"];
 const subjects = ["user", "assistant", "shared"];
@@ -89,9 +118,19 @@ const statusLabels: Record<string, string> = {
 };
 
 const memories = ref<MemoryItem[]>([]);
+const selectedMemories = ref<MemoryItem[]>([]);
+const deleting = ref(false);
+const memoryTable = ref<{ clearSelection: () => void }>();
+function clearSelection() {
+  selectedMemories.value = [];
+  memoryTable.value?.clearSelection();
+}
+function onSelectionChange(rows: MemoryItem[]) {
+  selectedMemories.value = rows;
+}
 const ledger = ref<LedgerItem[]>([]);
 const stats = reactive({ active: 0, conflict: 0, archived: 0, deleted: 0 });
-const filters = reactive({ subject: "", type: "", status: "", factKey: "", minImportance: "" });
+const filters = reactive({ subject: "", type: "", status: "", factKey: "", minImportance: "", tier: "" });
 const memoryPage = ref(1);
 const memoryPageSize = ref(20);
 const memoryTotal = ref(0);
@@ -126,6 +165,7 @@ const queryResult = ref<{
 const memoryParams = computed(() => {
   const params = new URLSearchParams();
   if (filters.subject) params.set("subject", filters.subject);
+  if (filters.tier) params.set("tier", filters.tier);
   if (filters.type) params.set("type", filters.type);
   if (filters.status) params.set("status", filters.status);
   if (filters.factKey.trim()) params.set("fact_key", filters.factKey.trim());
@@ -139,6 +179,7 @@ const fmt = (value: string | null) => (value ? new Date(value).toLocaleString() 
 
 /** 并行拉取列表、四类统计与台账；统计读 total 不再整表下载 */
 async function load() {
+  clearSelection();
   try {
     const [page, active, conflict, archived, ledgerPageData] = await Promise.all([
       api.request<{ items: MemoryItem[]; total: number }>(`/api/v1/admin/memories?${memoryParams.value}`),
@@ -150,6 +191,12 @@ async function load() {
           + `&offset=${(ledgerPage.value - 1) * ledgerPageSize.value}`,
       ),
     ]);
+    const lastPage = Math.max(1, Math.ceil(page.total / memoryPageSize.value));
+    if (memoryPage.value > lastPage) {
+      memoryPage.value = lastPage;
+      await load();
+      return;
+    }
     memories.value = page.items;
     memoryTotal.value = page.total;
     if (active.items[0]) fallbackUser.value = active.items[0].user_id;
@@ -276,28 +323,56 @@ async function resolve(id: number, action: "adopt" | "keep") {
 }
 
 async function remove(id: number) {
-  let reason = "";
+  await removeMemories([id]);
+}
+
+async function removeSelected() {
+  await removeMemories(selectedMemories.value.map((item) => item.id));
+}
+
+async function removeMemories(ids: number[]) {
+  if (deleting.value || !ids.length) return;
+  deleting.value = true;
   try {
-    const result = await ElMessageBox.prompt(`硬删除记忆 #${id} 及其整个版本链，不可撤销并记入台账。`, "删除记忆", {
-      type: "error",
-      inputPlaceholder: "请输入删除原因",
-      inputValidator: (value: any) => value.trim().length >= 2 || "请填写删除原因",
-      confirmButtonText: "确认删除",
-      cancelButtonText: "取消",
-    });
-    reason = result.value;
-  } catch {
-    return;
-  }
-  try {
-    const receipt = await api.request<{ ledger_id: number; deleted_ids: number[] }>(
-      `/api/v1/admin/memories/${id}?reason=${encodeURIComponent(reason)}`,
-      { method: "DELETE" },
-    );
-    emit("status", `已删除 ${receipt.deleted_ids.length} 个版本（台账 #${receipt.ledger_id}）`);
+    let reason: string;
+    try {
+      const result = await ElMessageBox.prompt(
+        `将硬删除所选 ${ids.length} 条记忆及其整个版本链（可能包含未选中的关联版本），不可撤销并记入台账。`,
+        "删除记忆",
+        {
+          type: "error",
+          inputPlaceholder: "请输入删除原因",
+          inputValidator: (value: string) => (value ?? "").trim().length >= 2 || "请填写删除原因",
+          confirmButtonText: "确认删除",
+          cancelButtonText: "取消",
+        },
+      );
+      reason = result.value.trim();
+    } catch {
+      return;
+    }
+    const deleted = new Set<number>();
+    const failed: number[] = [];
+    // 同一版本链只请求一次；每次仍经过既有权限检查和删除台账。
+    for (const id of ids) {
+      if (deleted.has(id)) continue;
+      try {
+        const receipt = await api.request<{ ledger_id: number; deleted_ids: number[] }>(
+          `/api/v1/admin/memories/${id}?reason=${encodeURIComponent(reason)}`,
+          { method: "DELETE" },
+        );
+        receipt.deleted_ids.forEach((value) => deleted.add(value));
+      } catch {
+        failed.push(id);
+      }
+    }
+    const remaining = failed.filter((id) => !deleted.has(id));
+    if (detail.value && deleted.has(detail.value.id)) detail.value = null;
+    if (editing.value && deleted.has(editing.value.id)) editing.value = null;
+    emit("status", `已确认删除 ${deleted.size} 个版本并记入台账${remaining.length ? `；${remaining.length} 条未确认删除：${remaining.map((id) => `#${id}`).join("、")}，请刷新核对后重试` : ""}`, remaining.length > 0);
     await load();
-  } catch (error) {
-    emit("status", error instanceof Error ? error.message : "删除失败", true);
+  } finally {
+    deleting.value = false;
   }
 }
 
@@ -399,13 +474,20 @@ onMounted(load);
         </el-radio-button>
       </el-radio-group>
       <div class="filters">
+        <el-select v-model="filters.tier" placeholder="全部等级" clearable><el-option v-for="(label, key) in tierLabels" :key="key" :label="label" :value="key" /></el-select>
         <el-select v-model="filters.type" placeholder="全部类型" clearable><el-option v-for="t in types" :key="t" :label="typeLabels[t] ?? t" :value="t" /></el-select>
         <el-select v-model="filters.status" placeholder="全部状态" clearable><el-option v-for="s in statuses" :key="s" :label="statusLabels[s] ?? s" :value="s" /></el-select>
         <el-input v-model="filters.factKey" placeholder="fact_key" clearable />
         <el-input v-model="filters.minImportance" placeholder="最低重要性" />
         <el-button @click="applyFilters">应用过滤</el-button>
       </div>
-      <el-table :data="memories" empty-text="没有匹配的记忆" style="width:100%">
+      <div class="row">
+        <span class="hint">已选 {{ selectedMemories.length }} 条（仅当前页，翻页或过滤后清空）</span>
+        <el-button type="danger" :disabled="!selectedMemories.length || deleting" :loading="deleting" @click="removeSelected">删除所选</el-button>
+        <el-button :disabled="!selectedMemories.length || deleting" @click="clearSelection">取消选择</el-button>
+      </div>
+      <el-table ref="memoryTable" :data="memories" row-key="id" empty-text="没有匹配的记忆" style="width:100%" @selection-change="onSelectionChange">
+        <el-table-column type="selection" width="48" :selectable="() => !deleting" />
         <el-table-column label="ID" width="100"><template #default="{ row }"><strong>#{{ row.id }}</strong><small v-if="row.superseded_by">→ #{{ row.superseded_by }}</small><small v-if="row.conflict_with">⚠ vs #{{ row.conflict_with }}</small></template></el-table-column>
         <el-table-column label="主体" width="110"><template #default="{ row }"><el-tag size="small" effect="plain">{{ subjectLabels[row.subject] ?? row.subject }}</el-tag><small>{{ row.subject_key }}</small></template></el-table-column>
         <el-table-column label="类型" width="110"><template #default="{ row }">{{ typeLabels[row.type] ?? row.type }}{{ row.pin ? ' 📌' : '' }}</template></el-table-column>
@@ -413,8 +495,16 @@ onMounted(load);
         <el-table-column label="事实槽位" min-width="160"><template #default="{ row }"><code>{{ row.fact_key ?? '—' }}</code><small>{{ originLabels[row.origin_kind] ?? row.origin_kind }}</small></template></el-table-column>
         <el-table-column label="状态" width="120"><template #default="{ row }"><el-tag :type="row.status === 'active' ? 'success' : row.status === 'conflict' ? 'warning' : 'info'">{{ statusLabels[row.status] ?? row.status }}</el-tag><small>{{ row.privacy_level }}</small></template></el-table-column>
         <el-table-column label="重要性" width="90"><template #default="{ row }">{{ row.importance.toFixed(2) }}</template></el-table-column>
+        <el-table-column label="记忆等级" width="155"><template #default="{ row }">
+          <el-select :model-value="row.tier" size="small" @change="(value: string) => setTier(row as MemoryItem, value, row.tier_locked)"><el-option v-for="(label, key) in tierLabels" :key="key" :label="label" :value="key" /></el-select>
+          <el-button size="small" link @click="setTier(row as MemoryItem, row.tier, !row.tier_locked)">{{ row.tier_locked ? '已固定 · 解锁' : '固定等级' }}</el-button>
+          <small>实际使用 {{ row.use_count }} 次</small>
+          <small v-if="row.last_used_at">最近使用 {{ new Date(row.last_used_at).toLocaleDateString() }}</small>
+          <el-button size="small" link @click="showStrengthHistory(row as MemoryItem)">变化记录</el-button>
+          <el-button size="small" link @click="confirmMemory(row as MemoryItem)">确认正确</el-button>
+        </template></el-table-column>
         <el-table-column prop="access_count" label="访问" width="75" />
-        <el-table-column label="操作" min-width="320" fixed="right"><template #default="{ row }"><div class="actions"><el-button size="small" @click="showDetail(row.id)">溯源</el-button><el-button v-if="row.status === 'active' || row.status === 'conflict'" size="small" @click="openEdit(row as MemoryItem)">编辑</el-button><el-button v-if="row.status === 'active'" size="small" @click="archive(row.id)">归档</el-button><template v-if="row.status === 'conflict'"><el-button type="primary" size="small" @click="resolve(row.id, 'adopt')">采纳</el-button><el-button size="small" @click="resolve(row.id, 'keep')">保留旧值</el-button></template><el-button type="danger" plain size="small" @click="remove(row.id)">删除</el-button></div></template></el-table-column>
+        <el-table-column label="操作" min-width="320" fixed="right"><template #default="{ row }"><div class="actions"><el-button size="small" @click="showDetail(row.id)">溯源</el-button><el-button v-if="row.status === 'active' || row.status === 'conflict'" size="small" @click="openEdit(row as MemoryItem)">编辑</el-button><el-button v-if="row.status === 'active'" size="small" @click="archive(row.id)">归档</el-button><template v-if="row.status === 'conflict'"><el-button type="primary" size="small" @click="resolve(row.id, 'adopt')">采纳</el-button><el-button size="small" @click="resolve(row.id, 'keep')">保留旧值</el-button></template><el-button type="danger" plain size="small" :disabled="deleting" @click="remove(row.id)">删除</el-button></div></template></el-table-column>
       </el-table>
       <div class="pager">
         <el-pagination

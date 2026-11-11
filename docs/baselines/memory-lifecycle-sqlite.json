@@ -1,0 +1,42 @@
+{
+  "measured_at": "2026-11-11T15:24:41.953713+00:00",
+  "scope": "synthetic SQLite without embeddings; not PostgreSQL ANN or semantic accuracy",
+  "results": [
+    {
+      "rows": 10000,
+      "samples_ms": [
+        55.4,
+        36.9,
+        37.1,
+        37.12,
+        36.79
+      ],
+      "median_ms": 37.1,
+      "max_ms": 55.4
+    },
+    {
+      "rows": 100000,
+      "samples_ms": [
+        255.51,
+        252.06,
+        251.49,
+        252.34,
+        252.69
+      ],
+      "median_ms": 252.34,
+      "max_ms": 255.51
+    },
+    {
+      "rows": 1000000,
+      "samples_ms": [
+        2481.85,
+        2541.53,
+        2431.71,
+        2300.03,
+        2275.85
+      ],
+      "median_ms": 2431.71,
+      "max_ms": 2541.53
+    }
+  ]
+}

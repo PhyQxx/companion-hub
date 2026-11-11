@@ -46,6 +46,7 @@ class ToolResult(StrictModel):
 class ToolExecution(StrictModel):
     call_id: str
     result: ToolResult
+    memory_ids_used: tuple[int, ...] = ()
 
 
 class ToolHandler(Protocol):

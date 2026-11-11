@@ -114,6 +114,19 @@ class MemoryRecord(Base):
         DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now()
     )
     last_accessed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    tier: Mapped[str] = mapped_column(
+        String(16), nullable=False, default="medium", server_default="medium"
+    )
+    tier_locked: Mapped[bool] = mapped_column(nullable=False, default=False, server_default=false())
+    tier_changed_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    last_used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    next_decay_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
+    use_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
+    lifecycle_version: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default="0"
+    )
     access_count: Mapped[int] = mapped_column(
         Integer, nullable=False, default=0, server_default="0"
     )
@@ -169,3 +182,34 @@ class DeletionLedgerRecord(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
+
+
+class MemoryUsageRecord(Base):
+    __module__ = "app.db.models"
+    __tablename__ = "memory_usage"
+    __table_args__ = (Index("uq_memory_usage_turn", "memory_id", "turn_key", unique=True),)
+    id: Mapped[int] = mapped_column(BIGINT_PK, primary_key=True, autoincrement=True)
+    memory_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("memory.id", ondelete="CASCADE"), nullable=False
+    )
+    user_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
+    turn_key: Mapped[str] = mapped_column(String(160), nullable=False)
+    kind: Mapped[str] = mapped_column(String(32), nullable=False)
+    points: Mapped[int] = mapped_column(Integer, nullable=False)
+    day: Mapped[str] = mapped_column(String(10), nullable=False)
+    occurred_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class MemoryLifecycleRecord(Base):
+    __module__ = "app.db.models"
+    __tablename__ = "memory_lifecycle_event"
+    id: Mapped[int] = mapped_column(BIGINT_PK, primary_key=True, autoincrement=True)
+    memory_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("memory.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    user_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
+    old_tier: Mapped[str] = mapped_column(String(16), nullable=False)
+    new_tier: Mapped[str] = mapped_column(String(16), nullable=False)
+    reason: Mapped[str] = mapped_column(String(40), nullable=False)
+    policy_version: Mapped[str] = mapped_column(String(40), nullable=False)
+    occurred_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)

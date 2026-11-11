@@ -421,6 +421,7 @@ onBeforeUnmount(() => {
         :is-local="isLocalMessage" :set-messages-root="setMessagesRoot"
         @select-all="selectAllMessages" @export-selected="exportSelected"
         @toggle-select-mode="toggleSelectMode" @toggle-message-selected="toggleMessageSelected"
+        @refresh-memory="activeId && refreshMessages(activeId)"
         @choose-location="chooseLocation"
       />
 

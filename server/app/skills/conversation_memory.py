@@ -131,6 +131,10 @@ class ConversationMemoryTool:
                     "error_code": job.error_code,
                     "progress": job.progress,
                     "current_step": job.current_step,
+                    "failure_detail": await worker.engine.failure_detail(job.id, owner=str(uid)),
+                    "scope": await worker.engine.job_input(job.id),
+                    "guidance": "until_seq仅为扫描上界，不是失败位置。失败位置只看failure_detail；"
+                    "无详细证据时不得猜测。后台失败后不要自行改为手动补录或承诺继续执行。",
                 },
             )
         if args.operation == "start":

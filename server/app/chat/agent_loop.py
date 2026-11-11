@@ -468,7 +468,45 @@ class AgentLoopHandlers:
         # 本轮挂载的 MCP 工具均为只读（写动作只经计划确认链）
         return any(handler.name == name for handler in pending.mcp_handlers)
 
-    async def execute_single_call(
+    async def execute_single_call(self, pending: PendingTurn, call: ToolCall) -> ToolExecution:
+        execution = await self._execute_single_call_body(pending, call)
+        if (
+            not execution.result.ok
+            or not self.multi_call_safe(call, pending)
+            or pending.memory_retrieval is None
+        ):
+            return execution
+        # Evidence IDs are produced by the server from successful read operations,
+        # never accepted from model/handler claims. Do not persist raw arguments.
+        arguments = call.function.arguments
+
+        def strings(value: object) -> list[str]:
+            if isinstance(value, str):
+                return [value]
+            if isinstance(value, dict):
+                return [text for item in value.values() for text in strings(item)]
+            if isinstance(value, list):
+                return [text for item in value for text in strings(item)]
+            return []
+
+        values = strings(arguments)
+        included = {
+            ref.source_id
+            for ref in pending.context_references
+            if ref.kind == "memory" and ref.included
+        }
+        identifiers = []
+        for hit in pending.memory_retrieval.hits:
+            evidence = hit.memory.content.removeprefix("用户").strip("。 .，,")
+            if (
+                str(hit.memory.id) in included
+                and len(evidence) >= 6
+                and any(evidence in value for value in values)
+            ):
+                identifiers.append(hit.memory.id)
+        return execution.model_copy(update={"memory_ids_used": tuple(identifiers)})
+
+    async def _execute_single_call_body(
         self,
         pending: PendingTurn,
         call: ToolCall,

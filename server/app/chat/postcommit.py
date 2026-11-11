@@ -3,7 +3,7 @@
 from app.db import Database
 from app.jobs.maintenance import Handler, MaintenanceSourceGone, MaintenanceWorker
 
-RESOURCE = "chat-postcommit"
+RESOURCE = "chat-postcommit-v2"
 PostcommitSourceGone = MaintenanceSourceGone
 
 

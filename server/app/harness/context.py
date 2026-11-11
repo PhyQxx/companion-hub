@@ -52,6 +52,19 @@ class ContextReference:
     included: bool = True
     reason: str = "authorized_snapshot"
 
+    def __post_init__(self) -> None:
+        # JSON round trips turn nested tuples into lists. Restore the immutable
+        # shape before repositories compare ancestry with sets; reject malformed
+        # metadata rather than silently dropping source protection.
+        if not isinstance(self.lineage, (tuple, list)) or any(
+            not isinstance(pair, (tuple, list))
+            or len(pair) != 2
+            or any(not isinstance(value, str) or not value for value in pair)
+            for pair in self.lineage
+        ):
+            raise ValueError("context_reference_lineage_invalid")
+        object.__setattr__(self, "lineage", tuple((pair[0], pair[1]) for pair in self.lineage))
+
     def manifest(self) -> dict[str, object]:
         return {field.name: getattr(self, field.name) for field in fields(self)}
 

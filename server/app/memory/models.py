@@ -4,6 +4,7 @@
 - Pydantic 模型（StrictModel）用于 API 边界与提取器输出，禁止多余字段；
 - frozen dataclass 用于服务层只读视图，避免 ORM 对象泄漏到业务逻辑之外。
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -154,6 +155,14 @@ class MemoryEntry:
     embedding_model: str | None
     embedding_dimension: int | None
     embedding_version: str | None
+
+    tier: str = "medium"
+    tier_locked: bool = False
+    tier_changed_at: datetime | None = None
+    last_used_at: datetime | None = None
+    next_decay_at: datetime | None = None
+    use_count: int = 0
+    lifecycle_version: int = 0
 
 
 @dataclass(frozen=True, slots=True)

@@ -28,8 +28,10 @@ from app.harness.context import ContextReference
 from app.harness.model_accounting import model_accounting_scope
 from app.harness.run_trace import run_trace_scope
 from app.ids import uuid7
+from app.jobs.maintenance import MaintenanceFailure
 from app.llm import CompletionRequest, LLMMessage, LLMRoute
 from app.memory import ExtractionBackend, MemoryHit, RetrievalResult
+from app.memory.extraction_scope import extraction_scope
 from app.persona import PersonaConfig
 from app.runs.chat_parent import require_chat_parent
 from app.runs.model_accounting import DisabledModelAccounting
@@ -220,12 +222,18 @@ class PostcommitHandlers:
                 budget_enabled = parent_budget_scope is not None or bool(
                     parent.budget and parent.budget.get("enabled")
                 )
-            references = tuple(
-                ContextReference(**ref)
-                for group in meta.get("context_sources", [])
-                for ref in group.get("references", [])
-                if ref.get("included", True)
-            )
+            try:
+                references = tuple(
+                    ContextReference(**ref)
+                    for group in meta.get("context_sources", [])
+                    for ref in group.get("references", [])
+                    if ref.get("included", True)
+                )
+            except (TypeError, ValueError, AttributeError) as error:
+                raise MaintenanceFailure(
+                    "postcommit_context_metadata_invalid",
+                    {"stage": "context_deserialization", "error_type": type(error).__name__},
+                ) from error
             try:
                 await validate_references(
                     session, references, owner_id=user_id, privacy_level=assistant.privacy_level
@@ -576,19 +584,109 @@ class PostcommitHandlers:
                 if pending.memory_retrieval is not None
                 else ()
             )
-            await self._service._memory_ingester.ingest_turn(
-                user_id=pending.user_id,
-                user_message_id=pending.user_message.id,
-                user_text=pending.user_message.content,
-                user_occurred_at=pending.user_message.created_at,
-                assistant_message_id=assistant_message.id,
-                assistant_text=assistant_message.content,
-                assistant_occurred_at=assistant_message.created_at,
-                privacy_level=pending.request.privacy_level,
-                retrieved_memories=retrieved_memories,
-                backend=backend,
-                enforce_sources=strict,
+            async with self._service._database.sessions() as session:
+                previous = list(
+                    await session.scalars(
+                        select(MessageRecord)
+                        .where(
+                            MessageRecord.conversation_id == pending.conversation_id,
+                            MessageRecord.seq < pending.user_message.seq,
+                            MessageRecord.privacy_level <= str(pending.request.privacy_level),
+                        )
+                        .order_by(MessageRecord.seq.desc())
+                        .limit(6)
+                    )
+                )
+            context = "\n".join(
+                f"{item.role}: {item.content[-2000:]}" for item in reversed(previous)
             )
+            with extraction_scope(
+                context, strict=strict, source_ids=tuple(str(item.id) for item in previous)
+            ) as extraction_errors:
+                outcomes = await self._service._memory_ingester.ingest_turn(
+                    user_id=pending.user_id,
+                    user_message_id=pending.user_message.id,
+                    user_text=pending.user_message.content,
+                    user_occurred_at=pending.user_message.created_at,
+                    assistant_message_id=assistant_message.id,
+                    assistant_text=assistant_message.content,
+                    assistant_occurred_at=assistant_message.created_at,
+                    privacy_level=pending.request.privacy_level,
+                    retrieved_memories=retrieved_memories,
+                    backend=backend,
+                    enforce_sources=strict,
+                )
+            if self._service._memory_store is not None:
+                for outcome in outcomes:
+                    if (
+                        str(outcome.decision) == "supported"
+                        and outcome.memory.status == "active"
+                        and outcome.memory.origin_kind == "user_statement"
+                    ):
+                        await self._service._memory_store.record_use(
+                            outcome.memory.id,
+                            user_id=pending.user_id,
+                            turn_key=str(pending.turn_id),
+                            kind="user_reaffirmed",
+                            timezone=pending.user_timezone,
+                        )
+            if self._service._memory_store is not None:
+                for memory in retrieved_memories:
+                    # Conservative attribution: retrieval alone never strengthens a fact.
+                    evidence = memory.content.removeprefix("用户").strip("。 .，,")
+                    tool_uses = (assistant_message.decision_meta or {}).get("tool_calls", [])
+                    action_used = (
+                        any(
+                            isinstance(item, dict)
+                            and item.get("outcome") == "success"
+                            and memory.id in item.get("memory_ids_used", [])
+                            for item in tool_uses
+                        )
+                        if isinstance(tool_uses, list)
+                        else False
+                    )
+                    if action_used or (
+                        len(evidence) >= 6 and evidence in assistant_message.content
+                    ):
+                        await self._service._memory_store.record_use(
+                            memory.id,
+                            user_id=pending.user_id,
+                            turn_key=str(pending.turn_id),
+                            kind="used_in_action" if action_used else "used_in_answer",
+                            timezone=pending.user_timezone,
+                        )
+            async with self._service._database.sessions.begin() as session:
+                await assert_current_claim(session)
+                message = await session.get(MessageRecord, assistant_message.id)
+                if message is not None:
+                    receipt: dict[str, Any] = {
+                        "state": "retry_wait" if extraction_errors else "completed",
+                        "created": 0,
+                        "supported": 0,
+                        "conflict": 0,
+                        "memory_ids": [outcome.memory.id for outcome in outcomes],
+                    }
+                    for outcome in outcomes:
+                        key = str(outcome.decision)
+                        if key in ("created", "supported", "conflict"):
+                            receipt[key] = int(receipt[key]) + 1
+                    message.decision_meta = {
+                        **(message.decision_meta or {}),
+                        "memory_receipt": receipt,
+                    }
+            if extraction_errors:
+                raise MaintenanceFailure(
+                    "memory_extraction_incomplete",
+                    {
+                        "stage": "extract",
+                        "error_types": extraction_errors,
+                        "saved_candidates": len(outcomes),
+                    },
+                    retryable=not any(
+                        kind in {"SecretNotFound", "AuthenticationError", "PermissionDeniedError"}
+                        for kind in extraction_errors
+                    ),
+                )
         except Exception:
             if strict:
                 raise

@@ -14,7 +14,17 @@ defineProps<{
   isLocal: (message: ChatMessage) => boolean;
   setMessagesRoot: (el: Element | null) => void;
 }>();
+function memoryReceipt(message: ChatMessage): string {
+  const value = message.decision_meta?.memory_receipt as { state?: string; created?: number; supported?: number; conflict?: number } | undefined;
+  if (!value) return "";
+  if (value.state === "failed") return "记忆整理失败，请查看后台任务原因";
+  if (value.state === "cancelled") return "记忆整理已取消";
+  if (value.state === "retry_wait") return "记忆未完整提取，等待重试";
+  if (value.state !== "completed") return "记忆正在整理，可刷新查看结果";
+  return `记忆整理完成：新增 ${value.created ?? 0}，补充 ${value.supported ?? 0}，待核对 ${value.conflict ?? 0}`;
+}
 const emit = defineEmits<{
+  refreshMemory: [];
   selectAll: [];
   exportSelected: [action: "copy" | "download"];
   toggleSelectMode: [];
@@ -66,6 +76,7 @@ const { toolResultOf, emotionOf, personaVersionOf, recallLabelOf, messageTimeOf,
           <span v-if="message.role === 'assistant' && emotionOf(message)" class="emotion">{{ emotionOf(message) }}</span>
           <span v-if="message.role === 'assistant' && personaVersionOf(message)" class="persona-badge">P v{{ personaVersionOf(message) }}</span>
           <span v-if="message.role === 'assistant' && recallLabelOf(message)" class="recall-badge">{{ recallLabelOf(message) }}</span>
+          <span v-if="memoryReceipt(message)" class="recall-badge">{{ memoryReceipt(message) }} <button type="button" @click="emit('refreshMemory')">刷新</button></span>
           <span v-if="messageTimeOf(message)" class="message-time">{{ messageTimeOf(message) }}</span>
         </div>
       </div>
