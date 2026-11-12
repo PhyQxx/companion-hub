@@ -948,4 +948,4 @@
 - [x] B3：门禁阈值环境化（`ARIA_MEMORY_AI_TIER_CORE_GATE`/`ARIA_MEMORY_AI_TIER_IMPORTANT_GATE`，默认 0.8/0.6，非法回落，只影响 AI 建议不影响显式定级）；被拒建议记 `memory.initial_tier_gate` 结构化日志（不落内容，不污染等级历史）；`GET /api/v1/admin/memories/tier-stats` 聚合（active 按等级 + 初始定级 reason×new_tier 总量/近7天）+ 管理页"AI 初始定级"卡片。提示词与默认阈值不动，校准待真实漏判样本。
 - [x] B4：`periodic_wake_at` 纯函数（生日限定 `*.birthday` fact_key、纪念日"每年M月D日"，唤醒点=下一周年-`ARIA_MEMORY_WAKE_AHEAD_DAYS`(默认7)天，2月29日落3月1日）；add/edit 排程 `next_relevant_at`；迁移 0074 加列+索引+存量回填；`wake_due_batch` 到期 dormant/low/ordinary 升回中级（reason=periodic_wake，不计使用分，保鲜重算，窗口推进下一年）；挂 60 秒维护循环（decay 后），开关 `ARIA_MEMORY_PERIODIC_WAKE`；管理页详情显示临近唤醒。DDL 快照 memory 项按测试算法重算（仅该项变化）。年度内多醒一次自愈语义已如实登记。
 - [x] 相关验证：新增 5 项（阈值 env+被拒日志、tier-stats 端点、排程锚定真实入库时间、唤醒/推进/core 不动/幂等、开关）；批次回归 249 通过/42 跳过（PG 条件）零失败；空库 upgrade head 至 0074 成功；架构门禁（重算快照）全绿；ruff/format/mypy 零错；Node22 前端 typecheck+build 通过。
-- [ ] 剩余/下一优先级：真实模型定级质量与真会话唤醒体验由用户验收；PG 环境 0074 迁移与 EXPLAIN、真实换版演练待环境；C1~C6 待排期。本批业务哈希待提交后回填。
+- [ ] 剩余/下一优先级：真实模型定级质量与真会话唤醒体验由用户验收；PG 环境 0074 迁移与 EXPLAIN、真实换版演练待环境；C1~C6 待排期。本批业务哈希 `184c8a4`（2026-11-12 回填）。
