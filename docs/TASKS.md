@@ -965,4 +965,4 @@
 - [x] 持久层：`JobEngine.completed_step_names`（跨 attempt completed 步骤名集合）；后处理 `_JobChunkCursor` 记 `memory-chunk:{offset}` 步骤（checkpoint 含逐块 processed/created/supported/conflict），claim 上下文提供任务身份。
 - [x] 接线：`consolidate_memory` 任务路径+多块文本+`ARIA_MEMORY_CHUNK_CURSOR`（默认开）三条件齐备才建游标；单块不建（重试成本一次模型调用）；置 0 回退整消息重试；崩溃窗口（落库后、记步骤前）按未完成重跑、同消息来源防重建兜底不重复计数，语义已如实登记。
 - [x] 相关验证：新增 3 项（块上报/重试跳过模型调用/单块 offset=0 上报；端到端 4 块游标步骤落库+同事实去重+回执 supported 合并+开关回退无步骤）；批次回归 323 通过/45 跳过（含 jobs 套件与架构门禁）零失败；ruff/format/mypy 零错。原 02A"块级持久游标待增强"就此关闭。
-- [ ] 剩余：真实环境超长消息续提验收待部署；02A"覆盖范围记录"仍以日志承载；C2/C4/C5 待排期。本批业务哈希待提交后回填。
+- [ ] 剩余：真实环境超长消息续提验收待部署；02A"覆盖范围记录"仍以日志承载；C2/C4/C5 待排期。本批业务哈希 `6594641`（2026-11-13 回填）。
