@@ -9,6 +9,7 @@ pgvector ANN 或进程内余弦。删除操作只经 hard_delete* 入口进入�
 from __future__ import annotations
 
 import hashlib
+import logging
 import os
 from collections.abc import Sequence
 from datetime import UTC, datetime
@@ -53,6 +54,11 @@ from .models import (
     SimilarMemory,
 )
 from .retrieval_models import RetrievalCandidate as RetrievalCandidate
+
+logger = logging.getLogger(__name__)
+
+# 查重兜底窗口上限：SQLite 无向量 ANN，按"同类型同主体最近新增"取窗（方案 A1）。
+DEDUP_WINDOW = 2000
 
 
 def _list_filter(
@@ -102,6 +108,11 @@ class MemoryStore:
         self._embedding_provider: EmbeddingProvider = (
             embedding_provider or HashingEmbeddingProvider()
         )
+        # 嵌入换版观测缓存（方案 A2）：启动门控写入、回填任务随批刷新；
+        # stale_rows 是"落后于目标/当前版本的行数"，None 表示尚未统计。
+        # 仅进程内诊断用，不作为并发状态。
+        self.embedding_stale_rows: int | None = None
+        self.pending_embedding_version: str | None = None
 
     @property
     def database(self) -> Database:
@@ -530,23 +541,193 @@ class MemoryStore:
         statuses: Sequence[MemoryStatus] = (MemoryStatus.ACTIVE,),
         limit: int = 5,
     ) -> list[SimilarMemory]:
+        """查重相似检索（沉淀判定）：不按重要性截窗。
+
+        PostgreSQL 走 pgvector ANN 精确取同类型近邻；SQLite 无向量索引时退化为
+        同类型同主体"最近新增优先"窗口（上限 DEDUP_WINDOW）。两条路径都不再按
+        重要性排序截窗，避免低重要性重复事实漏出查重窗口（方案 A1）。
+        """
+        if not statuses:
+            return []
         vector = (await self._embedding_provider.embed([content]))[0]
-        candidates = await self.retrieval_candidates(
-            user_id,
-            subject_kind=subject_kind,
-            subject_key=subject_key,
-            types=[type],
-            statuses=statuses,
-            limit=500,
-        )
-        scored = [
-            SimilarMemory(entry=item.entry, similarity=cosine_similarity(vector, item.embedding))
-            for item in candidates
-            if item.embedding is not None
-            and item.entry.embedding_version == self._embedding_provider.version
-        ]
+        version = self._embedding_provider.version
+        if self.vector_sql_enabled:
+            recall = await self._vector_dedup_recall(
+                vector,
+                user_id=user_id,
+                embedding_version=version,
+                type=type,
+                subject_kind=subject_kind,
+                subject_key=subject_key,
+                statuses=statuses,
+                limit=max(limit * 10, 50),
+            )
+            scored: list[SimilarMemory] = []
+            if recall:
+                ids = [memory_id for memory_id, _ in recall]
+                async with self._database.sessions() as session:
+                    records = list(
+                        await session.scalars(select(MemoryRecord).where(MemoryRecord.id.in_(ids)))
+                    )
+                entries = {record.id: self._entry(record) for record in records}
+                scored = [
+                    SimilarMemory(entry=entries[memory_id], similarity=similarity)
+                    for memory_id, similarity in recall
+                    if memory_id in entries
+                ]
+            examined = len(recall)
+            path = "pg_ann"
+        else:
+            candidates = await self._dedup_window_candidates(
+                user_id=user_id,
+                subject_kind=subject_kind,
+                subject_key=subject_key,
+                type=type,
+                statuses=statuses,
+            )
+            scored = [
+                SimilarMemory(
+                    entry=item.entry, similarity=cosine_similarity(vector, item.embedding)
+                )
+                for item in candidates
+                if item.embedding is not None and item.entry.embedding_version == version
+            ]
+            examined = len(candidates)
+            path = "recent_window"
         scored.sort(key=lambda item: item.similarity, reverse=True)
-        return scored[:limit]
+        trimmed = scored[:limit]
+        logger.info(
+            "memory.dedup_recall path=%s examined=%d returned=%d",
+            path,
+            examined,
+            len(trimmed),
+        )
+        return trimmed
+
+    async def _dedup_window_candidates(
+        self,
+        *,
+        user_id: UUID,
+        subject_kind: MemorySubjectKind,
+        subject_key: str,
+        type: MemoryType,
+        statuses: Sequence[MemoryStatus],
+        limit: int = DEDUP_WINDOW,
+    ) -> list[RetrievalCandidate]:
+        """SQLite 查重兜底窗口：同类型同主体、最近新增优先，不按重要性截窗。"""
+        query = (
+            select(MemoryRecord)
+            .where(
+                MemoryRecord.user_id == user_id,
+                MemoryRecord.subject_kind == MemorySubjectKind(subject_kind).value,
+                MemoryRecord.subject_key == subject_key,
+                MemoryRecord.type == type.value,
+                MemoryRecord.status.in_([item.value for item in statuses]),
+            )
+            .order_by(MemoryRecord.id.desc())
+            .limit(limit)
+        )
+        async with self._database.sessions() as session:
+            records = list(await session.scalars(query))
+        return [
+            RetrievalCandidate(entry=self._entry(record), embedding=record.embedding)
+            for record in records
+        ]
+
+    async def _vector_dedup_recall(
+        self,
+        query_vector: Sequence[float],
+        *,
+        user_id: UUID,
+        embedding_version: str,
+        type: MemoryType,
+        subject_kind: MemorySubjectKind,
+        subject_key: str,
+        statuses: Sequence[MemoryStatus],
+        limit: int,
+    ) -> list[tuple[int, float]]:
+        """pgvector 查重召回：同用户同类型同主体的近邻，多状态可用。"""
+        if not self.vector_sql_enabled:
+            return []
+        statement = text(
+            """
+            SELECT id, 1 - (embedding_vec <=> CAST(:qv AS vector)) AS similarity
+            FROM memory
+            WHERE user_id = :uid
+              AND status IN :statuses
+              AND type = :mtype
+              AND subject_kind = :skind
+              AND subject_key = :skey
+              AND embedding_version = :version
+              AND embedding_vec IS NOT NULL
+            ORDER BY embedding_vec <=> CAST(:qv AS vector)
+            LIMIT :lim
+            """
+        ).bindparams(bindparam("statuses", expanding=True))
+        async with self._database.sessions() as session:
+            rows = (
+                await session.execute(
+                    statement,
+                    {
+                        "qv": _vector_literal(query_vector),
+                        "uid": user_id,
+                        "version": embedding_version,
+                        "statuses": [item.value for item in statuses],
+                        "mtype": type.value,
+                        "skind": MemorySubjectKind(subject_kind).value,
+                        "skey": subject_key,
+                        "lim": limit,
+                    },
+                )
+            ).all()
+        return [(int(row[0]), float(row[1])) for row in rows]
+
+    async def count_embedding_mismatch(self, *, version: str) -> int:
+        """统计嵌入版本落后（含历史空版本）的记忆行数（换版门控/回填进度）。"""
+        query = (
+            select(func.count())
+            .select_from(MemoryRecord)
+            .where(
+                or_(
+                    MemoryRecord.embedding_version.is_(None),
+                    MemoryRecord.embedding_version != version,
+                )
+            )
+        )
+        async with self._database.sessions() as session:
+            return int(await session.scalar(query) or 0)
+
+    async def reembed_stale_batch(self, *, provider: EmbeddingProvider, limit: int = 100) -> int:
+        """把嵌入版本落后于 provider 的记忆重算一批（方案 A2 回填）。
+
+        每批一个事务：按内容重算嵌入并同步 JSON 向量列与 pgvector 列；
+        中断后重扫剩余行即可续跑，已更新行不会被重复计算。
+        语义字段与等级/使用统计不受影响。
+        """
+        target_version = provider.version
+        query = (
+            select(MemoryRecord)
+            .where(
+                or_(
+                    MemoryRecord.embedding_version.is_(None),
+                    MemoryRecord.embedding_version != target_version,
+                )
+            )
+            .order_by(MemoryRecord.id.asc())
+            .limit(limit)
+        )
+        async with self._database.sessions.begin() as session:
+            records = list(await session.scalars(query))
+            if not records:
+                return 0
+            vectors = await provider.embed([record.content for record in records])
+            for record, vector in zip(records, vectors, strict=True):
+                record.embedding = list(vector)
+                record.embedding_model = provider.model_name
+                record.embedding_dimension = provider.dimension
+                record.embedding_version = target_version
+                await self._sync_vector_column(session, record.id, vector)
+        return len(records)
 
     async def register_support(
         self,

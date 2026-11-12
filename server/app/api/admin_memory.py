@@ -134,6 +134,23 @@ class EmbeddingInfoView(StrictModel):
     version: str
 
 
+class EmbeddingStatusView(StrictModel):
+    """嵌入换版与回填状态（方案 A2，只读观测）。
+
+    stale_rows 为落后于当前生效版本（含历史空版本）的行数缓存，None 表示
+    该部署从未做过换版统计；pending_version 非空说明切换被门控推迟、
+    pending_stale_rows 是回填剩余工作量。
+    """
+
+    model: str
+    version: str
+    dimension: int
+    total_rows: int
+    stale_rows: int | None = None
+    pending_version: str | None = None
+    pending_stale_rows: int | None = None
+
+
 class RetrievalQueryResult(StrictModel):
     policy_version: str
     candidate_count: int
@@ -257,6 +274,24 @@ def create_admin_memory_router(store: MemoryStore, *, admin_token: str | None) -
             raise HTTPException(status.HTTP_404_NOT_FOUND, detail=str(error)) from error
         if entry.user_id != principal.user_id:
             raise HTTPException(status.HTTP_404_NOT_FOUND, detail="memory not found")
+
+    @router.get("/embedding-status", response_model=EmbeddingStatusView)
+    async def embedding_status(request: Request) -> EmbeddingStatusView:
+        """嵌入换版与回填观测（方案 A2）；stale 行数来自 store 进程内缓存。"""
+        del request
+        provider = store.embedding_provider
+        pending = store.pending_embedding_version
+        return EmbeddingStatusView(
+            model=provider.model_name,
+            version=provider.version,
+            dimension=provider.dimension,
+            total_rows=await store.count_memories(),
+            stale_rows=store.embedding_stale_rows,
+            pending_version=pending,
+            pending_stale_rows=(
+                await store.count_embedding_mismatch(version=pending) if pending else None
+            ),
+        )
 
     @router.get("/{memory_id}/lifecycle-events")
     async def lifecycle_history(memory_id: int, request: Request) -> list[dict[str, object]]:

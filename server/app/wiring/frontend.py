@@ -245,6 +245,18 @@ def register_frontend(
             }
             if hermes_health.status == "unreachable":
                 result["status"] = "degraded"
+        # 嵌入换版观测（方案 A2）：读 store 上的进程内缓存，不做逐请求查询；
+        # stale_rows 为落后于目标/当前版本的行数，None 表示该部署未做过换版统计。
+        memory_store = getattr(app.state, "memory_store", None)
+        if memory_store is not None and (
+            getattr(memory_store, "embedding_stale_rows", None) is not None
+            or getattr(memory_store, "pending_embedding_version", None) is not None
+        ):
+            result["embedding"] = {
+                "version": memory_store.embedding_provider.version,
+                "pending_version": memory_store.pending_embedding_version,
+                "stale_rows": memory_store.embedding_stale_rows,
+            }
         return result
 
     @app.get("/api/v1/meta/protocol", tags=["system"])

@@ -321,6 +321,29 @@ async def test_shadow_retrieval_keeps_relevance_above_strength(
     assert (await store.get(relevant.id)).use_count == 0
 
 
+async def test_dedup_support_finds_low_importance_duplicate(database: Database) -> None:
+    """守门（方案 A1）：查重窗口不按重要性截断。
+
+    600 条高重要性噪声 + 1 条低重要性目标记忆；与目标几乎相同的新候选
+    必须判 supported——旧实现在"重要性前 500"窗口内找不到目标，会误判 created。
+    """
+    from app.memory import ConsolidateDecision, MemoryIngester
+
+    owner, _, _ = await seed(database)
+    store = MemoryStore(database)
+    target = "用户有一条冷门的小众爱好：收集各地老火车票"
+    await store.add(candidate(target, importance=0.1), user_id=owner)
+    for index in range(600):
+        await store.add(
+            candidate(f"fixture noise memory number {index:04d}", importance=0.9),
+            user_id=owner,
+        )
+    outcome = await MemoryIngester(store).ingest(
+        candidate(f"{target}。", importance=0.9), user_id=owner
+    )
+    assert outcome.decision is ConsolidateDecision.SUPPORTED
+
+
 async def test_ai_initial_tier_gates_and_audit(database: Database) -> None:
     from app.memory import MemoryStatus
 
@@ -479,6 +502,59 @@ async def test_chat_saves_family_facts_at_ai_proposed_tier(
         events = list(await session.scalars(select(MemoryLifecycleRecord)))
     assert {event.reason for event in events} == {"ai_initial"}
     assert {event.new_tier for event in events} == {"core"}
+
+
+async def test_admin_embedding_status_and_health_block(database: Database, tmp_path: Path) -> None:
+    """方案 A2：嵌入换版观测端点与 healthz 块（缓存缺失时字段如实为空）。"""
+    from httpx import ASGITransport, AsyncClient
+    from test_chat import config_yaml
+    from test_memory import candidate
+
+    from app.config import DatabaseConfigStore
+    from app.main import create_app
+
+    owner, _, _ = await seed(database)
+    path = tmp_path / "hub.yaml"
+    path.write_text(config_yaml())
+    app = create_app(
+        database,
+        config_store=DatabaseConfigStore(database, path),
+        watch_config=False,
+        admin_token="fixture-token",
+    )
+    headers = {"Authorization": "Bearer fixture-token"}
+    app_store = app.state.memory_store
+    await MemoryStore(database).add(candidate("synthetic embedding status"), user_id=owner)
+    async with (
+        app.router.lifespan_context(app),
+        AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client,
+    ):
+        assert (await client.get("/api/v1/admin/memories/embedding-status")).status_code == 401
+        status = (
+            await client.get("/api/v1/admin/memories/embedding-status", headers=headers)
+        ).json()
+        assert status["version"] == "char-ngram-hash/1"
+        assert status["model"] == "builtin.hashing" and status["dimension"] == 256
+        assert status["total_rows"] >= 1
+        assert status["stale_rows"] is None and status["pending_version"] is None
+        assert "embedding" not in (await client.get("/healthz")).json()
+        # 门控/回填运行时缓存写入后，healthz 与端点如实暴露
+        app_store.embedding_stale_rows = 3
+        app_store.pending_embedding_version = "text-embedding-test/1"
+        refreshed = (
+            await client.get("/api/v1/admin/memories/embedding-status", headers=headers)
+        ).json()
+        assert refreshed["pending_version"] == "text-embedding-test/1"
+        assert refreshed["stale_rows"] == 3  # 进程内缓存值
+        assert refreshed["pending_stale_rows"] == 1  # 待换版本的真实库内计数
+        health = (await client.get("/healthz")).json()
+        assert health["embedding"] == {
+            "version": "char-ngram-hash/1",
+            "pending_version": "text-embedding-test/1",
+            "stale_rows": 3,
+        }
+        app_store.embedding_stale_rows = None
+        app_store.pending_embedding_version = None
 
 
 async def test_admin_create_with_explicit_tier(database: Database, tmp_path: Path) -> None:

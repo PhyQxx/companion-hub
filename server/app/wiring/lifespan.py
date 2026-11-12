@@ -42,6 +42,7 @@ if TYPE_CHECKING:
     from app.integrations.mcp import McpManager
     from app.jobs import DelegatedJobWorker
     from app.mail_awareness import MailAwarenessLoop
+    from app.memory.embedding_backfill import EmbeddingBackfillService
     from app.memory.store import MemoryStore
     from app.observability.selfcheck import DailySelfCheckScheduler
     from app.perception import PerceptionPipeline
@@ -72,6 +73,7 @@ class LifespanDeps:
     xiaoai_materializer: XiaoAiConfigMaterializer | None = None
     persona_store: PersonaStore | None = None
     memory_store: MemoryStore | None = None
+    embedding_backfill: EmbeddingBackfillService | None = None
     home_assistant_manager: HomeAssistantManager | None = None
     mqtt_client: MqttDeviceClient | None = None
     avatar_store: AvatarStore | None = None
@@ -130,12 +132,16 @@ def _core_modules(deps: LifespanDeps) -> ModuleRegistry:
             )
             if embedding_provider is not None:
                 if await probe_embedding_provider(embedding_provider):
-                    deps.memory_store.set_embedding_provider(embedding_provider)
-                    logging.getLogger(__name__).info(
-                        "semantic embedding enabled model=%s dimension=%d",
-                        embedding_provider.model_name,
-                        embedding_provider.dimension,
+                    # A2 换版门控：库内存在旧版本嵌入时不静默切换（旧行为会让
+                    # 整库向量通道瞬间失效且无报警）；交给回填任务把旧行重算
+                    # 到目标版本后再换入。无落后行则行为与原实现一致。
+                    from app.memory.embedding_backfill import attach_embedding_provider
+
+                    backfill = await attach_embedding_provider(
+                        deps.memory_store, embedding_provider
                     )
+                    if backfill is not None:
+                        deps.embedding_backfill = backfill
                 else:
                     logging.getLogger(__name__).warning(
                         "semantic embedding unavailable, falling back to hashing embedder"
@@ -240,6 +246,9 @@ def _core_modules(deps: LifespanDeps) -> ModuleRegistry:
     add_service("plan-completion-reports", deps.plan_completion_reporter)
     add_service("skill-audit", deps.skill_audit_scheduler)
     add_service("self-check", deps.self_check_scheduler)
+    # 嵌入版本回填（方案 A2）：仅当启动门控推迟换版时才注册；
+    # requires memory——门控在 memory 模块启动时决定是否产生该服务。
+    add_service("memory-reembed", deps.embedding_backfill, requires=("memory",))
     add_service("home-proactive", deps.home_assistant_proactive, start_method=None)
     add_service("mqtt-presence", deps.mqtt_presence_bridge, start_method=None)
     add_service("perception", deps.perception_pipeline, start_method=None)

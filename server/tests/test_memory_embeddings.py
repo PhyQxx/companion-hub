@@ -1,19 +1,36 @@
-"""SEMB（docs/09 §2）语义嵌入：配置校验、HTTP provider、探测回落与换入。"""
+"""SEMB（docs/09 §2）语义嵌入：配置校验、HTTP provider、探测回落与换入。
+
+方案 A2（嵌入版本回填）的门控/续跑/收敛测试也在此文件。
+"""
 
 from __future__ import annotations
 
 import json
+from collections.abc import AsyncIterator, Sequence
+from pathlib import Path
 
 import httpx
 import pytest
 
 from app.config.models import EmbeddingsConfig
+from app.db import Database
 from app.memory import (
     HashingEmbeddingProvider,
     HttpEmbeddingProvider,
     build_embedding_provider,
     probe_embedding_provider,
 )
+
+
+@pytest.fixture(params=["sqlite", "postgresql"])
+async def database(request: pytest.FixtureRequest, tmp_path: Path) -> AsyncIterator[Database]:
+    from test_run_cancel_fence import prepared
+
+    storage = await prepared(request.param, tmp_path)
+    try:
+        yield storage.database
+    finally:
+        await storage.close()
 
 
 def _provider(
@@ -136,9 +153,7 @@ def test_build_embedding_provider_resolves_secret_ref() -> None:
     assert provider is not None
     assert provider.model_name == "text-embedding-test"
 
-    config_value = config.model_copy(
-        update={"secret_ref": None, "secret_value": "inline"}
-    )
+    config_value = config.model_copy(update={"secret_ref": None, "secret_value": "inline"})
     inline = build_embedding_provider(config_value, _StaticSecrets({}))
     assert inline is not None
 
@@ -164,3 +179,117 @@ def test_memory_store_swaps_embedding_provider() -> None:
     store.set_embedding_provider(_provider(transport))
     assert isinstance(store.embedding_provider, HttpEmbeddingProvider)
     assert store.embedding_provider.version == "text-embedding-test/1"
+
+
+class _FakeProvider:
+    """确定性测试 provider：向量与内容长度相关，版本与哈希默认互不兼容。"""
+
+    def __init__(self, *, version: str = "fake-embed/9", dimension: int = 8) -> None:
+        self._version = version
+        self._dimension = dimension
+
+    @property
+    def model_name(self) -> str:
+        return "fake.model"
+
+    @property
+    def dimension(self) -> int:
+        return self._dimension
+
+    @property
+    def version(self) -> str:
+        return self._version
+
+    async def embed(self, texts: Sequence[str]) -> list[list[float]]:
+        return [[float(len(text) % 7 + 1)] * self._dimension for text in texts]
+
+
+async def test_attach_defers_swap_and_backfill_completes(database: Database) -> None:
+    """方案 A2：库内存在旧版本嵌入时换版被推迟，回填收敛后才换入。"""
+    from test_goal_delivery_runs import seed
+    from test_memory import candidate
+
+    from app.memory import MemoryRetriever, MemoryStore
+    from app.memory.embedding_backfill import attach_embedding_provider
+    from app.schemas import PrivacyLevel
+
+    owner, _, _ = await seed(database)
+    store = MemoryStore(database)
+    content = "fixture embedding backfill fact"
+    entry = await store.add(candidate(content), user_id=owner)
+    await store.add(candidate("fixture embedding backfill second"), user_id=owner)
+    async with database.sessions.begin() as session:
+        from app.db import MemoryRecord
+
+        row = await session.get_one(MemoryRecord, entry.id)
+        row.embedding_version = None  # 模拟历史空版本行
+    pending = _FakeProvider()
+    assert await store.count_embedding_mismatch(version=pending.version) == 2
+
+    service = await attach_embedding_provider(
+        store, pending, interval_seconds=3_600.0, batch_size=1
+    )
+    assert service is not None
+    try:
+        # 门控生效：旧 provider 仍在服务，目标版本进入待换入状态
+        assert isinstance(store.embedding_provider, HashingEmbeddingProvider)
+        assert store.pending_embedding_version == pending.version
+        assert store.embedding_stale_rows == 2
+        # 回填期间检索不阻塞：仍可通过词法/精确通道命中
+        hits = await MemoryRetriever(store).retrieve(
+            content, user_id=owner, privacy_level=PrivacyLevel.L1
+        )
+        assert hits.hits and hits.hits[0].memory.id == entry.id
+        # 断点续跑：先手动重算一批（1 行），剩余 1 行由循环收敛
+        assert await store.reembed_stale_batch(provider=pending, limit=1) == 1
+        assert await store.count_embedding_mismatch(version=pending.version) == 1
+        assert await service.run_once() is False
+        assert store.embedding_provider.version == "char-ngram-hash/1"  # 未换入
+        assert await service.run_once() is True
+        assert store.embedding_provider.version == pending.version  # 已换入
+        assert store.pending_embedding_version is None
+        assert store.embedding_stale_rows == 0
+    finally:
+        await service.stop()
+
+
+async def test_attach_swaps_immediately_when_no_stale(database: Database) -> None:
+    """无落后行时门控直接换入，行为与原实现一致。"""
+    from test_goal_delivery_runs import seed
+    from test_memory import candidate
+
+    from app.memory import MemoryStore
+    from app.memory.embedding_backfill import attach_embedding_provider
+
+    owner, _, _ = await seed(database)
+    store = MemoryStore(database)
+    await store.add(candidate("fixture no stale fact"), user_id=owner)
+    fresh = _FakeProvider()
+    # 先把全库重算到目标版本，模拟"上轮回填已完成"的收敛态
+    await store.reembed_stale_batch(provider=fresh, limit=10)
+    assert await store.count_embedding_mismatch(version=fresh.version) == 0
+    service = await attach_embedding_provider(store, fresh, interval_seconds=3_600.0)
+    assert service is None
+    assert store.embedding_provider is fresh
+    assert store.embedding_stale_rows == 0
+
+
+async def test_attach_defers_without_backfill_when_disabled(database: Database) -> None:
+    """开关关闭（ARIA_MEMORY_EMBED_BACKFILL=0）：推迟换版且不启动回填。"""
+    from test_goal_delivery_runs import seed
+    from test_memory import candidate
+
+    from app.memory import MemoryStore
+    from app.memory.embedding_backfill import attach_embedding_provider
+
+    owner, _, _ = await seed(database)
+    store = MemoryStore(database)
+    await store.add(candidate("fixture disabled backfill fact"), user_id=owner)
+    pending = _FakeProvider()
+    service = await attach_embedding_provider(store, pending, backfill_enabled=False)
+    assert service is None
+    assert isinstance(store.embedding_provider, HashingEmbeddingProvider)
+    assert store.pending_embedding_version == pending.version
+    assert store.embedding_stale_rows == 1
+    # 关闭回填后剩余行保持不变，切换维持推迟
+    assert await store.count_embedding_mismatch(version=pending.version) == 1

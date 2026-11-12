@@ -58,6 +58,15 @@ interface LedgerItem {
   reason: string | null;
   created_at: string;
 }
+interface EmbeddingStatus {
+  model: string;
+  version: string;
+  dimension: number;
+  total_rows: number;
+  stale_rows: number | null;
+  pending_version: string | null;
+  pending_stale_rows: number | null;
+}
 
 // 记忆库治理：统计、过滤列表、溯源详情、纠错编辑、冲突裁决、
 // 手动添加、检索调试与删除台账（含重放试运行/执行）。
@@ -131,6 +140,7 @@ function onSelectionChange(rows: MemoryItem[]) {
 }
 const ledger = ref<LedgerItem[]>([]);
 const stats = reactive({ active: 0, conflict: 0, archived: 0, deleted: 0 });
+const embeddingStatus = ref<EmbeddingStatus | null>(null);
 const filters = reactive({ subject: "", type: "", status: "", factKey: "", minImportance: "", tier: "" });
 const memoryPage = ref(1);
 const memoryPageSize = ref(20);
@@ -183,7 +193,7 @@ const fmt = (value: string | null) => (value ? new Date(value).toLocaleString() 
 async function load() {
   clearSelection();
   try {
-    const [page, active, conflict, archived, ledgerPageData] = await Promise.all([
+    const [page, active, conflict, archived, ledgerPageData, embedding] = await Promise.all([
       api.request<{ items: MemoryItem[]; total: number }>(`/api/v1/admin/memories?${memoryParams.value}`),
       api.request<{ items: MemoryItem[]; total: number }>("/api/v1/admin/memories?status=active&limit=1"),
       api.request<{ items: MemoryItem[]; total: number }>("/api/v1/admin/memories?status=conflict&limit=1"),
@@ -192,6 +202,8 @@ async function load() {
         `/api/v1/admin/deletion-ledger?limit=${ledgerPageSize.value}`
           + `&offset=${(ledgerPage.value - 1) * ledgerPageSize.value}`,
       ),
+      // 嵌入换版观测（方案 A2）；旧后端无此端点时不影响列表加载
+      api.request<EmbeddingStatus>("/api/v1/admin/memories/embedding-status").catch(() => null),
     ]);
     const lastPage = Math.max(1, Math.ceil(page.total / memoryPageSize.value));
     if (memoryPage.value > lastPage) {
@@ -206,6 +218,7 @@ async function load() {
     stats.conflict = conflict.total;
     stats.archived = archived.total;
     stats.deleted = ledgerPageData.total;
+    embeddingStatus.value = embedding;
     ledger.value = ledgerPageData.items;
     ledgerTotal.value = ledgerPageData.total;
   } catch (error) {
@@ -438,6 +451,15 @@ onMounted(load);
       <article><span>待裁决冲突</span><strong>{{ stats.conflict }}</strong></article>
       <article><span>已归档</span><strong>{{ stats.archived }}</strong></article>
       <article><span>删除台账</span><strong>{{ stats.deleted }}</strong></article>
+      <article v-if="embeddingStatus">
+        <span>嵌入索引{{ embeddingStatus.pending_version ? '（回填中）' : '' }}</span>
+        <strong>{{ embeddingStatus.version }}</strong>
+        <span>
+          {{ embeddingStatus.pending_version
+            ? `待回填 ${embeddingStatus.pending_stale_rows ?? embeddingStatus.stale_rows ?? 0}/${embeddingStatus.total_rows} 条`
+            : `版本落后 ${embeddingStatus.stale_rows ?? 0}/${embeddingStatus.total_rows} 条` }}
+        </span>
+      </article>
     </div>
 
     <div v-if="props.mode === 'library'" class="panel">
