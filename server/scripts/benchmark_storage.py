@@ -102,6 +102,12 @@ async def open_storage(path: Path, postgres_test_url: str | None = None) -> Fixt
                     f"CREATE INDEX ix_memory_embedding_vec ON {storage.schema}.memory"
                     " USING hnsw (embedding_vec vector_cosine_ops)"
                 )
+            else:
+                # 方案 B1：镜像迁移 0073 的 FTS5 表（空库无需回填），
+                # 使测试覆盖真实部署的词法索引路径。
+                await connection.exec_driver_sql(
+                    "CREATE VIRTUAL TABLE IF NOT EXISTS memory_lex USING fts5(grams)"
+                )
         return storage
     except BaseException:
         await storage.close()

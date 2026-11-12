@@ -931,4 +931,13 @@
 - [x] A1 代码：`find_similar` 重写为专用查重召回——PG 走新增 pgvector ANN 查询（同用户+类型+主体+多状态、按相似度排序、不受重要性截窗），SQLite 退化为"同类型同主体最近新增"窗口（上限 2000）；判定阈值不变；每次调用记 `memory.dedup_recall` 日志。守门测试（601 条低重要性目标必须判 supported）已做暂存验证：旧代码必失败、修复后通过。
 - [x] A2 代码：新增 `app/memory/embedding_backfill.py`——换版门控（无落后行直换=原行为；有落后行推迟切换并记 pending）、有界回填循环（每批 ≤100 行行级原子更新含 pgvector 列，中断重扫描续跑，收敛后换入），开关 `ARIA_MEMORY_EMBED_BACKFILL` 默认开；`load_memory` 接入门控，服务随模块启停（memory-reembed）。观测：admin `GET /memories/embedding-status`、healthz 可选 `embedding` 块（读进程内缓存）、管理页记忆库"嵌入索引"卡片。实现选择：有界扫描循环而非 Job 队列（与降级扫描同先例，行级原子更新天然满足续跑口径），偏差已在方案 §11 如实登记。
 - [x] 相关验证：新增 5 项（门控推迟/回填收敛换入/断点续跑、无落后行直换、开关关闭、查重守门、状态端点+healthz 块），SQLite/PG 双库夹具；批次回归集合 242 通过/36 跳过（PG 条件）、零失败（嵌入/生命周期/记忆主套件/沉淀快照/支持围栏/补录技能/聊天/后处理/api/build_info/模块生命周期/架构门禁，集合有重叠不相加）；ruff/format/mypy 零错；架构门禁 57 项全绿；Node22 前端 typecheck 与 production build 通过。
-- [ ] 剩余/下一优先级：下一批 B1（SQLite FTS5/PG tsvector 词法索引，涉迁移 0073 与架构快照）+ B2（评测考题集与影子对比）；真实环境换版演练（真实嵌入服务门控→回填→换入→健康页归零）属真实验收未执行。本批未提交（业务哈希待回填），未部署，未做冻结源码全量/性能验收；不改检索打分公式、等级规则与隐私/删除围栏。
+- [ ] 剩余/下一优先级：下一批 B1（SQLite FTS5/PG tsvector 词法索引，涉迁移 0073 与架构快照）+ B2（评测考题集与影子对比）；真实环境换版演练（真实嵌入服务门控→回填→换入→健康页归零）属真实验收未执行。本批业务哈希 `f6b5c03`（2026-11-12 回填），未部署，未做冻结源码全量/性能验收；不改检索打分公式、等级规则与隐私/删除围栏。
+
+
+### 记忆优化批次二：B1 词法索引 + B2 评测考题集（2026-11-12，代码交付）
+
+- [x] B2：新增 `scripts/eval_memory_retrieval.py`（36 条合成语料 + 44 道考题 8 类场景，recall@8/Top-1/grounded/隐私违规/跨用户泄漏/延迟）与 `tests/test_memory_retrieval_eval.py` 防退化门禁；基线 SQLite：总体 recall@8 0.8296、隐私违规 0、冷层深搜池覆盖 1.0；弱项如实记录（lexical_rewrite 0.5 系哈希嵌入无语义、distractor 入侵 7 次）。冷层非槽位按设计契约以深搜池覆盖计量。见 [基线](./baselines/memory-retrieval-eval.json)。
+- [x] B1：迁移 0073（SQLite FTS5 表 memory_lex + Python 回填；PG pg_trgm GIN 索引）；store 三收口点同事务维护 FTS（add/edit/_purge_memory_ids，事务内探测表存在、迁移前库跳过）；候选池改两段式索引预筛+补齐，与旧单趟排序严格等价（等价性测试双库锁死：开关开/关候选 ID 序列与端到端命中完全一致）；开关 `ARIA_MEMORY_LEXICAL_INDEX` 默认开；open_storage 夹具镜像建 FTS 表覆盖真实路径。
+- [x] 容量复测（诚实结论）：SQLite 100万稀疏命中 2223→1826ms（-18%）、密命中 +25%（病态场景）；**方案承诺的"百万级 p95<300ms"未达成**——地板由补齐段 importance 全量排序主导，索引只省预筛；百毫秒需 importance 复合索引/候选分页，登记 B1 后续增强。真实规模（≤万条）50ms 级。见 [基准](./baselines/memory-lexical-index-bench.json)。
+- [x] 相关验证：新专项 5 项 + 记忆族回归 224 通过/29 跳过（PG 条件）零失败；架构门禁 57 全绿（ORM 快照口径不含 FTS 表，零差）；ruff/format 零错、mypy（app+tests 口径）零错；eval 基线 FTS 启用后复跑召回逐位一致。
+- [ ] 剩余/下一优先级：第三批 B3（AI 初始定级校准）+ B4（生日临近唤醒，涉 DDL）与 C 项按真实验收节奏；PG 分支等价性测试本机未配 `ARIA_TEST_DATABASE_URL` 跳过、trigram EXPLAIN 验证与真实环境换版演练待 PG 环境；部署 0073 前先备份（FTS 回填一次性成本）。本批业务哈希待提交后回填。

@@ -16,7 +16,23 @@ from datetime import UTC, datetime
 from typing import cast
 from uuid import UUID
 
-from sqlalchemy import Select, bindparam, case, delete, func, literal, or_, select, text, update
+from sqlalchemy import (
+    ColumnElement,
+    Select,
+    bindparam,
+    case,
+    column,
+    delete,
+    func,
+    literal,
+    or_,
+    select,
+    text,
+    update,
+)
+from sqlalchemy import (
+    table as sql_table,
+)
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db import (
@@ -113,6 +129,9 @@ class MemoryStore:
         # 仅进程内诊断用，不作为并发状态。
         self.embedding_stale_rows: int | None = None
         self.pending_embedding_version: str | None = None
+        # 词法索引可用性（方案 B1）：SQLite 首次探测后缓存；
+        # None=未探测。非 SQLite 方言恒 False（预筛走 OR-LIKE）。
+        self._lex_index_available: bool | None = None
 
     @property
     def database(self) -> Database:
@@ -225,6 +244,7 @@ class MemoryStore:
             )
             session.add(record)
             await session.flush()
+            await self._lex_index_put(session, record.id, record.content)
             if initial_tier is not MemoryTier.MEDIUM:
                 # 初始定级与记忆同事务落审计，保证等级历史可回溯。
                 session.add(
@@ -413,6 +433,14 @@ class MemoryStore:
                 ),
                 start=literal(0),
             )
+            if tokens and os.getenv("ARIA_MEMORY_LEXICAL_INDEX", "1") == "1":
+                records = await self._indexed_lexical_candidates(
+                    query, tokens=tokens, matches=matches, limit=limit, deep=deep
+                )
+                return [
+                    RetrievalCandidate(entry=self._entry(record), embedding=record.embedding)
+                    for record in records
+                ]
             query = query.order_by(
                 matches.desc() if tokens else MemoryRecord.id.desc(),
                 MemoryRecord.importance.desc(),
@@ -446,6 +474,124 @@ class MemoryStore:
             RetrievalCandidate(entry=self._entry(record), embedding=record.embedding)
             for record in records
         ]
+
+    async def _indexed_lexical_candidates(
+        self,
+        query: Select[tuple[MemoryRecord]],
+        *,
+        tokens: list[str],
+        matches: ColumnElement[int],
+        limit: int,
+        deep: bool,
+    ) -> list[MemoryRecord]:
+        """两段式词法候选（方案 B1）：索引预筛命中行，再补零命中行。
+
+        与旧单趟排序语义严格等价：命中行（matches>0）按
+        (matches, importance, id) 排满名额；名额未满时余下必为零命中行，
+        按 (importance, id) 补齐——若命中行已排满名额，补齐段不会执行，
+        因此不存在"未取到的命中行应排在零命中行之前"的缺口。
+        SQLite 用 FTS5 表 memory_lex 预筛；PostgreSQL 用 OR-LIKE
+        （pg_trgm GIN 索引可合并为 BitmapOr）；其余方言退化为纯 SQL。
+        """
+        lex_ready = await self._lex_index_ready()
+        if lex_ready:
+            lex = sql_table("memory_lex", column("rowid"), column("grams"))
+            pattern = " OR ".join(f'"{token}"' for token in tokens)
+        else:
+            pattern = ""
+        ranked_order = (matches.desc(), MemoryRecord.importance.desc(), MemoryRecord.id.desc())
+        fill_order = (MemoryRecord.importance.desc(), MemoryRecord.id.desc())
+
+        def stage1(base: Select[tuple[MemoryRecord]]) -> Select[tuple[MemoryRecord]]:
+            if lex_ready:
+                return base.join(lex, lex.c.rowid == MemoryRecord.id).where(
+                    lex.c.grams.match(pattern)
+                )
+            return base.where(
+                or_(*[MemoryRecord.content.contains(token, autoescape=True) for token in tokens])
+            )
+
+        async def take(statement: Select[tuple[MemoryRecord]]) -> list[MemoryRecord]:
+            return list(await session.scalars(statement))
+
+        async with self._database.sessions() as session:
+            hot: list[MemoryRecord] = []
+            if not deep:
+                hot_cap = limit // 2
+                hot = await take(
+                    stage1(query)
+                    .where(MemoryRecord.tier.in_(["core", "important", "medium"]))
+                    .order_by(*ranked_order)
+                    .limit(hot_cap)
+                )
+                if len(hot) < hot_cap:
+                    hot += await take(
+                        query.where(
+                            MemoryRecord.tier.in_(["core", "important", "medium"]),
+                            MemoryRecord.id.not_in([item.id for item in hot]),
+                        )
+                        .order_by(*fill_order)
+                        .limit(hot_cap - len(hot))
+                    )
+            rest_cap = limit - len(hot)
+            excluded = [item.id for item in hot]
+            rest = await take(
+                stage1(query.where(MemoryRecord.id.not_in(excluded)))
+                .order_by(*ranked_order)
+                .limit(rest_cap)
+            )
+            excluded += [item.id for item in rest]
+            if len(rest) < rest_cap:
+                rest += await take(
+                    query.where(MemoryRecord.id.not_in(excluded))
+                    .order_by(*fill_order)
+                    .limit(rest_cap - len(rest))
+                )
+            return hot + rest
+
+    async def _lex_index_ready(self, session: AsyncSession | None = None) -> bool:
+        """SQLite 且迁移 0073 的 FTS 表存在时启用 FTS 预筛（按实例缓存）。
+
+        事务内调用必须传入当前 session：另开连接查 sqlite_master 会与
+        持写锁的事务在 SQLite 回滚日志模式下互锁。
+        """
+        if self._database.engine.dialect.name != "sqlite":
+            return False
+        if self._lex_index_available is None:
+            if session is not None:
+                row = await session.execute(
+                    text("SELECT 1 FROM sqlite_master WHERE type='table' AND name='memory_lex'")
+                )
+                self._lex_index_available = row.first() is not None
+            else:
+                async with self._database.sessions() as probe:
+                    row = await probe.execute(
+                        text("SELECT 1 FROM sqlite_master WHERE type='table' AND name='memory_lex'")
+                    )
+                    self._lex_index_available = row.first() is not None
+        return self._lex_index_available
+
+    async def _lex_index_put(self, session: AsyncSession, memory_id: int, content: str) -> None:
+        """写入路径同事务维护 FTS 行（SQLite；迁移前库自动跳过）。"""
+        if not await self._lex_index_ready(session):
+            return
+        from .similarity import text_tokens
+
+        await session.execute(
+            text("INSERT OR REPLACE INTO memory_lex(rowid, grams) VALUES (:id, :grams)"),
+            {"id": memory_id, "grams": " ".join(text_tokens(content))},
+        )
+
+    async def _lex_index_drop(self, session: AsyncSession, memory_ids: Sequence[int]) -> None:
+        """删除路径同事务清理 FTS 行（SQLite；迁移前库自动跳过）。"""
+        if not memory_ids or not await self._lex_index_ready(session):
+            return
+        await session.execute(
+            text("DELETE FROM memory_lex WHERE rowid IN :ids").bindparams(
+                bindparam("ids", expanding=True)
+            ),
+            {"ids": list(memory_ids)},
+        )
 
     async def fact_candidates(
         self,
@@ -876,6 +1022,7 @@ class MemoryStore:
             )
             session.add(replacement)
             await session.flush()
+            await self._lex_index_put(session, replacement.id, replacement.content)
             old_sources = list(
                 await session.scalars(
                     select(MemorySourceRecord).where(MemorySourceRecord.memory_id == memory_id)
@@ -1151,6 +1298,7 @@ class MemoryStore:
 
         for model in (MemoryUsageRecord, MemoryLifecycleRecord):
             await session.execute(delete(model).where(model.memory_id.in_(deleted_ids)))
+        await self._lex_index_drop(session, deleted_ids)
         await session.execute(delete(MemoryRecord).where(MemoryRecord.id.in_(deleted_ids)))
 
     async def _record_ledger(

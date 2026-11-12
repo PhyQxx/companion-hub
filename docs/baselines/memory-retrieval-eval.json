@@ -1,0 +1,122 @@
+{
+  "cases": 44,
+  "corpus_memories": 36,
+  "fill": 0,
+  "per_category": {
+    "exact_cold": {
+      "cases": 12.0,
+      "recall_at_8": 0.9167,
+      "grounded_recall": 0.9167,
+      "top1": 0.9091,
+      "top1_cases": 11.0
+    },
+    "lexical_rewrite": {
+      "cases": 8.0,
+      "recall_at_8": 0.5,
+      "grounded_recall": 0.5,
+      "top1": 1.0,
+      "top1_cases": 1.0
+    },
+    "distractor": {
+      "cases": 8.0,
+      "recall_at_8": 0.875,
+      "grounded_recall": 0.875,
+      "top1": 0.75,
+      "top1_cases": 8.0
+    },
+    "inventory": {
+      "cases": 3.0,
+      "recall_at_8": 1.0,
+      "grounded_recall": 1.0
+    },
+    "privacy_boundary": {
+      "cases": 4.0,
+      "recall_at_8": 1.0,
+      "grounded_recall": 1.0,
+      "top1": 0.5,
+      "top1_cases": 2.0
+    },
+    "multi_fact": {
+      "cases": 2.0,
+      "recall_at_8": 0.75,
+      "grounded_recall": 0.75
+    },
+    "cross_subject": {
+      "cases": 4.0,
+      "recall_at_8": 0.75,
+      "grounded_recall": 0.75,
+      "top1": 0.6667,
+      "top1_cases": 3.0
+    },
+    "cold_deep": {
+      "cases": 3.0,
+      "recall_at_8": 1.0,
+      "grounded_recall": 0.0
+    }
+  },
+  "overall": {
+    "recall_at_8": 0.8296,
+    "grounded_recall": 0.7614,
+    "privacy_violations": 0,
+    "distractor_intrusions": 7,
+    "cross_user_leaks": 0
+  },
+  "violations": [
+    {
+      "query": "点菜时能吃香菜吗",
+      "category": "distractor",
+      "hit_forbidden": [
+        "distractor_quantum"
+      ]
+    },
+    {
+      "query": "用户爱吃辣吗",
+      "category": "distractor",
+      "hit_forbidden": [
+        "distractor_space"
+      ]
+    },
+    {
+      "query": "用户答应过伴侣什么事情",
+      "category": "distractor",
+      "hit_forbidden": [
+        "distractor_quantum"
+      ]
+    },
+    {
+      "query": "助手每周五要帮用户做什么",
+      "category": "distractor",
+      "hit_forbidden": [
+        "distractor_space"
+      ]
+    },
+    {
+      "query": "用户上周的工作汇报顺利吗",
+      "category": "distractor",
+      "hit_forbidden": [
+        "distractor_stocks"
+      ]
+    },
+    {
+      "query": "用户对芒果是什么态度",
+      "category": "distractor",
+      "hit_forbidden": [
+        "distractor_space"
+      ]
+    },
+    {
+      "query": "用户常去哪里借书",
+      "category": "distractor",
+      "hit_forbidden": [
+        "distractor_space"
+      ]
+    }
+  ],
+  "latency_ms": {
+    "p50": 9.148,
+    "p95": 13.248,
+    "max": 28.723
+  },
+  "retrieval_policy_version": "hybrid-lifecycle-v7",
+  "backend": "sqlite"
+}

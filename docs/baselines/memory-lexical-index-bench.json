@@ -1,0 +1,100 @@
+{
+  "measured_at": "2026-11-12T12:52:50.759413+00:00",
+  "scope": "synthetic SQLite without embeddings; legacy scan vs FTS5 lexical index (B1); not PostgreSQL ANN or semantic accuracy",
+  "results": [
+    {
+      "rows": 100000,
+      "dense_legacy_scan": {
+        "samples_ms": [
+          374.38,
+          298.82,
+          331.75,
+          315.47,
+          310.02
+        ],
+        "median_ms": 315.47,
+        "max_ms": 374.38
+      },
+      "dense_lexical_index": {
+        "samples_ms": [
+          380.85,
+          441.95,
+          401.97,
+          413.42,
+          384.78
+        ],
+        "median_ms": 401.97,
+        "max_ms": 441.95
+      },
+      "sparse_legacy_scan": {
+        "samples_ms": [
+          236.78,
+          228.58,
+          290.28,
+          237.9,
+          256.39
+        ],
+        "median_ms": 237.9,
+        "max_ms": 290.28
+      },
+      "sparse_lexical_index": {
+        "samples_ms": [
+          225.52,
+          238.51,
+          236.93,
+          222.95,
+          214.92
+        ],
+        "median_ms": 225.52,
+        "max_ms": 238.51
+      }
+    },
+    {
+      "rows": 1000000,
+      "dense_legacy_scan": {
+        "samples_ms": [
+          2859.17,
+          2898.72,
+          2866.03,
+          2849.88,
+          2801.76
+        ],
+        "median_ms": 2859.17,
+        "max_ms": 2898.72
+      },
+      "dense_lexical_index": {
+        "samples_ms": [
+          3554.39,
+          3552.15,
+          3496.22,
+          3616.17,
+          3572.98
+        ],
+        "median_ms": 3554.39,
+        "max_ms": 3616.17
+      },
+      "sparse_legacy_scan": {
+        "samples_ms": [
+          2243.02,
+          2218.3,
+          2223.47,
+          2224.68,
+          2207.49
+        ],
+        "median_ms": 2223.47,
+        "max_ms": 2243.02
+      },
+      "sparse_lexical_index": {
+        "samples_ms": [
+          1826.08,
+          1787.66,
+          1861.35,
+          1848.16,
+          1817.71
+        ],
+        "median_ms": 1826.08,
+        "max_ms": 1861.35
+      }
+    }
+  ]
+}
