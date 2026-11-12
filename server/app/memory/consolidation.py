@@ -10,7 +10,7 @@ from app.schemas.common import PrivacyLevel
 from .consolidation_core import CandidateConsolidator
 from .consolidation_core import ConsolidationPolicy as ConsolidationPolicy
 from .consolidation_core import _normalize_fact_content as _normalize_fact_content
-from .consolidation_ports import MemoryConsolidationRepository
+from .consolidation_ports import ChunkCursor, MemoryConsolidationRepository
 from .extraction import (
     RULE_EXTRACTOR_VERSION,
     ExtractionBackend,
@@ -126,7 +126,39 @@ class MemoryIngester:
         retrieved_memories: tuple[MemoryEntry, ...] = (),
         backend: ExtractionBackend | None = None,
         enforce_sources: bool = False,
+        done_offsets: frozenset[int] = frozenset(),
+        chunk_cursor: ChunkCursor | None = None,
     ) -> list[ConsolidateOutcome]:
+        """沉淀完整回合；可选块级游标（方案 C1/02A）支持断点续跑。
+
+        chunk_cursor 提供已完成块集合与记录回调：每个顶层块提取完成后立即
+        落库并记录游标，后续重试跳过该块（候选已持久，模型不再重跑）；
+        turn_core 会深拷贝候选，已处理判断按 (type, content) 键而非身份。
+        """
+
+        async def on_chunk(offset: int, chunk: list[MemoryCandidate]) -> None:
+            outcomes = [
+                await self.ingest(
+                    candidate,
+                    user_id=user_id,
+                    actor=candidate.extractor_version or RULE_EXTRACTOR_VERSION,
+                    enforce_sources=enforce_sources,
+                )
+                for candidate in chunk
+            ]
+            chunked_outcomes.extend(outcomes)
+            chunked_keys.update((candidate.type, candidate.content) for candidate in chunk)
+            if chunk_cursor is not None:
+                counts = {"created": 0, "supported": 0, "conflict": 0}
+                for outcome in outcomes:
+                    key = str(outcome.decision)
+                    if key in counts:
+                        counts[key] += 1
+                await chunk_cursor.record(offset, processed=len(chunk), **counts)
+
+        chunked_outcomes: list[ConsolidateOutcome] = []
+        chunked_keys: set[tuple[str, str]] = set()
+        skip = frozenset(await chunk_cursor.done_offsets()) if chunk_cursor else done_offsets
         candidates = await self._turn_extractor.extract_turn(
             user_text=user_text,
             user_message_id=user_message_id,
@@ -137,19 +169,28 @@ class MemoryIngester:
             privacy_level=privacy_level,
             retrieved_memories=retrieved_memories,
             backend=backend,
+            skip_offsets=skip,
+            chunk_done=on_chunk if chunk_cursor is not None else None,
         )
         logging.getLogger(__name__).info(
-            "memory.turn message_id=%s reason=%s candidates=%d",
+            "memory.turn message_id=%s reason=%s candidates=%d chunked=%d skipped=%d",
             user_message_id,
             "candidates_ready" if candidates else "no_candidates",
             len(candidates),
+            len(chunked_outcomes),
+            len(skip),
         )
-        return [
-            await self.ingest(
-                candidate,
-                user_id=user_id,
-                actor=candidate.extractor_version or RULE_EXTRACTOR_VERSION,
-                enforce_sources=enforce_sources,
-            )
-            for candidate in candidates
-        ]
+        outcomes = list(chunked_outcomes)
+        outcomes.extend(
+            [
+                await self.ingest(
+                    candidate,
+                    user_id=user_id,
+                    actor=candidate.extractor_version or RULE_EXTRACTOR_VERSION,
+                    enforce_sources=enforce_sources,
+                )
+                for candidate in candidates
+                if (candidate.type, candidate.content) not in chunked_keys
+            ]
+        )
+        return outcomes

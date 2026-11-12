@@ -10,7 +10,7 @@ from uuid import UUID
 from app.llm import CompletionRequest, CompletionResult, LLMMessage, LLMRoute
 from app.schemas.common import PrivacyLevel
 
-from .extraction_core import StructuredMemoryExtractor
+from .extraction_core import ChunkDoneCallback, StructuredMemoryExtractor
 from .extraction_ports import MemoryExtractionCompletion, MemoryExtractionInput
 from .extraction_rules import LLM_EXTRACTOR_VERSION as LLM_EXTRACTOR_VERSION
 from .extraction_rules import MAX_EXTRACT_INPUT_CHARS as MAX_EXTRACT_INPUT_CHARS
@@ -37,6 +37,8 @@ class MemoryExtractor(Protocol):
         privacy_level: PrivacyLevel,
         occurred_at: datetime,
         backend: ExtractionBackend | None = None,
+        skip_offsets: frozenset[int] = frozenset(),
+        chunk_done: ChunkDoneCallback | None = None,
     ) -> list[MemoryCandidate]: ...
 
 
@@ -59,6 +61,8 @@ class TurnMemoryExtractor:
         privacy_level: PrivacyLevel,
         retrieved_memories: Sequence[MemoryEntry] = (),
         backend: ExtractionBackend | None = None,
+        skip_offsets: frozenset[int] = frozenset(),
+        chunk_done: ChunkDoneCallback | None = None,
     ) -> list[MemoryCandidate]:
         return await CompletedTurnMemoryExtractor(
             _BoundMessageExtractor(self._message_extractor, backend)
@@ -71,6 +75,8 @@ class TurnMemoryExtractor:
             assistant_occurred_at=assistant_occurred_at,
             privacy_level=privacy_level,
             retrieved_memories=retrieved_memories,
+            skip_offsets=skip_offsets,
+            chunk_done=chunk_done,
         )
 
 
@@ -85,6 +91,8 @@ class _BoundMessageExtractor:
         message_id: UUID,
         privacy_level: PrivacyLevel,
         occurred_at: datetime,
+        skip_offsets: frozenset[int] = frozenset(),
+        chunk_done: ChunkDoneCallback | None = None,
     ) -> list[MemoryCandidate]:
         return await self._extractor.extract(
             text,
@@ -92,6 +100,8 @@ class _BoundMessageExtractor:
             privacy_level=privacy_level,
             occurred_at=occurred_at,
             backend=self._backend,
+            skip_offsets=skip_offsets,
+            chunk_done=chunk_done,
         )
 
 
@@ -130,6 +140,8 @@ class LlmMemoryExtractor:
         privacy_level: PrivacyLevel,
         occurred_at: datetime,
         backend: ExtractionBackend | None = None,
+        skip_offsets: frozenset[int] = frozenset(),
+        chunk_done: ChunkDoneCallback | None = None,
     ) -> list[MemoryCandidate]:
         return await self._core.extract(
             text,
@@ -137,4 +149,6 @@ class LlmMemoryExtractor:
             privacy_level=privacy_level,
             occurred_at=occurred_at,
             completion=_ChatMemoryCompletion(backend) if backend is not None else None,
+            skip_offsets=skip_offsets,
+            chunk_done=chunk_done,
         )

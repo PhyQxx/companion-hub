@@ -1,6 +1,7 @@
 """Memory candidate policy with detached completion and offline rule fallback."""
 
 import logging
+from collections.abc import Awaitable, Callable
 from datetime import datetime
 from math import isfinite
 from uuid import UUID
@@ -27,6 +28,10 @@ from .models import ExtractedCandidates, MemoryCandidate, MemorySourceKind, Memo
 
 logger = logging.getLogger(__name__)
 
+# 块完成回调（方案 C1/02A）：offset 为顶层块起点字符位，candidates 为该块
+# 全部（含饱和再分）候选；回调负责落库与游标记录，异常向上传播触发重试。
+ChunkDoneCallback = Callable[[int, list[MemoryCandidate]], Awaitable[None]]
+
 
 class StructuredMemoryExtractor:
     def __init__(self, *, fallback: RuleBasedExtractor | None = None) -> None:
@@ -40,19 +45,27 @@ class StructuredMemoryExtractor:
         privacy_level: PrivacyLevel,
         occurred_at: datetime,
         completion: MemoryExtractionCompletionPort | None = None,
+        skip_offsets: frozenset[int] = frozenset(),
+        chunk_done: ChunkDoneCallback | None = None,
     ) -> list[MemoryCandidate]:
         if len(text) > MAX_EXTRACT_INPUT_CHARS:
             results: list[MemoryCandidate] = []
+            # 顶层块循环（方案 C1）：skip_offsets 里的块上次已落库并记了游标，
+            # 本次直接跳过；完成的块先回调落库再继续，中途失败时已回调的块
+            # 在重试中被跳过。子调用不透传 skip/chunk_done（游标只记顶层块）。
             for start in range(0, len(text), MAX_EXTRACT_INPUT_CHARS - 200):
-                results.extend(
-                    await self.extract(
-                        text[start : start + MAX_EXTRACT_INPUT_CHARS],
-                        message_id=message_id,
-                        privacy_level=privacy_level,
-                        occurred_at=occurred_at,
-                        completion=completion,
-                    )
+                if start in skip_offsets:
+                    continue
+                chunk = await self.extract(
+                    text[start : start + MAX_EXTRACT_INPUT_CHARS],
+                    message_id=message_id,
+                    privacy_level=privacy_level,
+                    occurred_at=occurred_at,
+                    completion=completion,
                 )
+                if chunk_done is not None:
+                    await chunk_done(start, chunk)
+                results.extend(chunk)
             return list({(item.type, item.content): item for item in results}.values())
         privacy_level = PrivacyLevel(privacy_level)
         if privacy_level is PrivacyLevel.L3:
@@ -124,7 +137,7 @@ class StructuredMemoryExtractor:
             min(len(payload.candidates), MAX_LLM_CANDIDATES),
             max(0, len(payload.candidates) - MAX_LLM_CANDIDATES),
         )
-        return [
+        candidates = [
             MemoryCandidate(
                 type=item.type,
                 content=item.content,
@@ -145,3 +158,7 @@ class StructuredMemoryExtractor:
             )
             for item in payload.candidates[:MAX_LLM_CANDIDATES]
         ]
+        if chunk_done is not None:
+            # 单块文本同样走游标（offset=0），重试可整段跳过。
+            await chunk_done(0, candidates)
+        return candidates

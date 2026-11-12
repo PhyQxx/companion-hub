@@ -729,6 +729,98 @@ async def test_admin_quality_stats_endpoint(database: Database, tmp_path: Path) 
     assert payload["decay_backlog"] == 0  # 本用例未建记忆
 
 
+async def test_chat_chunk_cursor_persists_steps_and_gate_off_falls_back(
+    database: Database, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """方案 C1/02A：超长消息提取逐块记 memory-chunk 游标步骤；开关回退整消息。"""
+    import json
+
+    from sqlalchemy import select as _select
+    from test_memory import ScriptedRouter, _chat_service
+
+    from app.db import JobRecord, JobStepRecord
+    from app.memory import LlmMemoryExtractor
+    from app.memory.extraction_rules import MAX_EXTRACT_INPUT_CHARS
+    from app.memory.persistence import MemoryRecord as _MemoryRecord
+    from app.schemas import PrivacyLevel
+
+    owner, _, _ = await seed(database)
+    fact = "用户女儿小晴生日是2024年5月6日。"
+    long_text = fact * 800  # 12800 字符，远超单块上限：4 个顶层块（0/3800/7600/11400）
+    assert len(long_text) > MAX_EXTRACT_INPUT_CHARS
+    chunk_payload = json.dumps(
+        {
+            "candidates": [
+                {
+                    "type": "semantic",
+                    "content": "用户女儿小晴生日是2024年5月6日",
+                    "importance": 0.9,
+                    "confidence": 0.9,
+                    "tier": "core",
+                }
+            ]
+        },
+        ensure_ascii=False,
+    )
+    router = ScriptedRouter(
+        ["谢谢你介绍家人。", chunk_payload, chunk_payload, chunk_payload, chunk_payload]
+    )
+    service = await _chat_service(database, tmp_path, router, extractor=LlmMemoryExtractor())
+    conversation = await service.create_conversation(user_id=owner, title="synthetic chunk")
+    await service.send_message(
+        conversation.id, user_id=owner, text=long_text, privacy_level=PrivacyLevel.L1
+    )
+    await service.drain_background_work()
+
+    async with database.sessions() as session:
+        chunk_steps = list(
+            await session.scalars(
+                _select(JobStepRecord).where(JobStepRecord.name.like("memory-chunk:%"))
+            )
+        )
+        records = list(await session.scalars(_select(_MemoryRecord)))
+    # 同一事实经 4 个块重复陈述：块级落库 + 同消息防重建 → 只存 1 条。
+    assert len(chunk_steps) >= 4 and all(step.status == "completed" for step in chunk_steps)
+    assert len(records) == 1 and records[0].tier == "core"
+    messages = await service.list_messages(conversation.id, user_id=owner)
+    receipt = cast(dict[str, Any], (messages[-1].decision_meta or {})["memory_receipt"])
+    assert receipt["state"] == "completed" and receipt["supported"] == 3
+
+    # 开关关闭：新回合不再记块游标（原有整消息重试路径）。
+    monkeypatch.setenv("ARIA_MEMORY_CHUNK_CURSOR", "0")
+    plain_payload = json.dumps(
+        {
+            "candidates": [
+                {"type": "semantic", "content": "用户周末学习合成钢琴曲", "confidence": 0.9}
+            ]
+        },
+        ensure_ascii=False,
+    )
+    router2 = ScriptedRouter(["好的。", *([plain_payload] * 5)])
+    service2 = await _chat_service(database, tmp_path, router2, extractor=LlmMemoryExtractor())
+    conversation2 = await service2.create_conversation(user_id=owner, title="synthetic no-cursor")
+    await service2.send_message(
+        conversation2.id, user_id=owner, text=long_text, privacy_level=PrivacyLevel.L1
+    )
+    await service2.drain_background_work()
+    async with database.sessions() as session:
+        latest_job = await session.scalar(
+            _select(JobRecord)
+            .where(JobRecord.kind == "chat.memory")
+            .order_by(JobRecord.id.desc())
+            .limit(1)
+        )
+        latest_job_steps = list(
+            await session.scalars(
+                _select(JobStepRecord).where(
+                    JobStepRecord.job_id == latest_job.id,
+                    JobStepRecord.name.like("memory-chunk:%"),
+                )
+            )
+        )
+    assert not latest_job_steps
+
+
 async def test_admin_embedding_status_and_health_block(database: Database, tmp_path: Path) -> None:
     """方案 A2：嵌入换版观测端点与 healthz 块（缓存缺失时字段如实为空）。"""
     from httpx import ASGITransport, AsyncClient

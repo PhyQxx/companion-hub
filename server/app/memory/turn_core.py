@@ -7,6 +7,7 @@ from uuid import UUID
 
 from app.schemas.common import PrivacyLevel
 
+from .extraction_core import ChunkDoneCallback
 from .extraction_rules import (
     RuleBasedExtractor,
     _dedupe_and_suppress_echo,
@@ -24,6 +25,8 @@ class MessageMemoryExtractor(Protocol):
         message_id: UUID,
         privacy_level: PrivacyLevel,
         occurred_at: datetime,
+        skip_offsets: frozenset[int] = frozenset(),
+        chunk_done: ChunkDoneCallback | None = None,
     ) -> list[MemoryCandidate]: ...
 
 
@@ -42,6 +45,8 @@ class CompletedTurnMemoryExtractor:
         assistant_occurred_at: datetime,
         privacy_level: PrivacyLevel,
         retrieved_memories: Sequence[MemoryEntry] = (),
+        skip_offsets: frozenset[int] = frozenset(),
+        chunk_done: ChunkDoneCallback | None = None,
     ) -> list[MemoryCandidate]:
         privacy = PrivacyLevel(privacy_level)
         if privacy is PrivacyLevel.L3:
@@ -54,6 +59,8 @@ class CompletedTurnMemoryExtractor:
             message_id=user_message_id,
             privacy_level=privacy,
             occurred_at=user_occurred_at,
+            skip_offsets=skip_offsets,
+            chunk_done=chunk_done,
         )
         # Ports may retain their collection and nested mutable source refs.
         candidates = [candidate.model_copy(deep=True) for candidate in extracted]

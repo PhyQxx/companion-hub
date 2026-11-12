@@ -24,10 +24,12 @@ from app.db import (
 )
 from app.db.claims import assert_current_claim
 from app.harness.budget import budget_scope, tool_budget_scope
+from app.harness.claim import current_claim
 from app.harness.context import ContextReference
 from app.harness.model_accounting import model_accounting_scope
 from app.harness.run_trace import run_trace_scope
 from app.ids import uuid7
+from app.jobs.engine import JobEngine
 from app.jobs.maintenance import MaintenanceFailure
 from app.llm import CompletionRequest, LLMMessage, LLMRoute
 from app.memory import ExtractionBackend, MemoryHit, RetrievalResult
@@ -53,6 +55,70 @@ logger = logging.getLogger(__name__)
 SUMMARY_TRIGGER_MESSAGES = 10
 SUMMARY_WINDOW_LIMIT = 30
 SUMMARY_MAX_CHARS = 500
+
+# 记忆提取块级游标（方案 C1/02A）：JobStep 承载的持久游标开关与步骤前缀。
+# 开关置 0 回退为整消息重试（原有行为）。
+_CHUNK_CURSOR_ENV = "ARIA_MEMORY_CHUNK_CURSOR"
+_CHUNK_STEP_PREFIX = "memory-chunk:"
+
+
+class _JobChunkCursor:
+    """JobStep 承载的提取块级游标：块候选落库后记 `memory-chunk:{offset}` 步骤。
+
+    重试经 completed_step_names 读取已完成块并整块跳过；进程在"落库后、
+    记步骤前"崩溃时该块按未完成重跑，存储幂等（同消息来源防重建）兜底，
+    不会重复计数。record 失败（租约丢失）向抛出方传递取消语义。
+    """
+
+    def __init__(
+        self, engine: JobEngine, job_id: UUID, *, worker_id: str, claim_version: int
+    ) -> None:
+        self._engine = engine
+        self._job_id = job_id
+        self._worker_id = worker_id
+        self._claim_version = claim_version
+
+    async def done_offsets(self) -> set[int]:
+        names = await self._engine.completed_step_names(self._job_id)
+        offsets: set[int] = set()
+        for name in names:
+            if name.startswith(_CHUNK_STEP_PREFIX):
+                try:
+                    offsets.add(int(name[len(_CHUNK_STEP_PREFIX) :]))
+                except ValueError:
+                    logger.warning("memory chunk cursor invalid step name %s", name)
+        return offsets
+
+    async def record(
+        self,
+        offset: int,
+        *,
+        processed: int,
+        created: int,
+        supported: int,
+        conflict: int,
+    ) -> None:
+        step_id = await self._engine.start_step(
+            self._job_id,
+            f"{_CHUNK_STEP_PREFIX}{offset}",
+            checkpoint={
+                "processed": processed,
+                "created": created,
+                "supported": supported,
+                "conflict": conflict,
+            },
+            worker_id=self._worker_id,
+            claim_version=self._claim_version,
+        )
+        completed = await self._engine.complete_step(
+            step_id, worker_id=self._worker_id, claim_version=self._claim_version
+        )
+        if not completed:
+            raise MaintenanceFailure(
+                "memory_chunk_cursor_lost",
+                {"stage": "chunk_cursor", "offset": offset},
+                retryable=True,
+            )
 
 
 @dataclass(slots=True)
@@ -567,6 +633,30 @@ class PostcommitHandlers:
                 raise
             logger.warning("timeline indexing failed for turn %s", pending.turn_id, exc_info=True)
 
+    def _chunk_cursor(self, user_text: str) -> _JobChunkCursor | None:
+        """构造块级游标（方案 C1）：任务路径 + 多块文本 + 开关开启才启用。
+
+        仅在 Job claim 上下文内可用（current_claim 提供任务身份）；单块文本
+        重试成本为一次模型调用，不建游标步骤；开关置 0 回退整消息重试。
+        """
+        import os
+
+        from app.memory.extraction_rules import MAX_EXTRACT_INPUT_CHARS
+
+        if os.getenv(_CHUNK_CURSOR_ENV, "1") != "1":
+            return None
+        if len(user_text) <= MAX_EXTRACT_INPUT_CHARS:
+            return None
+        claim = current_claim()
+        if claim is None:
+            return None
+        engine = getattr(self._service._postcommit, "engine", None)
+        if engine is None:
+            return None
+        return _JobChunkCursor(
+            engine, claim.job_id, worker_id=claim.worker_id, claim_version=claim.version
+        )
+
     async def consolidate_memory(
         self,
         pending: PendingTurn,
@@ -603,6 +693,7 @@ class PostcommitHandlers:
             with extraction_scope(
                 context, strict=strict, source_ids=tuple(str(item.id) for item in previous)
             ) as extraction_errors:
+                chunk_cursor = self._chunk_cursor(pending.user_message.content)
                 outcomes = await self._service._memory_ingester.ingest_turn(
                     user_id=pending.user_id,
                     user_message_id=pending.user_message.id,
@@ -615,6 +706,7 @@ class PostcommitHandlers:
                     retrieved_memories=retrieved_memories,
                     backend=backend,
                     enforce_sources=strict,
+                    chunk_cursor=chunk_cursor,
                 )
             if self._service._memory_store is not None:
                 for outcome in outcomes:

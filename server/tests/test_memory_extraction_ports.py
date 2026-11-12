@@ -181,6 +181,68 @@ async def test_memory_completion_chunks_input_and_preserves_all_candidates() -> 
     ]
 
 
+async def test_chunk_cursor_reports_blocks_and_skips_done_on_retry() -> None:
+    """方案 C1/02A：块完成回调逐块上报，重试跳过已完成块不再调用模型。"""
+    completion = Completion(VALID)
+    extractor = StructuredMemoryExtractor()
+    message_id = uuid7()
+    text = "喜欢合成测试水果。" * 1400  # 4 个顶层块（0 / 3800 / 7600 / 11400）
+    assert len(text) > MAX_EXTRACT_INPUT_CHARS * 2
+    done: list[int] = []
+    persisted: list[list[MemoryCandidate]] = []
+
+    async def on_chunk(offset: int, chunk: list[MemoryCandidate]) -> None:
+        done.append(offset)
+        persisted.append(list(chunk))
+
+    first = await extractor.extract(
+        text,
+        message_id=message_id,
+        privacy_level=PrivacyLevel.L1,
+        occurred_at=NOW,
+        completion=completion,
+        chunk_done=on_chunk,
+    )
+    assert done == [0, 3800, 7600, 11400]
+    assert len(persisted) == 4 and all(len(chunk) == 1 for chunk in persisted)
+    assert len(first) == 1
+    assert len(completion.inputs) == 4
+
+    # 重试：前三块已落库记游标 → 只有末块再调模型；返回仍含末块候选。
+    completion.inputs.clear()
+    retried = await extractor.extract(
+        text,
+        message_id=message_id,
+        privacy_level=PrivacyLevel.L1,
+        occurred_at=NOW,
+        completion=completion,
+        skip_offsets=frozenset({0, 3800, 7600}),
+    )
+    assert len(completion.inputs) == 1
+    assert retried == first
+
+
+async def test_single_block_text_reports_cursor_at_offset_zero() -> None:
+    """单块文本同样上报游标（offset=0），整段可跳过；不带回调则不报。"""
+    completion = Completion(VALID)
+    done: list[int] = []
+
+    async def on_chunk(offset: int, chunk: list[MemoryCandidate]) -> None:
+        done.append(offset)
+
+    result = await StructuredMemoryExtractor().extract(
+        TEXT,
+        message_id=uuid7(),
+        privacy_level=PrivacyLevel.L1,
+        occurred_at=NOW,
+        completion=completion,
+        chunk_done=on_chunk,
+    )
+    assert done == [0] and len(result) == 1
+    # 规则兜底路径（completion=None）不产生回调——重试零成本无需游标。
+    assert await extracted(None)  # 既有兜底行为保持
+
+
 def test_memory_completion_dtos_are_frozen() -> None:
     def overwrite(value: object, attribute: str) -> None:
         setattr(value, attribute, "changed")

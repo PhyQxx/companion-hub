@@ -480,6 +480,21 @@ class JobEngine:
             )
             return changed is not None
 
+    async def completed_step_names(self, job_id: UUID) -> set[str]:
+        """本任务全部已完成步骤名（方案 C1/02A 块级游标持久层）。
+
+        步骤名含 attempt 维度以外的游标语义（如 memory-chunk:{offset}）时，
+        重试读取该集合即可跳过已落库的块；完成步骤跨 attempt 累计保留。
+        """
+        async with self._database.sessions() as session:
+            rows = await session.scalars(
+                select(JobStepRecord.name).where(
+                    JobStepRecord.job_id == job_id,
+                    JobStepRecord.status == "completed",
+                )
+            )
+            return set(rows)
+
     async def fail_step(
         self,
         step_id: int,

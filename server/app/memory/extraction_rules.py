@@ -140,8 +140,12 @@ class RuleBasedExtractor:
         privacy_level: PrivacyLevel,
         occurred_at: datetime,
         backend: object | None = None,
+        skip_offsets: frozenset[int] = frozenset(),
+        chunk_done: object | None = None,
     ) -> list[MemoryCandidate]:
-        # 规则路径没有脱敏能力：L2/L3 不产生任何候选
+        # 规则路径没有脱敏能力：L2/L3 不产生任何候选；规则提取无块级游标
+        # 语义（确定性重跑零成本），skip_offsets/chunk_done 仅保持协议兼容。
+        del skip_offsets, chunk_done
         if privacy_level in {PrivacyLevel.L2, PrivacyLevel.L3}:
             return []
         results: list[MemoryCandidate] = []
