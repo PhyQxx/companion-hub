@@ -108,10 +108,14 @@ def extraction_instruction(privacy_level: PrivacyLevel) -> str:
     instruction = (
         "你是长期记忆提取器。从用户消息中提取值得长期记住的内容，只输出严格 JSON：\n"
         '{"candidates":[{"type":"semantic|preference|commitment|episodic|emotional",'
-        '"content":"……","importance":0.6,"confidence":0.8}]}\n'
+        '"content":"……","importance":0.6,"confidence":0.8,"tier":"medium"}]}\n'
         "要求：content 用第三人称“用户……”的中文描述，不超过 80 字；"
         "能记则记：保存有依据的事实、习惯、关系、偏好、经历和约定，不因重要性低而省略。每个事实单独一条，最多12条；生日需绑定实际人物，不保存易过期年龄。禁止把助手猜测当成用户事实；寒暄不提取；"
         '没有值得记忆的内容时输出 {"candidates":[]}。'
+        "tier 是初始记忆等级：core 只给用户直接说出的长期核心身份事实"
+        "（家人关系、生日、住址、健康等）；"
+        "important 给明确的长期偏好、重要习惯或进行中的重要约定；其余一律 medium；"
+        "不确定、易过期或推断的内容不得给 core/important。"
     )
     if privacy_level == PrivacyLevel.L2:
         instruction += (

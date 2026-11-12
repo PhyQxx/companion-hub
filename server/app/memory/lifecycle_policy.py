@@ -16,6 +16,8 @@ class MemoryTier(StrEnum):
 
 TIERS = tuple(MemoryTier)
 POLICY_VERSION = "memory-life-v1"
+# 初始等级只允许从中级向上定级；更低等级仍由自然遗忘过程产生。
+ALLOWED_INITIAL_TIERS = (MemoryTier.MEDIUM, MemoryTier.IMPORTANT, MemoryTier.CORE)
 DECAY_DAYS = {
     MemoryTier.CORE: 180,
     MemoryTier.IMPORTANT: 90,
@@ -40,6 +42,34 @@ class StrengthDecision:
     tier: MemoryTier
     reason: str
     next_decay_at: datetime | None
+
+
+def clamp_initial_tier(value: str | None) -> MemoryTier:
+    """显式定级（管理端）只做合法值钳制；非法或缺省落回中级。"""
+    if value is None:
+        return MemoryTier.MEDIUM
+    try:
+        tier = MemoryTier(value)
+    except ValueError:
+        return MemoryTier.MEDIUM
+    return tier if tier in ALLOWED_INITIAL_TIERS else MemoryTier.MEDIUM
+
+
+def resolve_ai_initial_tier(
+    value: str | None, *, importance: float, confidence: float | None
+) -> MemoryTier:
+    """AI 初始等级围栏：只允许向上定级，并按置信度/重要性门禁降级。
+
+    core 需要置信度与重要性都 ≥0.8，important 需要 ≥0.6；未提供置信度
+    视为不达标（宁保守）。结果只可能是 medium/important/core。
+    """
+    tier = clamp_initial_tier(value)
+    if tier is MemoryTier.MEDIUM:
+        return tier
+    threshold = 0.8 if tier is MemoryTier.CORE else 0.6
+    if importance < threshold or confidence is None or confidence < threshold:
+        return MemoryTier.MEDIUM
+    return tier
 
 
 def evaluate(

@@ -139,6 +139,7 @@ class StructuredMemoryExtractor:
                 ],
                 importance=min(1.0, max(0.0, item.importance)),
                 confidence=item.confidence,
+                initial_tier=item.tier,
                 extractor_version=LLM_EXTRACTOR_VERSION,
                 valid_from=occurred_at,
             )

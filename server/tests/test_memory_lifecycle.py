@@ -319,3 +319,212 @@ async def test_shadow_retrieval_keeps_relevance_above_strength(
             assert result.hits and result.hits[0].memory.id == relevant.id
             assert irrelevant.id not in {hit.memory.id for hit in result.hits}
     assert (await store.get(relevant.id)).use_count == 0
+
+
+async def test_ai_initial_tier_gates_and_audit(database: Database) -> None:
+    from app.memory import MemoryStatus
+
+    owner, _, _ = await seed(database)
+    store = MemoryStore(database)
+    core = await store.add(
+        candidate(
+            "用户的女儿小晴生日是2024年5月6日",
+            importance=0.9,
+            confidence=0.9,
+            initial_tier="core",
+        ),
+        user_id=owner,
+    )
+    important = await store.add(
+        candidate(
+            "fixture important habit",
+            importance=0.9,
+            confidence=0.7,
+            initial_tier="important",
+        ),
+        user_id=owner,
+    )
+    gated = await store.add(
+        candidate(
+            "fixture weak core claim",
+            importance=0.9,
+            confidence=0.5,
+            initial_tier="core",
+        ),
+        user_id=owner,
+    )
+    gated_important = await store.add(
+        candidate(
+            "fixture weak important claim",
+            importance=0.9,
+            confidence=0.5,
+            initial_tier="important",
+        ),
+        user_id=owner,
+    )
+    missing_confidence = await store.add(
+        candidate("fixture missing confidence", importance=0.9, initial_tier="core"),
+        user_id=owner,
+    )
+    below_floor = await store.add(
+        candidate(
+            "fixture below floor claim",
+            importance=0.9,
+            confidence=0.9,
+            initial_tier="ordinary",
+        ),
+        user_id=owner,
+    )
+    invalid = await store.add(
+        candidate(
+            "fixture invalid tier claim",
+            importance=0.9,
+            confidence=0.9,
+            initial_tier="spam",
+        ),
+        user_id=owner,
+    )
+    assert core.tier == "core" and important.tier == "important"
+    assert gated.tier == "medium"
+    assert gated_important.tier == "medium"
+    assert missing_confidence.tier == "medium"
+    assert below_floor.tier == "medium" and invalid.tier == "medium"
+    async with database.sessions() as session:
+        events = list(await session.scalars(select(MemoryLifecycleRecord)))
+    trail = [(event.memory_id, event.old_tier, event.new_tier, event.reason) for event in events]
+    assert trail == [
+        (core.id, "medium", "core", "ai_initial"),
+        (important.id, "medium", "important", "ai_initial"),
+    ]
+    # 待决冲突记忆不得带初始等级入库，采纳前保持中级。
+    conflict = await store.add(
+        candidate(
+            "fixture conflict core claim",
+            importance=0.9,
+            confidence=0.9,
+            initial_tier="core",
+        ),
+        user_id=owner,
+        status=MemoryStatus.CONFLICT,
+    )
+    assert conflict.tier == "medium"
+
+
+async def test_ai_initial_tier_switch_off_falls_back_to_medium(
+    database: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    owner, _, _ = await seed(database)
+    store = MemoryStore(database)
+    monkeypatch.setenv("ARIA_MEMORY_AI_INITIAL_TIER", "0")
+    entry = await store.add(
+        candidate(
+            "fixture rolled back tier claim",
+            importance=0.9,
+            confidence=0.9,
+            initial_tier="core",
+        ),
+        user_id=owner,
+    )
+    assert entry.tier == "medium"
+    async with database.sessions() as session:
+        assert not list(await session.scalars(select(MemoryLifecycleRecord)))
+
+
+async def test_chat_saves_family_facts_at_ai_proposed_tier(
+    database: Database, tmp_path: Path
+) -> None:
+    import json
+
+    from test_memory import ScriptedRouter, _chat_service
+
+    from app.memory import LlmMemoryExtractor
+    from app.schemas import PrivacyLevel
+
+    owner, _, _ = await seed(database)
+    payload = [
+        {
+            "type": "semantic",
+            "content": "用户女儿小晴生日是2024年5月6日",
+            "importance": 0.9,
+            "confidence": 0.9,
+            "tier": "core",
+        },
+        {
+            "type": "semantic",
+            "content": "用户住在青岛",
+            "importance": 0.9,
+            "confidence": 0.9,
+            "tier": "core",
+        },
+        {"type": "semantic", "content": "用户养了一只猫", "importance": 0.5, "confidence": 0.9},
+    ]
+    router = ScriptedRouter(
+        ["谢谢你介绍家人。", json.dumps({"candidates": payload}, ensure_ascii=False)]
+    )
+    service = await _chat_service(database, tmp_path, router, extractor=LlmMemoryExtractor())
+    conversation = await service.create_conversation(user_id=owner, title="synthetic ai tier")
+    await service.send_message(
+        conversation.id,
+        user_id=owner,
+        text="我女儿小晴生日是2024年5月6日。我住在青岛。我养了一只猫。",
+        privacy_level=PrivacyLevel.L1,
+    )
+    await service.drain_background_work()
+    entries = await MemoryStore(database).list_memories(user_id=owner)
+    tiers = {entry.content: entry.tier for entry in entries}
+    assert tiers["用户女儿小晴生日是2024年5月6日"] == "core"
+    assert tiers["用户住在青岛"] == "core"
+    assert tiers["用户养了一只猫"] == "medium"
+    async with database.sessions() as session:
+        events = list(await session.scalars(select(MemoryLifecycleRecord)))
+    assert {event.reason for event in events} == {"ai_initial"}
+    assert {event.new_tier for event in events} == {"core"}
+
+
+async def test_admin_create_with_explicit_tier(database: Database, tmp_path: Path) -> None:
+    from httpx import ASGITransport, AsyncClient
+    from test_chat import config_yaml
+
+    from app.config import DatabaseConfigStore
+    from app.main import create_app
+
+    owner, _, _ = await seed(database)
+    path = tmp_path / "hub.yaml"
+    path.write_text(config_yaml())
+    app = create_app(
+        database,
+        config_store=DatabaseConfigStore(database, path),
+        watch_config=False,
+        admin_token="fixture-token",
+    )
+    headers = {"Authorization": "Bearer fixture-token"}
+    body = {
+        "user_id": str(owner),
+        "type": "semantic",
+        "content": "用户的女儿叫小晴",
+        "tier": "core",
+    }
+    async with (
+        app.router.lifespan_context(app),
+        AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client,
+    ):
+        created = await client.post("/api/v1/admin/memories", json=body, headers=headers)
+        assert created.status_code == 201 and created.json()["tier"] == "core"
+        events = (
+            await client.get(
+                f"/api/v1/admin/memories/{created.json()['id']}/lifecycle-events", headers=headers
+            )
+        ).json()
+        assert events[0]["reason"] == "manual" and events[0]["new_tier"] == "core"
+        plain = await client.post(
+            "/api/v1/admin/memories",
+            json={**body, "content": "用户养了一只猫", "tier": None},
+            headers=headers,
+        )
+        assert plain.status_code == 201 and plain.json()["tier"] == "medium"
+        plain_events = (
+            await client.get(
+                f"/api/v1/admin/memories/{plain.json()['id']}/lifecycle-events", headers=headers
+            )
+        ).json()
+        assert not plain_events

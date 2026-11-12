@@ -87,6 +87,7 @@ class ManualMemoryCreate(StrictModel):
     privacy_level: PrivacyLevel = PrivacyLevel.L1
     importance: Annotated[float, Field(ge=0, le=1)] = 0.6
     pin: bool = False
+    tier: MemoryTier | None = None  # 显式初始等级；缺省按默认中级入库
     valid_from: datetime | None = None
     valid_to: datetime | None = None
 
@@ -406,12 +407,15 @@ def create_admin_memory_router(store: MemoryStore, *, admin_token: str | None) -
             ],
             importance=payload.importance,
             pin=payload.pin,
+            initial_tier=payload.tier,
             summary=payload.summary,
             extractor_version="manual",
             valid_from=payload.valid_from,
             valid_to=payload.valid_to,
         )
-        entry = await store.add(candidate, user_id=payload.user_id, actor="admin")
+        entry = await store.add(
+            candidate, user_id=payload.user_id, actor="admin", tier_reason="manual"
+        )
         return _view(entry)
 
     @router.get("/{memory_id}", response_model=MemoryDetailView)

@@ -66,6 +66,7 @@ const api = inject("adminApi") as AdminApi;
 const emit = defineEmits<{ status: [text: string, error?: boolean] }>();
 
 const tierLabels: Record<string, string> = { core: "核心", important: "重要", medium: "中级", ordinary: "一般", low: "不重要", dormant: "冷存档" };
+const initialTierOptions = ["medium", "important", "core"];
 async function setTier(row: MemoryItem, tier: string, locked: boolean) {
   try {
     const updated = await api.request<MemoryItem>(`/api/v1/admin/memories/${row.id}/lifecycle`, {
@@ -78,7 +79,7 @@ async function setTier(row: MemoryItem, tier: string, locked: boolean) {
 async function showStrengthHistory(row: MemoryItem) {
   try {
     const events = await api.request<Array<{ old_tier: string; new_tier: string; reason: string; occurred_at: string }>>(`/api/v1/admin/memories/${row.id}/lifecycle-events`);
-    const reasons: Record<string, string> = { unused: "长期未使用", frequent_use: "近期频繁使用", sustained_use: "持续使用", used_again: "再次使用唤醒", manual: "手动调整", manual_locked: "手动固定" };
+    const reasons: Record<string, string> = { unused: "长期未使用", frequent_use: "近期频繁使用", sustained_use: "持续使用", used_again: "再次使用唤醒", manual: "手动调整", manual_locked: "手动固定", ai_initial: "AI初始定级" };
     await ElMessageBox.alert(events.map(e => `${e.occurred_at}: ${tierLabels[e.old_tier]} → ${tierLabels[e.new_tier]}（${reasons[e.reason] ?? e.reason}）`).join("\n") || "尚无等级变更记录", "等级变化记录");
   } catch (error) { emit("status", String(error), true); }
 }
@@ -153,6 +154,7 @@ const addForm = reactive({
   importance: 0.6,
   content: "",
   pin: false,
+  tier: "medium",
 });
 const queryForm = reactive({ text: "", privacy: "L1", user: "" });
 const queryResult = ref<{
@@ -272,6 +274,7 @@ async function submitAdd() {
     importance: addForm.importance,
     content: addForm.content,
     pin: addForm.pin,
+    tier: addForm.tier,
   };
   if (addForm.subject_key.trim()) body.subject_key = addForm.subject_key.trim();
   if (addForm.fact_key.trim()) body.fact_key = addForm.fact_key.trim();
@@ -606,6 +609,7 @@ onMounted(load);
           <label>fact_key（可选）<el-input v-model="addForm.fact_key" placeholder="如 profile.height" /></label>
           <label>重要性<el-input-number v-model="addForm.importance" :min="0" :max="1" :step="0.05" /></label>
         </div>
+        <label>初始等级<el-select v-model="addForm.tier"><el-option v-for="key in initialTierOptions" :key="key" :label="tierLabels[key]" :value="key" /></el-select></label>
         <label>内容<el-input v-model="addForm.content" type="textarea" :rows="3" /></label>
         <el-checkbox v-model="addForm.pin">置顶</el-checkbox>
       <template #footer><el-button @click="adding = false">取消</el-button><el-button type="primary" :disabled="addForm.content.trim().length < 2" @click="submitAdd">添加</el-button></template>

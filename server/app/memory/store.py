@@ -9,6 +9,7 @@ pgvector ANN 或进程内余弦。删除操作只经 hard_delete* 入口进入�
 from __future__ import annotations
 
 import hashlib
+import os
 from collections.abc import Sequence
 from datetime import UTC, datetime
 from typing import cast
@@ -21,6 +22,7 @@ from app.db import (
     ConversationRecord,
     Database,
     DeletionLedgerRecord,
+    MemoryLifecycleRecord,
     MemoryRecord,
     MemorySourceRecord,
     MessageRecord,
@@ -30,6 +32,12 @@ from app.privacy.deletion_journal import DeletionIntent, DeletionJournal
 from app.schemas.common import PrivacyLevel
 
 from .embeddings import EmbeddingProvider, HashingEmbeddingProvider, cosine_similarity
+from .lifecycle_policy import (
+    POLICY_VERSION,
+    MemoryTier,
+    clamp_initial_tier,
+    resolve_ai_initial_tier,
+)
 from .models import (
     DeletionLedgerEntry,
     DeletionReceipt,
@@ -125,6 +133,7 @@ class MemoryStore:
         status: MemoryStatus = MemoryStatus.ACTIVE,
         conflict_with: int | None = None,
         enforce_sources: bool = False,
+        tier_reason: str = "ai_initial",
     ) -> MemoryEntry:
         privacy = PrivacyLevel(candidate.privacy_level)
         # L3（原始传感器遥测）在任何路径下都禁止成为持久记忆
@@ -132,6 +141,18 @@ class MemoryStore:
             raise ValueError("L3 content must never become a durable memory")
         vector = (await self._embedding_provider.embed([candidate.content]))[0]
         now = datetime.now(UTC)
+        # 初始等级围栏：候选可建议从中级向上定级。显式（manual）只钳制合法值；
+        # AI 建议受开关与置信度/重要性门禁约束；待决冲突与非法值一律落回中级。
+        initial_tier = MemoryTier.MEDIUM
+        if candidate.initial_tier and status is MemoryStatus.ACTIVE:
+            if tier_reason == "manual":
+                initial_tier = clamp_initial_tier(candidate.initial_tier)
+            elif os.getenv("ARIA_MEMORY_AI_INITIAL_TIER", "1") != "0":
+                initial_tier = resolve_ai_initial_tier(
+                    candidate.initial_tier,
+                    importance=min(1.0, max(0.0, candidate.importance)),
+                    confidence=candidate.confidence,
+                )
         async with self._database.sessions.begin() as session:
             if enforce_sources:
                 await self._guard_sources(session, candidate.sources, user_id=user_id)
@@ -180,6 +201,7 @@ class MemoryStore:
                 importance=min(1.0, max(0.0, candidate.importance)),
                 pin=candidate.pin,
                 tier_locked=candidate.pin,
+                tier=initial_tier.value,
                 status=status.value,
                 confidence=candidate.confidence,
                 valid_from=candidate.valid_from or now,
@@ -192,6 +214,19 @@ class MemoryStore:
             )
             session.add(record)
             await session.flush()
+            if initial_tier is not MemoryTier.MEDIUM:
+                # 初始定级与记忆同事务落审计，保证等级历史可回溯。
+                session.add(
+                    MemoryLifecycleRecord(
+                        memory_id=record.id,
+                        user_id=user_id,
+                        old_tier=MemoryTier.MEDIUM.value,
+                        new_tier=initial_tier.value,
+                        reason=tier_reason,
+                        policy_version=POLICY_VERSION,
+                        occurred_at=now,
+                    )
+                )
             await self._write_sources(session, record.id, candidate.sources)
             await self._sync_vector_column(session, record.id, vector)
             await session.refresh(record)

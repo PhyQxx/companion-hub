@@ -101,6 +101,7 @@ class MemoryCandidate(StrictModel):
     importance: float = 0.5  # 重要性 0~1，参与检索重排
     pin: bool = False  # 置顶：检索时获得加分，不受类型配额挤占
     confidence: float | None = None  # 提取器给出的置信度
+    initial_tier: str | None = None  # AI/管理端建议的初始等级；入库围栏校验后生效，缺省中级
     summary: Annotated[str, Field(max_length=2_000)] | None = None
     extractor_version: Annotated[str, Field(max_length=64)] = "rule-v1"  # 提取器版本，用于溯源
     valid_from: datetime | None = None  # 有效期起点，缺省为入库时间
@@ -114,6 +115,7 @@ class ExtractedCandidate(StrictModel):
     content: Annotated[str, Field(min_length=2, max_length=200)]
     importance: float = 0.5
     confidence: float | None = None
+    tier: str | None = None  # 建议的初始等级；宽松字符串，入库围栏统一钳制
 
 
 class ExtractedCandidates(StrictModel):
