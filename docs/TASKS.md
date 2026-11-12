@@ -940,4 +940,4 @@
 - [x] B1：迁移 0073（SQLite FTS5 表 memory_lex + Python 回填；PG pg_trgm GIN 索引）；store 三收口点同事务维护 FTS（add/edit/_purge_memory_ids，事务内探测表存在、迁移前库跳过）；候选池改两段式索引预筛+补齐，与旧单趟排序严格等价（等价性测试双库锁死：开关开/关候选 ID 序列与端到端命中完全一致）；开关 `ARIA_MEMORY_LEXICAL_INDEX` 默认开；open_storage 夹具镜像建 FTS 表覆盖真实路径。
 - [x] 容量复测（诚实结论）：SQLite 100万稀疏命中 2223→1826ms（-18%）、密命中 +25%（病态场景）；**方案承诺的"百万级 p95<300ms"未达成**——地板由补齐段 importance 全量排序主导，索引只省预筛；百毫秒需 importance 复合索引/候选分页，登记 B1 后续增强。真实规模（≤万条）50ms 级。见 [基准](./baselines/memory-lexical-index-bench.json)。
 - [x] 相关验证：新专项 5 项 + 记忆族回归 224 通过/29 跳过（PG 条件）零失败；架构门禁 57 全绿（ORM 快照口径不含 FTS 表，零差）；ruff/format 零错、mypy（app+tests 口径）零错；eval 基线 FTS 启用后复跑召回逐位一致。
-- [ ] 剩余/下一优先级：第三批 B3（AI 初始定级校准）+ B4（生日临近唤醒，涉 DDL）与 C 项按真实验收节奏；PG 分支等价性测试本机未配 `ARIA_TEST_DATABASE_URL` 跳过、trigram EXPLAIN 验证与真实环境换版演练待 PG 环境；部署 0073 前先备份（FTS 回填一次性成本）。本批业务哈希待提交后回填。
+- [ ] 剩余/下一优先级：第三批 B3（AI 初始定级校准）+ B4（生日临近唤醒，涉 DDL）与 C 项按真实验收节奏；PG 分支等价性测试本机未配 `ARIA_TEST_DATABASE_URL` 跳过、trigram EXPLAIN 验证与真实环境换版演练待 PG 环境；部署 0073 前先备份（FTS 回填一次性成本）。本批业务哈希 `5651295`（2026-11-12 回填）。
