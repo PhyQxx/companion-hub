@@ -956,3 +956,13 @@
 - [x] C3/C6：`quality_counts()`（decay_backlog 与 decay_batch 同口径 / pending_wakes / periodic_wake 事件总量与近7天）+ `GET /api/v1/admin/memories/quality-stats`（只读）；提取成功率复用既有 jobs 端点按 kind=chat.memory 聚合，不跨域直查；管理页新增"维护健康"与"提取任务"卡片（端点缺失静默降级）。
 - [x] 相关验证：新增 2 项（0 基线口径、唤醒闭环计数、端点 401/字段集）；回归 203 通过/25 跳过（含架构门禁）零失败；ruff/format/mypy 零错；Node22 前端 typecheck+build 通过。
 - [ ] 剩余：真实环境 backlog 趋势属运营验收；C1（02A 块级游标）/C2（03B 归因增强）/C4（冲突裁决辅助）/C5（浏览器验收）待排期。本批业务哈希 `e383708`（2026-11-12 回填）。
+
+
+### 记忆优化批次五：C1/02A 块级持久游标（2026-11-13，代码交付）
+
+- [x] 提取层：`extract` 顶层块循环暴露 chunk_done/skip_offsets（块边界随文本确定），协议链路（MemoryExtractor/TurnMemoryExtractor/turn_core）全量透传；饱和再分/规则兜底不透传，规则提取器保持兼容签名（确定性重跑零成本）。
+- [x] 沉淀层：`ingest_turn` 新增 ChunkCursor 协议（consolidation_ports）——每块提取后立即落库并记游标，重试跳过已落库块，(type, content) 键去重，回执合并块级与收尾计数。
+- [x] 持久层：`JobEngine.completed_step_names`（跨 attempt completed 步骤名集合）；后处理 `_JobChunkCursor` 记 `memory-chunk:{offset}` 步骤（checkpoint 含逐块 processed/created/supported/conflict），claim 上下文提供任务身份。
+- [x] 接线：`consolidate_memory` 任务路径+多块文本+`ARIA_MEMORY_CHUNK_CURSOR`（默认开）三条件齐备才建游标；单块不建（重试成本一次模型调用）；置 0 回退整消息重试；崩溃窗口（落库后、记步骤前）按未完成重跑、同消息来源防重建兜底不重复计数，语义已如实登记。
+- [x] 相关验证：新增 3 项（块上报/重试跳过模型调用/单块 offset=0 上报；端到端 4 块游标步骤落库+同事实去重+回执 supported 合并+开关回退无步骤）；批次回归 323 通过/45 跳过（含 jobs 套件与架构门禁）零失败；ruff/format/mypy 零错。原 02A"块级持久游标待增强"就此关闭。
+- [ ] 剩余：真实环境超长消息续提验收待部署；02A"覆盖范围记录"仍以日志承载；C2/C4/C5 待排期。本批业务哈希待提交后回填。
