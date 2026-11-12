@@ -11,7 +11,7 @@ from sqlalchemy.orm.attributes import flag_modified
 from app.db import Database
 from app.db.claims import assert_current_claim
 
-from .lifecycle_policy import POLICY_VERSION, MemoryTier, aware, evaluate
+from .lifecycle_policy import POLICY_VERSION, MemoryTier, aware, evaluate, periodic_wake_at
 from .persistence import MemoryLifecycleRecord, MemoryRecord, MemoryUsageRecord
 
 POINTS = {"used_in_answer": 1, "used_in_action": 2, "user_reaffirmed": 2, "user_confirmed": 3}
@@ -229,6 +229,58 @@ class MemoryLifecycle:
                 flag_modified(row, "updated_at")
             return changed
 
+    async def wake_due_batch(self, *, now: datetime | None = None, limit: int = 100) -> int:
+        """周期事实临近唤醒（方案 B4）：dormant/low/ordinary 到期升回中级。
+
+        只提升可见性，不计使用分、不算用户确认；唤醒后保鲜期按中级重算，
+        next_relevant_at 推进到下一个周年窗口，避免同一年反复唤醒。
+        """
+        moment = aware(now or datetime.now(UTC))
+        async with self.database.sessions.begin() as session:
+            rows = list(
+                await session.scalars(
+                    select(MemoryRecord)
+                    .where(
+                        MemoryRecord.status == "active",
+                        MemoryRecord.next_relevant_at.is_not(None),
+                        MemoryRecord.next_relevant_at <= moment,
+                        MemoryRecord.tier.in_(["dormant", "low", "ordinary"]),
+                    )
+                    .order_by(MemoryRecord.id)
+                    .limit(limit)
+                )
+            )
+            changed = 0
+            for row in rows:
+                session.add(
+                    MemoryLifecycleRecord(
+                        memory_id=row.id,
+                        user_id=row.user_id,
+                        old_tier=row.tier,
+                        new_tier=MemoryTier.MEDIUM.value,
+                        reason="periodic_wake",
+                        policy_version=POLICY_VERSION,
+                        occurred_at=moment,
+                    )
+                )
+                row.tier = MemoryTier.MEDIUM.value
+                row.tier_changed_at = moment
+                decision = evaluate(
+                    tier=MemoryTier.MEDIUM,
+                    changed_at=moment,
+                    created_at=row.created_at,
+                    last_used_at=row.last_used_at,
+                    importance=row.importance,
+                    locked=False,
+                    now=moment,
+                )
+                row.next_decay_at = decision.next_decay_at
+                row.next_relevant_at = periodic_wake_at(row.content, row.fact_key, now=moment)
+                row.lifecycle_version += 1
+                flag_modified(row, "updated_at")
+                changed += 1
+            return changed
+
     async def history(self, memory_id: int, *, user_id: UUID) -> list[dict[str, object]]:
         async with self.database.sessions() as session:
             owned = await session.scalar(
@@ -249,13 +301,48 @@ class MemoryLifecycle:
                     .limit(100)
                 )
             )
-            return [
-                {
-                    "old_tier": row.old_tier,
-                    "new_tier": row.new_tier,
-                    "reason": row.reason,
-                    "policy_version": row.policy_version,
-                    "occurred_at": row.occurred_at.isoformat(),
-                }
-                for row in rows
+        return [
+            {
+                "old_tier": row.old_tier,
+                "new_tier": row.new_tier,
+                "reason": row.reason,
+                "policy_version": row.policy_version,
+                "occurred_at": row.occurred_at.isoformat(),
+            }
+            for row in rows
+        ]
+
+    async def initial_tier_stats(self) -> dict[str, dict[str, dict[str, int]]]:
+        """初始定级审计聚合（B3 校准）：按 reason/new_tier 计数，含近 7 天。
+
+        被围栏降级到中级的 AI 建议不产生审计行（medium→medium 非等级变更），
+        其样本经 store 的 memory.initial_tier_gate 结构化日志另行采集。
+        """
+        now = datetime.now(UTC)
+        statement = (
+            select(
+                MemoryLifecycleRecord.reason,
+                MemoryLifecycleRecord.new_tier,
+                func.count(),
+            )
+            .where(MemoryLifecycleRecord.reason.in_(["ai_initial", "manual"]))
+            .group_by(MemoryLifecycleRecord.reason, MemoryLifecycleRecord.new_tier)
+        )
+        recent = statement.where(MemoryLifecycleRecord.occurred_at >= now - timedelta(days=7))
+        async with self.database.sessions() as session:
+            total_rows = [
+                (str(row[0]), str(row[1]), int(row[2]))
+                for row in (await session.execute(statement)).all()
             ]
+            recent_rows = [
+                (str(row[0]), str(row[1]), int(row[2]))
+                for row in (await session.execute(recent)).all()
+            ]
+
+        def bucketed(rows: list[tuple[str, str, int]]) -> dict[str, dict[str, int]]:
+            result: dict[str, dict[str, int]] = {}
+            for reason, tier, count in rows:
+                result.setdefault(reason, {})[tier] = count
+            return result
+
+        return {"total": bucketed(total_rows), "recent_7d": bucketed(recent_rows)}

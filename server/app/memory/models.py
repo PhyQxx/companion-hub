@@ -163,6 +163,7 @@ class MemoryEntry:
     tier_changed_at: datetime | None = None
     last_used_at: datetime | None = None
     next_decay_at: datetime | None = None
+    next_relevant_at: datetime | None = None
     use_count: int = 0
     lifecycle_version: int = 0
 

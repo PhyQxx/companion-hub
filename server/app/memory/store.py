@@ -53,6 +53,7 @@ from .lifecycle_policy import (
     POLICY_VERSION,
     MemoryTier,
     clamp_initial_tier,
+    periodic_wake_at,
     resolve_ai_initial_tier,
 )
 from .models import (
@@ -75,6 +76,23 @@ logger = logging.getLogger(__name__)
 
 # 查重兜底窗口上限：SQLite 无向量 ANN，按"同类型同主体最近新增"取窗（方案 A1）。
 DEDUP_WINDOW = 2000
+
+
+def _env_gate(name: str, default: float) -> float:
+    """读取 AI 初始定级门禁阈值；非法或越界值回落默认（B3 校准入口）。"""
+    try:
+        value = float(os.getenv(name, str(default)))
+    except ValueError:
+        return default
+    return min(1.0, max(0.5, value))
+
+
+def _wake_ahead_days() -> int:
+    """周期事实提前唤醒天数（B4）；非法值回落默认 7 天。"""
+    try:
+        return min(60, max(0, int(os.getenv("ARIA_MEMORY_WAKE_AHEAD_DAYS", "7"))))
+    except ValueError:
+        return 7
 
 
 def _list_filter(
@@ -173,6 +191,7 @@ class MemoryStore:
         now = datetime.now(UTC)
         # 初始等级围栏：候选可建议从中级向上定级。显式（manual）只钳制合法值；
         # AI 建议受开关与置信度/重要性门禁约束；待决冲突与非法值一律落回中级。
+        # 门禁阈值可经环境校准（B3）：只影响 AI 建议，不影响显式定级。
         initial_tier = MemoryTier.MEDIUM
         if candidate.initial_tier and status is MemoryStatus.ACTIVE:
             if tier_reason == "manual":
@@ -182,7 +201,18 @@ class MemoryStore:
                     candidate.initial_tier,
                     importance=min(1.0, max(0.0, candidate.importance)),
                     confidence=candidate.confidence,
+                    core_gate=_env_gate("ARIA_MEMORY_AI_TIER_CORE_GATE", 0.8),
+                    important_gate=_env_gate("ARIA_MEMORY_AI_TIER_IMPORTANT_GATE", 0.6),
                 )
+                if clamp_initial_tier(candidate.initial_tier) is not initial_tier:
+                    # 建议被围栏降级：只记等级与原因，不落内容（B3 校准数据）。
+                    logger.info(
+                        "memory.initial_tier_gate suggested=%s resolved=medium"
+                        " confidence=%s importance=%.2f",
+                        candidate.initial_tier,
+                        "none" if candidate.confidence is None else f"{candidate.confidence:.2f}",
+                        min(1.0, max(0.0, candidate.importance)),
+                    )
         async with self._database.sessions.begin() as session:
             if enforce_sources:
                 await self._guard_sources(session, candidate.sources, user_id=user_id)
@@ -232,6 +262,12 @@ class MemoryStore:
                 pin=candidate.pin,
                 tier_locked=candidate.pin,
                 tier=initial_tier.value,
+                next_relevant_at=periodic_wake_at(
+                    candidate.content,
+                    candidate.fact_key,
+                    now=now,
+                    ahead_days=_wake_ahead_days(),
+                ),
                 status=status.value,
                 confidence=candidate.confidence,
                 valid_from=candidate.valid_from or now,
@@ -283,6 +319,16 @@ class MemoryStore:
         if os.getenv("ARIA_MEMORY_AUTO_DECAY", "1") != "1":
             return 0
         return await MemoryLifecycle(self._database).decay_batch()
+
+    async def wake_periodic_memories(self) -> int:
+        """周期事实临近唤醒入口（方案 B4）；开关 ARIA_MEMORY_PERIODIC_WAKE。"""
+        import os
+
+        from .lifecycle import MemoryLifecycle
+
+        if os.getenv("ARIA_MEMORY_PERIODIC_WAKE", "1") != "1":
+            return 0
+        return await MemoryLifecycle(self._database).wake_due_batch()
 
     async def get(self, memory_id: int, *, user_id: UUID | None = None) -> MemoryEntry:
         async with self._database.sessions() as session:
@@ -374,6 +420,17 @@ class MemoryStore:
         )
         async with self._database.sessions() as session:
             return int(await session.scalar(statement) or 0)
+
+    async def count_by_tier(self, *, status: MemoryStatus = MemoryStatus.ACTIVE) -> dict[str, int]:
+        """按等级聚合计数（B3 校准观测；含全部主体，不落内容）。"""
+        statement = (
+            select(MemoryRecord.tier, func.count())
+            .where(MemoryRecord.status == status.value)
+            .group_by(MemoryRecord.tier)
+        )
+        async with self._database.sessions() as session:
+            rows = (await session.execute(statement)).all()
+        return {tier: int(count) for tier, count in rows}
 
     async def retrieval_candidates(
         self,
@@ -1011,6 +1068,12 @@ class MemoryStore:
                 importance=importance if importance is not None else old.importance,
                 pin=pin if pin is not None else old.pin,
                 tier_locked=pin if pin is not None else old.tier_locked,
+                next_relevant_at=periodic_wake_at(
+                    new_content,
+                    old.fact_key,
+                    now=now,
+                    ahead_days=_wake_ahead_days(),
+                ),
                 status=MemoryStatus.ACTIVE.value,
                 confidence=old.confidence,
                 valid_from=old.valid_from or now,
@@ -1506,6 +1569,7 @@ class MemoryStore:
             tier_changed_at=_aware(record.tier_changed_at),
             last_used_at=_aware(record.last_used_at),
             next_decay_at=_aware(record.next_decay_at),
+            next_relevant_at=_aware(record.next_relevant_at),
             use_count=record.use_count,
             lifecycle_version=record.lifecycle_version,
             embedding_model=record.embedding_model,

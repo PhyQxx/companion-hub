@@ -36,6 +36,7 @@ interface MemoryItem {
   use_count: number;
   last_used_at: string | null;
   next_decay_at: string | null;
+  next_relevant_at: string | null;
   lifecycle_version: number;
 }
 interface MemoryDetail extends MemoryItem {
@@ -66,6 +67,13 @@ interface EmbeddingStatus {
   stale_rows: number | null;
   pending_version: string | null;
   pending_stale_rows: number | null;
+}
+interface TierStats {
+  active_by_tier: Record<string, number>;
+  initial_tier: {
+    total: Record<string, Record<string, number>>;
+    recent_7d: Record<string, Record<string, number>>;
+  };
 }
 
 // 记忆库治理：统计、过滤列表、溯源详情、纠错编辑、冲突裁决、
@@ -141,6 +149,12 @@ function onSelectionChange(rows: MemoryItem[]) {
 const ledger = ref<LedgerItem[]>([]);
 const stats = reactive({ active: 0, conflict: 0, archived: 0, deleted: 0 });
 const embeddingStatus = ref<EmbeddingStatus | null>(null);
+const tierStats = ref<TierStats | null>(null);
+const initialTierText = computed(() => {
+  const data = tierStats.value?.initial_tier?.total?.ai_initial;
+  if (!data) return "";
+  return ["core", "important"].map(tier => `${tierLabels[tier]}×${data[tier] ?? 0}`).join(" / ");
+});
 const filters = reactive({ subject: "", type: "", status: "", factKey: "", minImportance: "", tier: "" });
 const memoryPage = ref(1);
 const memoryPageSize = ref(20);
@@ -193,7 +207,7 @@ const fmt = (value: string | null) => (value ? new Date(value).toLocaleString() 
 async function load() {
   clearSelection();
   try {
-    const [page, active, conflict, archived, ledgerPageData, embedding] = await Promise.all([
+    const [page, active, conflict, archived, ledgerPageData, embedding, tiers] = await Promise.all([
       api.request<{ items: MemoryItem[]; total: number }>(`/api/v1/admin/memories?${memoryParams.value}`),
       api.request<{ items: MemoryItem[]; total: number }>("/api/v1/admin/memories?status=active&limit=1"),
       api.request<{ items: MemoryItem[]; total: number }>("/api/v1/admin/memories?status=conflict&limit=1"),
@@ -204,6 +218,8 @@ async function load() {
       ),
       // 嵌入换版观测（方案 A2）；旧后端无此端点时不影响列表加载
       api.request<EmbeddingStatus>("/api/v1/admin/memories/embedding-status").catch(() => null),
+      // 初始定级校准观测（B3）
+      api.request<TierStats>("/api/v1/admin/memories/tier-stats").catch(() => null),
     ]);
     const lastPage = Math.max(1, Math.ceil(page.total / memoryPageSize.value));
     if (memoryPage.value > lastPage) {
@@ -219,6 +235,7 @@ async function load() {
     stats.archived = archived.total;
     stats.deleted = ledgerPageData.total;
     embeddingStatus.value = embedding;
+    tierStats.value = tiers;
     ledger.value = ledgerPageData.items;
     ledgerTotal.value = ledgerPageData.total;
   } catch (error) {
@@ -460,6 +477,10 @@ onMounted(load);
             : `版本落后 ${embeddingStatus.stale_rows ?? 0}/${embeddingStatus.total_rows} 条` }}
         </span>
       </article>
+      <article v-if="initialTierText">
+        <span>AI 初始定级</span>
+        <strong>{{ initialTierText }}</strong>
+      </article>
     </div>
 
     <div v-if="props.mode === 'library'" class="panel">
@@ -589,6 +610,7 @@ onMounted(load);
           <dt>提取器</dt><dd>{{ detail.extractor_version ?? "—" }} · 置信度 {{ detail.confidence ?? "—" }}</dd>
           <dt>创建</dt><dd>{{ fmt(detail.created_at) }} · {{ detail.created_by }}</dd>
           <dt>访问</dt><dd>{{ detail.access_count }} 次 · 最近 {{ fmt(detail.last_accessed_at) }}</dd>
+          <dt v-if="detail.next_relevant_at">临近唤醒</dt><dd v-if="detail.next_relevant_at">{{ fmt(detail.next_relevant_at) }}（周期事实到期自动回中级）</dd>
         </dl>
         <h4>来源（{{ detail.sources.length }}）</h4>
         <div v-for="source in detail.sources" :key="source.source_id" class="source-row">

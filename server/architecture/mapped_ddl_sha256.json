@@ -164,8 +164,8 @@
     "sqlite": "aa2f0c674e5f1f73726cc10bf19614b291a8bc28a8b2dd50706ee86cb293628f"
   },
   "memory": {
-    "postgresql": "ce741f747bfa5b0eaf705b03865f510ad06278aeade3f64b545a4e2afffb7db9",
-    "sqlite": "eb7a9f491eaf87183d512a04b94f856a8ad0200013f265620e5f21c96c769c56"
+    "postgresql": "0883c7f698ff8dd8a9742dbcdbe911339e552a6fecd3f949f7f14c3cc05c413e",
+    "sqlite": "cfc2dc5518c76aadda238909f0594ef67eaac03c032cdc7161b47c7f9a97a517"
   },
   "memory_lifecycle_event": {
     "postgresql": "8db0c7b6198d92c79b5cd4547d4b8c348324ac3dae33e8fa6d2dfb1fb58bd769",

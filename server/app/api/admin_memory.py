@@ -62,6 +62,7 @@ class MemoryView(StrictModel):
     use_count: int = 0
     last_used_at: datetime | None = None
     next_decay_at: datetime | None = None
+    next_relevant_at: datetime | None = None
     lifecycle_version: int = 0
 
 
@@ -234,6 +235,7 @@ def _view(entry: MemoryEntry) -> MemoryView:
         use_count=entry.use_count,
         last_used_at=entry.last_used_at,
         next_decay_at=entry.next_decay_at,
+        next_relevant_at=entry.next_relevant_at,
         lifecycle_version=entry.lifecycle_version,
     )
 
@@ -292,6 +294,16 @@ def create_admin_memory_router(store: MemoryStore, *, admin_token: str | None) -
                 await store.count_embedding_mismatch(version=pending) if pending else None
             ),
         )
+
+    @router.get("/tier-stats")
+    async def tier_stats(request: Request) -> dict[str, object]:
+        """等级分布与初始定级审计聚合（B3 校准观测，只读）。"""
+        del request
+        stats = await MemoryLifecycle(store.database).initial_tier_stats()
+        return {
+            "active_by_tier": await store.count_by_tier(),
+            "initial_tier": stats,
+        }
 
     @router.get("/{memory_id}/lifecycle-events")
     async def lifecycle_history(memory_id: int, request: Request) -> list[dict[str, object]]:

@@ -965,6 +965,8 @@ class ChatService:
             try:
                 if self._memory_store is not None:
                     await self._memory_store.decay_memories()
+                    # 周期事实（生日/纪念日）临近唤醒（方案 B4），同一维护循环。
+                    await self._memory_store.wake_periodic_memories()
             except Exception:
                 logger.exception("memory lifecycle maintenance failed")
 

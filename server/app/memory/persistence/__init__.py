@@ -123,6 +123,8 @@ class MemoryRecord(Base):
     )
     last_used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     next_decay_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
+    # 周期事实（生日/纪念日）的下一次临近唤醒时间（方案 B4，迁移 0074）。
+    next_relevant_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
     use_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
     lifecycle_version: Mapped[int] = mapped_column(
         Integer, nullable=False, default=0, server_default="0"

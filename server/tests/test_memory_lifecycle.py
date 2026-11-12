@@ -4,7 +4,7 @@ from pathlib import Path
 from typing import Any, cast
 
 import pytest
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.orm.attributes import flag_modified
 from test_goal_delivery_runs import seed
 from test_memory import candidate
@@ -502,6 +502,165 @@ async def test_chat_saves_family_facts_at_ai_proposed_tier(
         events = list(await session.scalars(select(MemoryLifecycleRecord)))
     assert {event.reason for event in events} == {"ai_initial"}
     assert {event.new_tier for event in events} == {"core"}
+
+
+async def test_ai_gate_env_threshold_and_rejection_logging(
+    database: Database, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """B3：AI 定级门禁阈值可经环境校准；被拒建议留结构化日志。"""
+    owner, _, _ = await seed(database)
+    store = MemoryStore(database)
+    gate = {"importance": 0.9, "confidence": 0.85, "initial_tier": "core"}
+
+    monkeypatch.setenv("ARIA_MEMORY_AI_TIER_CORE_GATE", "0.9")
+    with caplog.at_level("INFO", logger="app.memory.store"):
+        stricter = await store.add(candidate("fixture stricter gate fact", **gate), user_id=owner)
+    assert stricter.tier == "medium"  # 0.85 < 0.9 被门禁降级
+    assert any(
+        "memory.initial_tier_gate" in record.message and "suggested=core" in record.message
+        for record in caplog.records
+    )
+
+    monkeypatch.setenv("ARIA_MEMORY_AI_TIER_CORE_GATE", "0.8")
+    accepted = await store.add(candidate("fixture relaxed gate fact", **gate), user_id=owner)
+    assert accepted.tier == "core"
+
+    monkeypatch.setenv("ARIA_MEMORY_AI_TIER_CORE_GATE", "not-a-number")
+    fallback = await store.add(candidate("fixture fallback gate fact", **gate), user_id=owner)
+    assert fallback.tier == "core"  # 非法阈值回落默认 0.8
+
+
+async def test_admin_tier_stats_endpoint(database: Database, tmp_path: Path) -> None:
+    """B3：tier-stats 聚合等级分布与初始定级审计。"""
+    from httpx import ASGITransport, AsyncClient
+    from test_chat import config_yaml
+
+    from app.config import DatabaseConfigStore
+    from app.main import create_app
+
+    owner, _, _ = await seed(database)
+    store = MemoryStore(database)
+    await store.add(
+        candidate(
+            "fixture stats core fact",
+            importance=0.9,
+            confidence=0.9,
+            initial_tier="core",
+        ),
+        user_id=owner,
+    )
+    await store.add(candidate("fixture stats medium fact"), user_id=owner)
+    path = tmp_path / "hub.yaml"
+    path.write_text(config_yaml())
+    app = create_app(
+        database,
+        config_store=DatabaseConfigStore(database, path),
+        watch_config=False,
+        admin_token="fixture-token",
+    )
+    headers = {"Authorization": "Bearer fixture-token"}
+    async with (
+        app.router.lifespan_context(app),
+        AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client,
+    ):
+        assert (await client.get("/api/v1/admin/memories/tier-stats")).status_code == 401
+        payload = (await client.get("/api/v1/admin/memories/tier-stats", headers=headers)).json()
+    assert payload["active_by_tier"].get("core") == 1
+    assert payload["active_by_tier"].get("medium") == 1
+    assert payload["initial_tier"]["total"]["ai_initial"]["core"] == 1
+    assert payload["initial_tier"]["recent_7d"]["ai_initial"]["core"] == 1
+
+
+async def test_periodic_wake_scheduling_and_wake_batch(database: Database) -> None:
+    """B4：生日/周年事实排程临近唤醒；到期低等级升回中级并推进下一年。"""
+    from datetime import UTC as _UTC
+
+    owner, _, _ = await seed(database)
+    store, lifecycle = MemoryStore(database), MemoryLifecycle(database)
+
+    birthday = await store.add(
+        candidate("用户的女儿小晴生日是2024年5月6日", fact_key="person.小晴.birthday"),
+        user_id=owner,
+    )
+    anniversary = await store.add(candidate("用户和伴侣的结婚纪念日是每年6月18日"), user_id=owner)
+    plain = await store.add(candidate("fixture non periodic fact"), user_id=owner)
+
+    from app.memory.lifecycle_policy import periodic_wake_at as _wake
+
+    # 排程锚定真实入库时间：期望按同口径独立计算（下一个周年 - 7 天）。
+    assert birthday.next_relevant_at == _wake(
+        "用户的女儿小晴生日是2024年5月6日",
+        "person.小晴.birthday",
+        now=birthday.created_at,
+    )
+    assert anniversary.next_relevant_at == _wake(
+        "用户和伴侣的结婚纪念日是每年6月18日", None, now=anniversary.created_at
+    )
+    assert birthday.next_relevant_at is not None and anniversary.next_relevant_at is not None
+    assert plain.next_relevant_at is None
+
+    # 全部压到低等级并制造到期：唤醒只提升可见性，core 不动。
+    for entry, tier in ((birthday, MemoryTier.DORMANT), (anniversary, MemoryTier.LOW)):
+        await lifecycle.set_tier(
+            entry.id, user_id=owner, tier=tier, locked=False, expected_version=0
+        )
+    core_fact = await store.add(
+        candidate(
+            "fixture core anniversary 每年6月18日也是重要日子",
+            importance=0.9,
+            confidence=0.9,
+            initial_tier="core",
+        ),
+        user_id=owner,
+    )
+    async with database.sessions.begin() as session:
+        from app.db import MemoryRecord as _MemoryRecord
+
+        await session.execute(
+            update(_MemoryRecord)
+            .where(_MemoryRecord.id.in_([birthday.id, anniversary.id, core_fact.id]))
+            .values(next_relevant_at=datetime(2030, 6, 2, tzinfo=_UTC))
+        )
+    woken = await lifecycle.wake_due_batch(now=datetime(2030, 6, 3, tzinfo=UTC))
+    assert woken == 2
+    woke_birthday = await store.get(birthday.id)
+    woke_anniversary = await store.get(anniversary.id)
+    core_row = await store.get(core_fact.id)
+    assert woke_birthday.tier == "medium" and woke_anniversary.tier == "medium"
+    assert core_row.tier == "core"  # 中级及以上不重复唤醒
+    # 唤醒后推进：生日窗口已过（5月6日 < 6月3日）→ 下一周年 2031；
+    # 纪念日周年（6月18日）尚未到 → 保留当年窗口 2030-06-11（周年前
+    # tier 已是中级不会重复触发；周年过完若再降级，重扫时自愈推进下一年）。
+    assert woke_birthday.next_relevant_at == datetime(2031, 4, 29, tzinfo=UTC)
+    assert woke_anniversary.next_relevant_at == datetime(2030, 6, 11, tzinfo=UTC)
+    assert await lifecycle.wake_due_batch(now=datetime(2030, 6, 3, tzinfo=UTC)) == 0
+    async with database.sessions() as session:
+        events = list(await session.scalars(select(MemoryLifecycleRecord)))
+    assert {event.reason for event in events} >= {"periodic_wake"}
+    wake_events = [event for event in events if event.reason == "periodic_wake"]
+    assert {(event.old_tier, event.new_tier) for event in wake_events} == {
+        ("dormant", "medium"),
+        ("low", "medium"),
+    }
+    # 唤醒不计使用分
+    assert woke_birthday.use_count == 0
+
+
+async def test_periodic_wake_switch_off(
+    database: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    owner, _, _ = await seed(database)
+    store = MemoryStore(database)
+    entry = await store.add(
+        candidate("用户的儿子乐乐生日是2020年3月12日", fact_key="person.乐乐.birthday"),
+        user_id=owner,
+    )
+    await MemoryLifecycle(database).set_tier(
+        entry.id, user_id=owner, tier=MemoryTier.DORMANT, locked=False, expected_version=0
+    )
+    monkeypatch.setenv("ARIA_MEMORY_PERIODIC_WAKE", "0")
+    assert await store.wake_periodic_memories() == 0
+    assert (await store.get(entry.id)).tier == "dormant"
 
 
 async def test_admin_embedding_status_and_health_block(database: Database, tmp_path: Path) -> None:
