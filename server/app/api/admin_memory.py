@@ -305,6 +305,16 @@ def create_admin_memory_router(store: MemoryStore, *, admin_token: str | None) -
             "initial_tier": stats,
         }
 
+    @router.get("/quality-stats")
+    async def quality_stats(request: Request) -> dict[str, int]:
+        """维护健康观测（C3/C6）：降级积压、周期唤醒积压与事件计数，只读。
+
+        提取任务成功率不在本端点：经 `/api/v1/admin/jobs?kind=chat.memory`
+        按状态聚合，避免跨域直查。
+        """
+        del request
+        return await MemoryLifecycle(store.database).quality_counts()
+
     @router.get("/{memory_id}/lifecycle-events")
     async def lifecycle_history(memory_id: int, request: Request) -> list[dict[str, object]]:
         await require_ownership(memory_id, request)

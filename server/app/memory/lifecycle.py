@@ -346,3 +346,54 @@ class MemoryLifecycle:
             return result
 
         return {"total": bucketed(total_rows), "recent_7d": bucketed(recent_rows)}
+
+    async def quality_counts(self) -> dict[str, int]:
+        """维护健康观测（方案 C3/C6）：降级积压、待唤醒与唤醒事件计数。
+
+        decay_backlog 与 decay_batch 同口径（到期或未排程且未锁定、未冷存档）；
+        大库下每轮只处理 100 条，backlog 持续增长说明降级跟不上到期速度。
+        """
+        moment = datetime.now(UTC)
+        async with self.database.sessions() as session:
+            backlog = await session.scalar(
+                select(func.count())
+                .select_from(MemoryRecord)
+                .where(
+                    MemoryRecord.status == "active",
+                    MemoryRecord.tier_locked.is_(False),
+                    MemoryRecord.tier != "dormant",
+                    or_(
+                        MemoryRecord.next_decay_at.is_(None),
+                        MemoryRecord.next_decay_at <= moment,
+                    ),
+                )
+            )
+            pending_wakes = await session.scalar(
+                select(func.count())
+                .select_from(MemoryRecord)
+                .where(
+                    MemoryRecord.status == "active",
+                    MemoryRecord.next_relevant_at.is_not(None),
+                    MemoryRecord.next_relevant_at <= moment,
+                    MemoryRecord.tier.in_(["dormant", "low", "ordinary"]),
+                )
+            )
+            wake_events = await session.scalar(
+                select(func.count())
+                .select_from(MemoryLifecycleRecord)
+                .where(MemoryLifecycleRecord.reason == "periodic_wake")
+            )
+            recent_wakes = await session.scalar(
+                select(func.count())
+                .select_from(MemoryLifecycleRecord)
+                .where(
+                    MemoryLifecycleRecord.reason == "periodic_wake",
+                    MemoryLifecycleRecord.occurred_at >= moment - timedelta(days=7),
+                )
+            )
+        return {
+            "decay_backlog": int(backlog or 0),
+            "pending_wakes": int(pending_wakes or 0),
+            "periodic_wake_events": int(wake_events or 0),
+            "periodic_wake_events_7d": int(recent_wakes or 0),
+        }

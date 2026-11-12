@@ -663,6 +663,72 @@ async def test_periodic_wake_switch_off(
     assert (await store.get(entry.id)).tier == "dormant"
 
 
+async def test_quality_stats_counts_backlog_and_wakes(database: Database) -> None:
+    """C3/C6：降级积压、待唤醒与唤醒事件计数。"""
+    owner, _, _ = await seed(database)
+    store, lifecycle = MemoryStore(database), MemoryLifecycle(database)
+    counts = await lifecycle.quality_counts()
+    assert counts["decay_backlog"] == 0 and counts["pending_wakes"] == 0
+    plain = await store.add(candidate("fixture backlog fact"), user_id=owner)
+    del plain
+    # 新记忆未排 decay（next_decay_at NULL）且未锁定 → 计入积压口径
+    assert (await lifecycle.quality_counts())["decay_backlog"] == 1
+    birthday = await store.add(
+        candidate("用户的儿子乐乐生日是2020年3月12日", fact_key="person.乐乐.birthday"),
+        user_id=owner,
+    )
+    await lifecycle.set_tier(
+        birthday.id, user_id=owner, tier=MemoryTier.DORMANT, locked=False, expected_version=0
+    )
+    async with database.sessions.begin() as session:
+        from app.db import MemoryRecord as _MemoryRecord
+
+        await session.execute(
+            update(_MemoryRecord)
+            .where(_MemoryRecord.id == birthday.id)
+            .values(next_relevant_at=datetime.now(UTC) - timedelta(days=1))
+        )
+    refreshed = await lifecycle.quality_counts()
+    assert refreshed["pending_wakes"] == 1
+    assert await lifecycle.wake_due_batch() == 1
+    final = await lifecycle.quality_counts()
+    assert final["pending_wakes"] == 0
+    assert final["periodic_wake_events"] == 1
+    assert final["periodic_wake_events_7d"] == 1
+
+
+async def test_admin_quality_stats_endpoint(database: Database, tmp_path: Path) -> None:
+    from httpx import ASGITransport, AsyncClient
+    from test_chat import config_yaml
+
+    from app.config import DatabaseConfigStore
+    from app.main import create_app
+
+    await seed(database)
+    path = tmp_path / "hub.yaml"
+    path.write_text(config_yaml())
+    app = create_app(
+        database,
+        config_store=DatabaseConfigStore(database, path),
+        watch_config=False,
+        admin_token="fixture-token",
+    )
+    headers = {"Authorization": "Bearer fixture-token"}
+    async with (
+        app.router.lifespan_context(app),
+        AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client,
+    ):
+        assert (await client.get("/api/v1/admin/memories/quality-stats")).status_code == 401
+        payload = (await client.get("/api/v1/admin/memories/quality-stats", headers=headers)).json()
+    assert set(payload) == {
+        "decay_backlog",
+        "pending_wakes",
+        "periodic_wake_events",
+        "periodic_wake_events_7d",
+    }
+    assert payload["decay_backlog"] == 0  # 本用例未建记忆
+
+
 async def test_admin_embedding_status_and_health_block(database: Database, tmp_path: Path) -> None:
     """方案 A2：嵌入换版观测端点与 healthz 块（缓存缺失时字段如实为空）。"""
     from httpx import ASGITransport, AsyncClient

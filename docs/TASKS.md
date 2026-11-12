@@ -949,3 +949,10 @@
 - [x] B4：`periodic_wake_at` 纯函数（生日限定 `*.birthday` fact_key、纪念日"每年M月D日"，唤醒点=下一周年-`ARIA_MEMORY_WAKE_AHEAD_DAYS`(默认7)天，2月29日落3月1日）；add/edit 排程 `next_relevant_at`；迁移 0074 加列+索引+存量回填；`wake_due_batch` 到期 dormant/low/ordinary 升回中级（reason=periodic_wake，不计使用分，保鲜重算，窗口推进下一年）；挂 60 秒维护循环（decay 后），开关 `ARIA_MEMORY_PERIODIC_WAKE`；管理页详情显示临近唤醒。DDL 快照 memory 项按测试算法重算（仅该项变化）。年度内多醒一次自愈语义已如实登记。
 - [x] 相关验证：新增 5 项（阈值 env+被拒日志、tier-stats 端点、排程锚定真实入库时间、唤醒/推进/core 不动/幂等、开关）；批次回归 249 通过/42 跳过（PG 条件）零失败；空库 upgrade head 至 0074 成功；架构门禁（重算快照）全绿；ruff/format/mypy 零错；Node22 前端 typecheck+build 通过。
 - [ ] 剩余/下一优先级：真实模型定级质量与真会话唤醒体验由用户验收；PG 环境 0074 迁移与 EXPLAIN、真实换版演练待环境；C1~C6 待排期。本批业务哈希 `184c8a4`（2026-11-12 回填）。
+
+
+### 记忆优化批次四：C3 质量观测 + C6 降级滞后监控（2026-11-12，代码交付）
+
+- [x] C3/C6：`quality_counts()`（decay_backlog 与 decay_batch 同口径 / pending_wakes / periodic_wake 事件总量与近7天）+ `GET /api/v1/admin/memories/quality-stats`（只读）；提取成功率复用既有 jobs 端点按 kind=chat.memory 聚合，不跨域直查；管理页新增"维护健康"与"提取任务"卡片（端点缺失静默降级）。
+- [x] 相关验证：新增 2 项（0 基线口径、唤醒闭环计数、端点 401/字段集）；回归 203 通过/25 跳过（含架构门禁）零失败；ruff/format/mypy 零错；Node22 前端 typecheck+build 通过。
+- [ ] 剩余：真实环境 backlog 趋势属运营验收；C1（02A 块级游标）/C2（03B 归因增强）/C4（冲突裁决辅助）/C5（浏览器验收）待排期。本批业务哈希待提交后回填。

@@ -75,6 +75,12 @@ interface TierStats {
     recent_7d: Record<string, Record<string, number>>;
   };
 }
+interface QualityStats {
+  decay_backlog: number;
+  pending_wakes: number;
+  periodic_wake_events: number;
+  periodic_wake_events_7d: number;
+}
 
 // 记忆库治理：统计、过滤列表、溯源详情、纠错编辑、冲突裁决、
 // 手动添加、检索调试与删除台账（含重放试运行/执行）。
@@ -150,11 +156,25 @@ const ledger = ref<LedgerItem[]>([]);
 const stats = reactive({ active: 0, conflict: 0, archived: 0, deleted: 0 });
 const embeddingStatus = ref<EmbeddingStatus | null>(null);
 const tierStats = ref<TierStats | null>(null);
+const qualityStats = ref<QualityStats | null>(null);
+const extractionSummary = ref<string | null>(null);
 const initialTierText = computed(() => {
   const data = tierStats.value?.initial_tier?.total?.ai_initial;
   if (!data) return "";
   return ["core", "important"].map(tier => `${tierLabels[tier]}×${data[tier] ?? 0}`).join(" / ");
 });
+
+/** 提取任务近况：经 jobs 端点按状态聚合（kind=chat.memory）。 */
+async function loadExtractionSummary() {
+  const [done, failed] = await Promise.all([
+    api.request<{ total: number }>("/api/v1/admin/jobs?kind=chat.memory&status=succeeded&limit=1").catch(() => null),
+    api.request<{ total: number }>("/api/v1/admin/jobs?kind=chat.memory&status=failed&limit=1").catch(() => null),
+  ]);
+  if (done) {
+    const failedCount = failed?.total ?? 0;
+    extractionSummary.value = `成功 ${done.total} / 失败 ${failedCount}`;
+  }
+}
 const filters = reactive({ subject: "", type: "", status: "", factKey: "", minImportance: "", tier: "" });
 const memoryPage = ref(1);
 const memoryPageSize = ref(20);
@@ -207,7 +227,8 @@ const fmt = (value: string | null) => (value ? new Date(value).toLocaleString() 
 async function load() {
   clearSelection();
   try {
-    const [page, active, conflict, archived, ledgerPageData, embedding, tiers] = await Promise.all([
+    const [page, active, conflict, archived, ledgerPageData, embedding, tiers, quality] =
+      await Promise.all([
       api.request<{ items: MemoryItem[]; total: number }>(`/api/v1/admin/memories?${memoryParams.value}`),
       api.request<{ items: MemoryItem[]; total: number }>("/api/v1/admin/memories?status=active&limit=1"),
       api.request<{ items: MemoryItem[]; total: number }>("/api/v1/admin/memories?status=conflict&limit=1"),
@@ -220,6 +241,8 @@ async function load() {
       api.request<EmbeddingStatus>("/api/v1/admin/memories/embedding-status").catch(() => null),
       // 初始定级校准观测（B3）
       api.request<TierStats>("/api/v1/admin/memories/tier-stats").catch(() => null),
+      // 维护健康观测（C3/C6）
+      api.request<QualityStats>("/api/v1/admin/memories/quality-stats").catch(() => null),
     ]);
     const lastPage = Math.max(1, Math.ceil(page.total / memoryPageSize.value));
     if (memoryPage.value > lastPage) {
@@ -236,6 +259,8 @@ async function load() {
     stats.deleted = ledgerPageData.total;
     embeddingStatus.value = embedding;
     tierStats.value = tiers;
+    qualityStats.value = quality;
+    void loadExtractionSummary();
     ledger.value = ledgerPageData.items;
     ledgerTotal.value = ledgerPageData.total;
   } catch (error) {
@@ -480,6 +505,15 @@ onMounted(load);
       <article v-if="initialTierText">
         <span>AI 初始定级</span>
         <strong>{{ initialTierText }}</strong>
+      </article>
+      <article v-if="qualityStats">
+        <span>维护健康</span>
+        <strong>降级积压 {{ qualityStats.decay_backlog }}</strong>
+        <span>待唤醒 {{ qualityStats.pending_wakes }} · 近7天唤醒 {{ qualityStats.periodic_wake_events_7d }}</span>
+      </article>
+      <article v-if="extractionSummary">
+        <span>提取任务</span>
+        <strong>{{ extractionSummary }}</strong>
       </article>
     </div>
 
