@@ -21,6 +21,7 @@ from app.memory import (
     MemoryType,
     replay_deletions,
 )
+from app.memory.conflict_advisor import ConflictAdvisor
 from app.memory.lifecycle import LifecycleConflict, MemoryLifecycle
 from app.memory.lifecycle_policy import MemoryTier
 from app.schemas.common import PrivacyLevel, StrictModel
@@ -251,7 +252,12 @@ def _default_subject_key(subject: MemorySubjectKind) -> str:
     return "user:self"
 
 
-def create_admin_memory_router(store: MemoryStore, *, admin_token: str | None) -> APIRouter:
+def create_admin_memory_router(
+    store: MemoryStore,
+    *,
+    admin_token: str | None,
+    conflict_advisor: ConflictAdvisor | None = None,
+) -> APIRouter:
     guard = AdminTokenGuard(admin_token, min_role="member")
     router = APIRouter(
         prefix="/api/v1/admin/memories",
@@ -530,6 +536,36 @@ def create_admin_memory_router(store: MemoryStore, *, admin_token: str | None) -
         except ValueError as error:
             raise HTTPException(status.HTTP_409_CONFLICT, detail=str(error)) from error
         return _view(entry)
+
+    @router.get("/{memory_id}/conflict-advice")
+    async def conflict_advice(memory_id: int, request: Request) -> dict[str, str]:
+        """冲突裁决 AI 建议（方案 C4）：只建议、不执行，裁决仍走 /resolve 人工确认。
+
+        L2 冲突不出模型（脱敏边界），未配置顾问/模型时 503 如实告知。
+        """
+        await require_ownership(memory_id, request)
+        if conflict_advisor is None:
+            raise HTTPException(503, "conflict advisor unavailable")
+        try:
+            entry = await store.get(memory_id)
+            original = await store.get(entry.conflict_with) if entry.conflict_with else None
+        except LookupError as error:
+            raise HTTPException(404, "memory not found") from error
+        if entry.status != MemoryStatus.CONFLICT.value or original is None:
+            raise HTTPException(409, "memory is not a pending conflict")
+        if "L2" in {entry.privacy_level, original.privacy_level}:
+            raise HTTPException(422, "L2 conflicts require manual adjudication")
+        advice = await conflict_advisor.advise(
+            new_content=entry.content,
+            original_content=original.content,
+            new_created_at=entry.created_at.isoformat(),
+            original_created_at=original.created_at.isoformat(),
+        )
+        return {
+            "recommendation": advice.recommendation,
+            "reason": advice.reason,
+            "policy": "advisory-only",
+        }
 
     @router.post("/{memory_id}/resolve", response_model=MemoryView)
     async def resolve_conflict(

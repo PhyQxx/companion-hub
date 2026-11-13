@@ -11,6 +11,7 @@ from test_memory import candidate
 from test_run_cancel_fence import prepared
 
 from app.db import Database, MemoryRecord
+from app.llm import CompletionRequest, CompletionResult, ModelUsage
 from app.memory import MemoryStore
 from app.memory.lifecycle import LifecycleConflict, MemoryLifecycle
 from app.memory.lifecycle_policy import MemoryTier, evaluate
@@ -819,6 +820,150 @@ async def test_chat_chunk_cursor_persists_steps_and_gate_off_falls_back(
             )
         )
     assert not latest_job_steps
+
+
+class _AdvisorBackend:
+    def __init__(self, *, text: str | None = None, error: Exception | None = None) -> None:
+        self._text, self._error = text, error
+
+    async def complete(self, request: CompletionRequest) -> CompletionResult:
+        if self._error is not None:
+            raise self._error
+        return CompletionResult(
+            text=self._text or "",
+            provider="openai_compatible",
+            model="utility-v1",
+            endpoint="cloud",
+            route=request.route,
+            finish_reason="stop",
+            usage=ModelUsage(),
+            latency_ms=3.0,
+        )
+
+
+async def test_llm_conflict_advisor_parses_and_falls_back_uncertain() -> None:
+    """方案 C4：顾问解析建议 JSON；异常/坏值/未配置一律 uncertain，不臆造裁决。"""
+    from app.memory.conflict_advisor import LlmConflictAdvisor
+
+    good = LlmConflictAdvisor(
+        lambda: _AdvisorBackend(text='{"recommendation":"adopt","reason":"新记忆更晚且更具体"}')
+    )
+    advice = await good.advise(
+        new_content="用户住在青岛",
+        original_content="用户住在济南",
+        new_created_at="2030-01-02T00:00:00+00:00",
+        original_created_at="2030-01-01T00:00:00+00:00",
+    )
+    assert advice.recommendation == "adopt" and advice.reason == "新记忆更晚且更具体"
+
+    bad_value = LlmConflictAdvisor(
+        lambda: _AdvisorBackend(text='{"recommendation":"maybe","reason":"..."}')
+    )
+    assert (
+        await bad_value.advise(
+            new_content="a", original_content="b", new_created_at="t", original_created_at="t"
+        )
+    ).recommendation == "uncertain"
+    broken = LlmConflictAdvisor(lambda: _AdvisorBackend(text="不是JSON"))
+    assert (
+        await broken.advise(
+            new_content="a", original_content="b", new_created_at="t", original_created_at="t"
+        )
+    ).recommendation == "uncertain"
+    raising = LlmConflictAdvisor(lambda: _AdvisorBackend(error=RuntimeError("boom")))
+    assert (
+        await raising.advise(
+            new_content="a", original_content="b", new_created_at="t", original_created_at="t"
+        )
+    ).reason == "advisor_error:RuntimeError"
+    unconfigured = LlmConflictAdvisor(lambda: None)
+    assert (
+        await unconfigured.advise(
+            new_content="a", original_content="b", new_created_at="t", original_created_at="t"
+        )
+    ).reason == "model_unconfigured"
+
+
+async def test_admin_conflict_advice_endpoint_gates(
+    database: Database, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """方案 C4：/conflict-advice 401/非冲突409/L2围栏422/开关关闭503；装配链路200。"""
+    from httpx import ASGITransport, AsyncClient
+    from test_chat import config_yaml
+
+    from app.config import DatabaseConfigStore
+    from app.main import create_app
+    from app.memory import MemoryStatus
+    from app.schemas import PrivacyLevel
+
+    owner, _, _ = await seed(database)
+    store = MemoryStore(database)
+    original = await store.add(candidate("用户住在济南"), user_id=owner)
+    conflicted = await store.add(
+        candidate("用户住在青岛"),
+        user_id=owner,
+        status=MemoryStatus.CONFLICT,
+        conflict_with=original.id,
+    )
+    l2_pair = await store.add(
+        candidate("用户的私密行程安排", privacy_level=PrivacyLevel.L2), user_id=owner
+    )
+    l2_conflict = await store.add(
+        candidate("用户的私密行程变更", privacy_level=PrivacyLevel.L2),
+        user_id=owner,
+        status=MemoryStatus.CONFLICT,
+        conflict_with=l2_pair.id,
+    )
+    path = tmp_path / "hub.yaml"
+    path.write_text(config_yaml())
+    app = create_app(
+        database,
+        config_store=DatabaseConfigStore(database, path),
+        watch_config=False,
+        admin_token="fixture-token",
+    )
+    headers = {"Authorization": "Bearer fixture-token"}
+    async with (
+        app.router.lifespan_context(app),
+        AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client,
+    ):
+        assert (
+            await client.get(f"/api/v1/admin/memories/{conflicted.id}/conflict-advice")
+        ).status_code == 401
+        # 真实装配链路：模型失败/未配置如实返回 uncertain（advisory-only）。
+        advice = await client.get(
+            f"/api/v1/admin/memories/{conflicted.id}/conflict-advice", headers=headers
+        )
+        assert advice.status_code == 200
+        body = advice.json()
+        assert body["recommendation"] in {"adopt", "keep", "uncertain"}
+        assert body["policy"] == "advisory-only"
+        plain = await client.get(
+            f"/api/v1/admin/memories/{original.id}/conflict-advice", headers=headers
+        )
+        assert plain.status_code == 409  # 非 conflict 状态不构成裁决对
+        assert (
+            await client.get(
+                f"/api/v1/admin/memories/{l2_conflict.id}/conflict-advice", headers=headers
+            )
+        ).status_code == 422  # L2 冲突不出模型
+    # 开关关闭：装配不建顾问 → 503 如实告知。
+    monkeypatch.setenv("ARIA_MEMORY_CONFLICT_ADVISOR", "0")
+    app2 = create_app(
+        database,
+        config_store=DatabaseConfigStore(database, path),
+        watch_config=False,
+        admin_token="fixture-token",
+    )
+    async with (
+        app2.router.lifespan_context(app2),
+        AsyncClient(transport=ASGITransport(app=app2), base_url="http://test") as client,
+    ):
+        assert (
+            await client.get(
+                f"/api/v1/admin/memories/{conflicted.id}/conflict-advice", headers=headers
+            )
+        ).status_code == 503
 
 
 async def test_admin_embedding_status_and_health_block(database: Database, tmp_path: Path) -> None:

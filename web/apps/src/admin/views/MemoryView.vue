@@ -380,6 +380,23 @@ async function resolve(id: number, action: "adopt" | "keep") {
   }
 }
 
+/** 冲突裁决 AI 建议（方案 C4）：只展示建议，裁决仍由管理员点确认。 */
+async function showConflictAdvice(id: number) {
+  const labels: Record<string, string> = { adopt: "建议采纳新记忆", keep: "建议保留旧记忆", uncertain: "依据不足，请人工判断" };
+  try {
+    const advice = await api.request<{ recommendation: string; reason: string; policy: string }>(
+      `/api/v1/admin/memories/${id}/conflict-advice`,
+    );
+    await ElMessageBox.alert(
+      `${labels[advice.recommendation] ?? advice.recommendation}\n\n依据：${advice.reason || "—"}\n\n本建议仅供参考，最终裁决由您确认后执行。`,
+      "AI 裁决建议",
+      { confirmButtonText: "知道了" },
+    );
+  } catch (error) {
+    emit("status", error instanceof Error ? error.message : "AI 建议获取失败", true);
+  }
+}
+
 async function remove(id: number) {
   await removeMemories([id]);
 }
@@ -584,7 +601,7 @@ onMounted(load);
           <el-button size="small" link @click="confirmMemory(row as MemoryItem)">确认正确</el-button>
         </template></el-table-column>
         <el-table-column prop="access_count" label="访问" width="75" />
-        <el-table-column label="操作" min-width="320" fixed="right"><template #default="{ row }"><div class="actions"><el-button size="small" @click="showDetail(row.id)">溯源</el-button><el-button v-if="row.status === 'active' || row.status === 'conflict'" size="small" @click="openEdit(row as MemoryItem)">编辑</el-button><el-button v-if="row.status === 'active'" size="small" @click="archive(row.id)">归档</el-button><template v-if="row.status === 'conflict'"><el-button type="primary" size="small" @click="resolve(row.id, 'adopt')">采纳</el-button><el-button size="small" @click="resolve(row.id, 'keep')">保留旧值</el-button></template><el-button type="danger" plain size="small" :disabled="deleting" @click="remove(row.id)">删除</el-button></div></template></el-table-column>
+        <el-table-column label="操作" min-width="320" fixed="right"><template #default="{ row }"><div class="actions"><el-button size="small" @click="showDetail(row.id)">溯源</el-button><el-button v-if="row.status === 'active' || row.status === 'conflict'" size="small" @click="openEdit(row as MemoryItem)">编辑</el-button><el-button v-if="row.status === 'active'" size="small" @click="archive(row.id)">归档</el-button><template v-if="row.status === 'conflict'"><el-button type="primary" size="small" @click="resolve(row.id, 'adopt')">采纳</el-button><el-button size="small" @click="resolve(row.id, 'keep')">保留旧值</el-button><el-button size="small" @click="showConflictAdvice(row.id)">AI 建议</el-button></template><el-button type="danger" plain size="small" :disabled="deleting" @click="remove(row.id)">删除</el-button></div></template></el-table-column>
       </el-table>
       <div class="pager">
         <el-pagination

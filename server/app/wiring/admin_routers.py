@@ -161,10 +161,27 @@ def register_admin_routers(
             )
         )
     if memory_store is not None:
+        # 冲突裁决 AI 建议（方案 C4）：按需构建 utility 路由；开关置 0 关闭。
+        conflict_advisor = None
+        if os.getenv("ARIA_MEMORY_CONFLICT_ADVISOR", "1") == "1":
+            from app.llm.factory import build_router
+            from app.llm.provider import EnvSecretProvider
+            from app.memory.conflict_advisor import CompletionBackend, LlmConflictAdvisor
+
+            _advisor_secrets = EnvSecretProvider()
+
+            def _advisor_backend() -> CompletionBackend | None:
+                snapshot = config.current
+                if snapshot is None:
+                    return None
+                return build_router(snapshot.config, _advisor_secrets)
+
+            conflict_advisor = LlmConflictAdvisor(_advisor_backend)
         app.include_router(
             create_admin_memory_router(
                 memory_store,
                 admin_token=runtime_admin_token,
+                conflict_advisor=conflict_advisor,
             )
         )
         app.include_router(
