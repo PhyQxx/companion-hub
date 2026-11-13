@@ -20,6 +20,7 @@ from app.harness.run_trace import run_trace_scope
 from app.llm import CompletionRequest, CompletionResult, LLMMessage, ToolCall
 from app.llm.provider import EnvSecretProvider, absorb_text_tool_calls
 from app.llm.text_tool_calls import MAX_TEXT_TOOL_CALLS
+from app.memory.attribution import evidence_used_in_text
 from app.runs.trace_sources import capture_disabled_trace
 from app.schemas import PrivacyLevel
 from app.tools import (
@@ -498,10 +499,8 @@ class AgentLoopHandlers:
         identifiers = []
         for hit in pending.memory_retrieval.hits:
             evidence = hit.memory.content.removeprefix("用户").strip("。 .，,")
-            if (
-                str(hit.memory.id) in included
-                and len(evidence) >= 6
-                and any(evidence in value for value in values)
+            if str(hit.memory.id) in included and any(
+                evidence_used_in_text(evidence, value) for value in values
             ):
                 identifiers.append(hit.memory.id)
         return execution.model_copy(update={"memory_ids_used": tuple(identifiers)})

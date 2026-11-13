@@ -33,6 +33,7 @@ from app.jobs.engine import JobEngine
 from app.jobs.maintenance import MaintenanceFailure
 from app.llm import CompletionRequest, LLMMessage, LLMRoute
 from app.memory import ExtractionBackend, MemoryHit, RetrievalResult
+from app.memory.attribution import evidence_used_in_text
 from app.memory.extraction_scope import extraction_scope
 from app.persona import PersonaConfig
 from app.runs.chat_parent import require_chat_parent
@@ -725,6 +726,8 @@ class PostcommitHandlers:
             if self._service._memory_store is not None:
                 for memory in retrieved_memories:
                     # Conservative attribution: retrieval alone never strengthens a fact.
+                    # C2/03B：同义改写经统一口径判定（归一化包含或 4 字连续片段），
+                    # 仍宁少计——孤立短词重合不算复用。
                     evidence = memory.content.removeprefix("用户").strip("。 .，,")
                     tool_uses = (assistant_message.decision_meta or {}).get("tool_calls", [])
                     action_used = (
@@ -737,9 +740,7 @@ class PostcommitHandlers:
                         if isinstance(tool_uses, list)
                         else False
                     )
-                    if action_used or (
-                        len(evidence) >= 6 and evidence in assistant_message.content
-                    ):
+                    if action_used or evidence_used_in_text(evidence, assistant_message.content):
                         await self._service._memory_store.record_use(
                             memory.id,
                             user_id=pending.user_id,
