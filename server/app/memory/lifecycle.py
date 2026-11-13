@@ -1,5 +1,6 @@
 """Owned, transactional lifecycle state; never rewrites semantic revisions."""
 
+import logging
 import os
 from datetime import UTC, datetime, timedelta
 from uuid import UUID
@@ -12,7 +13,10 @@ from app.db import Database
 from app.db.claims import assert_current_claim
 
 from .lifecycle_policy import POLICY_VERSION, MemoryTier, aware, evaluate, periodic_wake_at
+from .logfmt import tier_label
 from .persistence import MemoryLifecycleRecord, MemoryRecord, MemoryUsageRecord
+
+logger = logging.getLogger(__name__)
 
 POINTS = {"used_in_answer": 1, "used_in_action": 2, "user_reaffirmed": 2, "user_confirmed": 3}
 
@@ -123,6 +127,13 @@ class MemoryLifecycle:
                         occurred_at=moment,
                     )
                 )
+                logger.info(
+                    "memory.story 记忆#%s 等级变化：%s → %s（原因=%s，经实际使用）",
+                    row.id,
+                    tier_label(row.tier),
+                    tier_label(decision.tier.value),
+                    decision.reason,
+                )
                 row.tier, row.tier_changed_at = decision.tier.value, moment
             row.last_used_at = max(aware(row.last_used_at or moment), moment)
             row.next_decay_at = decision.next_decay_at
@@ -222,11 +233,19 @@ class MemoryLifecycle:
                             occurred_at=moment,
                         )
                     )
+                    logger.info(
+                        "memory.story 记忆#%s 长期未使用，自然遗忘：%s → %s（只降级不删除）",
+                        row.id,
+                        tier_label(row.tier),
+                        tier_label(decision.tier.value),
+                    )
                     row.tier, row.tier_changed_at = decision.tier.value, moment
                     changed += 1
                 row.next_decay_at = decision.next_decay_at
                 row.lifecycle_version += 1
                 flag_modified(row, "updated_at")
+            if changed:
+                logger.info("memory.story 本轮自然遗忘降级：%d条（固定与冷存档不参与）", changed)
             return changed
 
     async def wake_due_batch(self, *, now: datetime | None = None, limit: int = 100) -> int:
@@ -252,11 +271,12 @@ class MemoryLifecycle:
             )
             changed = 0
             for row in rows:
+                old_tier = row.tier
                 session.add(
                     MemoryLifecycleRecord(
                         memory_id=row.id,
                         user_id=row.user_id,
-                        old_tier=row.tier,
+                        old_tier=old_tier,
                         new_tier=MemoryTier.MEDIUM.value,
                         reason="periodic_wake",
                         policy_version=POLICY_VERSION,
@@ -279,6 +299,14 @@ class MemoryLifecycle:
                 row.lifecycle_version += 1
                 flag_modified(row, "updated_at")
                 changed += 1
+                logger.info(
+                    "memory.story 记忆#%s 周期事实临近（如生日/纪念日），%s → 中级自动唤醒，"
+                    "不计使用分",
+                    row.id,
+                    tier_label(old_tier),
+                )
+            if changed:
+                logger.info("memory.story 本轮周期唤醒完成：%d条", changed)
             return changed
 
     async def history(self, memory_id: int, *, user_id: UUID) -> list[dict[str, object]]:

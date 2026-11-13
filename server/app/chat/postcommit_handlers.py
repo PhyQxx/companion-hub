@@ -767,6 +767,14 @@ class PostcommitHandlers:
                         **(message.decision_meta or {}),
                         "memory_receipt": receipt,
                     }
+                    logger.info(
+                        "memory.story 回合记忆整理%s：新增%d条 / 佐证%d条 / 冲突%d条%s",
+                        "未完成（将自动重试）" if extraction_errors else "完成",
+                        receipt["created"],
+                        receipt["supported"],
+                        receipt["conflict"],
+                        f"，失败原因类型={extraction_errors}" if extraction_errors else "",
+                    )
             if extraction_errors:
                 raise MaintenanceFailure(
                     "memory_extraction_incomplete",

@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import logging
 import math
 import os
 import re
@@ -22,6 +23,7 @@ from app.schemas.common import PrivacyLevel, persistent_privacy_levels
 
 from .fact_keys import birthday_key
 from .lifecycle_policy import TIERS, MemoryTier
+from .logfmt import tier_label
 from .models import MemoryEntry, MemoryStatus, MemorySubjectKind, MemoryType
 from .retrieval_models import MemoryHit as MemoryHit
 from .retrieval_models import RetrievalCandidate
@@ -316,6 +318,7 @@ class MemoryRetriever:
                 break
 
         await self._store.record_access([hit.memory.id for hit in selected])
+        _log_retrieval_summary(selected, candidate_count=len(candidates))
         return RetrievalResult(
             hits=tuple(selected),
             policy_version=RETRIEVAL_POLICY_VERSION,
@@ -476,3 +479,26 @@ def _rank(
     ranked = [(memory_id, score) for memory_id, score in ranked if score > 0]
     ranked.sort(key=lambda pair: pair[1], reverse=True)
     return ranked
+
+
+def _log_retrieval_summary(selected: Sequence[MemoryHit], *, candidate_count: int) -> None:
+    """业主可读：本轮对话想起了哪些记忆、什么等级（不含内容）。"""
+    if not selected:
+        logging.getLogger(__name__).info(
+            "memory.story 本轮没有需要想起的长期记忆（候选%d条）", candidate_count
+        )
+        return
+    counts: dict[str, int] = {}
+    exact = 0
+    for hit in selected:
+        counts[hit.memory.tier] = counts.get(hit.memory.tier, 0) + 1
+        exact += "exact_fact" in hit.reasons
+    distribution = "、".join(
+        f"{tier_label(tier)}{count}" for tier, count in sorted(counts.items(), reverse=True)
+    )
+    logging.getLogger(__name__).info(
+        "memory.story 本轮注入%d条长期记忆（等级：%s；精确槽命中%d条）",
+        len(selected),
+        distribution,
+        exact,
+    )

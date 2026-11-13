@@ -18,6 +18,7 @@ from .extraction import (
     RuleBasedExtractor,
     TurnMemoryExtractor,
 )
+from .logfmt import content_preview, decision_label, tier_label, type_label
 from .models import (
     ConsolidateDecision,
     ConsolidateOutcome,
@@ -81,6 +82,18 @@ class MemoryIngester:
             outcome.decision,
             outcome.memory.id,
             outcome.related.id if outcome.related else None,
+        )
+        # 业主可读日志（方案批次八）：每条记忆的去向与等级一目了然。
+        memory = outcome.memory
+        logging.getLogger(__name__).info(
+            "memory.story 记忆#%s %s：%s（%s，重要度%.2f，置信度%s）预览=%s",
+            memory.id,
+            decision_label(str(outcome.decision)),
+            tier_label(memory.tier),
+            type_label(memory.type),
+            memory.importance,
+            "未知" if memory.confidence is None else f"{memory.confidence:.2f}",
+            content_preview(memory.content),
         )
         return outcome
 
@@ -193,4 +206,30 @@ class MemoryIngester:
                 if (candidate.type, candidate.content) not in chunked_keys
             ]
         )
+        # 业主可读回合总结：本回合到底记没记、记了什么等级。
+        counts = {"created": 0, "supported": 0, "conflict": 0}
+        tiers: dict[str, int] = {}
+        for outcome in outcomes:
+            key = str(outcome.decision)
+            if key in counts:
+                counts[key] += 1
+            tiers[outcome.memory.tier] = tiers.get(outcome.memory.tier, 0) + 1
+        tier_text = (
+            "、".join(
+                f"{tier_label(tier)}{count}" for tier, count in sorted(tiers.items(), reverse=True)
+            )
+            or "无"
+        )
+        logging.getLogger(__name__).info(
+            "memory.turn_summary 本回合记忆整理完成：共%d条（新增%d / 佐证%d / 冲突%d），等级：%s",
+            len(outcomes),
+            counts["created"],
+            counts["supported"],
+            counts["conflict"],
+            tier_text + (f"，跳过已完成块{len(skip)}个" if skip else ""),
+        )
+        if not outcomes:
+            logging.getLogger(__name__).info(
+                "memory.turn_summary 本回合没有值得长期记住的新内容（原始聊天仍在消息记录中）"
+            )
         return outcomes
