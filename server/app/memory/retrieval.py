@@ -1,6 +1,6 @@
 """混合检索器：双路召回 → 硬过滤 → 归一化重排 → 类型配额 Top-K。
 
-策略版本 hybrid-quota-v1 会随 decision_meta 一起落库，任何打分或
+策略版本（当前 hybrid-lifecycle-v8）会随 decision_meta 一起落库，任何打分或
 过滤规则的修改都必须 bump 版本号，保证历史回合可追溯当时的检索行为。
 """
 
@@ -31,7 +31,7 @@ from .retrieval_models import RetrievalResult as RetrievalResult
 from .retrieval_ports import MemoryRetrievalRepository
 from .similarity import cosine_similarity, lexical_cosine, text_tokens
 
-RETRIEVAL_POLICY_VERSION = "hybrid-lifecycle-v7"
+RETRIEVAL_POLICY_VERSION = "hybrid-lifecycle-v8"
 
 DEFAULT_SUBJECT_SCOPES: tuple[tuple[MemorySubjectKind, str], ...] = (
     (MemorySubjectKind.USER, "user:self"),
@@ -46,6 +46,10 @@ DEFAULT_TYPE_QUOTAS: Mapping[str, int] = {
     MemoryType.EPISODIC.value: 2,
     MemoryType.EMOTIONAL.value: 2,
 }
+
+# 低置信门槛与生命周期自动晋升的 confidence ≥ 0.6 围栏（lifecycle.py）同界：
+# 达不到该把握的记忆渲染时标注“把握较低”，提示模型先承认不确定再请用户确认。
+LOW_CONFIDENCE = 0.6
 
 
 @dataclass(frozen=True, slots=True)
@@ -64,6 +68,7 @@ class RetrievalPolicy:
     grounded_lexical_threshold: float = 0.15
     grounded_vector_threshold: float = 0.55
     inventory_k: int = 20
+    identity_k: int = 8
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "quotas", MappingProxyType(dict(self.quotas)))
@@ -317,8 +322,28 @@ class MemoryRetriever:
             if len(selected) >= self._policy.top_k:
                 break
 
+        # 身份问句兜底（批次九 D1）：“你记得我吗/我是谁”类问题的目标记忆可能
+        # 从未打上 fact_key，语义弱命中又过不了证据门槛。正常通道拿不出可作
+        # 证据的用户记忆时，按档案优先直取，不能让身份确认被滤成一片空白。
+        identity_probe = (
+            os.getenv("ARIA_MEMORY_IDENTITY_PROBE", "1") == "1"
+            and _infer_identity_probe(query)
+            and not any(
+                hit.memory.subject_kind == MemorySubjectKind.USER.value
+                and (
+                    "exact_fact" in hit.reasons
+                    or hit.lexical_score >= self._policy.grounded_lexical_threshold
+                    or hit.vector_score >= self._policy.grounded_vector_threshold
+                )
+                for hit in selected
+            )
+        )
+        if identity_probe:
+            selected = list(self._identity_probe_hits(candidates))
+            _log_identity_probe_summary(selected)
+        else:
+            _log_retrieval_summary(selected, candidate_count=len(candidates))
         await self._store.record_access([hit.memory.id for hit in selected])
-        _log_retrieval_summary(selected, candidate_count=len(candidates))
         return RetrievalResult(
             hits=tuple(selected),
             policy_version=RETRIEVAL_POLICY_VERSION,
@@ -329,24 +354,55 @@ class MemoryRetriever:
             lexical_recalled=len(lexical_top),
             subject_hint=subject_hint.value if subject_hint is not None else None,
             fact_hint=fact_hint,
+            identity_probe=identity_probe,
         )
 
     def grounded_hits(self, result: RetrievalResult) -> tuple[MemoryHit, ...]:
         """Return only hits strong enough to be treated as remembered evidence.
 
         Retrieval top-k is intentionally permissive so the model can receive useful
-        context. Evidence semantics are stricter: exact fact slots always qualify,
-        lexical matches need a minimum overlap, and vector-only matches need a high
-        similarity. Importance, pin and subject bonuses may order relevant memories,
-        but must never manufacture relevance by themselves.
+        context. Evidence semantics are stricter: exact fact slots, subject
+        inventory and identity probe hits always qualify, lexical matches need a
+        minimum overlap, and vector-only matches need a high similarity.
+        Importance, pin and subject bonuses may order relevant memories, but must
+        never manufacture relevance by themselves.
         """
         return tuple(
             hit
             for hit in result.hits
             if "exact_fact" in hit.reasons
             or "subject_inventory" in hit.reasons
+            or "identity_probe" in hit.reasons
             or hit.lexical_score >= self._policy.grounded_lexical_threshold
             or hit.vector_score >= self._policy.grounded_vector_threshold
+        )
+
+    def _identity_probe_hits(
+        self, candidates: Sequence[RetrievalCandidate]
+    ) -> tuple[MemoryHit, ...]:
+        """身份问句兜底召回：档案槽优先 → 置顶 → 重要性，不依赖语义相似度。"""
+        user_entries = [
+            item.entry
+            for item in candidates
+            if item.entry.subject_kind == MemorySubjectKind.USER.value
+        ]
+        user_entries.sort(
+            key=lambda entry: (
+                not (entry.fact_key or "").startswith("profile."),
+                not entry.pin,
+                -entry.importance,
+                -entry.id,
+            )
+        )
+        return tuple(
+            MemoryHit(
+                memory=entry,
+                vector_score=0.0,
+                lexical_score=0.0,
+                final_score=entry.importance,
+                reasons=("identity_probe",),
+            )
+            for entry in user_entries[: self._policy.identity_k]
         )
 
     @staticmethod
@@ -358,6 +414,15 @@ class MemoryRetriever:
         """按 user / assistant / shared 分组渲染长期记忆，避免主体串线。"""
         selected_hits = tuple(result.hits if hits is None else hits)
         if not selected_hits:
+            if result.identity_probe:
+                # 批次九 D3：身份问句检索不到记录时，宁可承认“没找到”，
+                # 也不允许模型一口咬死“从未记录过”——检索不到 ≠ 没存过。
+                return (
+                    "【长期记忆】用户正在确认你是否记得TA。当前检索没有可提供的"
+                    "用户记录：请如实回答没有找到，不要编造，也不要断言“从未记录过”"
+                    "（可能是没检索到，不等于一定没存过）；如本轮提供了记忆查询工具，"
+                    "可先按编号或分区核对后再回答。"
+                )
             return ""
         labels = {
             MemorySubjectKind.USER.value: "关于用户",
@@ -365,20 +430,34 @@ class MemoryRetriever:
             MemorySubjectKind.SHARED.value: "关于你们",
         }
         grouped: dict[str, list[str]] = {key: [] for key in labels}
+        low_confidence = False
         for hit in selected_hits:
             fact = f"[{hit.memory.fact_key}]" if hit.memory.fact_key else ""
             line = f"- [{hit.memory.type}]{fact} {hit.memory.content}"
             if hit.memory.summary:
                 line += f"（{hit.memory.summary}）"
+            if hit.memory.confidence is not None and hit.memory.confidence < LOW_CONFIDENCE:
+                line += "（把握较低）"
+                low_confidence = True
             grouped.setdefault(hit.memory.subject_kind, []).append(line)
         blocks = [
             "【长期记忆】以下内容来自可追溯的长期记忆。优先遵守 active 的稳定事实；"
             "不要把不同主体混淆。不确定时可以明确说不确定，不要编造。"
         ]
+        if any("identity_probe" in hit.reasons for hit in selected_hits):
+            blocks.append(
+                "用户正在确认你是否记得TA：基于下列关于用户的记录如实回答、逐条概括；"
+                "把握较低的先说明并请用户确认，不要直接当作确定事实。"
+            )
         if any("subject_inventory" in hit.reasons for hit in selected_hits):
             blocks.append(
                 "用户正在要求盘点记忆。请逐条如实概括下列记录；只要下方存在记录，"
                 "就不得声称记忆为空，也不要承诺所有对话都会自动成为长期记忆。"
+            )
+        if low_confidence:
+            blocks.append(
+                "标注（把握较低）的记录未经用户确认：回答时先说明不确定并请用户核对，"
+                "不要当作确定事实引用，也不要因此直接声称没有相关记忆。"
             )
         for subject_kind, label in labels.items():
             lines = grouped.get(subject_kind) or []
@@ -459,16 +538,49 @@ def _infer_inventory_subject(query: str) -> MemorySubjectKind | None:
         "记忆里关于",
         "关于我的记忆",
         "关于你的记忆",
+        "记忆里有没有",
+        "历史记忆",
+        "长期记忆",
+        "记得些什么",
     )
     if not any(marker in normalized for marker in inventory_markers):
         return None
     if any(token in normalized for token in ("我们", "咱们", "咱俩", "我们俩")):
         return MemorySubjectKind.SHARED
-    if any(token in normalized for token in ("关于我", "我的记忆", "记得我")):
+    # “你的历史记忆/你的记忆”问的是助手库里关于用户的记录，主体仍是用户。
+    if any(
+        token in normalized
+        for token in ("关于我", "我的记忆", "记得我", "你的记忆", "历史记忆", "长期记忆")
+    ):
         return MemorySubjectKind.USER
     if any(token in normalized for token in ("关于你", "你自己的记忆")):
         return MemorySubjectKind.ASSISTANT
     return None
+
+
+_IDENTITY_PROBE_PATTERNS: tuple[str, ...] = (
+    "你记得我",
+    "还记得我",
+    "记得我吗",
+    "记得我不",
+    "认识我",
+    "我是谁",
+    "我叫什么",
+    "我叫啥",
+    "我的名字",
+    "知道我是谁",
+    "想得起我",
+)
+
+
+def _infer_identity_probe(query: str) -> bool:
+    """识别“你是否记得我/我是谁”类身份问句；命中后走兜底直取而非语义碰运气。
+
+    精确槽位问句（如“还记得我的工作吗”）仍优先走 exact_fact 通道：
+    探针只在正常检索给不出可作证据的用户记忆时兜底（见 retrieve 尾部）。
+    """
+    normalized = re.sub(r"\s+", "", query.strip().lower())
+    return any(pattern in normalized for pattern in _IDENTITY_PROBE_PATTERNS)
 
 
 def _rank(
@@ -501,4 +613,24 @@ def _log_retrieval_summary(selected: Sequence[MemoryHit], *, candidate_count: in
         len(selected),
         distribution,
         exact,
+    )
+
+
+def _log_identity_probe_summary(probe_hits: Sequence[MemoryHit]) -> None:
+    """业主可读：身份问句兜底召回了哪些等级的记忆（不含内容）。"""
+    if not probe_hits:
+        logging.getLogger(__name__).info(
+            "memory.story 用户在确认你是否记得TA，没有找到可提供的用户记忆"
+        )
+        return
+    counts: dict[str, int] = {}
+    for hit in probe_hits:
+        counts[hit.memory.tier] = counts.get(hit.memory.tier, 0) + 1
+    distribution = "、".join(
+        f"{tier_label(tier)}{count}" for tier, count in sorted(counts.items(), reverse=True)
+    )
+    logging.getLogger(__name__).info(
+        "memory.story 用户在确认你是否记得TA，注入%d条关于用户的记忆（等级：%s）",
+        len(probe_hits),
+        distribution,
     )

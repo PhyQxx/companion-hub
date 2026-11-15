@@ -59,6 +59,8 @@ MULTI_CALL_SAFE_TOOLS = frozenset(
         "reminder_list",
         "inspect_webpage",
         "fetch_webpage",
+        "web_search",
+        "memory_lookup",
         "hermes_status",
         "propose_skill",
         "pnkx_read_life",
@@ -243,6 +245,8 @@ def _tool_label(tool_name: str) -> str:
         "capture_screen": "正在读取电脑屏幕…",
         "inspect_webpage": "正在读取当前网页…",
         "fetch_webpage": "正在读取网页…",
+        "web_search": "正在搜索网页…",
+        "research_skill": "正在发起技能学习…",
         "home_get_state": "正在读取设备状态…",
         "home_get_history": "正在读取设备历史…",
         "home_control": "正在执行设备控制…",
@@ -600,6 +604,20 @@ class AgentLoopHandlers:
             and service._web_fetch.name in pending.tool_names
         ):
             return await ToolExecutor(ToolRegistry([service._web_fetch])).execute(call, context)
+        if (
+            service._web_search is not None
+            and call.function.name == service._web_search.name
+            and service._web_search.name in pending.tool_names
+        ):
+            return await ToolExecutor(ToolRegistry([service._web_search])).execute(call, context)
+        if (
+            service._skill_research is not None
+            and call.function.name == service._skill_research.name
+            and service._skill_research.name in pending.tool_names
+        ):
+            return await ToolExecutor(ToolRegistry([service._skill_research])).execute(
+                call, context
+            )
         runtime = None
         try:
             runtime = build_query_tool_runtime(pending.config, EnvSecretProvider())

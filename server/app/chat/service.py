@@ -60,6 +60,7 @@ from app.runs.store import RunStore, transition_run
 from app.schemas import PrivacyLevel
 from app.skills.drafts import SkillDraftAssistant
 from app.skills.learning import SkillRevisionLearner
+from app.skills.research import ResearchSkillTool
 from app.skills.runtime import SkillToolProvider
 from app.timeline import (
     BrowserActivityRecallService,
@@ -73,6 +74,7 @@ from app.tools import (
     ToolExecution,
     ToolHandler,
     ToolRegistry,
+    WebSearchTool,
     select_device_tools,
 )
 
@@ -126,7 +128,9 @@ class ChatService:
         skill_tools: SkillToolProvider | None = None,
         skill_drafts: SkillDraftAssistant | None = None,
         skill_learner: SkillRevisionLearner | None = None,
+        skill_research: ResearchSkillTool | None = None,
         web_fetch: FetchWebpageTool | None = None,
+        web_search: WebSearchTool | None = None,
         safety: Any | None = None,
         cognitive_cycle: CognitiveCycle | None = None,
         avatar_store: Any | None = None,
@@ -167,7 +171,9 @@ class ChatService:
         self._skill_tools = skill_tools
         self._skill_drafts = skill_drafts
         self._skill_learner = skill_learner
+        self._skill_research = skill_research
         self._web_fetch = web_fetch
+        self._web_search = web_search
         # SAFE-02 SafetyAlertService：聊天确认意图入口（可选依赖，无则跳过）。
         # main.py 中投递服务晚于 ChatService 构造，装配后经 set_safety 注入。
         self._safety = safety
@@ -188,6 +194,11 @@ class ChatService:
             review_tool = ConversationMemoryTool(self, SkillStore(database), self._memory_ingester)
             self._memory_review_worker = ConversationMemoryWorker(self, review_tool)
             self._device_tools.register(review_tool)
+        if memory_store is not None:
+            # 批次九 D2：只读记忆核对工具（编号/分区/关键词），供模型先核对再回答。
+            from app.tools.memory_query import MemoryLookupTool
+
+            self._device_tools.register(MemoryLookupTool(memory_store))
         # 后台记忆任务的强引用集合：既防止任务被 GC，也支持停机前等待收尾
         self._background_tasks: set[asyncio.Task[None]] = set()
         self._memory_decay_task: asyncio.Task[None] | None = None

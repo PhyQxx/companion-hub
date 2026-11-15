@@ -1,0 +1,72 @@
+{
+  "schemaVersion": "mimosa-finding-ledger-batch/v1",
+  "batchId": "pretooluse-fec73feac6a3c9cdf1a8e47711311d99",
+  "runId": null,
+  "runStatus": "completed",
+  "coverage": {
+    "status": "complete",
+    "reasons": []
+  },
+  "source": {
+    "component": "zcode-hook",
+    "operationId": "PreToolUse"
+  },
+  "revision": null,
+  "diffHash": null,
+  "rulesVersion": null,
+  "sessionHash": "6441c52661fc11d1420cfbeda4386e56a8596b10f845461eee82f0affd5413bd",
+  "reportRef": null,
+  "events": [
+    {
+      "eventId": "hook-9582bb3b78fcab8d57d3daa4dca07b95",
+      "findingId": "mimosa-34e0b57f6b65a56ed402911e",
+      "type": "finding_blocked",
+      "at": "2026-11-14T12:21:00.339Z",
+      "identity": {
+        "projectRelativeFile": "server/app/skills/research.py",
+        "ruleId": "security",
+        "codeEvidenceHash": "9c26c05196e3f10adbef54998e0d091fddbb2ed0350e625bd5f1a7e2ba73a65a",
+        "confidence": "stable"
+      },
+      "scope": "direct",
+      "line": 273,
+      "endLine": 273,
+      "reasonCode": "deny",
+      "reportedToAgent": true,
+      "evidence": {
+        "kind": "source",
+        "boundary": "candidate",
+        "producer": "deterministic",
+        "evidenceHash": "9c26c05196e3f10adbef54998e0d091fddbb2ed0350e625bd5f1a7e2ba73a65a"
+      },
+      "sequence": 0
+    },
+    {
+      "eventId": "hook-8010d960f2e1a4d62bcee6396d774e2f",
+      "findingId": "mimosa-6d20a2d476371cdaa352d8e0",
+      "type": "finding_blocked",
+      "at": "2026-11-14T12:21:00.339Z",
+      "identity": {
+        "projectRelativeFile": "server/app/skills/research.py",
+        "ruleId": "security",
+        "codeEvidenceHash": "60abd15c4b0589778e1778312b291ce519c0032d11f868622c7e968509d8724a",
+        "confidence": "stable"
+      },
+      "scope": "direct",
+      "line": 320,
+      "endLine": 320,
+      "reasonCode": "deny",
+      "reportedToAgent": true,
+      "evidence": {
+        "kind": "source",
+        "boundary": "candidate",
+        "producer": "deterministic",
+        "evidenceHash": "60abd15c4b0589778e1778312b291ce519c0032d11f868622c7e968509d8724a"
+      },
+      "sequence": 1
+    }
+  ],
+  "observedFindingIds": [],
+  "verifiedFiles": [],
+  "recordedAt": "2026-11-14T12:21:00.562Z"
+}

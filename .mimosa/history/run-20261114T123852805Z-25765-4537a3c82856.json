@@ -1,0 +1,51 @@
+{
+  "schemaVersion": "mimosa-finding-history/v1",
+  "runId": "20261114T123852805Z-25765-4537a3c82856",
+  "runStatus": "inconclusive",
+  "errors": [
+    "scan:server/app/config/models.py: scanner_failed: spawnSync /Users/peihaoyu/.nvm/versions/node/v18.20.8/bin/node ETIMEDOUT",
+    "scan:server/app/tools/websearch.py: scanner_failed: spawnSync /Users/peihaoyu/.nvm/versions/node/v18.20.8/bin/node ETIMEDOUT",
+    "scan:server/app/chat/service.py: scanner_failed: spawnSync /Users/peihaoyu/.nvm/versions/node/v18.20.8/bin/node ETIMEDOUT",
+    "scan:server/app/chat/turn_lifecycle.py: scanner_failed: spawnSync /Users/peihaoyu/.nvm/versions/node/v18.20.8/bin/node ETIMEDOUT",
+    "scan:server/app/chat/agent_loop.py: scanner_failed: spawnSync /Users/peihaoyu/.nvm/versions/node/v18.20.8/bin/node ETIMEDOUT",
+    "scan:server/app/wiring/domain.py: scanner_failed: spawnSync /Users/peihaoyu/.nvm/versions/node/v18.20.8/bin/node ETIMEDOUT",
+    "scan:server/app/wiring/modules/conversation.py: scanner_failed: spawnSync /Users/peihaoyu/.nvm/versions/node/v18.20.8/bin/node ETIMEDOUT"
+  ],
+  "target": ".",
+  "revision": "a0766dab873c43e98b6c7647f662664934ab4c30",
+  "diffHash": "409347f3c139e62cab5f72484804a7ce99473d30b43a9b3bb74c4ebc3110a5bd",
+  "rulesVersion": "unavailable",
+  "recordedAt": "2026-11-14T12:38:52.805Z",
+  "timing": {
+    "startedAt": "2026-11-14T12:38:50.514Z",
+    "completedAt": "2026-11-14T12:38:52.805Z",
+    "durationMs": 2291
+  },
+  "tokens": {
+    "input": 0,
+    "output": 0,
+    "total": 0,
+    "modelCalls": 0,
+    "measurement": "known-zero"
+  },
+  "findings": {
+    "total": 11,
+    "bySeverity": {
+      "high": 11
+    },
+    "byStatus": {
+      "blocked": 9,
+      "static_verified": 2
+    }
+  },
+  "coverage": {
+    "status": "partial",
+    "reasonCounts": {
+      "baseline_partial": 1,
+      "scanner_failed": 7,
+      "project_check_failed": 7
+    }
+  },
+  "evidenceBoundary": "static_only",
+  "immutableReport": ".mimosa/reports/task-review-sess_2f6aaaa9-a376-402b-b97a-378acb9e20ff-20261114T123852805Z-25765-4537a3c82856.json"
+}

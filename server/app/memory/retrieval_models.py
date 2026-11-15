@@ -23,6 +23,9 @@ class RetrievalResult:
     lexical_recalled: int
     subject_hint: str | None = None
     fact_hint: str | None = None
+    # 批次九 D1：身份问句兜底召回已触发（含零命中情形），渲染层据此输出
+    # “没检索到 ≠ 从未记录过”的如实回答指引。
+    identity_probe: bool = False
 
 
 @dataclass(frozen=True, slots=True)

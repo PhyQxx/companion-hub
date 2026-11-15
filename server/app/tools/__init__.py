@@ -19,6 +19,7 @@ if TYPE_CHECKING:
     from .route import PlanRouteArgs, RouteTool, route_tool_definition
     from .weather import GetWeatherArgs, WeatherTool, weather_tool_definition
     from .webfetch import FetchWebpageTool
+    from .websearch import WebSearchTool
 
 _EXPORTS = {
     "AmapProvider": ("app.tools.amap", "AmapProvider"),
@@ -56,6 +57,7 @@ _EXPORTS = {
     "WeatherTool": ("app.tools.weather", "WeatherTool"),
     "weather_tool_definition": ("app.tools.weather", "weather_tool_definition"),
     "FetchWebpageTool": ("app.tools.webfetch", "FetchWebpageTool"),
+    "WebSearchTool": ("app.tools.websearch", "WebSearchTool"),
 }
 
 
@@ -94,6 +96,7 @@ __all__ = [
     "ToolRegistry",
     "ToolResult",
     "WeatherTool",
+    "WebSearchTool",
     "build_query_tool_runtime",
     "location_tool_definition",
     "nearby_tool_definition",

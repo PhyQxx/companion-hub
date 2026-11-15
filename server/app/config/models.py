@@ -413,6 +413,22 @@ class WebFetchConfig(StrictModel):
     max_redirects: Annotated[int, Field(ge=0, le=5)] = 3
 
 
+class WebSearchConfig(StrictModel):
+    """联网搜索工具：按关键词检索公开网页，供模型阅读与技能研究复用。
+
+    默认关闭；开启后仅 L0/L1 会话外发查询词（L2 自守拒绝）。provider=auto
+    时配置了 tavily_api_key_env 且该环境变量存在则用 Tavily，否则
+    DuckDuckGo（零配置）。tavily_api_key_env 填服务端环境变量名，
+    密钥本身绝不入库。
+    """
+
+    enabled: bool = False
+    provider: Literal["auto", "duckduckgo", "tavily"] = "auto"
+    tavily_api_key_env: Annotated[str, Field(max_length=128)] = ""
+    max_results: Annotated[int, Field(ge=1, le=10)] = 5
+    timeout_ms: Annotated[int, Field(ge=500, le=30_000)] = 8_000
+
+
 class ToolsConfig(StrictModel):
     enabled: bool = False
     # 每回合最多执行的工具轮数：1 保持 v1 单轮语义；>1 允许模型在
@@ -424,6 +440,7 @@ class ToolsConfig(StrictModel):
     browser_workflow: BrowserWorkflowConfig = Field(default_factory=BrowserWorkflowConfig)
     commute: CommuteConfig = Field(default_factory=CommuteConfig)
     web_fetch: WebFetchConfig = Field(default_factory=WebFetchConfig)
+    web_search: WebSearchConfig = Field(default_factory=WebSearchConfig)
 
     @model_validator(mode="after")
     def validate_provider(self) -> ToolsConfig:

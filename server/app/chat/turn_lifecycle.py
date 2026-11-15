@@ -174,6 +174,7 @@ def _device_tool_ready(
         "workflow_save",
         "workflow_run",
         "conversation_memory_review",
+        "memory_lookup",
         "propose_action",
         "commute_check",
         "focus_start",
@@ -850,6 +851,17 @@ class TurnLifecycleHandlers:
             tool_names = (*tool_names, service._skill_drafts.name)
             tool_definitions.append(service._skill_drafts.definition())
         if (
+            service._skill_research is not None
+            and snapshot.config.tools.enabled
+            and snapshot.config.tools.web_search.enabled
+            and privacy_level is PrivacyLevel.L1
+            and _cloud_tool_model_ready(snapshot.config, llm_route)
+        ):
+            # research_skill：能力缺口转后台研究 Job（SKILL-RESEARCH-01），
+            # 仅 L1、依赖 web_search 配置；提交即返回回执不阻塞回合
+            tool_names = (*tool_names, service._skill_research.name)
+            tool_definitions.append(service._skill_research.definition())
+        if (
             service._web_fetch is not None
             and snapshot.config.tools.enabled
             and snapshot.config.tools.web_fetch.enabled
@@ -859,6 +871,16 @@ class TurnLifecycleHandlers:
             # 只读网页抓取：仅 L0/L1，出站前做 SSRF 校验（工具内自守 L2）
             tool_names = (*tool_names, service._web_fetch.name)
             tool_definitions.append(service._web_fetch.definition())
+        if (
+            service._web_search is not None
+            and snapshot.config.tools.enabled
+            and snapshot.config.tools.web_search.enabled
+            and privacy_level in {PrivacyLevel.L0, PrivacyLevel.L1}
+            and _cloud_tool_model_ready(snapshot.config, llm_route)
+        ):
+            # 只读联网搜索：仅 L0/L1，查询词外发（工具内自守 L2）
+            tool_names = (*tool_names, service._web_search.name)
+            tool_definitions.append(service._web_search.definition())
         card_skill_unavailable = _has_pnkx_card_intent(text) and not skill_handlers
         blocks = ContextBlocks(
             time=time_block,

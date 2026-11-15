@@ -47,7 +47,10 @@ from app.memory import (
     extract_assistant_fact_assertions,
     replay_deletions,
 )
+from app.memory.models import MemoryEntry
 from app.schemas import PrivacyLevel
+from app.tools.contracts import ToolContext
+from app.tools.memory_query import MemoryLookupArgs, MemoryLookupTool
 
 # 检索侧冻结时钟必须晚于真实墙钟：store.add 用当前时间落 valid_from，
 # 若冻结点已过，valid_from <= now 过滤会排除全部新记忆导致测试随时间腐烂
@@ -129,7 +132,7 @@ async def test_grounded_memory_hits_require_actual_relevance(
     def result(hit: MemoryHit) -> RetrievalResult:
         return RetrievalResult(
             hits=(hit,),
-            policy_version="hybrid-lifecycle-v7",
+            policy_version="hybrid-lifecycle-v8",
             candidate_count=1,
             vector_recalled=1,
             lexical_recalled=1,
@@ -163,11 +166,19 @@ async def test_grounded_memory_hits_require_actual_relevance(
         final_score=1.0,
         reasons=("exact_fact",),
     )
+    probe = MemoryHit(
+        memory=entry,
+        vector_score=0.0,
+        lexical_score=0.0,
+        final_score=0.8,
+        reasons=("identity_probe",),
+    )
 
     assert retriever.grounded_hits(result(weak_vector)) == ()
     assert retriever.grounded_hits(result(lexical)) == (lexical,)
     assert retriever.grounded_hits(result(semantic_vector)) == (semantic_vector,)
     assert retriever.grounded_hits(result(exact)) == (exact,)
+    assert retriever.grounded_hits(result(probe)) == (probe,)
 
 
 async def test_store_add_get_list_and_sources(store: MemoryStore, user: AppUserRecord) -> None:
@@ -267,7 +278,7 @@ async def test_retrieval_ranks_relevant_memory_and_records_access(
         "帮我点菜，我能吃香菜吗", user_id=user.id, privacy_level=PrivacyLevel.L1, now=NOW
     )
 
-    assert result.policy_version == "hybrid-lifecycle-v7"
+    assert result.policy_version == "hybrid-lifecycle-v8"
     assert result.hits
     assert result.hits[0].memory.id == target.id
     assert "香菜" in MemoryRetriever.render_context(result)
@@ -397,6 +408,213 @@ async def test_retrieval_lists_memories_for_requested_subject(
     context = MemoryRetriever.render_context(result)
     assert "[关于用户]" in context
     assert "[关于你自己]" not in context
+
+
+async def test_inventory_markers_cover_history_memory_question(
+    store: MemoryStore, user: AppUserRecord
+) -> None:
+    name = await store.add(candidate("用户叫浩宇"), user_id=user.id)
+
+    result = await MemoryRetriever(store).retrieve(
+        "你的历史记忆里没有吗",
+        user_id=user.id,
+        privacy_level=PrivacyLevel.L1,
+        now=NOW,
+    )
+
+    assert {hit.memory.id for hit in result.hits} == {name.id}
+    assert all(hit.reasons == ("subject_inventory",) for hit in result.hits)
+
+
+async def test_identity_probe_recalls_unslotted_user_memories(
+    store: MemoryStore,
+    user: AppUserRecord,
+    database: Database,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # 批次九 D1 复盘的原始事故：无 fact_key 的“用户叫浩宇”在身份问句下
+    # 语义弱命中过不了证据门槛，导致助手答不上用户名字。
+    monkeypatch.delenv("ARIA_MEMORY_IDENTITY_PROBE", raising=False)
+    stranger = AppUserRecord(id=uuid7(), display_name="Stranger", status="active")
+    async with database.sessions.begin() as session:
+        session.add(stranger)
+    name = await store.add(candidate("用户叫浩宇"), user_id=user.id)
+    await store.add(candidate("用户不吃香菜"), user_id=user.id)
+    await store.add(candidate("陌生人的记忆"), user_id=stranger.id)
+
+    retriever = MemoryRetriever(store)
+    for query in ("你记得我吗", "我是谁", "我叫什么"):
+        result = await retriever.retrieve(
+            query, user_id=user.id, privacy_level=PrivacyLevel.L1, now=NOW
+        )
+        assert result.identity_probe is True
+        grounded = retriever.grounded_hits(result)
+        ids = {hit.memory.id for hit in grounded}
+        assert name.id in ids
+        assert all("identity_probe" in hit.reasons for hit in grounded)
+        assert all(hit.memory.user_id == user.id for hit in grounded)
+
+
+async def test_identity_probe_orders_profile_slots_first(
+    store: MemoryStore, user: AppUserRecord
+) -> None:
+    city = await store.add(
+        candidate("用户在济南生活", fact_key="profile.city", importance=0.4), user_id=user.id
+    )
+    assert city.fact_key == "profile.city"
+    await store.add(candidate("用户喜欢黑咖啡", importance=0.95), user_id=user.id)
+    await store.add(candidate("用户叫浩宇"), user_id=user.id)
+
+    result = await MemoryRetriever(store).retrieve(
+        "你记得我吗",
+        user_id=user.id,
+        privacy_level=PrivacyLevel.L1,
+        now=NOW,
+    )
+
+    assert [hit.memory.content for hit in result.hits] == [
+        "用户在济南生活",
+        "用户喜欢黑咖啡",
+        "用户叫浩宇",
+    ]
+
+
+async def test_identity_probe_yields_to_exact_slot_recall(
+    store: MemoryStore, user: AppUserRecord
+) -> None:
+    job = await store.add(candidate("用户是IT行业从业者", fact_key="profile.job"), user_id=user.id)
+
+    result = await MemoryRetriever(store).retrieve(
+        "你还记得我的工作吗",
+        user_id=user.id,
+        privacy_level=PrivacyLevel.L1,
+        now=NOW,
+    )
+
+    assert result.identity_probe is False
+    assert result.hits[0].memory.id == job.id
+    assert "exact_fact" in result.hits[0].reasons
+
+
+async def test_identity_probe_disabled_by_switch(
+    store: MemoryStore, user: AppUserRecord, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("ARIA_MEMORY_IDENTITY_PROBE", "0")
+    await store.add(candidate("用户叫浩宇"), user_id=user.id)
+    retriever = MemoryRetriever(store)
+
+    result = await retriever.retrieve(
+        "你记得我吗", user_id=user.id, privacy_level=PrivacyLevel.L1, now=NOW
+    )
+
+    assert result.identity_probe is False
+    assert all("identity_probe" not in hit.reasons for hit in result.hits)
+    assert retriever.grounded_hits(result) == ()
+
+
+async def test_identity_probe_guidance_when_no_user_memories(
+    store: MemoryStore, user: AppUserRecord
+) -> None:
+    retriever = MemoryRetriever(store)
+    result = await retriever.retrieve(
+        "你记得我吗", user_id=user.id, privacy_level=PrivacyLevel.L1, now=NOW
+    )
+    assert result.hits == ()
+    assert result.identity_probe is True
+
+    for block in (
+        MemoryRetriever.render_context(result),
+        MemoryRetriever.render_context(result, hits=retriever.grounded_hits(result)),
+    ):
+        assert "你是否记得TA" in block
+        assert "不要断言“从未记录过”" in block
+        assert "记忆查询工具" in block
+
+
+async def test_render_context_marks_low_confidence_hits(
+    store: MemoryStore, user: AppUserRecord
+) -> None:
+    low = await store.add(candidate("用户叫浩宇", confidence=0.5), user_id=user.id)
+    high = await store.add(candidate("用户在济南生活", confidence=0.9), user_id=user.id)
+
+    def hit_of(entry: MemoryEntry) -> MemoryHit:
+        return MemoryHit(
+            memory=entry,
+            vector_score=0.0,
+            lexical_score=0.0,
+            final_score=entry.importance,
+            reasons=("identity_probe",),
+        )
+
+    result = RetrievalResult(
+        hits=(hit_of(low), hit_of(high)),
+        policy_version="hybrid-lifecycle-v8",
+        candidate_count=2,
+        vector_recalled=0,
+        lexical_recalled=0,
+        identity_probe=True,
+    )
+    block = MemoryRetriever.render_context(result)
+
+    # 行级标记只落在低置信条目上；块头说明句另有一处。
+    assert "用户叫浩宇（把握较低）" in block
+    assert "用户在济南生活\n" in block
+    assert "未经用户确认" in block
+
+
+async def test_memory_lookup_tool_by_id_scope_keyword_and_privacy(
+    database: Database, user: AppUserRecord
+) -> None:
+    store = MemoryStore(database)
+    tool = MemoryLookupTool(store)
+    name = await store.add(candidate("用户叫浩宇"), user_id=user.id)
+    await store.add(
+        candidate(
+            "助手身高为 160 厘米",
+            subject_kind=MemorySubjectKind.ASSISTANT,
+            subject_key="assistant:primary",
+            fact_key="profile.height",
+            origin_kind=MemoryOriginKind.ASSISTANT_STATEMENT,
+        ),
+        user_id=user.id,
+    )
+    private = await store.add(
+        candidate("用户的健康隐私记录", privacy_level=PrivacyLevel.L2), user_id=user.id
+    )
+    context = ToolContext(privacy_level=PrivacyLevel.L1, user_id=user.id)
+
+    by_id = await tool.execute(MemoryLookupArgs(memory_id=name.id), context)
+    assert by_id.ok
+    assert by_id.data["items"][0]["content"] == "用户叫浩宇"
+    assert by_id.data["items"][0]["scope_label"] == "关于用户"
+    assert by_id.data["items"][0]["id"] == name.id
+
+    hidden = await tool.execute(MemoryLookupArgs(memory_id=private.id), context)
+    assert not hidden.ok and hidden.reason_code == "memory_not_found"
+    private_view = await tool.execute(
+        MemoryLookupArgs(memory_id=private.id),
+        ToolContext(privacy_level=PrivacyLevel.L2, user_id=user.id),
+    )
+    assert private_view.ok and private_view.data["items"][0]["id"] == private.id
+
+    scope = await tool.execute(MemoryLookupArgs(scope="user"), context)
+    assert {item["id"] for item in scope.data["items"]} == {name.id}
+
+    keyword = await tool.execute(MemoryLookupArgs(keyword="浩宇"), context)
+    assert [item["id"] for item in keyword.data["items"]] == [name.id]
+
+    missing = await tool.execute(MemoryLookupArgs(keyword="完全不相关的内容"), context)
+    assert missing.ok and missing.data["total"] == 0
+    assert "不得断言从未记录过" in missing.data["note"]
+
+    stranger = AppUserRecord(id=uuid7(), display_name="Stranger", status="active")
+    async with database.sessions.begin() as session:
+        session.add(stranger)
+    foreign = await tool.execute(
+        MemoryLookupArgs(memory_id=name.id),
+        ToolContext(privacy_level=PrivacyLevel.L1, user_id=stranger.id),
+    )
+    assert not foreign.ok and foreign.reason_code == "memory_not_found"
 
 
 async def test_retrieval_exactly_recalls_multiple_requested_assistant_profile_slots(
@@ -849,7 +1067,7 @@ async def test_chat_turn_builds_memory_loop(
     assert "【长期记忆】" in system_prompt
     assert "用户不吃香菜" in system_prompt
     memory_meta = meta_section(second.assistant_message.decision_meta, "memory")
-    assert memory_meta["policy_version"] == "hybrid-lifecycle-v7"
+    assert memory_meta["policy_version"] == "hybrid-lifecycle-v8"
     assert memory_meta["hits"][0]["id"] == memories[0].id
     assert memory_meta["hits"][0]["subject"] == "user"
     assert memory_meta["hits"][0]["subject_key"] == "user:self"
@@ -858,6 +1076,40 @@ async def test_chat_turn_builds_memory_loop(
 
     fresh = await store.get(memories[0].id)
     assert fresh.access_count == 1
+
+
+async def test_chat_turn_identity_probe_injects_user_name(
+    database: Database, user: AppUserRecord, tmp_path: Path
+) -> None:
+    config_path = tmp_path / "hub.yaml"
+    config_path.write_text(config_yaml(), encoding="utf-8")
+    config_store = DatabaseConfigStore(database, config_path)
+    await config_store.load()
+    requests: list[CompletionRequest] = []
+    service = ChatService(
+        database,
+        config_store,
+        router_builder=lambda config: FakeRouter(config.models["cloud"].model, requests),
+        memory_store=MemoryStore(database),
+    )
+    name = await MemoryStore(database).add(candidate("用户叫浩宇"), user_id=user.id)
+    conversation = await service.create_conversation(user_id=user.id, title="identity")
+
+    turn = await service.send_message(
+        conversation.id,
+        user_id=user.id,
+        text="你记得我吗",
+        privacy_level=PrivacyLevel.L1,
+    )
+    await service.drain_background_work()
+    system_prompt = requests[-1].messages[0].content
+    assert "【长期记忆】" in system_prompt
+    assert "用户叫浩宇" in system_prompt
+    assert "你是否记得TA" in system_prompt
+    memory_meta = meta_section(turn.assistant_message.decision_meta, "memory")
+    probe_hits = [hit for hit in memory_meta["hits"] if "identity_probe" in hit["reasons"]]
+    assert probe_hits and probe_hits[0]["id"] == name.id
+    assert probe_hits[0]["grounded"] is True
 
 
 async def test_chat_memory_failure_never_breaks_turn(
@@ -996,7 +1248,7 @@ async def test_admin_memory_api_manages_lifecycle(
     assert edited.json()["subject"] == "user"
     assert edited.json()["subject_key"] == "user:self"
     assert detail.json()["lineage"] or True
-    assert queried.json()["policy_version"] == "hybrid-lifecycle-v7"
+    assert queried.json()["policy_version"] == "hybrid-lifecycle-v8"
     assert queried.json()["hits"]
     assert l3_rejected.status_code == 422
     assert archived.json()["status"] == "archived"
@@ -1774,7 +2026,7 @@ async def test_retrieval_respects_every_context_scope(
         "cilantro preference", user_id=user.id, privacy_level=privacy, now=NOW
     )
     assert {hit.memory.privacy_level for hit in result.hits} == expected
-    assert result.policy_version == "hybrid-lifecycle-v7"
+    assert result.policy_version == "hybrid-lifecycle-v8"
 
 
 async def test_ephemeral_retrieval_does_not_query_or_embed(

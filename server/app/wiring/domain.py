@@ -103,6 +103,11 @@ from app.skills.credentials import SkillCredentialStore
 from app.skills.drafts import SkillDraftAssistant
 from app.skills.generator import SkillDraftGenerator
 from app.skills.learning import SkillRevisionLearner
+from app.skills.research import (
+    DELEG_KIND_SKILL_RESEARCH,
+    ResearchSkillTool,
+    SkillResearchHandler,
+)
 from app.skills.runtime import SkillToolProvider
 from app.skills.store import SkillStore
 from app.tasks import TaskScheduler, TaskStore
@@ -117,7 +122,7 @@ from app.tasks.review_scheduler import DailyReviewScheduler
 from app.timeline import HistoryRecallService, TimelineStore
 from app.todo import PnkxTodoClient, TodoSyncService
 from app.todo.sync_scheduler import TodoSyncScheduler
-from app.tools import FetchWebpageTool, build_query_tool_runtime
+from app.tools import FetchWebpageTool, WebSearchTool, build_query_tool_runtime
 from app.tools.hermes import HermesDelegateTool
 from app.workflows import WorkflowService, WorkflowStore
 from app.workflows.drafts import PlanDistiller, WorkflowDraftStore
@@ -206,8 +211,10 @@ class DomainAssembly:
     google_calendar_sync_service: GoogleCalendarSyncService | None
     google_calendar_sync_scheduler: GoogleCalendarSyncScheduler | None
     web_fetch_tool: FetchWebpageTool | None
+    web_search_tool: WebSearchTool | None
     deleg_worker: DelegatedJobWorker | None
     delegate_task_tool: DelegateTaskTool | None
+    skill_research_tool: ResearchSkillTool | None
     history_recall: HistoryRecallService | None
     memory_extractor: MemoryExtractor | None
     build_commute_service: Callable[[], CommuteService | None]
@@ -720,6 +727,12 @@ def assemble_domain(
         if runtime_config is not None
         else None
     )
+    # 联网搜索工具（SKILL-RESEARCH-01）：DDG 默认/Tavily 可选，同一闸门模式
+    web_search_tool = (
+        WebSearchTool(lambda: runtime_config.current.config.tools.web_search)
+        if runtime_config is not None
+        else None
+    )
     # DELEG（docs/09 §5）：长任务委派 worker + 对话入口工具；主动汇报通道
     # 在 ProactiveDeliveryService 装配后注入。
     deleg_worker = (
@@ -732,6 +745,24 @@ def assemble_domain(
             DELEG_KIND_RESEARCH,
             WebResearchHandler(web_fetch_tool, runtime_config, database=runtime_database),
         )
+        # SKILL-RESEARCH-01：能力缺口 → 搜索 → 技能草稿（后台 Job，草稿待审）
+        if (
+            web_search_tool is not None
+            and skill_store is not None
+            and skill_generator is not None
+            and runtime_database is not None
+        ):
+            deleg_worker.register(
+                DELEG_KIND_SKILL_RESEARCH,
+                SkillResearchHandler(
+                    search=web_search_tool,
+                    fetch=web_fetch_tool,
+                    generator=skill_generator,
+                    store=skill_store,
+                    config_store=runtime_config,
+                    database=runtime_database,
+                ),
+            )
     # HRM（docs/06 Hermes 集成）：受控 hermes 客户端 + deleg.hermes_task 委派；
     # 审批通知在 ProactiveDeliveryService 装配后经 set_notify 注入。
     hermes_manager = HermesManager(runtime_config) if runtime_config is not None else None
@@ -744,6 +775,15 @@ def assemble_domain(
         else None
     )
     delegate_task_tool = DelegateTaskTool(job_engine) if job_engine is not None else None
+    # research_skill：对话内能力缺口入口，提交 deleg.skill_research Job
+    skill_research_tool = (
+        ResearchSkillTool(
+            job_engine,
+            lambda: runtime_config.current.config.tools.web_search.enabled,
+        )
+        if job_engine is not None and runtime_config is not None
+        else None
+    )
     # 对话内 propose_skill 工具 + 回合后草稿收割，共用生成器与草稿存储；
     # url 文档链接由服务端复用 web_fetch 抓取，避免模型转述正文
     skill_draft_assistant = (
@@ -856,6 +896,8 @@ def assemble_domain(
         skill_generator=skill_generator,
         skill_draft_assistant=skill_draft_assistant,
         skill_learner=skill_learner,
+        web_search_tool=web_search_tool,
+        skill_research_tool=skill_research_tool,
         persona_store=persona_store,
         memory_store=memory_store,
         timeline_store=timeline_store,
