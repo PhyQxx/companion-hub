@@ -436,8 +436,9 @@ class SkillResearchHandler:
             api_note = "为说明型技能，指导用现有工具完成"
         summary = (
             f"我根据 {len(documents)} 篇文档学会了「{capability}」的做法，"
-            f"已生成技能草稿《{draft.document.name}》（{api_note}）。"
-            "草稿不会直接生效，请在技能中心审阅中心批准后启用。"
+            f"已生成技能草稿《{draft.document.name}》（{api_note}，草稿编号 "
+            f"{str(draft.id)[:8]}）。草稿不会直接生效——你可以直接在对话里说"
+            "“批准启用”，我在对话内完成审阅，无需去管理后台。"
         )
         return self._outcome(
             outcome="drafted",
@@ -445,6 +446,7 @@ class SkillResearchHandler:
             capability=capability,
             summary=summary,
             skill_name=draft.document.name,
+            draft_id=str(draft.id),
             search_terms=search_terms,
             search_provider=search_provider,
             documents=[item["url"] for item in documents],
@@ -547,6 +549,7 @@ class SkillResearchHandler:
         summary: str,
         reason: str | None = None,
         skill_name: str | None = None,
+        draft_id: str | None = None,
         search_terms: list[str] | None = None,
         search_provider: str = "",
         documents: list[str] | None = None,
@@ -558,6 +561,7 @@ class SkillResearchHandler:
             "reason": reason,
             "capability": capability,
             "skill_name": skill_name,
+            "draft_id": draft_id,
             "summary": summary[:1_000],
             "search_terms": search_terms or [],
             "search_count": len(search_terms or []),

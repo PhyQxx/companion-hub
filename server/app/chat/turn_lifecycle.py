@@ -850,6 +850,12 @@ class TurnLifecycleHandlers:
             # propose_skill 只产出待审阅草稿，不外发数据；跟随工具模型可用性挂载
             tool_names = (*tool_names, service._skill_drafts.name)
             tool_definitions.append(service._skill_drafts.definition())
+        if service._skill_review is not None and _cloud_tool_model_ready(
+            snapshot.config, llm_route
+        ):
+            # 对话内草稿审阅（业主运行时鉴权）；挂载给模型、执行时校验角色
+            tool_names = (*tool_names, service._skill_review.name)
+            tool_definitions.append(service._skill_review.definition())
         if (
             service._skill_research is not None
             and snapshot.config.tools.enabled

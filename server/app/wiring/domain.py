@@ -100,7 +100,7 @@ from app.safety import ActivityTracker
 from app.skills.audit import SkillAuditScheduler
 from app.skills.connections import SkillConnectionStore, SkillHttpClient
 from app.skills.credentials import SkillCredentialStore
-from app.skills.drafts import SkillDraftAssistant
+from app.skills.drafts import SkillDraftAssistant, SkillDraftReviewTool
 from app.skills.generator import SkillDraftGenerator
 from app.skills.learning import SkillRevisionLearner
 from app.skills.research import (
@@ -164,6 +164,7 @@ class DomainAssembly:
     skill_tool_provider: SkillToolProvider | None
     skill_generator: SkillDraftGenerator | None
     skill_draft_assistant: SkillDraftAssistant | None
+    skill_review_tool: SkillDraftReviewTool | None
     skill_learner: SkillRevisionLearner | None
     persona_store: PersonaStore | None
     memory_store: MemoryStore | None
@@ -791,6 +792,23 @@ def assemble_domain(
         if skill_store is not None and skill_generator is not None
         else None
     )
+
+    # 对话内草稿审阅（SKILL-RESEARCH-01 增量）：业主在对话批准/忽略/启用；
+    # 批准或启用后经回调重同步该技能的写动作（与 Admin 路由同语义）
+    async def _resync_skill_actions(skill: Any) -> None:
+        from app.skills.actions import sync_skill_actions
+
+        sync_skill_actions(action_registry, [skill])
+
+    skill_review_tool = (
+        SkillDraftReviewTool(
+            skill_store,
+            runtime_database,
+            on_skills_changed=_resync_skill_actions,
+        )
+        if skill_store is not None and runtime_database is not None
+        else None
+    )
     # S4（docs/08）：对话纠正 → 技能修订候选；试跑复用连接白名单与认证闸门
     skill_learner = (
         SkillRevisionLearner(
@@ -895,6 +913,7 @@ def assemble_domain(
         skill_tool_provider=skill_tool_provider,
         skill_generator=skill_generator,
         skill_draft_assistant=skill_draft_assistant,
+        skill_review_tool=skill_review_tool,
         skill_learner=skill_learner,
         web_search_tool=web_search_tool,
         skill_research_tool=skill_research_tool,

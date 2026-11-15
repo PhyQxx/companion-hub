@@ -17,12 +17,14 @@ from __future__ import annotations
 import json
 import logging
 import re
+from collections.abc import Callable
 from time import perf_counter
-from typing import Any, TypedDict
+from typing import Annotated, Any, Literal, TypedDict
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from app.db import AppUserRecord, Database
 from app.ids import uuid7
 from app.llm import CompletionRequest, LLMMessage, LLMRoute, ToolDefinition
 from app.schemas import PrivacyLevel
@@ -321,6 +323,215 @@ class SkillDraftAssistant:
             reason_code=reason_code,
             latency_ms=(perf_counter() - started) * 1_000,
         )
+
+
+class _ReviewSkillDraftArgs(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    action: Literal["list", "approve", "dismiss"] = Field(
+        description="list=列出待审草稿；approve=批准；dismiss=忽略"
+    )
+    draft_id: Annotated[str | None, Field(min_length=1, max_length=64)] = Field(
+        default=None,
+        description="草稿 ID（UUID，list 结果或学习汇报里给出）；按名称无法唯一确定时必须传",
+    )
+    skill_name: Annotated[str | None, Field(min_length=1, max_length=64)] = Field(
+        default=None,
+        description="草稿的技能名（学习汇报中《》里的名字）；与 draft_id 二选一",
+    )
+    enable: bool = Field(
+        default=False,
+        description="批准后同时启用技能；说明型技能启用后即可在对话中使用，含接口契约的技能仍需管理员配置连接",
+    )
+
+
+class SkillDraftReviewTool:
+    """对话内技能草稿审阅（SKILL-RESEARCH-01 增量）：仅业主可用。
+
+    审批语义与管理后台审阅中心完全一致（同一 SkillStore 方法）：批准即
+    创建停用技能（修订草稿创建新版本），fixture 回放失败会被阻断；
+    enable=true 额外启用。成员调用一律拒绝——业主即本部署的管理员，
+    对话内批准不放宽任何闸门。
+    """
+
+    name = "review_skill_draft"
+    description = (
+        "在对话内审阅技能草稿，免去切换管理后台。仅业主可用，成员会被拒绝。"
+        "action=list 列出待审草稿（含 ID/名称/来源/时间）；"
+        "approve 按 draft_id 或技能名批准（enable=true 可同时启用，"
+        "说明型技能启用后立即可用）；dismiss 忽略不采用。"
+        "审批结果与管理后台审阅中心一致。"
+    )
+    arguments_model: type[BaseModel] = _ReviewSkillDraftArgs
+    max_privacy_level = PrivacyLevel.L1
+    runs_local = True
+
+    def __init__(
+        self,
+        store: SkillStore,
+        database: Database,
+        *,
+        on_skills_changed: Callable[[Any], Any] | None = None,
+    ) -> None:
+        self._store = store
+        self._database = database
+        self._on_skills_changed = on_skills_changed
+
+    def definition(self) -> ToolDefinition:
+        return ToolDefinition(
+            name=self.name,
+            description=self.description,
+            parameters=self.arguments_model.model_json_schema(),
+        )
+
+    async def execute(self, arguments: BaseModel, context: ToolContext) -> ToolResult:
+        started = perf_counter()
+        args = _ReviewSkillDraftArgs.model_validate(arguments.model_dump())
+        if context.privacy_level != PrivacyLevel.L1:
+            return self._finish(False, started, "review_requires_l1")
+        if context.user_id is None:
+            return self._finish(False, started, "user_context_missing")
+        async with self._database.sessions() as session:
+            user = await session.get(AppUserRecord, context.user_id)
+        if user is None or user.role != "owner":
+            return self._finish(False, started, "owner_required")
+
+        if args.action == "list":
+            pending = await self._store.drafts(status="pending")
+            return self._finish(
+                True,
+                started,
+                data={
+                    "count": len(pending),
+                    "drafts": [
+                        {
+                            "draft_id": str(item.id),
+                            "skill_name": item.document.name,
+                            "source": item.source,
+                            "has_api": item.document.api is not None,
+                            "revision_of": item.target_skill_id is not None,
+                            "created_at": item.created_at.isoformat(),
+                        }
+                        for item in pending
+                    ],
+                },
+            )
+
+        draft = await self._resolve_draft(args)
+        if isinstance(draft, ToolResult):
+            return draft
+        assert draft is not None
+
+        if args.action == "dismiss":
+            try:
+                dismissed = await self._store.dismiss_draft(draft.id)
+            except LookupError:
+                return self._finish(False, started, "draft_not_found")
+            except ValueError as error:
+                return self._finish(False, started, _reason_code(str(error), "dismiss_failed"))
+            message = f"已忽略草稿《{dismissed.document.name}》；同内容再次出现会重新进入待审。"
+            return self._finish(
+                True,
+                started,
+                data={
+                    "status": dismissed.status,
+                    "skill_name": dismissed.document.name,
+                    "message": message,
+                },
+            )
+
+        # approve
+        try:
+            skill = await self._store.approve_draft(draft.id)
+            if args.enable:
+                skill = await self._store.set_enabled(skill.id, True)
+        except LookupError:
+            return self._finish(False, started, "draft_not_found")
+        except ValueError as error:
+            return self._finish(False, started, _reason_code(str(error), "approve_failed"))
+        if self._on_skills_changed is not None:
+            try:
+                result = self._on_skills_changed(skill)
+                if hasattr(result, "__await__"):
+                    await result
+            except Exception:
+                logger.warning(
+                    "skill actions re-sync failed after in-chat approval",
+                    exc_info=True,
+                )
+        if skill.enabled:
+            message = (
+                f"已批准并启用技能《{skill.name}》（v{skill.version}）；相关对话会自动开始使用它。"
+            )
+        else:
+            message = (
+                f"已批准草稿《{skill.name}》（v{skill.version}，当前停用）；"
+                "需要启用时再说一声或到技能中心开启。"
+            )
+        return self._finish(
+            True,
+            started,
+            data={
+                "skill_id": str(skill.id),
+                "skill_name": skill.name,
+                "version": skill.version,
+                "enabled": skill.enabled,
+                "message": message,
+            },
+        )
+
+    async def _resolve_draft(
+        self, args: _ReviewSkillDraftArgs
+    ) -> SkillDraftView | ToolResult | None:
+        if args.draft_id is not None:
+            try:
+                draft_id = UUID(args.draft_id)
+            except ValueError:
+                return self._finish_now("invalid_draft_id")
+            draft = await self._store.get_draft(draft_id)
+            if draft is None or draft.status != "pending":
+                return self._finish_now("draft_not_found")
+            return draft
+        if args.skill_name is not None:
+            pending = await self._store.drafts(status="pending")
+            matches = [item for item in pending if item.document.name == args.skill_name]
+            if not matches:
+                return self._finish_now("draft_not_found")
+            if len(matches) > 1:
+                return self._finish_now("draft_ambiguous")
+            return matches[0]
+        return self._finish_now("draft_reference_required")
+
+    @staticmethod
+    def _finish_now(reason_code: str) -> ToolResult:
+        return ToolResult(
+            ok=False,
+            tool_name="review_skill_draft",
+            provider="skills",
+            data={},
+            reason_code=reason_code,
+            latency_ms=0.0,
+        )
+
+    @staticmethod
+    def _finish(
+        ok: bool,
+        started: float,
+        reason_code: str | None = None,
+        data: dict[str, Any] | None = None,
+    ) -> ToolResult:
+        return ToolResult(
+            ok=ok,
+            tool_name="review_skill_draft",
+            provider="skills",
+            data=data or {},
+            reason_code=reason_code,
+            latency_ms=(perf_counter() - started) * 1_000,
+        )
+
+
+def _reason_code(value: str, fallback: str) -> str:
+    return value if re.fullmatch(r"[a-z0-9_]+", value) else fallback
 
 
 async def verify_skill_draft(

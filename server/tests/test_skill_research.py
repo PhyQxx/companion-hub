@@ -117,6 +117,7 @@ class _FakeDraftStore:
         if not self._draft:
             return None
         return SimpleNamespace(
+            id=uuid4(),
             document=SkillDocument(
                 name="demo-skill", description="演示技能", instructions="按文档操作"
             ),

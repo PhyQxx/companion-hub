@@ -58,7 +58,7 @@ from app.runs.resources import recover_tool_reservations
 from app.runs.speech_delivery import recover_expired_speech_deliveries
 from app.runs.store import RunStore, transition_run
 from app.schemas import PrivacyLevel
-from app.skills.drafts import SkillDraftAssistant
+from app.skills.drafts import SkillDraftAssistant, SkillDraftReviewTool
 from app.skills.learning import SkillRevisionLearner
 from app.skills.research import ResearchSkillTool
 from app.skills.runtime import SkillToolProvider
@@ -127,6 +127,7 @@ class ChatService:
         mcp_tools: McpChatToolProvider | None = None,
         skill_tools: SkillToolProvider | None = None,
         skill_drafts: SkillDraftAssistant | None = None,
+        skill_review: SkillDraftReviewTool | None = None,
         skill_learner: SkillRevisionLearner | None = None,
         skill_research: ResearchSkillTool | None = None,
         web_fetch: FetchWebpageTool | None = None,
@@ -170,6 +171,7 @@ class ChatService:
         self._mcp_tools = mcp_tools
         self._skill_tools = skill_tools
         self._skill_drafts = skill_drafts
+        self._skill_review = skill_review
         self._skill_learner = skill_learner
         self._skill_research = skill_research
         self._web_fetch = web_fetch

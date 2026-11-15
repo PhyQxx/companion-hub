@@ -247,6 +247,7 @@ def _tool_label(tool_name: str) -> str:
         "fetch_webpage": "正在读取网页…",
         "web_search": "正在搜索网页…",
         "research_skill": "正在发起技能学习…",
+        "review_skill_draft": "正在审阅技能草稿…",
         "home_get_state": "正在读取设备状态…",
         "home_get_history": "正在读取设备历史…",
         "home_control": "正在执行设备控制…",
@@ -618,6 +619,12 @@ class AgentLoopHandlers:
             return await ToolExecutor(ToolRegistry([service._skill_research])).execute(
                 call, context
             )
+        if (
+            service._skill_review is not None
+            and call.function.name == service._skill_review.name
+            and service._skill_review.name in pending.tool_names
+        ):
+            return await ToolExecutor(ToolRegistry([service._skill_review])).execute(call, context)
         runtime = None
         try:
             runtime = build_query_tool_runtime(pending.config, EnvSecretProvider())

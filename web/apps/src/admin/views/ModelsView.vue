@@ -261,6 +261,13 @@ interface HubToolsConfig {
     max_chars: number;
     max_redirects: number;
   };
+  web_search: {
+    enabled: boolean;
+    provider: "auto" | "duckduckgo" | "tavily";
+    tavily_api_key_env: string;
+    max_results: number;
+    timeout_ms: number;
+  };
 }
 interface HubVoiceAsr {
   provider: "mimo" | "faster_whisper" | "sherpa_streaming";
@@ -479,6 +486,13 @@ const defaultTools = (): HubToolsConfig => ({
     max_chars: 12000,
     max_redirects: 3,
   },
+  web_search: {
+    enabled: false,
+    provider: "auto",
+    tavily_api_key_env: "",
+    max_results: 5,
+    timeout_ms: 8000,
+  },
 });
 
 const defaultVoiceAsr = (): DraftVoiceAsr => ({
@@ -646,6 +660,7 @@ function normalizeTools(tools: HubToolsConfig | undefined | null): HubToolsConfi
     browser_workflow: { ...base.browser_workflow, ...tools.browser_workflow },
     commute: { ...base.commute, ...tools.commute },
     web_fetch: { ...base.web_fetch, ...tools.web_fetch },
+    web_search: { ...base.web_search, ...tools.web_search },
   };
 }
 
@@ -1421,6 +1436,23 @@ onActivated(() => {
             <label class="field"><span>正文上限（字符）</span><el-input-number v-model="draft.tools.web_fetch.max_chars" :min="500" :max="40000" :step="500" :disabled="!draft.tools.web_fetch.enabled" /></label>
             <label class="field"><span>最大重定向</span><el-input-number v-model="draft.tools.web_fetch.max_redirects" :min="0" :max="5" :disabled="!draft.tools.web_fetch.enabled" /></label>
           </div>
+        </div>
+
+        <div class="global-card" style="margin-top: 16px;">
+          <div class="global-head">
+            <div>
+              <h2>联网搜索（web_search / 技能学习）</h2>
+              <p>按关键词检索公开网页（返回标题/链接/摘要），并驱动「能力缺口主动学习」的后台研究。查询词会外发到搜索服务，仅 L0/L1 会话生效，L2 自守拒绝。默认关闭。</p>
+            </div>
+            <el-switch v-model="draft.tools.web_search.enabled" active-text="启用" />
+          </div>
+          <div class="form-grid three global-fields">
+            <label class="field"><span>提供方</span><el-select v-model="draft.tools.web_search.provider" :disabled="!draft.tools.web_search.enabled"><el-option label="自动（有 Tavily 密钥用 Tavily，否则 DuckDuckGo）" value="auto" /><el-option label="DuckDuckGo（免费，可能限流）" value="duckduckgo" /><el-option label="Tavily（推荐，需密钥）" value="tavily" /></el-select></label>
+            <label class="field"><span>Tavily 密钥环境变量名</span><el-input v-model="draft.tools.web_search.tavily_api_key_env" placeholder="如 ARIA_TAVILY_API_KEY" :disabled="!draft.tools.web_search.enabled" /></label>
+            <label class="field"><span>每页结果数</span><el-input-number v-model="draft.tools.web_search.max_results" :min="1" :max="10" :disabled="!draft.tools.web_search.enabled" /></label>
+            <label class="field"><span>超时（ms）</span><el-input-number v-model="draft.tools.web_search.timeout_ms" :min="500" :max="30000" :step="500" :disabled="!draft.tools.web_search.enabled" /></label>
+          </div>
+          <p class="hint-inline">Tavily 密钥本身不在此填写：请在服务端环境变量保存 key（如 ARIA_TAVILY_API_KEY），此处只填变量名；密钥绝不入库，修改环境变量后需重启服务。</p>
         </div>
       </el-tab-pane>
 

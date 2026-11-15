@@ -34,6 +34,7 @@ def build_conversation(
         ),
         skill_tools=domain.skill_tool_provider,
         skill_drafts=domain.skill_draft_assistant,
+        skill_review=domain.skill_review_tool,
         skill_learner=domain.skill_learner,
         skill_research=domain.skill_research_tool,
         web_fetch=domain.web_fetch_tool,
