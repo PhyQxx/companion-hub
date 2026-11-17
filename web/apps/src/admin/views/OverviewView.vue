@@ -10,7 +10,7 @@ const emit = defineEmits<{ status: [text: string, error?: boolean] }>();
 const config = ref<{ version: number; content_hash: string; config?: unknown } | null>(null);
 const personas = ref<{ version: number; persona: { name?: string } } | null>(null);
 const memories = ref<number | null>(null);
-const ledger = ref<unknown[] | null>(null);
+const ledger = ref<number | null>(null);
 const voiceLatency = ref<VoiceLatencySummary | null>(null);
 const devices = ref<Array<{ online: boolean; revoked_at: string | null }> | null>(null);
 
@@ -33,9 +33,11 @@ onMounted(async () => {
     config.value = await api.request("/api/v1/admin/config/current");
     personas.value = await api.request("/api/v1/admin/personas/current");
     memories.value = (
-      await api.request<unknown[]>("/api/v1/admin/memories?status=active&limit=200")
-    ).length;
-    ledger.value = await api.request<unknown[]>("/api/v1/admin/deletion-ledger?limit=200");
+      await api.request<{ total: number }>("/api/v1/admin/memories?status=active&limit=1")
+    ).total;
+    ledger.value = (
+      await api.request<{ total: number }>("/api/v1/admin/deletion-ledger?limit=1")
+    ).total;
     devices.value = await api.request<Array<{ online: boolean; revoked_at: string | null }>>(
       "/api/v1/admin/devices",
     );
@@ -52,7 +54,7 @@ onMounted(async () => {
       <el-card shadow="never"><span>模型配置</span><strong>v{{ config?.version ?? "—" }}</strong><small>{{ config?.content_hash?.slice(0, 12) ?? "" }}</small></el-card>
       <el-card shadow="never"><span>当前人格</span><strong>{{ personas?.persona?.name ?? "—" }}</strong><small>v{{ personas?.version ?? "—" }}</small></el-card>
       <el-card shadow="never"><span>活跃记忆</span><strong>{{ memories ?? "—" }}</strong><small>参与检索</small></el-card>
-      <el-card shadow="never"><span>删除台账</span><strong>{{ ledger?.length ?? "—" }}</strong><small>硬删除记录</small></el-card>
+      <el-card shadow="never"><span>删除台账</span><strong>{{ ledger ?? "—" }}</strong><small>硬删除记录</small></el-card>
       <el-card shadow="never"><span>在线设备</span><strong>{{ devices?.filter(item => item.online && !item.revoked_at).length ?? "—" }}</strong><small>活跃 {{ devices?.filter(item => !item.revoked_at).length ?? "—" }} 台</small></el-card>
     </div>
     <el-card shadow="never" class="voice-latency-card">

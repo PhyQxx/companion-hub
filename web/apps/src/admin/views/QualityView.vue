@@ -38,8 +38,10 @@ const originLabels: Record<string, string> = {
 async function refresh() {
   loading.value = true;
   try {
-    const data = await api.request<MemoryItem[]>("/api/v1/admin/memories?status=active&limit=200");
-    memories.value = data;
+    const data = await api.request<{ items: MemoryItem[] }>(
+      "/api/v1/admin/memories?status=active&limit=200",
+    );
+    memories.value = data.items;
   } catch (error) {
     emit("status", error instanceof Error ? error.message : "加载失败", true);
   } finally {

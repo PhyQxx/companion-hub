@@ -34,8 +34,18 @@ const typeLabels: Record<string, string> = {
 async function refresh() {
   loading.value = true;
   try {
-    const data = await api.request<MemoryItem[]>("/api/v1/admin/memories?limit=200");
-    memories.value = data.filter((m) => m.conflict_with !== null);
+    // 服务端按 status=conflict 过滤；单页上限 200，按 total 翻页取全部待裁决项
+    const collected: MemoryItem[] = [];
+    let offset = 0;
+    for (;;) {
+      const page = await api.request<{ items: MemoryItem[]; total: number }>(
+        `/api/v1/admin/memories?status=conflict&limit=200&offset=${offset}`,
+      );
+      collected.push(...page.items);
+      offset += page.items.length;
+      if (!page.items.length || offset >= page.total) break;
+    }
+    memories.value = collected;
   } catch (error) {
     emit("status", error instanceof Error ? error.message : "加载失败", true);
   } finally {
